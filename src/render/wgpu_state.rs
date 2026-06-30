@@ -5,6 +5,7 @@ use glam::{Mat4, Vec3, Quat, EulerRot};
 use crate::math::geometry::{Vertex, TileMesh};
 use crate::math::camera::Camera;
 use crate::math::quadtree::{QuadtreeManager, TileId};
+use crate::render::texture_manager::TileTextureManager;
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
 use std::collections::HashMap;
@@ -125,6 +126,7 @@ pub struct WgpuState<'a> {
     pub egui_state: EguiState,
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
+    pub texture_manager: TileTextureManager,
 }
 
 fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -259,8 +261,16 @@ impl<'a> WgpuState<'a> {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        let texture_manager = TileTextureManager::new(&device);
+
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&camera_bind_group_layout, &texture_manager.bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let basic_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Basic Pipeline Layout"),
             bind_group_layouts: &[&camera_bind_group_layout],
             push_constant_ranges: &[],
         });
@@ -323,7 +333,7 @@ impl<'a> WgpuState<'a> {
 
         let wireframe_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Wireframe Pipeline"),
-            layout: Some(&render_pipeline_layout),
+            layout: Some(&basic_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
@@ -364,7 +374,7 @@ impl<'a> WgpuState<'a> {
 
         let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Debug Pipeline"),
-            layout: Some(&render_pipeline_layout),
+            layout: Some(&basic_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_debug",
@@ -433,6 +443,7 @@ impl<'a> WgpuState<'a> {
             egui_state,
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
+            texture_manager,
         }
     }
 
@@ -504,6 +515,15 @@ impl<'a> WgpuState<'a> {
         let visible_tiles = self.quadtree_manager.get_visible_tiles();
         self.update_tile_cache(&visible_tiles);
 
+        let visible_tile_ids: Vec<TileId> = visible_tiles.iter().map(|(id, _, _)| *id).collect();
+        self.texture_manager.cleanup_cache(&visible_tile_ids);
+        
+        for id in &visible_tile_ids {
+            self.texture_manager.request_tile(*id, &self.device, &self.queue);
+        }
+        
+        self.texture_manager.update(&self.device, &self.queue);
+
         let mut debug_vertices = Vec::new();
         if self.debug_mode {
             let inv_view_proj = main_view_proj.inverse();
@@ -558,10 +578,13 @@ impl<'a> WgpuState<'a> {
             render_pass.set_pipeline(&self.solid_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             for (id, _, _) in &visible_tiles {
-                if let Some(buffers) = self.tile_cache.get(id) {
-                    render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                    render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
+                if let Some((_, bind_group)) = self.texture_manager.get_texture(*id) {
+                    if let Some(buffers) = self.tile_cache.get(id) {
+                        render_pass.set_bind_group(1, bind_group, &[]);
+                        render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                        render_pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                        render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
+                    }
                 }
             }
 

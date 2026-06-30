@@ -1,5 +1,10 @@
 use glam::{Vec3, Mat4, Vec4};
-use crate::math::geometry::lon_lat_to_ecef;
+
+pub fn web_mercator_y_to_lat(y: f32, z: u8) -> f32 {
+    let n = (1_u32 << z) as f32;
+    let phi = (std::f32::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
+    phi.to_degrees()
+}
 
 const MAX_ZOOM: u8 = 20;
 
@@ -14,6 +19,8 @@ pub struct QuadtreeNode {
     pub id: TileId,
     pub center: Vec3,
     pub radius: f32,
+    pub surface_points: [Vec3; 9],
+    pub horizon_culling_point: Option<Vec3>,
     pub visible: bool,
     pub children: Option<Box<[QuadtreeNode; 4]>>,
 }
@@ -51,9 +58,17 @@ impl Frustum {
         }
     }
 
-    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
+    pub fn intersects_surface_points(&self, points: &[Vec3; 9]) -> bool {
+        let epsilon = 0.0001_f32; // Small 100-meter safety margin for floating-point stability
         for (n, d) in &self.planes {
-            if n.dot(center) + d < -radius {
+            let mut all_outside = true;
+            for p in points {
+                if n.dot(*p) + d >= -epsilon {
+                    all_outside = false;
+                    break;
+                }
+            }
+            if all_outside {
                 return false;
             }
         }
@@ -61,41 +76,143 @@ impl Frustum {
     }
 }
 
+fn get_tile_corner(lon_deg: f32, lat_deg: f32, alt: f32) -> Vec3 {
+    let a = 6.378137_f32;
+    let b = 6.3567523142_f32;
+    
+    let phi = lat_deg.to_radians();
+    let theta = lon_deg.to_radians();
+
+    let x = a * phi.cos() * theta.cos();
+    let y = b * phi.sin();
+    let z = -a * phi.cos() * theta.sin();
+
+    let pos = Vec3::new(x, y, z);
+    if alt == 0.0 {
+        pos
+    } else {
+        pos + pos.normalize() * alt
+    }
+}
+
+fn transform_to_scaled_space(p: Vec3) -> Vec3 {
+    let a = 6.378137_f32;
+    let b = 6.3567523142_f32;
+    Vec3::new(p.x / a, p.y / b, p.z / a)
+}
+
+fn compute_horizon_culling_point(
+    direction_to_point: Vec3,
+    corners: &[Vec3],
+) -> Option<Vec3> {
+    if direction_to_point.length_squared() < 0.000001 {
+        return None;
+    }
+    let scaled_dir = transform_to_scaled_space(direction_to_point).normalize();
+    
+    let mut max_magnitude = 0.0_f32;
+    for &p in corners {
+        let scaled_pos = transform_to_scaled_space(p);
+        let mut mag_sq = scaled_pos.length_squared();
+        let mut mag = mag_sq.sqrt();
+        
+        let dir = if mag > 0.000001 { scaled_pos / mag } else { Vec3::ZERO };
+        
+        // For the purpose of this computation, points below the ellipsoid are considered to be on it instead.
+        mag_sq = mag_sq.max(1.0);
+        mag = mag.max(1.0);
+        
+        let cos_alpha = dir.dot(scaled_dir);
+        let cross = dir.cross(scaled_dir);
+        let sin_alpha = cross.length();
+        
+        let cos_beta = 1.0 / mag;
+        let sin_beta = (mag_sq - 1.0).max(0.0).sqrt() * cos_beta;
+        
+        let denom = cos_alpha * cos_beta - sin_alpha * sin_beta;
+        if denom <= 0.0 {
+            // all points should face the same direction, but this one doesn't
+            return None;
+        }
+        
+        let candidate = 1.0 / denom;
+        max_magnitude = max_magnitude.max(candidate);
+    }
+    
+    if max_magnitude <= 0.0 || max_magnitude.is_nan() || max_magnitude.is_infinite() {
+        None
+    } else {
+        Some(scaled_dir * max_magnitude)
+    }
+}
+
 
 impl QuadtreeNode {
     pub fn new(id: TileId) -> Self {
-        let (center, radius) = Self::compute_bounding_volume(&id);
+        let (center, radius, surface_points) = Self::compute_bounding_volume(&id);
+        let geographic_corners = Self::compute_geographic_corners(&id);
+        let horizon_culling_point = compute_horizon_culling_point(center.normalize(), &geographic_corners);
         Self {
             id,
             center,
             radius,
+            surface_points,
+            horizon_culling_point,
             visible: false,
             children: None,
         }
     }
 
-    fn compute_bounding_volume(id: &TileId) -> (Vec3, f32) {
-        let z_pow_x = (1_u32 << (id.z + 1)) as f32; // 2^(z+1) for longitude
-        let z_pow_y = (1_u32 << id.z) as f32;       // 2^z for latitude
+    fn compute_bounding_volume(id: &TileId) -> (Vec3, f32, [Vec3; 9]) {
+        let z_pow = (1_u32 << id.z) as f32;
 
-        // Longitude spans -180 to 180 over 2^(z+1) tiles
-        let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow_x;
-        let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow_x;
-
-        // Latitude spans 90 to -90 over 2^z tiles (Y=0 is North)
-        let lat_max = 90.0 - (id.y as f32) * 180.0 / z_pow_y;
-        let lat_min = 90.0 - ((id.y + 1) as f32) * 180.0 / z_pow_y;
+        let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
+        let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
+        let lat_max = web_mercator_y_to_lat(id.y as f32, id.z);
+        let lat_min = web_mercator_y_to_lat((id.y + 1) as f32, id.z);
 
         let center_lon = (lon_min + lon_max) * 0.5;
-        let center_lat = (lat_min + lat_max) * 0.5;
+        let center_lat = web_mercator_y_to_lat(id.y as f32 + 0.5, id.z);
 
-        let center = lon_lat_to_ecef(center_lon, center_lat);
+        let surface_center = get_tile_corner(center_lon, center_lat, 0.0);
         
-        // Use corner to calculate bounding radius
-        let corner = lon_lat_to_ecef(lon_min, lat_max);
-        let radius = (center - corner).length();
+        let mut points = [Vec3::ZERO; 9];
+        let mut idx = 0;
+        let lons = [lon_min, center_lon, lon_max];
+        let lats = [lat_min, center_lat, lat_max];
+        
+        let mut max_dist_sq = 0.0_f32;
+        
+        for &lon in &lons {
+            for &lat in &lats {
+                let p = get_tile_corner(lon, lat, 0.0);
+                points[idx] = p;
+                idx += 1;
+                
+                let dist_sq = (p - surface_center).length_squared();
+                max_dist_sq = max_dist_sq.max(dist_sq);
+            }
+        }
+        
+        let radius = max_dist_sq.sqrt();
+        
+        (surface_center, radius, points)
+    }
 
-        (center, radius)
+    fn compute_geographic_corners(id: &TileId) -> [Vec3; 4] {
+        let z_pow = (1_u32 << id.z) as f32;
+
+        let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
+        let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
+        let lat_max = web_mercator_y_to_lat(id.y as f32, id.z);
+        let lat_min = web_mercator_y_to_lat((id.y + 1) as f32, id.z);
+
+        [
+            get_tile_corner(lon_min, lat_min, 0.0),
+            get_tile_corner(lon_max, lat_min, 0.0),
+            get_tile_corner(lon_max, lat_max, 0.0),
+            get_tile_corner(lon_min, lat_max, 0.0),
+        ]
     }
 
     pub fn subdivide(&mut self) {
@@ -112,46 +229,46 @@ impl QuadtreeNode {
     }
 
     pub fn update(&mut self, camera_pos: Vec3, lod_factor: f32, frustum: &Frustum) {
-        if !frustum.intersects_sphere(self.center, self.radius) {
-            self.visible = false;
-            self.children = None; // Drop children to save memory if culled
-            return;
-        }
+        if let Some(hcp) = self.horizon_culling_point {
+            let a = 6.378137_f32;
+            let b = 6.3567523142_f32;
+            let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
+            let vh_mag_sq = cv.length_squared() - 1.0;
+            let vt = hcp - cv;
+            let vt_dot_vc = -vt.dot(cv);
 
-        // Horizon Culling
-        let camera_dist_sq = camera_pos.length_squared();
-        let r_earth = 6.3567523_f32; // Conservative Earth polar radius
-        let r_earth_sq = r_earth * r_earth;
+            let is_occluded = if vh_mag_sq < 0.0 {
+                vt_dot_vc > 0.0
+            } else {
+                vt_dot_vc > vh_mag_sq && (vt_dot_vc * vt_dot_vc) / vt.length_squared() > vh_mag_sq
+            };
 
-        if camera_dist_sq > r_earth_sq {
-            let v_to_c = self.center - camera_pos;
-            let t_sq = v_to_c.length_squared();
-            let t = t_sq.sqrt();
-            let camera_dist = camera_dist_sq.sqrt();
-            
-            if t > self.radius {
-                let alpha = (r_earth / camera_dist).asin();
-                let beta = (self.radius / t).asin();
-                
-                let cos_theta = (-camera_pos).dot(v_to_c) / (camera_dist * t);
-                let theta = cos_theta.clamp(-1.0, 1.0).acos();
-                
-                if theta + beta < alpha {
-                    let d_h_sq = camera_dist_sq - r_earth_sq;
-                    let d_h = d_h_sq.sqrt();
-                    
-                    let horizon_plane_dist = d_h * (d_h / camera_dist);
-                    let node_front_dist = t * cos_theta - self.radius;
-                    
-                    if node_front_dist > horizon_plane_dist {
-                        self.visible = false;
-                        self.children = None;
-                        return;
-                    }
-                }
+            if is_occluded {
+                self.visible = false;
+                self.children = None;
+                return;
             }
         }
 
+        // Check if the entire tile is facing away from the camera (beyond the true horizon).
+        let a2 = 6.378137_f32 * 6.378137_f32;
+        let b2 = 6.3567523142_f32 * 6.3567523142_f32;
+        let mut all_facing_away = true;
+        for p in &self.surface_points {
+            let n = Vec3::new(p.x / a2, p.y / b2, p.z / a2).normalize();
+            let v = camera_pos - *p;
+            if n.dot(v) > 0.0 {
+                all_facing_away = false;
+                break;
+            }
+        }
+        
+        if all_facing_away {
+            self.visible = false;
+            self.children = None;
+            return;
+        }
+        
         self.visible = true;
 
         let dist = (self.center - camera_pos).length();
@@ -167,7 +284,7 @@ impl QuadtreeNode {
                 }
             }
         } else {
-            // Merge condition: too far away, drop children
+            self.visible = frustum.intersects_surface_points(&self.surface_points);
             self.children = None;
         }
     }
@@ -187,7 +304,7 @@ impl QuadtreeNode {
 }
 
 pub struct QuadtreeManager {
-    pub roots: [QuadtreeNode; 2],
+    pub roots: [QuadtreeNode; 4],
     pub lod_factor: f32, // Multiplier for subdivision distance check
 }
 
@@ -195,8 +312,10 @@ impl QuadtreeManager {
     pub fn new() -> Self {
         Self {
             roots: [
-                QuadtreeNode::new(TileId { z: 0, x: 0, y: 0 }), // West Hemisphere
-                QuadtreeNode::new(TileId { z: 0, x: 1, y: 0 }), // East Hemisphere
+                QuadtreeNode::new(TileId { z: 1, x: 0, y: 0 }), // NW
+                QuadtreeNode::new(TileId { z: 1, x: 1, y: 0 }), // NE
+                QuadtreeNode::new(TileId { z: 1, x: 0, y: 1 }), // SW
+                QuadtreeNode::new(TileId { z: 1, x: 1, y: 1 }), // SE
             ],
             lod_factor: 2.0, // Default LOD tuning parameter
         }

@@ -12,6 +12,8 @@ wgpu = "22.0"
 glam = "0.27"
 bytemuck = { version = "1.16", features = ["derive"] }
 pollster = "0.3"
+reqwest = { version = "0.12", features = ["blocking"] }
+image = "0.25"
 log = "0.4"
 cfg-if = "1.0"
 egui = "0.29.0"

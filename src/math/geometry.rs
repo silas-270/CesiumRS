@@ -7,6 +7,7 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub color: [f32; 4],
+    pub uv: [f32; 2],
 }
 
 impl Vertex {
@@ -15,21 +16,10 @@ impl Vertex {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: (std::mem::size_of::<[f32; 3]>() * 2) as wgpu::BufferAddress,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
+                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 40, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
             ],
         }
     }
@@ -59,61 +49,56 @@ impl TileMesh {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        let z_pow_x = (1_u32 << (id.z + 1)) as f32; // 2^(z+1) for longitude
-        let z_pow_y = (1_u32 << id.z) as f32;       // 2^z for latitude
+        let z_pow = (1_u32 << id.z) as f32;
 
-        // Longitude spans -180 to 180 over 2^(z+1) tiles
-        let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow_x;
-        let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow_x;
+        let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
+        let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
 
-        // Latitude spans 90 to -90 over 2^z tiles (Y=0 is North)
-        let lat_max = 90.0 - (id.y as f32) * 180.0 / z_pow_y;
-        let lat_min = 90.0 - ((id.y + 1) as f32) * 180.0 / z_pow_y;
+        // Base skirt height in megameters (approx 500km at z=0, scaled down)
+        let skirt_height = 0.5 / 2.0_f32.powi(id.z as i32);
 
-        // Deterministic pseudo-random color based on TileId
-        // XORing and wrapping multiplication for simple hashing
-        let hash1 = (id.z as u32).wrapping_mul(73856093) ^ id.x.wrapping_mul(19349663) ^ id.y.wrapping_mul(83492791);
-        let hash2 = hash1.wrapping_mul(83492791);
-        let hash3 = hash2.wrapping_mul(19349663);
+        let grid_size = segments + 3; // +2 for skirts
 
-        let r = ((hash1 >> 16) & 0xFF) as f32 / 255.0;
-        let g = ((hash2 >> 16) & 0xFF) as f32 / 255.0;
-        let b = ((hash3 >> 16) & 0xFF) as f32 / 255.0;
-        
-        let color = [r, g, b, 1.0];
+        for row in 0..grid_size {
+            let is_skirt_row = row == 0 || row == grid_size - 1;
+            let logical_row = (row.max(1) - 1).min(segments);
+            let v = logical_row as f32 / segments as f32;
+            
+            let global_y = id.y as f32 + v;
+            let lat = crate::math::quadtree::web_mercator_y_to_lat(global_y, id.z);
 
-        // Generate vertices
-        for y_idx in 0..=segments {
-            let v = y_idx as f32 / segments as f32;
-            let lat = lat_max - v * (lat_max - lat_min); // Map v=0 to lat_max (North), v=1 to lat_min (South)
-
-            for x_idx in 0..=segments {
-                let u = x_idx as f32 / segments as f32;
+            for col in 0..grid_size {
+                let is_skirt_col = col == 0 || col == grid_size - 1;
+                let logical_col = (col.max(1) - 1).min(segments);
+                let u = logical_col as f32 / segments as f32;
                 let lon = lon_min + u * (lon_max - lon_min);
 
-                let pos = lon_lat_to_ecef(lon, lat);
-                let normal = pos.normalize(); // Approximate normal for ellipsoid
+                let is_skirt = is_skirt_row || is_skirt_col;
+                let alt = if is_skirt { -skirt_height } else { 0.0 };
+
+                let surface_pos = lon_lat_to_ecef(lon, lat);
+                let normal = surface_pos.normalize();
+                
+                let pos = if alt == 0.0 { surface_pos } else { surface_pos + normal * alt };
 
                 vertices.push(Vertex {
                     position: pos.into(),
                     normal: normal.into(),
-                    color,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    uv: [u, v],
                 });
             }
         }
 
-        // Generate indices
-        for y_idx in 0..segments {
-            for x_idx in 0..segments {
-                let current = (y_idx * (segments + 1)) + x_idx;
-                let next = current + segments + 1;
+        for row in 0..(grid_size - 1) {
+            for col in 0..(grid_size - 1) {
+                let current = (row * grid_size) + col;
+                let next = current + grid_size;
 
-                // Triangle 1
                 indices.push(current as u16);
                 indices.push(next as u16);
                 indices.push((current + 1) as u16);
 
-                // Triangle 2
                 indices.push((current + 1) as u16);
                 indices.push(next as u16);
                 indices.push((next + 1) as u16);
