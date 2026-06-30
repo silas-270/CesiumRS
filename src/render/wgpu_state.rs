@@ -2,11 +2,18 @@ use winit::window::Window;
 use wgpu::util::DeviceExt;
 use std::sync::Arc;
 use glam::{Mat4, Vec3, Quat, EulerRot};
-use crate::math::geometry::{Vertex, Ellipsoid};
+use crate::math::geometry::{Vertex, TileMesh};
 use crate::math::camera::Camera;
-use crate::math::quadtree::QuadtreeManager;
+use crate::math::quadtree::{QuadtreeManager, TileId};
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
+use std::collections::HashMap;
+
+pub struct TileBuffers {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub num_indices: u32,
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -104,9 +111,7 @@ pub struct WgpuState<'a> {
     solid_pipeline: wgpu::RenderPipeline,
     wireframe_pipeline: wgpu::RenderPipeline,
     depth_texture_view: wgpu::TextureView,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    tile_cache: HashMap<TileId, TileBuffers>,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -291,7 +296,7 @@ impl<'a> WgpuState<'a> {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
@@ -338,7 +343,7 @@ impl<'a> WgpuState<'a> {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back), // Fix: explicitly cull backfaces on wireframe
                 polygon_mode: wgpu::PolygonMode::Line,
                 unclipped_depth: false,
@@ -391,25 +396,7 @@ impl<'a> WgpuState<'a> {
             cache: None,
         });
 
-        let ellipsoid = Ellipsoid::generate(30, 60);
-
-        let vertex_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(&ellipsoid.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }
-        );
-
-        let index_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(&ellipsoid.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            }
-        );
-
-        let num_indices = ellipsoid.indices.len() as u32;
+        let tile_cache = HashMap::new();
 
         let egui_ctx = egui::Context::default();
         let egui_state = EguiState::new(
@@ -432,9 +419,7 @@ impl<'a> WgpuState<'a> {
             solid_pipeline,
             wireframe_pipeline,
             depth_texture_view,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
+            tile_cache,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
@@ -466,6 +451,45 @@ impl<'a> WgpuState<'a> {
         }
     }
 
+    pub fn update_tile_cache(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
+        let mut active_ids = std::collections::HashSet::new();
+        for (id, _, _) in visible_tiles {
+            active_ids.insert(*id);
+        }
+
+        // Remove culled tiles
+        self.tile_cache.retain(|id, _| active_ids.contains(id));
+
+        // Generate missing tiles
+        for (id, _, _) in visible_tiles {
+            if !self.tile_cache.contains_key(id) {
+                let mesh = TileMesh::generate(id, 16);
+                
+                let vertex_buffer = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("Tile Vertex Buffer {:?}", id)),
+                        contents: bytemuck::cast_slice(&mesh.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }
+                );
+
+                let index_buffer = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("Tile Index Buffer {:?}", id)),
+                        contents: bytemuck::cast_slice(&mesh.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    }
+                );
+
+                self.tile_cache.insert(*id, TileBuffers {
+                    vertex_buffer,
+                    index_buffer,
+                    num_indices: mesh.indices.len() as u32,
+                });
+            }
+        }
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let main_view_proj = self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
@@ -477,14 +501,17 @@ impl<'a> WgpuState<'a> {
         self.camera_uniform.update_matrix(render_camera.get_view_matrix(), render_camera.get_projection_matrix(aspect_ratio));
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
 
+        let visible_tiles = self.quadtree_manager.get_visible_tiles();
+        self.update_tile_cache(&visible_tiles);
+
         let mut debug_vertices = Vec::new();
         if self.debug_mode {
             let inv_view_proj = main_view_proj.inverse();
             let frustum_corners = get_frustum_corners(inv_view_proj);
             append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]); // Yellow
             
-            for (_tile_id, center, radius) in self.quadtree_manager.get_visible_tiles() {
-                append_crosshair_lines(&mut debug_vertices, center, radius, [0.0, 1.0, 0.0, 1.0]); // Green
+            for (_tile_id, center, radius) in &visible_tiles {
+                append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]); // Green
             }
         }
         self.num_debug_vertices = debug_vertices.len() as u32;
@@ -530,13 +557,23 @@ impl<'a> WgpuState<'a> {
             // Draw solid
             render_pass.set_pipeline(&self.solid_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            for (id, _, _) in &visible_tiles {
+                if let Some(buffers) = self.tile_cache.get(id) {
+                    render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
+                }
+            }
 
             // Draw wireframe overlay
             render_pass.set_pipeline(&self.wireframe_pipeline);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            for (id, _, _) in &visible_tiles {
+                if let Some(buffers) = self.tile_cache.get(id) {
+                    render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
+                }
+            }
 
             if self.debug_mode && self.num_debug_vertices > 0 {
                 render_pass.set_pipeline(&self.debug_pipeline);
@@ -592,7 +629,6 @@ impl<'a> WgpuState<'a> {
                     }
 
                     ui.separator();
-                    let visible_tiles = self.quadtree_manager.get_visible_tiles();
                     ui.label(format!("Visible Tiles: {}", visible_tiles.len()));
                     
                     ui.separator();

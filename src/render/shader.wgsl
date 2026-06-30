@@ -6,19 +6,22 @@ var<uniform> camera: CameraUniform;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) normal: vec3<f32>,
+    @location(1) color: vec4<f32>,
 };
 
 @vertex
 fn vs_main(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
-    // Normalize position from center to get approximate normal for a sphere/ellipsoid
-    out.normal = normalize(model.position);
+    out.normal = model.normal;
+    out.color = model.color;
     return out;
 }
 
@@ -28,12 +31,9 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = 0.2;
     let diffuse = max(dot(in.normal, light_dir), 0.0);
     
-    // Dark blue base color
-    let base_color = vec3<f32>(0.05, 0.2, 0.5);
+    let color = in.color.rgb * (ambient + diffuse);
     
-    let color = base_color * (ambient + diffuse);
-    
-    return vec4<f32>(color, 1.0);
+    return vec4<f32>(color, in.color.a);
 }
 
 @fragment

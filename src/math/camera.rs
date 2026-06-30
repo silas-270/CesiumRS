@@ -190,20 +190,16 @@ impl Camera {
         let ndc_x = (2.0 * screen_x) / screen_width - 1.0;
         let ndc_y = 1.0 - (2.0 * screen_y) / screen_height;
 
-        let ndc_near = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
         let ndc_far = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
 
         let view_proj = self.get_projection_matrix(aspect_ratio) * self.get_view_matrix();
         let inv_view_proj = view_proj.inverse();
 
-        let mut world_near = inv_view_proj * ndc_near;
-        world_near /= world_near.w;
-
         let mut world_far = inv_view_proj * ndc_far;
         world_far /= world_far.w;
 
-        let ray_origin = world_near.truncate();
-        let ray_dir = (world_far.truncate() - world_near.truncate()).normalize();
+        let ray_origin = self.global_transform().0;
+        let ray_dir = (world_far.truncate() - ray_origin).normalize();
 
         (ray_origin, ray_dir)
     }
@@ -250,8 +246,17 @@ impl Camera {
                 let rot_delta = Quat::from_rotation_arc(start_point.normalize(), current_point.normalize());
                 let inv_rot = rot_delta.inverse();
                 
-                self.local_pos = inv_rot * self.drag_start_local_pos;
-                self.local_ori = (inv_rot * self.drag_start_local_ori).normalize();
+                // Get the starting global transform
+                let start_global_pos = self.anchor_pos + (self.anchor_ori * self.drag_start_local_pos);
+                let start_global_ori = self.anchor_ori * self.drag_start_local_ori;
+                
+                // Orbit the camera around the earth (origin)
+                let new_global_pos = inv_rot * start_global_pos;
+                let new_global_ori = inv_rot * start_global_ori;
+                
+                // Project back into anchor-local space
+                self.local_pos = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
+                self.local_ori = (self.anchor_ori.inverse() * new_global_ori).normalize();
             } else {
                 // If ray doesn't intersect anymore, retain the current position
                 self.local_pos = current_pos;

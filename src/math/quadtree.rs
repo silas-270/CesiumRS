@@ -1,4 +1,5 @@
 use glam::{Vec3, Mat4, Vec4};
+use crate::math::geometry::lon_lat_to_ecef;
 
 const MAX_ZOOM: u8 = 20;
 
@@ -60,19 +61,6 @@ impl Frustum {
     }
 }
 
-fn lon_lat_to_ecef(lon_deg: f32, lat_deg: f32) -> Vec3 {
-    let a = 6.378137_f32; // Equatorial radius
-    let b = 6.3567523142_f32; // Polar radius
-    
-    let phi = lat_deg.to_radians();
-    let theta = lon_deg.to_radians();
-
-    let x = a * phi.cos() * theta.cos();
-    let y = b * phi.sin();
-    let z = -a * phi.cos() * theta.sin(); // -Z to match Right-Handed +Y Up coords
-
-    Vec3::new(x, y, z)
-}
 
 impl QuadtreeNode {
     pub fn new(id: TileId) -> Self {
