@@ -1,9 +1,80 @@
 use winit::window::Window;
 use wgpu::util::DeviceExt;
 use std::sync::Arc;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Quat, EulerRot};
 use crate::math::geometry::{Vertex, Ellipsoid};
 use crate::math::camera::Camera;
+use crate::math::quadtree::QuadtreeManager;
+use egui_wgpu::Renderer as EguiRenderer;
+use egui_winit::State as EguiState;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DebugVertex {
+    pub position: [f32; 3],
+    pub color: [f32; 4],
+}
+
+impl DebugVertex {
+    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<DebugVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+fn get_frustum_corners(inv_view_proj: Mat4) -> [Vec3; 8] {
+    let mut corners = [Vec3::ZERO; 8];
+    let ndc_corners = [
+        Vec3::new(-1.0, -1.0, 0.0), // Near
+        Vec3::new(1.0, -1.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(-1.0, 1.0, 0.0),
+        Vec3::new(-1.0, -1.0, 1.0), // Far
+        Vec3::new(1.0, -1.0, 1.0),
+        Vec3::new(1.0, 1.0, 1.0),
+        Vec3::new(-1.0, 1.0, 1.0),
+    ];
+    for i in 0..8 {
+        corners[i] = inv_view_proj.project_point3(ndc_corners[i]);
+    }
+    corners
+}
+
+fn append_crosshair_lines(vertices: &mut Vec<DebugVertex>, center: Vec3, radius: f32, color: [f32; 4]) {
+    let p = center;
+    let r = radius;
+    vertices.push(DebugVertex { position: [p.x - r, p.y, p.z], color });
+    vertices.push(DebugVertex { position: [p.x + r, p.y, p.z], color });
+    vertices.push(DebugVertex { position: [p.x, p.y - r, p.z], color });
+    vertices.push(DebugVertex { position: [p.x, p.y + r, p.z], color });
+    vertices.push(DebugVertex { position: [p.x, p.y, p.z - r], color });
+    vertices.push(DebugVertex { position: [p.x, p.y, p.z + r], color });
+}
+
+fn append_frustum_lines(vertices: &mut Vec<DebugVertex>, corners: &[Vec3; 8], color: [f32; 4]) {
+    let indices = [
+        0, 1, 1, 2, 2, 3, 3, 0, // near
+        4, 5, 5, 6, 6, 7, 7, 4, // far
+        0, 4, 1, 5, 2, 6, 3, 7  // connections
+    ];
+    for &i in &indices {
+        vertices.push(DebugVertex { position: corners[i].into(), color });
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -40,6 +111,15 @@ pub struct WgpuState<'a> {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     pub camera: Camera,
+    pub debug_mode: bool,
+    pub debug_camera: Camera,
+    debug_pipeline: wgpu::RenderPipeline,
+    debug_vertex_buffer: wgpu::Buffer,
+    num_debug_vertices: u32,
+    pub egui_ctx: egui::Context,
+    pub egui_state: EguiState,
+    pub egui_renderer: EguiRenderer,
+    pub quadtree_manager: QuadtreeManager,
 }
 
 fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
@@ -58,6 +138,30 @@ fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfigurati
         view_formats: &[],
     });
     depth_texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn execute_egui<'rp>(
+    renderer: &'rp EguiRenderer,
+    encoder: &'rp mut wgpu::CommandEncoder,
+    view: &'rp wgpu::TextureView,
+    paint_jobs: &[egui::ClippedPrimitive],
+    screen_descriptor: &egui_wgpu::ScreenDescriptor,
+) {
+    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Egui Render Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+    }).forget_lifetime();
+    renderer.render(&mut render_pass, paint_jobs, screen_descriptor);
 }
 
 impl<'a> WgpuState<'a> {
@@ -106,7 +210,7 @@ impl<'a> WgpuState<'a> {
 
         let depth_texture_view = create_depth_texture(&device, &config);
 
-        let camera = Camera::new(Vec3::ZERO, 20.0);
+        let camera = Camera::new(Vec3::new(0.0, 0.0, 20.0), Vec3::ZERO);
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update_matrix(camera.get_view_matrix(), camera.get_projection_matrix(size.width as f32 / size.height as f32));
 
@@ -187,7 +291,7 @@ impl<'a> WgpuState<'a> {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
+                front_face: wgpu::FrontFace::Cw,
                 cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
@@ -234,13 +338,54 @@ impl<'a> WgpuState<'a> {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back), // Fix: explicitly cull backfaces on wireframe
+                polygon_mode: wgpu::PolygonMode::Line,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: wireframe_depth_stencil.clone(),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let debug_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Debug Vertex Buffer"),
+            size: std::mem::size_of::<DebugVertex>() as u64 * 100000,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Debug Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_debug",
+                buffers: &[DebugVertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_debug",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
                 cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Line,
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: wireframe_depth_stencil,
+            depth_stencil: wireframe_depth_stencil.clone(),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -266,6 +411,17 @@ impl<'a> WgpuState<'a> {
 
         let num_indices = ellipsoid.indices.len() as u32;
 
+        let egui_ctx = egui::Context::default();
+        let egui_state = EguiState::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(2048),
+        );
+        let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
+
         Self {
             surface,
             device,
@@ -283,6 +439,15 @@ impl<'a> WgpuState<'a> {
             camera_buffer,
             camera_bind_group,
             camera,
+            debug_mode: false,
+            debug_camera: Camera::new(Vec3::new(0.0, 0.0, 25.0), Vec3::ZERO),
+            debug_pipeline,
+            debug_vertex_buffer,
+            num_debug_vertices: 0,
+            egui_ctx,
+            egui_state,
+            egui_renderer,
+            quadtree_manager: QuadtreeManager::new(),
         }
     }
 
@@ -302,8 +467,30 @@ impl<'a> WgpuState<'a> {
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        self.camera_uniform.update_matrix(self.camera.get_view_matrix(), self.camera.get_projection_matrix(self.size.width as f32 / self.size.height as f32));
+        let aspect_ratio = self.size.width as f32 / self.size.height as f32;
+        let main_view_proj = self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
+        let render_camera = if self.debug_mode { &self.debug_camera } else { &self.camera };
+
+        let camera_pos = self.camera.global_transform().0;
+        self.quadtree_manager.update(camera_pos, main_view_proj);
+
+        self.camera_uniform.update_matrix(render_camera.get_view_matrix(), render_camera.get_projection_matrix(aspect_ratio));
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+
+        let mut debug_vertices = Vec::new();
+        if self.debug_mode {
+            let inv_view_proj = main_view_proj.inverse();
+            let frustum_corners = get_frustum_corners(inv_view_proj);
+            append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]); // Yellow
+            
+            for (_tile_id, center, radius) in self.quadtree_manager.get_visible_tiles() {
+                append_crosshair_lines(&mut debug_vertices, center, radius, [0.0, 1.0, 0.0, 1.0]); // Green
+            }
+        }
+        self.num_debug_vertices = debug_vertices.len() as u32;
+        if self.num_debug_vertices > 0 {
+            self.queue.write_buffer(&self.debug_vertex_buffer, 0, bytemuck::cast_slice(&debug_vertices));
+        }
 
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -350,6 +537,100 @@ impl<'a> WgpuState<'a> {
             // Draw wireframe overlay
             render_pass.set_pipeline(&self.wireframe_pipeline);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+            if self.debug_mode && self.num_debug_vertices > 0 {
+                render_pass.set_pipeline(&self.debug_pipeline);
+                render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(..));
+                render_pass.draw(0..self.num_debug_vertices, 0..1);
+            }
+        }
+
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        
+        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+            egui::Window::new("Debug")
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Altitude: {:.4}", self.camera.altitude()));
+                    
+                    let mut is_debug = self.debug_mode;
+                    if ui.checkbox(&mut is_debug, "Debug Mode (Dual Camera)").changed() {
+                        self.debug_mode = is_debug;
+                        if is_debug {
+                            let main_pos = self.camera.local_pos;
+                            let forward = self.camera.local_ori * Vec3::Z;
+                            let up = self.camera.local_ori * Vec3::Y;
+                            self.debug_camera = Camera::new(main_pos - forward * 5.0 + up * 5.0, main_pos);
+                        }
+                    }
+
+                    if self.debug_mode {
+                        ui.separator();
+                        ui.label("Main Camera Override:");
+                        ui.horizontal(|ui| {
+                            ui.label("Pos:");
+                            ui.add(egui::DragValue::new(&mut self.camera.local_pos.x).speed(0.1));
+                            ui.add(egui::DragValue::new(&mut self.camera.local_pos.y).speed(0.1));
+                            ui.add(egui::DragValue::new(&mut self.camera.local_pos.z).speed(0.1));
+                        });
+                        
+                        let (yaw, pitch, roll) = self.camera.local_ori.to_euler(EulerRot::YXZ);
+                        let mut yaw_deg = yaw.to_degrees();
+                        let mut pitch_deg = pitch.to_degrees();
+                        let mut roll_deg = roll.to_degrees();
+
+                        ui.horizontal(|ui| {
+                            ui.label("Rot:");
+                            ui.add(egui::DragValue::new(&mut pitch_deg).speed(1.0).prefix("P: "));
+                            ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
+                            ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
+                        });
+                        
+                        if pitch_deg != pitch.to_degrees() || yaw_deg != yaw.to_degrees() || roll_deg != roll.to_degrees() {
+                            self.camera.local_ori = Quat::from_euler(EulerRot::YXZ, yaw_deg.to_radians(), pitch_deg.to_radians(), roll_deg.to_radians());
+                        }
+                    }
+
+                    ui.separator();
+                    let visible_tiles = self.quadtree_manager.get_visible_tiles();
+                    ui.label(format!("Visible Tiles: {}", visible_tiles.len()));
+                    
+                    ui.separator();
+                    ui.label("First 5 Visible Tiles:");
+                    for (tile, _, _) in visible_tiles.iter().take(5) {
+                        ui.label(format!("  Z: {}, X: {}, Y: {}", tile.z, tile.x, tile.y));
+                    }
+                });
+        });
+        let paint_jobs = self.egui_ctx.tessellate(full_output.shapes, self.egui_ctx.pixels_per_point());
+        
+        for (id, image_delta) in &full_output.textures_delta.set {
+            self.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+        }
+
+        {
+            let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [self.config.width, self.config.height],
+                pixels_per_point: self.window.scale_factor() as f32,
+            };
+            self.egui_renderer.update_buffers(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &paint_jobs,
+                &screen_descriptor,
+            );
+            execute_egui(
+                &self.egui_renderer,
+                &mut encoder,
+                &view,
+                &paint_jobs,
+                &screen_descriptor,
+            );
+        }
+        
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

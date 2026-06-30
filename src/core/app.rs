@@ -37,6 +37,11 @@ impl<'a> ApplicationHandler for App<'a> {
 
         let state = self.wgpu_state.as_mut().unwrap();
 
+        let response = state.egui_state.on_window_event(window, &event);
+        if response.consumed {
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -56,15 +61,18 @@ impl<'a> ApplicationHandler for App<'a> {
                 self.mouse_pressed = element_state == ElementState::Pressed;
                 if self.mouse_pressed {
                     if let Some((x, y)) = self.last_mouse_pos {
-                        state.camera.begin_drag(x as f32, y as f32, state.size.width as f32, state.size.height as f32);
+                        let cam = if state.debug_mode { &mut state.debug_camera } else { &mut state.camera };
+                        cam.begin_drag(x as f32, y as f32, state.size.width as f32, state.size.height as f32);
                     }
                 } else {
-                    state.camera.end_drag();
+                    let cam = if state.debug_mode { &mut state.debug_camera } else { &mut state.camera };
+                    cam.end_drag();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if self.mouse_pressed {
-                    state.camera.drag(position.x as f32, position.y as f32, state.size.width as f32, state.size.height as f32);
+                    let cam = if state.debug_mode { &mut state.debug_camera } else { &mut state.camera };
+                    cam.drag(position.x as f32, position.y as f32, state.size.width as f32, state.size.height as f32);
                     window.request_redraw();
                 }
                 self.last_mouse_pos = Some((position.x, position.y));
@@ -74,7 +82,8 @@ impl<'a> ApplicationHandler for App<'a> {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 50.0) as f32,
                 };
-                state.camera.zoom(zoom_delta);
+                let cam = if state.debug_mode { &mut state.debug_camera } else { &mut state.camera };
+                cam.zoom(zoom_delta);
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput {
@@ -87,11 +96,13 @@ impl<'a> ApplicationHandler for App<'a> {
             } => {
                 match keycode {
                     KeyCode::ArrowUp | KeyCode::KeyW => {
-                        state.camera.pitch(1.0);
+                        let cam = if state.debug_mode { &mut state.debug_camera } else { &mut state.camera };
+                        cam.pitch(1.0);
                         window.request_redraw();
                     }
                     KeyCode::ArrowDown | KeyCode::KeyS => {
-                        state.camera.pitch(-1.0);
+                        let cam = if state.debug_mode { &mut state.debug_camera } else { &mut state.camera };
+                        cam.pitch(-1.0);
                         window.request_redraw();
                     }
                     _ => {}

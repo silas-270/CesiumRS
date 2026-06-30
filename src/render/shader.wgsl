@@ -41,3 +41,28 @@ fn fs_wireframe(in: VertexOutput) -> @location(0) vec4<f32> {
     // Light gray color for the wireframe overlay
     return vec4<f32>(0.7, 0.7, 0.7, 0.5);
 }
+
+// --- DEBUG LINE RENDERING ---
+
+struct DebugVertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct DebugVertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_debug(model: DebugVertexInput) -> DebugVertexOutput {
+    var out: DebugVertexOutput;
+    out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
+    out.color = model.color;
+    return out;
+}
+
+@fragment
+fn fs_debug(in: DebugVertexOutput) -> @location(0) vec4<f32> {
+    return in.color;
+}
