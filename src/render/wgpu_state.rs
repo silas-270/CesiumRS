@@ -781,7 +781,7 @@ impl<'a> WgpuState<'a> {
                 if self.debug_mode {
                     ui.separator();
                     ui.label("Controls: WASD to move, Right-Click to look");
-                    ui.label("Space / Shift+Space for Up / Down. Shift to boost.");
+                    ui.label("Space / Ctrl+Space for Up / Down. Shift to boost.");
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Snap God Camera to Main Camera").clicked() {

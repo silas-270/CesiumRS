@@ -220,7 +220,8 @@ impl<'a> ApplicationHandler for App<'a> {
                 let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft) || self.pressed_keys.contains(&KeyCode::ShiftRight);
                 
                 if self.pressed_keys.contains(&KeyCode::Space) {
-                    if fast {
+                    let ctrl = self.pressed_keys.contains(&KeyCode::ControlLeft) || self.pressed_keys.contains(&KeyCode::ControlRight);
+                    if ctrl {
                         movement.y -= 1.0;
                     } else {
                         movement.y += 1.0;
