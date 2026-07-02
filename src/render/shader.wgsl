@@ -18,10 +18,16 @@ struct VertexOutput {
     @location(2) uv: vec2<f32>,
 };
 
+struct PushConstants {
+    relative_center: vec3<f32>,
+}
+var<push_constant> push_constants: PushConstants;
+
 @vertex
 fn vs_main(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
+    let world_pos = model.position + push_constants.relative_center;
+    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.normal = model.normal;
     out.color = model.color;
     out.uv = model.uv;

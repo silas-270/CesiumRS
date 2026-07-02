@@ -14,6 +14,7 @@ pub struct TileBuffers {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
+    pub center_f64: [f64; 3],
 }
 
 #[repr(C)]
@@ -225,8 +226,11 @@ impl<'a> WgpuState<'a> {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::POLYGON_MODE_LINE,
-                    required_limits: wgpu::Limits::default(),
+                    required_features: wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::PUSH_CONSTANTS,
+                    required_limits: wgpu::Limits {
+                        max_push_constant_size: 16,
+                        ..Default::default()
+                    },
                     memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
@@ -256,8 +260,10 @@ impl<'a> WgpuState<'a> {
 
         let camera = Camera::new(Vec3::new(0.0, 0.0, 20.0), Vec3::ZERO);
         let mut camera_uniform = CameraUniform::new();
+        let mut init_view_matrix = camera.get_view_matrix();
+        init_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // strip translation
         camera_uniform.update_matrix(
-            camera.get_view_matrix(),
+            init_view_matrix,
             camera.get_projection_matrix(size.width as f32 / size.height as f32),
         );
 
@@ -298,6 +304,11 @@ impl<'a> WgpuState<'a> {
 
         let texture_manager = TileTextureManager::new(&device);
 
+        let push_constant_ranges = [wgpu::PushConstantRange {
+            stages: wgpu::ShaderStages::VERTEX,
+            range: 0..16,
+        }];
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
@@ -305,12 +316,19 @@ impl<'a> WgpuState<'a> {
                     &camera_bind_group_layout,
                     &texture_manager.bind_group_layout,
                 ],
-                push_constant_ranges: &[],
+                push_constant_ranges: &push_constant_ranges,
             });
 
         let basic_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Basic Pipeline Layout"),
+                bind_group_layouts: &[&camera_bind_group_layout],
+                push_constant_ranges: &push_constant_ranges,
+            });
+
+        let debug_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Debug Pipeline Layout"),
                 bind_group_layouts: &[&camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
@@ -414,7 +432,7 @@ impl<'a> WgpuState<'a> {
 
         let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Debug Pipeline"),
-            layout: Some(&basic_pipeline_layout),
+            layout: Some(&debug_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_debug",
@@ -497,8 +515,11 @@ impl<'a> WgpuState<'a> {
             // Recreate depth texture
             self.depth_texture_view = create_depth_texture(&self.device, &self.config);
 
+            let mut gpu_view_matrix = self.camera.get_view_matrix();
+            gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // strip translation
+
             self.camera_uniform.update_matrix(
-                self.camera.get_view_matrix(),
+                gpu_view_matrix,
                 self.camera
                     .get_projection_matrix(new_size.width as f32 / new_size.height as f32),
             );
@@ -546,6 +567,7 @@ impl<'a> WgpuState<'a> {
                         vertex_buffer,
                         index_buffer,
                         num_indices: mesh.indices.len() as u32,
+                        center_f64: mesh.center_f64,
                     },
                 );
             }
@@ -563,10 +585,13 @@ impl<'a> WgpuState<'a> {
         };
 
         let camera_pos = self.camera.global_transform().0;
-        self.quadtree_manager.update(camera_pos, main_view_proj);
+        self.quadtree_manager.update(camera_pos, main_view_proj); // Original main_view_proj with translation is passed here!
+
+        let mut gpu_view_matrix = render_camera.get_view_matrix();
+        gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
 
         self.camera_uniform.update_matrix(
-            render_camera.get_view_matrix(),
+            gpu_view_matrix,
             render_camera.get_projection_matrix(aspect_ratio),
         );
         self.queue.write_buffer(
@@ -647,12 +672,27 @@ impl<'a> WgpuState<'a> {
                 timestamp_writes: None,
             });
 
+            let camera_pos_f64 = [
+                camera_pos.x as f64,
+                camera_pos.y as f64,
+                camera_pos.z as f64,
+            ];
+
             // Draw solid
             render_pass.set_pipeline(&self.solid_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             for (id, _, _) in &visible_tiles {
                 if let Some((_, bind_group)) = self.texture_manager.get_texture(*id) {
                     if let Some(buffers) = self.tile_cache.get(id) {
+                        let center_f64 = buffers.center_f64;
+                        let relative_center = [
+                            (center_f64[0] - camera_pos_f64[0]) as f32,
+                            (center_f64[1] - camera_pos_f64[1]) as f32,
+                            (center_f64[2] - camera_pos_f64[2]) as f32,
+                            0.0, // padding
+                        ];
+                        render_pass.set_push_constants(wgpu::ShaderStages::VERTEX, 0, bytemuck::cast_slice(&relative_center));
+
                         render_pass.set_bind_group(1, bind_group, &[]);
                         render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
                         render_pass.set_index_buffer(
@@ -668,6 +708,15 @@ impl<'a> WgpuState<'a> {
             render_pass.set_pipeline(&self.wireframe_pipeline);
             for (id, _, _) in &visible_tiles {
                 if let Some(buffers) = self.tile_cache.get(id) {
+                    let center_f64 = buffers.center_f64;
+                    let relative_center = [
+                        (center_f64[0] - camera_pos_f64[0]) as f32,
+                        (center_f64[1] - camera_pos_f64[1]) as f32,
+                        (center_f64[2] - camera_pos_f64[2]) as f32,
+                        0.0, // padding
+                    ];
+                    render_pass.set_push_constants(wgpu::ShaderStages::VERTEX, 0, bytemuck::cast_slice(&relative_center));
+
                     render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
                     render_pass.set_index_buffer(
                         buffers.index_buffer.slice(..),

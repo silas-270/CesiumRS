@@ -55,7 +55,7 @@ pub struct Camera {
     pitch_sensitivity: f32,
 
     // Sticky Drag State
-    drag_start_point: Option<Vec3>,
+    drag_start_point: Option<glam::DVec3>,
     drag_start_local_pos: Vec3,
     drag_start_local_ori: Quat,
 }
@@ -219,35 +219,55 @@ impl Camera {
         let ndc_x = (2.0 * screen_x) / screen_width - 1.0;
         let ndc_y = 1.0 - (2.0 * screen_y) / screen_height;
 
-        let ndc_far = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let fov_y = std::f32::consts::FRAC_PI_4;
+        let tan_half_fov = (fov_y / 2.0).tan();
+        
+        let local_dir = Vec3::new(
+            ndc_x * aspect_ratio * tan_half_fov,
+            ndc_y * tan_half_fov,
+            -1.0,
+        ).normalize();
 
-        let view_proj = self.get_projection_matrix(aspect_ratio) * self.get_view_matrix();
-        let inv_view_proj = view_proj.inverse();
+        let (global_pos, global_ori) = self.global_transform();
+        let ray_dir = global_ori * local_dir;
 
-        let mut world_far = inv_view_proj * ndc_far;
-        world_far /= world_far.w;
-
-        let ray_origin = self.global_transform().0;
-        let ray_dir = (world_far.truncate() - ray_origin).normalize();
-
-        (ray_origin, ray_dir)
+        (global_pos, ray_dir)
     }
 
-    pub fn intersect_sphere(&self, ray_origin: Vec3, ray_dir: Vec3, radius: f32) -> Option<Vec3> {
-        let b = 2.0 * ray_origin.dot(ray_dir);
-        let c = ray_origin.length_squared() - radius * radius;
+    pub fn intersect_ellipsoid(&self, ray_origin: Vec3, ray_dir: Vec3) -> Option<glam::DVec3> {
+        let a = 6.378137_f64;
+        let b = 6.3567523142_f64;
 
-        let discriminant = b * b - 4.0 * c;
+        let ro = glam::DVec3::new(
+            ray_origin.x as f64 / a,
+            ray_origin.y as f64 / b,
+            ray_origin.z as f64 / a,
+        );
+        let rd = glam::DVec3::new(
+            ray_dir.x as f64 / a,
+            ray_dir.y as f64 / b,
+            ray_dir.z as f64 / a,
+        );
+
+        let qa = rd.length_squared();
+        let qb = 2.0 * ro.dot(rd);
+        let qc = ro.length_squared() - 1.0;
+
+        let discriminant = qb * qb - 4.0 * qa * qc;
         if discriminant < 0.0 {
             return None;
         }
 
-        let t = (-b - discriminant.sqrt()) / 2.0;
+        let t = (-qb - discriminant.sqrt()) / (2.0 * qa);
         if t < 0.0 {
             return None;
         }
 
-        Some(ray_origin + ray_dir * t)
+        Some(glam::DVec3::new(
+            ray_origin.x as f64 + ray_dir.x as f64 * t,
+            ray_origin.y as f64 + ray_dir.y as f64 * t,
+            ray_origin.z as f64 + ray_dir.z as f64 * t,
+        ))
     }
 
     pub fn begin_drag(
@@ -259,8 +279,8 @@ impl Camera {
     ) {
         let (ray_origin, ray_dir) =
             self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
-        let earth_radius = 6.378137;
-        self.drag_start_point = self.intersect_sphere(ray_origin, ray_dir, earth_radius);
+
+        self.drag_start_point = self.intersect_ellipsoid(ray_origin, ray_dir);
         self.drag_start_local_pos = self.local_pos;
         self.drag_start_local_ori = self.local_ori;
     }
@@ -276,12 +296,16 @@ impl Camera {
 
             let (ray_origin, ray_dir) =
                 self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
-            let earth_radius = 6.378137;
 
-            if let Some(current_point) = self.intersect_sphere(ray_origin, ray_dir, earth_radius) {
-                // The drag orbits the earth, so we orbit the anchor
-                let rot_delta =
-                    Quat::from_rotation_arc(start_point.normalize(), current_point.normalize());
+            if let Some(current_point) = self.intersect_ellipsoid(ray_origin, ray_dir) {
+                let start_f64 = start_point.normalize();
+                let current_f64 = current_point.normalize();
+
+                let dot = start_f64.dot(current_f64);
+                let cross = start_f64.cross(current_f64);
+                let q = glam::DQuat::from_xyzw(cross.x, cross.y, cross.z, 1.0 + dot).normalize();
+                let rot_delta = Quat::from_xyzw(q.x as f32, q.y as f32, q.z as f32, q.w as f32);
+
                 let inv_rot = rot_delta.inverse();
 
                 // Get the starting global transform

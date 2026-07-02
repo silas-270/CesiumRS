@@ -55,9 +55,25 @@ pub fn lon_lat_to_ecef(lon_deg: f32, lat_deg: f32) -> Vec3 {
     Vec3::new(x, y, z)
 }
 
+pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
+    let a = 6.378137_f64;
+    let b = 6.3567523142_f64;
+
+    let phi = lat_deg.to_radians();
+    let theta = lon_deg.to_radians();
+
+    let x = a * phi.cos() * theta.cos();
+    let y = b * phi.sin();
+    let z = -a * phi.cos() * theta.sin();
+
+    [x, y, z]
+}
+
 pub struct TileMesh {
+
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
+    pub center_f64: [f64; 3],
 }
 
 impl TileMesh {
@@ -69,6 +85,18 @@ impl TileMesh {
 
         let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
         let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
+
+        let mut center_lat_max = crate::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z) as f64;
+        let mut center_lat_min = crate::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z) as f64;
+        if id.y == 0 {
+            center_lat_max = 90.0;
+        }
+        if id.y == (1_u32 << id.z) - 1 {
+            center_lat_min = -90.0;
+        }
+        let center_lon = ((lon_min + lon_max) * 0.5) as f64;
+        let center_lat = (center_lat_min + center_lat_max) * 0.5;
+        let center_f64 = lon_lat_to_ecef_f64(center_lon, center_lat);
 
         // Base skirt height in megameters (approx 500km at z=0, scaled down)
         let skirt_height = 0.5 / 2.0_f32.powi(id.z as i32);
@@ -106,18 +134,41 @@ impl TileMesh {
                     0.0
                 };
 
-                let surface_pos = lon_lat_to_ecef(lon, lat);
-                let normal = surface_pos.normalize();
-
-                let pos = if alt == 0.0 {
-                    surface_pos
-                } else {
-                    surface_pos + normal * alt
+                let surface_pos_f64 = lon_lat_to_ecef_f64(lon as f64, lat as f64);
+                
+                // Normal based on WGS84 ellipsoid
+                let normal_f64 = {
+                    let a2 = 6.378137_f64 * 6.378137_f64;
+                    let b2 = 6.3567523142_f64 * 6.3567523142_f64;
+                    let nx = surface_pos_f64[0] / a2;
+                    let ny = surface_pos_f64[1] / b2;
+                    let nz = surface_pos_f64[2] / a2;
+                    let len = (nx * nx + ny * ny + nz * nz).sqrt();
+                    [nx / len, ny / len, nz / len]
                 };
 
+                let alt_f64 = alt as f64;
+                let pos_f64 = if alt_f64 == 0.0 {
+                    surface_pos_f64
+                } else {
+                    [
+                        surface_pos_f64[0] + normal_f64[0] * alt_f64,
+                        surface_pos_f64[1] + normal_f64[1] * alt_f64,
+                        surface_pos_f64[2] + normal_f64[2] * alt_f64,
+                    ]
+                };
+
+                let relative_pos = [
+                    (pos_f64[0] - center_f64[0]) as f32,
+                    (pos_f64[1] - center_f64[1]) as f32,
+                    (pos_f64[2] - center_f64[2]) as f32,
+                ];
+
+                let normal = [normal_f64[0] as f32, normal_f64[1] as f32, normal_f64[2] as f32];
+
                 vertices.push(Vertex {
-                    position: pos.into(),
-                    normal: normal.into(),
+                    position: relative_pos,
+                    normal,
                     color: [1.0, 1.0, 1.0, 1.0],
                     uv: [u, v],
                 });
@@ -139,6 +190,6 @@ impl TileMesh {
             }
         }
 
-        Self { vertices, indices }
+        Self { vertices, indices, center_f64 }
     }
 }
