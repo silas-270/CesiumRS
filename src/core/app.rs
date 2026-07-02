@@ -15,6 +15,16 @@ pub struct App<'a> {
     last_mouse_pos: Option<(f64, f64)>,
 }
 
+impl<'a> App<'a> {
+    pub fn wgpu_state_mut(&mut self) -> Option<&mut WgpuState<'a>> {
+        self.wgpu_state.as_mut()
+    }
+    
+    pub fn window(&self) -> Option<&Arc<Window>> {
+        self.window.as_ref()
+    }
+}
+
 impl<'a> ApplicationHandler for App<'a> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
@@ -54,7 +64,7 @@ impl<'a> ApplicationHandler for App<'a> {
             WindowEvent::Resized(physical_size) => {
                 state.resize(physical_size);
             }
-            WindowEvent::RedrawRequested => match state.render() {
+            WindowEvent::RedrawRequested => match state.render(None) {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                 Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),

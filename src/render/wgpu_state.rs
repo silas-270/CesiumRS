@@ -246,7 +246,7 @@ impl<'a> WgpuState<'a> {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: size.width,
             height: size.height,
@@ -574,7 +574,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, screenshot_out: Option<&str>) -> Result<(), wgpu::SurfaceError> {
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let main_view_proj =
             self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
@@ -838,6 +838,90 @@ impl<'a> WgpuState<'a> {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        if let Some(out_path) = screenshot_out {
+            let u32_size = std::mem::size_of::<u32>() as u32;
+            let unpadded_bytes_per_row = self.config.width * u32_size;
+            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
+
+            let buffer_size = (padded_bytes_per_row * self.config.height) as wgpu::BufferAddress;
+
+            let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Screenshot Staging Buffer"),
+                size: buffer_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+
+            let mut copy_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Screenshot Copy Encoder"),
+            });
+
+            copy_encoder.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture {
+                    texture: &output.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyBuffer {
+                    buffer: &staging_buffer,
+                    layout: wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_bytes_per_row),
+                        rows_per_image: Some(self.config.height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+
+            self.queue.submit(Some(copy_encoder.finish()));
+
+            let buffer_slice = staging_buffer.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                tx.send(result).unwrap();
+            });
+
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+
+            let data = buffer_slice.get_mapped_range();
+            let mut rgba_data = Vec::with_capacity((self.config.width * self.config.height * 4) as usize);
+            let is_bgra = matches!(
+                self.config.format,
+                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+            );
+
+            for chunk in data.chunks(padded_bytes_per_row as usize) {
+                for i in 0..self.config.width as usize {
+                    let c0 = chunk[i * 4];
+                    let c1 = chunk[i * 4 + 1];
+                    let c2 = chunk[i * 4 + 2];
+                    let c3 = chunk[i * 4 + 3];
+                    if is_bgra {
+                        rgba_data.push(c2);
+                        rgba_data.push(c1);
+                        rgba_data.push(c0);
+                        rgba_data.push(c3);
+                    } else {
+                        rgba_data.push(c0);
+                        rgba_data.push(c1);
+                        rgba_data.push(c2);
+                        rgba_data.push(c3);
+                    }
+                }
+            }
+            drop(data);
+            staging_buffer.unmap();
+            let _ = image::save_buffer(out_path, &rgba_data, self.config.width, self.config.height, image::ColorType::Rgba8);
+        }
+
         output.present();
 
         Ok(())
