@@ -780,9 +780,11 @@ impl<'a> WgpuState<'a> {
 
                 if self.debug_mode {
                     ui.separator();
+                    ui.label("Controls: WASD to move, Right-Click to look");
+                    ui.label("Space / Shift+Space for Up / Down. Shift to boost.");
+                    ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label("God Camera State:");
-                        if ui.button("Snap to Main Camera").clicked() {
+                        if ui.button("Snap God Camera to Main Camera").clicked() {
                             let (global_pos, global_ori) = self.camera.global_transform();
                             let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
                             let pitch = forward.y.asin();
@@ -790,15 +792,20 @@ impl<'a> WgpuState<'a> {
                             self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
                         }
                     });
+
+                    ui.separator();
+                    ui.label("Main Camera State:");
                     ui.horizontal(|ui| {
                         ui.label("Pos:");
-                        ui.add(egui::DragValue::new(&mut self.debug_camera.position.x).speed(0.1));
-                        ui.add(egui::DragValue::new(&mut self.debug_camera.position.y).speed(0.1));
-                        ui.add(egui::DragValue::new(&mut self.debug_camera.position.z).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.x).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.y).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.z).speed(0.1));
                     });
 
-                    let mut yaw_deg = self.debug_camera.yaw.to_degrees();
-                    let mut pitch_deg = self.debug_camera.pitch.to_degrees();
+                    let (yaw, pitch, roll) = self.camera.local_ori.to_euler(glam::EulerRot::YXZ);
+                    let mut yaw_deg = yaw.to_degrees();
+                    let mut pitch_deg = pitch.to_degrees();
+                    let mut roll_deg = roll.to_degrees();
 
                     ui.horizontal(|ui| {
                         ui.label("Rot:");
@@ -808,13 +815,19 @@ impl<'a> WgpuState<'a> {
                                 .prefix("P: "),
                         );
                         ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
+                        ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
                     });
 
-                    if pitch_deg != self.debug_camera.pitch.to_degrees()
-                        || yaw_deg != self.debug_camera.yaw.to_degrees()
+                    if pitch_deg != pitch.to_degrees()
+                        || yaw_deg != yaw.to_degrees()
+                        || roll_deg != roll.to_degrees()
                     {
-                        self.debug_camera.pitch = pitch_deg.to_radians();
-                        self.debug_camera.yaw = yaw_deg.to_radians();
+                        self.camera.local_ori = glam::Quat::from_euler(
+                            glam::EulerRot::YXZ,
+                            yaw_deg.to_radians(),
+                            pitch_deg.to_radians(),
+                            roll_deg.to_radians(),
+                        );
                     }
                 }
 

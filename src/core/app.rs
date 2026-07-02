@@ -216,14 +216,16 @@ impl<'a> ApplicationHandler for App<'a> {
                 if self.pressed_keys.contains(&KeyCode::KeyA) {
                     movement.x -= 1.0;
                 }
-                if self.pressed_keys.contains(&KeyCode::KeyE) {
-                    movement.y += 1.0;
-                }
-                if self.pressed_keys.contains(&KeyCode::KeyQ) {
-                    movement.y -= 1.0;
-                }
 
                 let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft) || self.pressed_keys.contains(&KeyCode::ShiftRight);
+                
+                if self.pressed_keys.contains(&KeyCode::Space) {
+                    if fast {
+                        movement.y -= 1.0;
+                    } else {
+                        movement.y += 1.0;
+                    }
+                }
                 if movement != Vec3::ZERO {
                     state.debug_camera.update(dt, movement.normalize_or_zero(), fast);
                     if let Some(window) = &self.window {
