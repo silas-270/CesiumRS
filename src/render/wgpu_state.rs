@@ -574,10 +574,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    pub fn render(&mut self, screenshot_out: Option<&str>) -> Result<(), wgpu::SurfaceError> {
-        let aspect_ratio = self.size.width as f32 / self.size.height as f32;
-        let main_view_proj =
-            self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
+    fn update_logic(&mut self, aspect_ratio: f32, main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
         let render_camera = if self.debug_mode {
             &self.debug_camera
         } else {
@@ -585,7 +582,7 @@ impl<'a> WgpuState<'a> {
         };
 
         let camera_pos = self.camera.global_transform().0;
-        self.quadtree_manager.update(camera_pos, main_view_proj); // Original main_view_proj with translation is passed here!
+        self.quadtree_manager.update(camera_pos, main_view_proj);
 
         let mut gpu_view_matrix = render_camera.get_view_matrix();
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
@@ -613,15 +610,18 @@ impl<'a> WgpuState<'a> {
 
         self.texture_manager.update(&self.device, &self.queue);
 
+        visible_tiles
+    }
+
+    fn compute_debug_vertices(&mut self, main_view_proj: Mat4, visible_tiles: &[(TileId, Vec3, f32)]) {
         let mut debug_vertices = Vec::new();
         if self.debug_mode {
             let inv_view_proj = main_view_proj.inverse();
-            let frustum_corners = get_frustum_corners(inv_view_proj);
-            append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]); // Yellow
+            let frustum_corners = crate::render::wgpu_state::get_frustum_corners(inv_view_proj);
+            crate::render::wgpu_state::append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]);
 
-            for (_tile_id, center, radius) in &visible_tiles {
-                append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
-                // Green
+            for (_tile_id, center, radius) in visible_tiles {
+                crate::render::wgpu_state::append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
             }
         }
         self.num_debug_vertices = debug_vertices.len() as u32;
@@ -632,91 +632,68 @@ impl<'a> WgpuState<'a> {
                 bytemuck::cast_slice(&debug_vertices),
             );
         }
+    }
 
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+    fn render_scene(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        visible_tiles: &[(TileId, Vec3, f32)],
+    ) {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1,
+                        g: 0.2,
+                        b: 0.3,
+                        a: 1.0,
                     }),
-                    stencil_ops: None,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_texture_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
 
-            let camera_pos_f64 = [
-                camera_pos.x as f64,
-                camera_pos.y as f64,
-                camera_pos.z as f64,
-            ];
+        let camera_pos = self.camera.global_transform().0;
+        let camera_pos_f64 = [
+            camera_pos.x as f64,
+            camera_pos.y as f64,
+            camera_pos.z as f64,
+        ];
 
-            // Draw solid
-            render_pass.set_pipeline(&self.solid_pipeline);
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            for (id, _, _) in &visible_tiles {
-                if let Some((_, bind_group)) = self.texture_manager.get_texture(*id) {
-                    if let Some(buffers) = self.tile_cache.get(id) {
-                        let center_f64 = buffers.center_f64;
-                        let relative_center = [
-                            (center_f64[0] - camera_pos_f64[0]) as f32,
-                            (center_f64[1] - camera_pos_f64[1]) as f32,
-                            (center_f64[2] - camera_pos_f64[2]) as f32,
-                            0.0, // padding
-                        ];
-                        render_pass.set_push_constants(wgpu::ShaderStages::VERTEX, 0, bytemuck::cast_slice(&relative_center));
-
-                        render_pass.set_bind_group(1, bind_group, &[]);
-                        render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
-                        render_pass.set_index_buffer(
-                            buffers.index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint16,
-                        );
-                        render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
-                    }
-                }
-            }
-
-            // Draw wireframe overlay
-            render_pass.set_pipeline(&self.wireframe_pipeline);
-            for (id, _, _) in &visible_tiles {
+        // Draw solid
+        render_pass.set_pipeline(&self.solid_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        for (id, _, _) in visible_tiles {
+            if let Some((_, bind_group)) = self.texture_manager.get_texture(*id) {
                 if let Some(buffers) = self.tile_cache.get(id) {
                     let center_f64 = buffers.center_f64;
                     let relative_center = [
                         (center_f64[0] - camera_pos_f64[0]) as f32,
                         (center_f64[1] - camera_pos_f64[1]) as f32,
                         (center_f64[2] - camera_pos_f64[2]) as f32,
-                        0.0, // padding
+                        0.0,
                     ];
-                    render_pass.set_push_constants(wgpu::ShaderStages::VERTEX, 0, bytemuck::cast_slice(&relative_center));
+                    render_pass.set_push_constants(
+                        wgpu::ShaderStages::VERTEX,
+                        0,
+                        bytemuck::cast_slice(&relative_center),
+                    );
 
+                    render_pass.set_bind_group(1, bind_group, &[]);
                     render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
                     render_pass.set_index_buffer(
                         buffers.index_buffer.slice(..),
@@ -725,14 +702,47 @@ impl<'a> WgpuState<'a> {
                     render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
                 }
             }
+        }
 
-            if self.debug_mode && self.num_debug_vertices > 0 {
-                render_pass.set_pipeline(&self.debug_pipeline);
-                render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(..));
-                render_pass.draw(0..self.num_debug_vertices, 0..1);
+        // Draw wireframe overlay
+        render_pass.set_pipeline(&self.wireframe_pipeline);
+        for (id, _, _) in visible_tiles {
+            if let Some(buffers) = self.tile_cache.get(id) {
+                let center_f64 = buffers.center_f64;
+                let relative_center = [
+                    (center_f64[0] - camera_pos_f64[0]) as f32,
+                    (center_f64[1] - camera_pos_f64[1]) as f32,
+                    (center_f64[2] - camera_pos_f64[2]) as f32,
+                    0.0,
+                ];
+                render_pass.set_push_constants(
+                    wgpu::ShaderStages::VERTEX,
+                    0,
+                    bytemuck::cast_slice(&relative_center),
+                );
+
+                render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    buffers.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
             }
         }
 
+        if self.debug_mode && self.num_debug_vertices > 0 {
+            render_pass.set_pipeline(&self.debug_pipeline);
+            render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(..));
+            render_pass.draw(0..self.num_debug_vertices, 0..1);
+        }
+    }
+
+    fn render_egui(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        visible_tiles: &[(TileId, Vec3, f32)],
+    ) {
         let raw_input = self.egui_state.take_egui_input(&self.window);
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
@@ -820,14 +830,14 @@ impl<'a> WgpuState<'a> {
             self.egui_renderer.update_buffers(
                 &self.device,
                 &self.queue,
-                &mut encoder,
+                encoder,
                 &paint_jobs,
                 &screen_descriptor,
             );
-            execute_egui(
+            crate::render::wgpu_state::execute_egui(
                 &self.egui_renderer,
-                &mut encoder,
-                &view,
+                encoder,
+                view,
                 &paint_jobs,
                 &screen_descriptor,
             );
@@ -836,90 +846,117 @@ impl<'a> WgpuState<'a> {
         for id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(id);
         }
+    }
+
+    fn capture_screenshot(&self, output_texture: &wgpu::Texture, out_path: &str) {
+        let u32_size = std::mem::size_of::<u32>() as u32;
+        let unpadded_bytes_per_row = self.config.width * u32_size;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
+
+        let buffer_size = (padded_bytes_per_row * self.config.height) as wgpu::BufferAddress;
+
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Screenshot Staging Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut copy_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Screenshot Copy Encoder"),
+        });
+
+        copy_encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &staging_buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(self.config.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit(Some(copy_encoder.finish()));
+
+        let buffer_slice = staging_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+
+        let data = buffer_slice.get_mapped_range();
+        let mut rgba_data = Vec::with_capacity((self.config.width * self.config.height * 4) as usize);
+        let is_bgra = matches!(
+            self.config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+
+        for chunk in data.chunks(padded_bytes_per_row as usize) {
+            for i in 0..self.config.width as usize {
+                let c0 = chunk[i * 4];
+                let c1 = chunk[i * 4 + 1];
+                let c2 = chunk[i * 4 + 2];
+                let c3 = chunk[i * 4 + 3];
+                if is_bgra {
+                    rgba_data.push(c2);
+                    rgba_data.push(c1);
+                    rgba_data.push(c0);
+                    rgba_data.push(c3);
+                } else {
+                    rgba_data.push(c0);
+                    rgba_data.push(c1);
+                    rgba_data.push(c2);
+                    rgba_data.push(c3);
+                }
+            }
+        }
+        drop(data);
+        staging_buffer.unmap();
+        let _ = image::save_buffer(out_path, &rgba_data, self.config.width, self.config.height, image::ColorType::Rgba8);
+    }
+
+    pub fn render(&mut self, screenshot_out: Option<&str>) -> Result<(), wgpu::SurfaceError> {
+        let aspect_ratio = self.size.width as f32 / self.size.height as f32;
+        let main_view_proj =
+            self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
+
+        let visible_tiles = self.update_logic(aspect_ratio, main_view_proj);
+        self.compute_debug_vertices(main_view_proj, &visible_tiles);
+
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        self.render_scene(&mut encoder, &view, &visible_tiles);
+        self.render_egui(&mut encoder, &view, &visible_tiles);
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
         if let Some(out_path) = screenshot_out {
-            let u32_size = std::mem::size_of::<u32>() as u32;
-            let unpadded_bytes_per_row = self.config.width * u32_size;
-            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
-
-            let buffer_size = (padded_bytes_per_row * self.config.height) as wgpu::BufferAddress;
-
-            let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Screenshot Staging Buffer"),
-                size: buffer_size,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-
-            let mut copy_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Screenshot Copy Encoder"),
-            });
-
-            copy_encoder.copy_texture_to_buffer(
-                wgpu::ImageCopyTexture {
-                    texture: &output.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyBuffer {
-                    buffer: &staging_buffer,
-                    layout: wgpu::ImageDataLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_bytes_per_row),
-                        rows_per_image: Some(self.config.height),
-                    },
-                },
-                wgpu::Extent3d {
-                    width: self.config.width,
-                    height: self.config.height,
-                    depth_or_array_layers: 1,
-                },
-            );
-
-            self.queue.submit(Some(copy_encoder.finish()));
-
-            let buffer_slice = staging_buffer.slice(..);
-            let (tx, rx) = std::sync::mpsc::channel();
-            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                tx.send(result).unwrap();
-            });
-
-            self.device.poll(wgpu::Maintain::Wait);
-            rx.recv().unwrap().unwrap();
-
-            let data = buffer_slice.get_mapped_range();
-            let mut rgba_data = Vec::with_capacity((self.config.width * self.config.height * 4) as usize);
-            let is_bgra = matches!(
-                self.config.format,
-                wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-            );
-
-            for chunk in data.chunks(padded_bytes_per_row as usize) {
-                for i in 0..self.config.width as usize {
-                    let c0 = chunk[i * 4];
-                    let c1 = chunk[i * 4 + 1];
-                    let c2 = chunk[i * 4 + 2];
-                    let c3 = chunk[i * 4 + 3];
-                    if is_bgra {
-                        rgba_data.push(c2);
-                        rgba_data.push(c1);
-                        rgba_data.push(c0);
-                        rgba_data.push(c3);
-                    } else {
-                        rgba_data.push(c0);
-                        rgba_data.push(c1);
-                        rgba_data.push(c2);
-                        rgba_data.push(c3);
-                    }
-                }
-            }
-            drop(data);
-            staging_buffer.unmap();
-            let _ = image::save_buffer(out_path, &rgba_data, self.config.width, self.config.height, image::ColorType::Rgba8);
+            self.capture_screenshot(&output.texture, out_path);
         }
 
         output.present();
