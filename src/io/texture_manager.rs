@@ -1,13 +1,12 @@
 use crate::globe::quadtree::TileId;
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
+use std::sync::mpsc::{self, Receiver};
 
 pub struct TileTextureManager {
     cache: HashMap<TileId, (wgpu::Texture, wgpu::BindGroup)>,
     requesting: HashSet<TileId>,
     rx: Receiver<(TileId, Result<Vec<u8>, String>)>,
-    tx: Sender<(TileId, Result<Vec<u8>, String>)>,
+    fetcher: crate::io::tile_fetcher::TileFetcher,
     pub bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
@@ -49,11 +48,13 @@ impl TileTextureManager {
             ..Default::default()
         });
 
+        let fetcher = crate::io::tile_fetcher::TileFetcher::new(tx);
+
         Self {
             cache: HashMap::new(),
             requesting: HashSet::new(),
             rx,
-            tx,
+            fetcher,
             bind_group_layout,
             sampler,
         }
@@ -65,37 +66,7 @@ impl TileTextureManager {
         }
 
         self.requesting.insert(id);
-        let tx = self.tx.clone();
-
-        thread::spawn(move || {
-            let url = format!(
-                "https://tile.openstreetmap.org/{}/{}/{}.png",
-                id.z, id.x, id.y
-            );
-
-            let client = reqwest::blocking::Client::builder()
-                .user_agent("CesiumRS/0.1.0")
-                .build();
-
-            let res = match client.and_then(|c| c.get(&url).send()) {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        match response.bytes() {
-                            Ok(bytes) => match image::load_from_memory(&bytes) {
-                                Ok(img) => Ok(img.to_rgba8().into_raw()),
-                                Err(e) => Err(format!("Image decode error: {}", e)),
-                            },
-                            Err(e) => Err(format!("Failed to read bytes: {}", e)),
-                        }
-                    } else {
-                        Err(format!("HTTP error: {}", response.status()))
-                    }
-                }
-                Err(e) => Err(format!("Request failed: {}", e)),
-            };
-
-            let _ = tx.send((id, res));
-        });
+        self.fetcher.request_tile(id, crate::io::tile_fetcher::TilePriority::High);
     }
 
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
