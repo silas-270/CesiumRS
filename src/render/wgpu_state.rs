@@ -1,14 +1,14 @@
-use winit::window::Window;
-use wgpu::util::DeviceExt;
-use std::sync::Arc;
-use glam::{Mat4, Vec3, Quat, EulerRot};
-use crate::math::geometry::{Vertex, TileMesh};
-use crate::math::camera::Camera;
-use crate::math::quadtree::{QuadtreeManager, TileId};
-use crate::render::texture_manager::TileTextureManager;
+use crate::camera::camera::Camera;
+use crate::globe::geometry::{TileMesh, Vertex};
+use crate::globe::quadtree::{QuadtreeManager, TileId};
+use crate::io::texture_manager::TileTextureManager;
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
+use glam::{EulerRot, Mat4, Quat, Vec3};
 use std::collections::HashMap;
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use winit::window::Window;
 
 pub struct TileBuffers {
     pub vertex_buffer: wgpu::Buffer,
@@ -62,25 +62,51 @@ fn get_frustum_corners(inv_view_proj: Mat4) -> [Vec3; 8] {
     corners
 }
 
-fn append_crosshair_lines(vertices: &mut Vec<DebugVertex>, center: Vec3, radius: f32, color: [f32; 4]) {
+fn append_crosshair_lines(
+    vertices: &mut Vec<DebugVertex>,
+    center: Vec3,
+    radius: f32,
+    color: [f32; 4],
+) {
     let p = center;
     let r = radius;
-    vertices.push(DebugVertex { position: [p.x - r, p.y, p.z], color });
-    vertices.push(DebugVertex { position: [p.x + r, p.y, p.z], color });
-    vertices.push(DebugVertex { position: [p.x, p.y - r, p.z], color });
-    vertices.push(DebugVertex { position: [p.x, p.y + r, p.z], color });
-    vertices.push(DebugVertex { position: [p.x, p.y, p.z - r], color });
-    vertices.push(DebugVertex { position: [p.x, p.y, p.z + r], color });
+    vertices.push(DebugVertex {
+        position: [p.x - r, p.y, p.z],
+        color,
+    });
+    vertices.push(DebugVertex {
+        position: [p.x + r, p.y, p.z],
+        color,
+    });
+    vertices.push(DebugVertex {
+        position: [p.x, p.y - r, p.z],
+        color,
+    });
+    vertices.push(DebugVertex {
+        position: [p.x, p.y + r, p.z],
+        color,
+    });
+    vertices.push(DebugVertex {
+        position: [p.x, p.y, p.z - r],
+        color,
+    });
+    vertices.push(DebugVertex {
+        position: [p.x, p.y, p.z + r],
+        color,
+    });
 }
 
 fn append_frustum_lines(vertices: &mut Vec<DebugVertex>, corners: &[Vec3; 8], color: [f32; 4]) {
     let indices = [
         0, 1, 1, 2, 2, 3, 3, 0, // near
         4, 5, 5, 6, 6, 7, 7, 4, // far
-        0, 4, 1, 5, 2, 6, 3, 7  // connections
+        0, 4, 1, 5, 2, 6, 3, 7, // connections
     ];
     for &i in &indices {
-        vertices.push(DebugVertex { position: corners[i].into(), color });
+        vertices.push(DebugVertex {
+            position: corners[i].into(),
+            color,
+        });
     }
 }
 
@@ -129,7 +155,10 @@ pub struct WgpuState<'a> {
     pub texture_manager: TileTextureManager,
 }
 
-fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
+fn create_depth_texture(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> wgpu::TextureView {
     let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Depth Texture"),
         size: wgpu::Extent3d {
@@ -154,20 +183,22 @@ fn execute_egui<'rp>(
     paint_jobs: &[egui::ClippedPrimitive],
     screen_descriptor: &egui_wgpu::ScreenDescriptor,
 ) {
-    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Egui Render Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        timestamp_writes: None,
-    }).forget_lifetime();
+    let mut render_pass = encoder
+        .begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Egui Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        })
+        .forget_lifetime();
     renderer.render(&mut render_pass, paint_jobs, screen_descriptor);
 }
 
@@ -178,29 +209,35 @@ impl<'a> WgpuState<'a> {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        
+
         let surface = instance.create_surface(window.clone()).unwrap();
 
-        let adapter = instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
-            },
-        ).await.unwrap();
+            })
+            .await
+            .unwrap();
 
-        let (device, queue) = adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::POLYGON_MODE_LINE,
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-            },
-            None,
-        ).await.unwrap();
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::POLYGON_MODE_LINE,
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats.iter()
+        let surface_format = surface_caps
+            .formats
+            .iter()
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
@@ -219,19 +256,20 @@ impl<'a> WgpuState<'a> {
 
         let camera = Camera::new(Vec3::new(0.0, 0.0, 20.0), Vec3::ZERO);
         let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_matrix(camera.get_view_matrix(), camera.get_projection_matrix(size.width as f32 / size.height as f32));
-
-        let camera_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Camera Buffer"),
-                contents: bytemuck::cast_slice(&[camera_uniform]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }
+        camera_uniform.update_matrix(
+            camera.get_view_matrix(),
+            camera.get_projection_matrix(size.width as f32 / size.height as f32),
         );
 
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
@@ -240,19 +278,16 @@ impl<'a> WgpuState<'a> {
                         min_binding_size: None,
                     },
                     count: None,
-                }
-            ],
-            label: Some("camera_bind_group_layout"),
-        });
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                }
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
             label: Some("camera_bind_group"),
         });
 
@@ -263,17 +298,22 @@ impl<'a> WgpuState<'a> {
 
         let texture_manager = TileTextureManager::new(&device);
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout, &texture_manager.bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[
+                    &camera_bind_group_layout,
+                    &texture_manager.bind_group_layout,
+                ],
+                push_constant_ranges: &[],
+            });
 
-        let basic_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Basic Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let basic_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Basic Pipeline Layout"),
+                bind_group_layouts: &[&camera_bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         // 1. Solid Pipeline
         let solid_depth_stencil = Some(wgpu::DepthStencilState {
@@ -453,12 +493,20 @@ impl<'a> WgpuState<'a> {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            
+
             // Recreate depth texture
             self.depth_texture_view = create_depth_texture(&self.device, &self.config);
 
-            self.camera_uniform.update_matrix(self.camera.get_view_matrix(), self.camera.get_projection_matrix(new_size.width as f32 / new_size.height as f32));
-            self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+            self.camera_uniform.update_matrix(
+                self.camera.get_view_matrix(),
+                self.camera
+                    .get_projection_matrix(new_size.width as f32 / new_size.height as f32),
+            );
+            self.queue.write_buffer(
+                &self.camera_buffer,
+                0,
+                bytemuck::cast_slice(&[self.camera_uniform]),
+            );
         }
     }
 
@@ -475,53 +523,69 @@ impl<'a> WgpuState<'a> {
         for (id, _, _) in visible_tiles {
             if !self.tile_cache.contains_key(id) {
                 let mesh = TileMesh::generate(id, 16);
-                
-                let vertex_buffer = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("Tile Vertex Buffer {:?}", id)),
-                        contents: bytemuck::cast_slice(&mesh.vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }
-                );
 
-                let index_buffer = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("Tile Index Buffer {:?}", id)),
-                        contents: bytemuck::cast_slice(&mesh.indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    }
-                );
+                let vertex_buffer =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some(&format!("Tile Vertex Buffer {:?}", id)),
+                            contents: bytemuck::cast_slice(&mesh.vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
 
-                self.tile_cache.insert(*id, TileBuffers {
-                    vertex_buffer,
-                    index_buffer,
-                    num_indices: mesh.indices.len() as u32,
-                });
+                let index_buffer =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some(&format!("Tile Index Buffer {:?}", id)),
+                            contents: bytemuck::cast_slice(&mesh.indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+
+                self.tile_cache.insert(
+                    *id,
+                    TileBuffers {
+                        vertex_buffer,
+                        index_buffer,
+                        num_indices: mesh.indices.len() as u32,
+                    },
+                );
             }
         }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
-        let main_view_proj = self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
-        let render_camera = if self.debug_mode { &self.debug_camera } else { &self.camera };
+        let main_view_proj =
+            self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
+        let render_camera = if self.debug_mode {
+            &self.debug_camera
+        } else {
+            &self.camera
+        };
 
         let camera_pos = self.camera.global_transform().0;
         self.quadtree_manager.update(camera_pos, main_view_proj);
 
-        self.camera_uniform.update_matrix(render_camera.get_view_matrix(), render_camera.get_projection_matrix(aspect_ratio));
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+        self.camera_uniform.update_matrix(
+            render_camera.get_view_matrix(),
+            render_camera.get_projection_matrix(aspect_ratio),
+        );
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
 
         let visible_tiles = self.quadtree_manager.get_visible_tiles();
         self.update_tile_cache(&visible_tiles);
 
         let visible_tile_ids: Vec<TileId> = visible_tiles.iter().map(|(id, _, _)| *id).collect();
         self.texture_manager.cleanup_cache(&visible_tile_ids);
-        
+
         for id in &visible_tile_ids {
-            self.texture_manager.request_tile(*id, &self.device, &self.queue);
+            self.texture_manager
+                .request_tile(*id, &self.device, &self.queue);
         }
-        
+
         self.texture_manager.update(&self.device, &self.queue);
 
         let mut debug_vertices = Vec::new();
@@ -529,22 +593,31 @@ impl<'a> WgpuState<'a> {
             let inv_view_proj = main_view_proj.inverse();
             let frustum_corners = get_frustum_corners(inv_view_proj);
             append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]); // Yellow
-            
+
             for (_tile_id, center, radius) in &visible_tiles {
-                append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]); // Green
+                append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
+                // Green
             }
         }
         self.num_debug_vertices = debug_vertices.len() as u32;
         if self.num_debug_vertices > 0 {
-            self.queue.write_buffer(&self.debug_vertex_buffer, 0, bytemuck::cast_slice(&debug_vertices));
+            self.queue.write_buffer(
+                &self.debug_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&debug_vertices),
+            );
         }
 
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -582,7 +655,10 @@ impl<'a> WgpuState<'a> {
                     if let Some(buffers) = self.tile_cache.get(id) {
                         render_pass.set_bind_group(1, bind_group, &[]);
                         render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
-                        render_pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                        render_pass.set_index_buffer(
+                            buffers.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint16,
+                        );
                         render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
                     }
                 }
@@ -593,7 +669,10 @@ impl<'a> WgpuState<'a> {
             for (id, _, _) in &visible_tiles {
                 if let Some(buffers) = self.tile_cache.get(id) {
                     render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    render_pass.set_index_buffer(
+                        buffers.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint16,
+                    );
                     render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
                 }
             }
@@ -606,65 +685,82 @@ impl<'a> WgpuState<'a> {
         }
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
-        
+
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Debug")
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.label(format!("Altitude: {:.4}", self.camera.altitude()));
-                    
-                    let mut is_debug = self.debug_mode;
-                    if ui.checkbox(&mut is_debug, "Debug Mode (Dual Camera)").changed() {
-                        self.debug_mode = is_debug;
-                        if is_debug {
-                            let main_pos = self.camera.local_pos;
-                            let forward = self.camera.local_ori * Vec3::Z;
-                            let up = self.camera.local_ori * Vec3::Y;
-                            self.debug_camera = Camera::new(main_pos - forward * 5.0 + up * 5.0, main_pos);
-                        }
+            egui::Window::new("Debug").resizable(false).show(ctx, |ui| {
+                ui.label(format!("Altitude: {:.4}", self.camera.altitude()));
+
+                let mut is_debug = self.debug_mode;
+                if ui
+                    .checkbox(&mut is_debug, "Debug Mode (Dual Camera)")
+                    .changed()
+                {
+                    self.debug_mode = is_debug;
+                    if is_debug {
+                        let main_pos = self.camera.local_pos;
+                        let forward = self.camera.local_ori * Vec3::Z;
+                        let up = self.camera.local_ori * Vec3::Y;
+                        self.debug_camera =
+                            Camera::new(main_pos - forward * 5.0 + up * 5.0, main_pos);
                     }
+                }
 
-                    if self.debug_mode {
-                        ui.separator();
-                        ui.label("Main Camera Override:");
-                        ui.horizontal(|ui| {
-                            ui.label("Pos:");
-                            ui.add(egui::DragValue::new(&mut self.camera.local_pos.x).speed(0.1));
-                            ui.add(egui::DragValue::new(&mut self.camera.local_pos.y).speed(0.1));
-                            ui.add(egui::DragValue::new(&mut self.camera.local_pos.z).speed(0.1));
-                        });
-                        
-                        let (yaw, pitch, roll) = self.camera.local_ori.to_euler(EulerRot::YXZ);
-                        let mut yaw_deg = yaw.to_degrees();
-                        let mut pitch_deg = pitch.to_degrees();
-                        let mut roll_deg = roll.to_degrees();
-
-                        ui.horizontal(|ui| {
-                            ui.label("Rot:");
-                            ui.add(egui::DragValue::new(&mut pitch_deg).speed(1.0).prefix("P: "));
-                            ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
-                            ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
-                        });
-                        
-                        if pitch_deg != pitch.to_degrees() || yaw_deg != yaw.to_degrees() || roll_deg != roll.to_degrees() {
-                            self.camera.local_ori = Quat::from_euler(EulerRot::YXZ, yaw_deg.to_radians(), pitch_deg.to_radians(), roll_deg.to_radians());
-                        }
-                    }
-
+                if self.debug_mode {
                     ui.separator();
-                    ui.label(format!("Visible Tiles: {}", visible_tiles.len()));
-                    
-                    ui.separator();
-                    ui.label("First 5 Visible Tiles:");
-                    for (tile, _, _) in visible_tiles.iter().take(5) {
-                        ui.label(format!("  Z: {}, X: {}, Y: {}", tile.z, tile.x, tile.y));
+                    ui.label("Main Camera Override:");
+                    ui.horizontal(|ui| {
+                        ui.label("Pos:");
+                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.x).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.y).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.z).speed(0.1));
+                    });
+
+                    let (yaw, pitch, roll) = self.camera.local_ori.to_euler(EulerRot::YXZ);
+                    let mut yaw_deg = yaw.to_degrees();
+                    let mut pitch_deg = pitch.to_degrees();
+                    let mut roll_deg = roll.to_degrees();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Rot:");
+                        ui.add(
+                            egui::DragValue::new(&mut pitch_deg)
+                                .speed(1.0)
+                                .prefix("P: "),
+                        );
+                        ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
+                        ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
+                    });
+
+                    if pitch_deg != pitch.to_degrees()
+                        || yaw_deg != yaw.to_degrees()
+                        || roll_deg != roll.to_degrees()
+                    {
+                        self.camera.local_ori = Quat::from_euler(
+                            EulerRot::YXZ,
+                            yaw_deg.to_radians(),
+                            pitch_deg.to_radians(),
+                            roll_deg.to_radians(),
+                        );
                     }
-                });
+                }
+
+                ui.separator();
+                ui.label(format!("Visible Tiles: {}", visible_tiles.len()));
+
+                ui.separator();
+                ui.label("First 5 Visible Tiles:");
+                for (tile, _, _) in visible_tiles.iter().take(5) {
+                    ui.label(format!("  Z: {}, X: {}, Y: {}", tile.z, tile.x, tile.y));
+                }
+            });
         });
-        let paint_jobs = self.egui_ctx.tessellate(full_output.shapes, self.egui_ctx.pixels_per_point());
-        
+        let paint_jobs = self
+            .egui_ctx
+            .tessellate(full_output.shapes, self.egui_ctx.pixels_per_point());
+
         for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
         }
 
         {
@@ -687,7 +783,7 @@ impl<'a> WgpuState<'a> {
                 &screen_descriptor,
             );
         }
-        
+
         for id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(id);
         }

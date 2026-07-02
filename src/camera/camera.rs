@@ -37,23 +37,23 @@
 //! - `altitude() -> f32`: Returns current height above the scaled WGS84 surface.
 //! - `screen_to_world_ray(screen_x, screen_y, w, h) -> (Vec3, Vec3)`: Projects screen coordinates to a 3D ray.
 
-use glam::{Mat4, Quat, Vec4, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 
 pub struct Camera {
     // 1. Anchor Transform (The focal point / tracking target)
     pub anchor_pos: Vec3,
     pub anchor_ori: Quat,
-    
+
     // 2. Local Transform (Offset & rotation relative to the anchor)
     pub local_pos: Vec3,
     pub local_ori: Quat,
-    
+
     // 3. Constraints
     pub min_distance: f32,
     pub max_distance: f32,
-    
+
     pitch_sensitivity: f32,
-    
+
     // Sticky Drag State
     drag_start_point: Option<Vec3>,
     drag_start_local_pos: Vec3,
@@ -130,9 +130,18 @@ impl Camera {
     fn enforce_bounds(&mut self) {
         let (global_pos, _) = self.global_transform();
         let dist = global_pos.length();
-        
-        if dist < self.min_distance {
-            let new_global_pos = global_pos.normalize_or_zero() * self.min_distance;
+
+        let dir = global_pos.normalize_or_zero();
+        let a = 6.378137_f32;
+        let b = 6.3567523142_f32;
+        let inv_a2 = 1.0 / (a * a);
+        let inv_b2 = 1.0 / (b * b);
+        let t =
+            1.0 / (dir.x * dir.x * inv_a2 + dir.y * dir.y * inv_b2 + dir.z * dir.z * inv_a2).sqrt();
+        let dynamic_min_distance = t + 0.000002;
+
+        if dist < dynamic_min_distance {
+            let new_global_pos = global_pos.normalize_or_zero() * dynamic_min_distance;
             self.local_pos = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
         } else if dist > self.max_distance {
             let new_global_pos = global_pos.normalize_or_zero() * self.max_distance;
@@ -143,21 +152,25 @@ impl Camera {
     // --- CONVENIENCE INPUT WRAPPERS ---
 
     pub fn pitch(&mut self, delta: f32) {
-        if delta == 0.0 { return; }
+        if delta == 0.0 {
+            return;
+        }
         let pitch_angle = delta * self.pitch_sensitivity;
-        
+
         // Rotate around local X axis
         let pitch_quat = Quat::from_axis_angle(Vec3::X, pitch_angle);
         self.rotate_local(pitch_quat);
     }
 
     pub fn zoom(&mut self, delta: f32) {
-        if delta == 0.0 { return; }
-        
+        if delta == 0.0 {
+            return;
+        }
+
         let altitude = self.altitude();
         let speed_alt = altitude.max(0.000002);
         let move_distance = speed_alt * 0.15 * delta;
-        
+
         let forward = -Vec3::Z; // Translate local expects local offset.
         self.translate_local(forward * move_distance);
     }
@@ -171,12 +184,22 @@ impl Camera {
 
     pub fn altitude(&self) -> f32 {
         let (pos, _) = self.global_transform();
-        pos.length() - 6.378137
+
+        let a = 6.378137_f32;
+        let b = 6.3567523142_f32;
+        let inv_a2 = 1.0 / (a * a);
+        let inv_b2 = 1.0 / (b * b);
+
+        let dir = pos.normalize_or_zero();
+        let t =
+            1.0 / (dir.x * dir.x * inv_a2 + dir.y * dir.y * inv_b2 + dir.z * dir.z * inv_a2).sqrt();
+
+        pos.length() - t
     }
 
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        let alt = self.altitude().max(0.0001);
-        let znear = (alt * 0.1).clamp(0.0001, 10.0);
+        let alt = self.altitude().max(0.000002);
+        let znear = (alt * 0.1).clamp(0.0000001, 10.0);
         let (pos, _) = self.global_transform();
         let zfar = pos.length() + 10.0;
         Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect_ratio, znear, zfar)
@@ -184,9 +207,15 @@ impl Camera {
 
     // --- RAYCASTING & DRAGGING (Earth Free Mode) ---
 
-    pub fn screen_to_world_ray(&self, screen_x: f32, screen_y: f32, screen_width: f32, screen_height: f32) -> (Vec3, Vec3) {
+    pub fn screen_to_world_ray(
+        &self,
+        screen_x: f32,
+        screen_y: f32,
+        screen_width: f32,
+        screen_height: f32,
+    ) -> (Vec3, Vec3) {
         let aspect_ratio = screen_width / screen_height;
-        
+
         let ndc_x = (2.0 * screen_x) / screen_width - 1.0;
         let ndc_y = 1.0 - (2.0 * screen_y) / screen_height;
 
@@ -207,22 +236,29 @@ impl Camera {
     pub fn intersect_sphere(&self, ray_origin: Vec3, ray_dir: Vec3, radius: f32) -> Option<Vec3> {
         let b = 2.0 * ray_origin.dot(ray_dir);
         let c = ray_origin.length_squared() - radius * radius;
-        
+
         let discriminant = b * b - 4.0 * c;
         if discriminant < 0.0 {
             return None;
         }
-        
+
         let t = (-b - discriminant.sqrt()) / 2.0;
         if t < 0.0 {
             return None;
         }
-        
+
         Some(ray_origin + ray_dir * t)
     }
 
-    pub fn begin_drag(&mut self, screen_x: f32, screen_y: f32, screen_width: f32, screen_height: f32) {
-        let (ray_origin, ray_dir) = self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
+    pub fn begin_drag(
+        &mut self,
+        screen_x: f32,
+        screen_y: f32,
+        screen_width: f32,
+        screen_height: f32,
+    ) {
+        let (ray_origin, ray_dir) =
+            self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
         let earth_radius = 6.378137;
         self.drag_start_point = self.intersect_sphere(ray_origin, ray_dir, earth_radius);
         self.drag_start_local_pos = self.local_pos;
@@ -233,27 +269,30 @@ impl Camera {
         if let Some(start_point) = self.drag_start_point {
             let current_pos = self.local_pos;
             let current_ori = self.local_ori;
-            
+
             // Revert to start state to compute the accurate single-gesture ray
             self.local_pos = self.drag_start_local_pos;
             self.local_ori = self.drag_start_local_ori;
-            
-            let (ray_origin, ray_dir) = self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
+
+            let (ray_origin, ray_dir) =
+                self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
             let earth_radius = 6.378137;
-            
+
             if let Some(current_point) = self.intersect_sphere(ray_origin, ray_dir, earth_radius) {
                 // The drag orbits the earth, so we orbit the anchor
-                let rot_delta = Quat::from_rotation_arc(start_point.normalize(), current_point.normalize());
+                let rot_delta =
+                    Quat::from_rotation_arc(start_point.normalize(), current_point.normalize());
                 let inv_rot = rot_delta.inverse();
-                
+
                 // Get the starting global transform
-                let start_global_pos = self.anchor_pos + (self.anchor_ori * self.drag_start_local_pos);
+                let start_global_pos =
+                    self.anchor_pos + (self.anchor_ori * self.drag_start_local_pos);
                 let start_global_ori = self.anchor_ori * self.drag_start_local_ori;
-                
+
                 // Orbit the camera around the earth (origin)
                 let new_global_pos = inv_rot * start_global_pos;
                 let new_global_ori = inv_rot * start_global_ori;
-                
+
                 // Project back into anchor-local space
                 self.local_pos = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
                 self.local_ori = (self.anchor_ori.inverse() * new_global_ori).normalize();

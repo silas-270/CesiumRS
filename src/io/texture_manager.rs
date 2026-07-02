@@ -1,4 +1,4 @@
-use crate::math::quadtree::TileId;
+use crate::globe::quadtree::TileId;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -15,7 +15,7 @@ pub struct TileTextureManager {
 impl TileTextureManager {
     pub fn new(device: &wgpu::Device) -> Self {
         let (tx, rx) = mpsc::channel();
-        
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Tile Texture Bind Group Layout"),
             entries: &[
@@ -66,24 +66,25 @@ impl TileTextureManager {
 
         self.requesting.insert(id);
         let tx = self.tx.clone();
-        
+
         thread::spawn(move || {
-            let url = format!("https://tile.openstreetmap.org/{}/{}/{}.png", id.z, id.x, id.y);
-            
+            let url = format!(
+                "https://tile.openstreetmap.org/{}/{}/{}.png",
+                id.z, id.x, id.y
+            );
+
             let client = reqwest::blocking::Client::builder()
                 .user_agent("CesiumRS/0.1.0")
                 .build();
-            
+
             let res = match client.and_then(|c| c.get(&url).send()) {
                 Ok(response) => {
                     if response.status().is_success() {
                         match response.bytes() {
-                            Ok(bytes) => {
-                                match image::load_from_memory(&bytes) {
-                                    Ok(img) => Ok(img.to_rgba8().into_raw()),
-                                    Err(e) => Err(format!("Image decode error: {}", e)),
-                                }
-                            }
+                            Ok(bytes) => match image::load_from_memory(&bytes) {
+                                Ok(img) => Ok(img.to_rgba8().into_raw()),
+                                Err(e) => Err(format!("Image decode error: {}", e)),
+                            },
                             Err(e) => Err(format!("Failed to read bytes: {}", e)),
                         }
                     } else {
@@ -92,7 +93,7 @@ impl TileTextureManager {
                 }
                 Err(e) => Err(format!("Request failed: {}", e)),
             };
-            
+
             let _ = tx.send((id, res));
         });
     }
@@ -100,17 +101,22 @@ impl TileTextureManager {
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         while let Ok((id, result)) = self.rx.try_recv() {
             self.requesting.remove(&id);
-            
+
             match result {
                 Ok(rgba) => {
-                    log::info!("Successfully downloaded and decoded tile z:{} x:{} y:{}", id.z, id.x, id.y);
-                    
+                    log::info!(
+                        "Successfully downloaded and decoded tile z:{} x:{} y:{}",
+                        id.z,
+                        id.x,
+                        id.y
+                    );
+
                     let size = wgpu::Extent3d {
                         width: 256,
                         height: 256,
                         depth_or_array_layers: 1,
                     };
-                    
+
                     let texture = device.create_texture(&wgpu::TextureDescriptor {
                         label: Some(&format!("Tile Texture {:?}", id)),
                         size,
@@ -139,7 +145,7 @@ impl TileTextureManager {
                     );
 
                     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    
+
                     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         layout: &self.bind_group_layout,
                         entries: &[
@@ -158,7 +164,13 @@ impl TileTextureManager {
                     self.cache.insert(id, (texture, bind_group));
                 }
                 Err(e) => {
-                    log::error!("Failed to fetch tile z:{} x:{} y:{}: {}", id.z, id.x, id.y, e);
+                    log::error!(
+                        "Failed to fetch tile z:{} x:{} y:{}: {}",
+                        id.z,
+                        id.x,
+                        id.y,
+                        e
+                    );
                 }
             }
         }

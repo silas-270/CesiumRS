@@ -9,6 +9,6 @@ fn main() {
                 .init();
         }
     }
-    
+
     run();
 }
