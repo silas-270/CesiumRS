@@ -818,6 +818,11 @@ impl<'a> WgpuState<'a> {
                         ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
                     });
 
+                    ui.horizontal(|ui| {
+                        ui.label("Lens:");
+                        ui.add(egui::Slider::new(&mut self.camera.focal_length, 12.0..=200.0).text("Focal Length (mm)"));
+                    });
+
                     if pitch_deg != pitch.to_degrees()
                         || yaw_deg != yaw.to_degrees()
                         || roll_deg != roll.to_degrees()
