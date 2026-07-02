@@ -17,7 +17,7 @@ impl Default for GodCamera {
             pitch: 0.0,
             base_speed: 5.0,
             fast_speed: 25.0,
-            sensitivity: 0.005,
+            sensitivity: 0.002, // Reduced from 0.005
         }
     }
 }
@@ -59,7 +59,7 @@ impl GodCamera {
 
     pub fn process_mouse(&mut self, dx: f32, dy: f32) {
         self.yaw -= dx * self.sensitivity;
-        self.pitch -= dy * self.sensitivity;
+        self.pitch += dy * self.sensitivity; // Inverted Y-axis
 
         // Clamp pitch to avoid gimbal lock
         self.pitch = self.pitch.clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);

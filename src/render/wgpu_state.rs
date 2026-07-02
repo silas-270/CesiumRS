@@ -615,7 +615,7 @@ impl<'a> WgpuState<'a> {
         visible_tiles
     }
 
-    fn compute_debug_vertices(&mut self, main_view_proj: Mat4, visible_tiles: &[(TileId, Vec3, f32)]) {
+    fn compute_debug_vertices(&mut self, main_view_proj: Mat4, visible_tiles: &[(TileId, Vec3, f32)], camera_pos: Vec3) {
         let mut debug_vertices = Vec::new();
         if self.debug_mode {
             let inv_view_proj = main_view_proj.inverse();
@@ -624,6 +624,13 @@ impl<'a> WgpuState<'a> {
 
             for (_tile_id, center, radius) in visible_tiles {
                 crate::render::wgpu_state::append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
+            }
+            
+            // Apply camera-relative translation to correctly position these when push constants are not available
+            for vertex in &mut debug_vertices {
+                vertex.position[0] -= camera_pos.x;
+                vertex.position[1] -= camera_pos.y;
+                vertex.position[2] -= camera_pos.z;
             }
         }
         self.num_debug_vertices = debug_vertices.len() as u32;
@@ -945,7 +952,6 @@ impl<'a> WgpuState<'a> {
             self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
 
         let visible_tiles = self.update_logic(aspect_ratio, main_view_proj);
-        self.compute_debug_vertices(main_view_proj, &visible_tiles);
 
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -957,6 +963,13 @@ impl<'a> WgpuState<'a> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+
+        let camera_pos = if self.debug_mode {
+            self.debug_camera.position
+        } else {
+            self.camera.global_transform().0
+        };
+        self.compute_debug_vertices(main_view_proj, &visible_tiles, camera_pos);
 
         self.render_scene(&mut encoder, &view, &visible_tiles);
         self.render_egui(&mut encoder, &view, &visible_tiles);
