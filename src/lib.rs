@@ -4,15 +4,24 @@ pub mod globe;
 pub mod io;
 pub mod render;
 
+#[cfg(not(target_os = "android"))]
+pub mod testing;
+
 use crate::core::app::App;
 use winit::event_loop::{ControlFlow, EventLoop};
 
-pub fn run() {
+#[cfg(not(target_os = "android"))]
+pub fn run(config: Option<testing::VerifyConfig>) {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::default();
-    event_loop.run_app(&mut app).unwrap();
+    if let Some(cfg) = config {
+        let mut app = testing::test_app::TestApp::new(cfg);
+        event_loop.run_app(&mut app).unwrap();
+    } else {
+        let mut app = App::default();
+        event_loop.run_app(&mut app).unwrap();
+    }
 }
 
 #[cfg(target_os = "android")]

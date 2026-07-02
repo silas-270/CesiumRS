@@ -184,4 +184,8 @@ impl TileTextureManager {
     pub fn get_texture(&self, id: TileId) -> Option<&(wgpu::Texture, wgpu::BindGroup)> {
         self.cache.get(&id)
     }
+
+    pub fn is_loading_complete(&self) -> bool {
+        self.requesting.is_empty()
+    }
 }
