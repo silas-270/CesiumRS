@@ -1,4 +1,4 @@
-use cesium_rs::camera::camera::Camera;
+use crate::camera::camera::Camera;
 use glam::{DVec3, Vec3};
 
 // Helper for the test to check where the ray ACTUALLY hits the WGS84 Ellipsoid
@@ -26,7 +26,8 @@ fn intersect_ellipsoid(ray_origin: Vec3, ray_dir: Vec3) -> Option<DVec3> {
     ))
 }
 
-fn main() {
+#[test]
+fn test_drag_zoom() {
     let screen_w = 1920.0;
     let screen_h = 1080.0;
     

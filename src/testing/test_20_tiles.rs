@@ -1,8 +1,9 @@
-use cesium_rs::camera::camera::Camera;
-use cesium_rs::globe::quadtree::{QuadtreeManager, TileId};
+use crate::camera::camera::Camera;
+use crate::globe::quadtree::QuadtreeManager;
 use glam::{Quat, Vec3};
 
-fn main() {
+#[test]
+fn test_20_tiles() {
     let mut cam = Camera::new(Vec3::new(0.0, 0.0, 9.0), Vec3::ZERO);
     cam.set_local_transform(Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY);
 
