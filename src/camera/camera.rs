@@ -58,6 +58,8 @@ pub struct Camera {
     drag_start_point: Option<glam::DVec3>,
     drag_start_local_pos: Vec3,
     drag_start_local_ori: Quat,
+
+    pub focal_length: f32, // Camera Lens focal length in mm (assuming 24mm vertical sensor height)
 }
 
 impl Camera {
@@ -73,6 +75,7 @@ impl Camera {
             drag_start_point: None,
             drag_start_local_pos: Vec3::ZERO,
             drag_start_local_ori: Quat::IDENTITY,
+            focal_length: 28.0,
         };
         cam.set_eye(position, target);
         cam
@@ -202,7 +205,10 @@ impl Camera {
         let znear = (alt * 0.1).clamp(0.0000001, 10.0);
         let (pos, _) = self.global_transform();
         let zfar = pos.length() + 10.0;
-        Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect_ratio, znear, zfar)
+        
+        let sensor_height = 24.0;
+        let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length)).atan();
+        Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar)
     }
 
     // --- RAYCASTING & DRAGGING (Earth Free Mode) ---
