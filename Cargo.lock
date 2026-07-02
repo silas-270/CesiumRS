@@ -491,6 +491,7 @@ dependencies = [
  "log",
  "lru",
  "pollster",
+ "rayon",
  "reqwest",
  "tokio",
  "wgpu",
