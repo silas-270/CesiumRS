@@ -4,7 +4,7 @@ use crate::globe::quadtree::{QuadtreeManager, TileId};
 use crate::io::texture_manager::TileTextureManager;
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
-use glam::{EulerRot, Mat4, Quat, Vec3};
+use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -145,7 +145,7 @@ pub struct WgpuState<'a> {
     camera_bind_group: wgpu::BindGroup,
     pub camera: Camera,
     pub debug_mode: bool,
-    pub debug_camera: Camera,
+    pub debug_camera: crate::camera::god_camera::GodCamera,
     debug_pipeline: wgpu::RenderPipeline,
     debug_vertex_buffer: wgpu::Buffer,
     num_debug_vertices: u32,
@@ -493,7 +493,7 @@ impl<'a> WgpuState<'a> {
             camera_bind_group,
             camera,
             debug_mode: false,
-            debug_camera: Camera::new(Vec3::new(0.0, 0.0, 25.0), Vec3::ZERO),
+            debug_camera: crate::camera::god_camera::GodCamera::default(),
             debug_pipeline,
             debug_vertex_buffer,
             num_debug_vertices: 0,
@@ -575,21 +575,21 @@ impl<'a> WgpuState<'a> {
     }
 
     fn update_logic(&mut self, aspect_ratio: f32, main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
-        let render_camera = if self.debug_mode {
-            &self.debug_camera
+        let (view_matrix, proj_matrix) = if self.debug_mode {
+            (self.debug_camera.get_view_matrix(), self.debug_camera.get_projection_matrix(aspect_ratio))
         } else {
-            &self.camera
+            (self.camera.get_view_matrix(), self.camera.get_projection_matrix(aspect_ratio))
         };
 
         let camera_pos = self.camera.global_transform().0;
         self.quadtree_manager.update(camera_pos, main_view_proj);
 
-        let mut gpu_view_matrix = render_camera.get_view_matrix();
+        let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
 
         self.camera_uniform.update_matrix(
             gpu_view_matrix,
-            render_camera.get_projection_matrix(aspect_ratio),
+            proj_matrix,
         );
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -756,28 +756,24 @@ impl<'a> WgpuState<'a> {
                 {
                     self.debug_mode = is_debug;
                     if is_debug {
-                        let main_pos = self.camera.local_pos;
-                        let forward = self.camera.local_ori * Vec3::Z;
-                        let up = self.camera.local_ori * Vec3::Y;
-                        self.debug_camera =
-                            Camera::new(main_pos - forward * 5.0 + up * 5.0, main_pos);
+                        let (global_pos, global_ori) = self.camera.global_transform();
+                        let (yaw, pitch, _) = global_ori.to_euler(glam::EulerRot::YXZ);
+                        self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
                     }
                 }
 
                 if self.debug_mode {
                     ui.separator();
-                    ui.label("Main Camera Override:");
+                    ui.label("God Camera State:");
                     ui.horizontal(|ui| {
                         ui.label("Pos:");
-                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.x).speed(0.1));
-                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.y).speed(0.1));
-                        ui.add(egui::DragValue::new(&mut self.camera.local_pos.z).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.debug_camera.position.x).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.debug_camera.position.y).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut self.debug_camera.position.z).speed(0.1));
                     });
 
-                    let (yaw, pitch, roll) = self.camera.local_ori.to_euler(EulerRot::YXZ);
-                    let mut yaw_deg = yaw.to_degrees();
-                    let mut pitch_deg = pitch.to_degrees();
-                    let mut roll_deg = roll.to_degrees();
+                    let mut yaw_deg = self.debug_camera.yaw.to_degrees();
+                    let mut pitch_deg = self.debug_camera.pitch.to_degrees();
 
                     ui.horizontal(|ui| {
                         ui.label("Rot:");
@@ -787,19 +783,13 @@ impl<'a> WgpuState<'a> {
                                 .prefix("P: "),
                         );
                         ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
-                        ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
                     });
 
-                    if pitch_deg != pitch.to_degrees()
-                        || yaw_deg != yaw.to_degrees()
-                        || roll_deg != roll.to_degrees()
+                    if pitch_deg != self.debug_camera.pitch.to_degrees()
+                        || yaw_deg != self.debug_camera.yaw.to_degrees()
                     {
-                        self.camera.local_ori = Quat::from_euler(
-                            EulerRot::YXZ,
-                            yaw_deg.to_radians(),
-                            pitch_deg.to_radians(),
-                            roll_deg.to_radians(),
-                        );
+                        self.debug_camera.pitch = pitch_deg.to_radians();
+                        self.debug_camera.yaw = yaw_deg.to_radians();
                     }
                 }
 
