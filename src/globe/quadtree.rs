@@ -289,8 +289,8 @@ impl QuadtreeNode {
         let mut max_ext = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
 
         // Sample a dense grid to accurately capture the curved surface shape.
-        // For large tiles (z<=3), the curvature between 3x3 points causes OBB bloat.
-        let steps = 8;
+        // For large tiles (z<=4), the curvature causes OBB bloat.
+        let steps = if id.z < 5 { 8 } else { 2 };
         for i in 0..=steps {
             let u = i as f32 / steps as f32;
             let lon = lon_min + u * (lon_max - lon_min);
@@ -425,7 +425,7 @@ impl QuadtreeNode {
                     }
 
                     let mut found = false;
-                    let steps = 10;
+                    let steps = 3;
                     for i in 0..=steps {
                         if found {
                             break;
