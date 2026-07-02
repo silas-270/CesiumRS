@@ -1,8 +1,6 @@
 use crate::camera::camera::Camera;
 use crate::globe::geometry::Vertex;
 use crate::globe::quadtree::{QuadtreeManager, TileId};
-use crate::io::mesh_worker::MeshWorkerPool;
-use crate::io::texture_manager::TileTextureManager;
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
 use glam::{Mat4, Vec3};
@@ -16,6 +14,13 @@ pub struct TileBuffers {
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
     pub center_f64: [f64; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TilePushConstants {
+    pub relative_center: [f32; 4], // Padding to 16 bytes included
+    pub uv_scale_offset: [f32; 4],
 }
 
 #[repr(C)]
@@ -155,8 +160,7 @@ pub struct WgpuState<'a> {
     pub egui_state: EguiState,
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
-    pub texture_manager: TileTextureManager,
-    pub mesh_worker: MeshWorkerPool,
+    pub orchestrator: crate::io::orchestrator::TileOrchestrator,
 }
 
 fn create_depth_texture(
@@ -231,7 +235,7 @@ impl<'a> WgpuState<'a> {
                     label: None,
                     required_features: wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::PUSH_CONSTANTS,
                     required_limits: wgpu::Limits {
-                        max_push_constant_size: 16,
+                        max_push_constant_size: 32,
                         ..Default::default()
                     },
                     memory_hints: wgpu::MemoryHints::default(),
@@ -305,11 +309,12 @@ impl<'a> WgpuState<'a> {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let texture_manager = TileTextureManager::new(&device);
+        let config_engine = crate::io::config::TileEngineConfig::default();
+        let orchestrator = crate::io::orchestrator::TileOrchestrator::new(&device, config_engine);
 
         let push_constant_ranges = [wgpu::PushConstantRange {
             stages: wgpu::ShaderStages::VERTEX,
-            range: 0..16,
+            range: 0..32,
         }];
 
         let render_pipeline_layout =
@@ -317,7 +322,7 @@ impl<'a> WgpuState<'a> {
                 label: Some("Render Pipeline Layout"),
                 bind_group_layouts: &[
                     &camera_bind_group_layout,
-                    &texture_manager.bind_group_layout,
+                    &orchestrator.texture_manager.bind_group_layout,
                 ],
                 push_constant_ranges: &push_constant_ranges,
             });
@@ -505,8 +510,7 @@ impl<'a> WgpuState<'a> {
             egui_state,
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
-            texture_manager,
-            mesh_worker: MeshWorkerPool::new(),
+            orchestrator,
         }
     }
 
@@ -545,15 +549,8 @@ impl<'a> WgpuState<'a> {
         // Remove culled tiles
         self.tile_cache.retain(|id, _| active_ids.contains(id));
 
-        // Request missing tiles
-        for (id, _, _) in visible_tiles {
-            if !self.tile_cache.contains_key(id) {
-                self.mesh_worker.request_mesh(*id, 16);
-            }
-        }
-
         // Process completed meshes
-        for (id, mesh) in self.mesh_worker.process_results() {
+        for (id, mesh) in self.orchestrator.mesh_worker.process_results() {
             if active_ids.contains(&id) {
                 let vertex_buffer =
                     self.device
@@ -608,17 +605,8 @@ impl<'a> WgpuState<'a> {
         );
 
         let visible_tiles = self.quadtree_manager.get_visible_tiles();
+        self.orchestrator.update(&self.device, &self.queue, camera_pos, &visible_tiles);
         self.update_tile_cache(&visible_tiles);
-
-        let visible_tile_ids: Vec<TileId> = visible_tiles.iter().map(|(id, _, _)| *id).collect();
-        self.texture_manager.cleanup_cache(&visible_tile_ids);
-
-        for id in &visible_tile_ids {
-            self.texture_manager
-                .request_tile(*id, &self.device, &self.queue);
-        }
-
-        self.texture_manager.update(&self.device, &self.queue);
 
         visible_tiles
     }
@@ -652,7 +640,7 @@ impl<'a> WgpuState<'a> {
     }
 
     fn render_scene(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         visible_tiles: &[(TileId, Vec3, f32)],
@@ -699,22 +687,26 @@ impl<'a> WgpuState<'a> {
         render_pass.set_pipeline(&self.solid_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         for (id, _, _) in visible_tiles {
-            if let Some((_, bind_group)) = self.texture_manager.get_texture(*id) {
+            if let Some(render_data) = self.orchestrator.get_render_data(*id) {
                 if let Some(buffers) = self.tile_cache.get(id) {
                     let center_f64 = buffers.center_f64;
-                    let relative_center = [
-                        (center_f64[0] - camera_pos_f64[0]) as f32,
-                        (center_f64[1] - camera_pos_f64[1]) as f32,
-                        (center_f64[2] - camera_pos_f64[2]) as f32,
-                        0.0,
-                    ];
+                    let push = TilePushConstants {
+                        relative_center: [
+                            (center_f64[0] - camera_pos_f64[0]) as f32,
+                            (center_f64[1] - camera_pos_f64[1]) as f32,
+                            (center_f64[2] - camera_pos_f64[2]) as f32,
+                            0.0,
+                        ],
+                        uv_scale_offset: render_data.uv_scale_offset,
+                    };
+
                     render_pass.set_push_constants(
                         wgpu::ShaderStages::VERTEX,
                         0,
-                        bytemuck::cast_slice(&relative_center),
+                        bytemuck::cast_slice(&[push]),
                     );
 
-                    render_pass.set_bind_group(1, bind_group, &[]);
+                    render_pass.set_bind_group(1, render_data.bind_group, &[]);
                     render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
                     render_pass.set_index_buffer(
                         buffers.index_buffer.slice(..),
@@ -730,16 +722,19 @@ impl<'a> WgpuState<'a> {
         for (id, _, _) in visible_tiles {
             if let Some(buffers) = self.tile_cache.get(id) {
                 let center_f64 = buffers.center_f64;
-                let relative_center = [
-                    (center_f64[0] - camera_pos_f64[0]) as f32,
-                    (center_f64[1] - camera_pos_f64[1]) as f32,
-                    (center_f64[2] - camera_pos_f64[2]) as f32,
-                    0.0,
-                ];
+                let push = TilePushConstants {
+                    relative_center: [
+                        (center_f64[0] - camera_pos_f64[0]) as f32,
+                        (center_f64[1] - camera_pos_f64[1]) as f32,
+                        (center_f64[2] - camera_pos_f64[2]) as f32,
+                        0.0,
+                    ],
+                    uv_scale_offset: [1.0, 1.0, 0.0, 0.0],
+                };
                 render_pass.set_push_constants(
                     wgpu::ShaderStages::VERTEX,
                     0,
-                    bytemuck::cast_slice(&relative_center),
+                    bytemuck::cast_slice(&[push]),
                 );
 
                 render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));

@@ -20,6 +20,7 @@ struct VertexOutput {
 
 struct PushConstants {
     relative_center: vec3<f32>,
+    uv_scale_offset: vec4<f32>,
 }
 var<push_constant> push_constants: PushConstants;
 
@@ -30,7 +31,8 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.normal = model.normal;
     out.color = model.color;
-    out.uv = model.uv;
+    // model.uv * scale + offset
+    out.uv = model.uv * push_constants.uv_scale_offset.xy + push_constants.uv_scale_offset.zw;
     return out;
 }
 

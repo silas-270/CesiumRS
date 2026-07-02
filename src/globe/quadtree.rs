@@ -15,6 +15,20 @@ pub struct TileId {
     pub y: u32,
 }
 
+impl TileId {
+    pub fn parent(&self) -> Option<TileId> {
+        if self.z == 0 {
+            None
+        } else {
+            Some(TileId {
+                z: self.z - 1,
+                x: self.x / 2,
+                y: self.y / 2,
+            })
+        }
+    }
+}
+
 pub struct QuadtreeNode {
     pub id: TileId,
     pub center: Vec3,

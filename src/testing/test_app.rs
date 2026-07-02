@@ -60,7 +60,7 @@ impl<'a> ApplicationHandler for TestApp<'a> {
             let mut capture_path = None;
             if self.simulator.actions.is_empty() {
                 if let Some(state) = self.inner.wgpu_state_mut() {
-                    if state.texture_manager.is_loading_complete() {
+                    if state.orchestrator.texture_manager.fetcher.is_loading_complete() {
                         self.frames_stable += 1;
                     } else {
                         self.frames_stable = 0;
