@@ -35,3 +35,5 @@ mod test_tile_fetcher;
 mod test_mesh_worker;
 #[cfg(test)]
 mod orchestrator_tests;
+#[cfg(test)]
+mod test_orchestrator_stress;
