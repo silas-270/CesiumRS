@@ -27,3 +27,7 @@ mod test_point;
 mod test_all_altitudes;
 #[cfg(test)]
 mod test_drag_zoom;
+#[cfg(test)]
+mod test_tile_cache;
+#[cfg(test)]
+mod test_tile_fetcher;
