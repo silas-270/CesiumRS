@@ -39,6 +39,13 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+const EARTH_RADIUS_A: f32 = 6.378137;
+const EARTH_RADIUS_B: f32 = 6.3567523142;
+const INV_A2: f32 = 1.0 / (EARTH_RADIUS_A * EARTH_RADIUS_A);
+const INV_B2: f32 = 1.0 / (EARTH_RADIUS_B * EARTH_RADIUS_B);
+
+const EARTH_RADIUS_A_F64: f64 = 6.378137;
+const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
 pub struct Camera {
     // 1. Anchor Transform (The focal point / tracking target)
     pub anchor_pos: Vec3,
@@ -135,12 +142,8 @@ impl Camera {
         let dist = global_pos.length();
 
         let dir = global_pos.normalize_or_zero();
-        let a = 6.378137_f32;
-        let b = 6.3567523142_f32;
-        let inv_a2 = 1.0 / (a * a);
-        let inv_b2 = 1.0 / (b * b);
         let t =
-            1.0 / (dir.x * dir.x * inv_a2 + dir.y * dir.y * inv_b2 + dir.z * dir.z * inv_a2).sqrt();
+            1.0 / (dir.x * dir.x * INV_A2 + dir.y * dir.y * INV_B2 + dir.z * dir.z * INV_A2).sqrt();
         let dynamic_min_distance = t + 0.000002;
 
         if dist < dynamic_min_distance {
@@ -188,14 +191,9 @@ impl Camera {
     pub fn altitude(&self) -> f32 {
         let (pos, _) = self.global_transform();
 
-        let a = 6.378137_f32;
-        let b = 6.3567523142_f32;
-        let inv_a2 = 1.0 / (a * a);
-        let inv_b2 = 1.0 / (b * b);
-
         let dir = pos.normalize_or_zero();
         let t =
-            1.0 / (dir.x * dir.x * inv_a2 + dir.y * dir.y * inv_b2 + dir.z * dir.z * inv_a2).sqrt();
+            1.0 / (dir.x * dir.x * INV_A2 + dir.y * dir.y * INV_B2 + dir.z * dir.z * INV_A2).sqrt();
 
         pos.length() - t
     }
@@ -241,18 +239,15 @@ impl Camera {
     }
 
     pub fn intersect_ellipsoid(&self, ray_origin: Vec3, ray_dir: Vec3) -> Option<glam::DVec3> {
-        let a = 6.378137_f64;
-        let b = 6.3567523142_f64;
-
         let ro = glam::DVec3::new(
-            ray_origin.x as f64 / a,
-            ray_origin.y as f64 / b,
-            ray_origin.z as f64 / a,
+            ray_origin.x as f64 / EARTH_RADIUS_A_F64,
+            ray_origin.y as f64 / EARTH_RADIUS_B_F64,
+            ray_origin.z as f64 / EARTH_RADIUS_A_F64,
         );
         let rd = glam::DVec3::new(
-            ray_dir.x as f64 / a,
-            ray_dir.y as f64 / b,
-            ray_dir.z as f64 / a,
+            ray_dir.x as f64 / EARTH_RADIUS_A_F64,
+            ray_dir.y as f64 / EARTH_RADIUS_B_F64,
+            ray_dir.z as f64 / EARTH_RADIUS_A_F64,
         );
 
         let qa = rd.length_squared();

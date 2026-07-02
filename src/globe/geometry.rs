@@ -1,6 +1,13 @@
 use crate::globe::quadtree::TileId;
 use glam::Vec3;
 
+const EARTH_RADIUS_A_F32: f32 = 6.378137;
+const EARTH_RADIUS_B_F32: f32 = 6.3567523142;
+const EARTH_RADIUS_A_F64: f64 = 6.378137;
+const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
+const INV_A2_F64: f64 = 1.0 / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64);
+const INV_B2_F64: f64 = 1.0 / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64);
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -42,29 +49,23 @@ impl Vertex {
 }
 
 pub fn lon_lat_to_ecef(lon_deg: f32, lat_deg: f32) -> Vec3 {
-    let a = 6.378137_f32; // Equatorial radius
-    let b = 6.3567523142_f32; // Polar radius
-
     let phi = lat_deg.to_radians();
     let theta = lon_deg.to_radians();
 
-    let x = a * phi.cos() * theta.cos();
-    let y = b * phi.sin();
-    let z = -a * phi.cos() * theta.sin(); // -Z to match Right-Handed +Y Up coords
+    let x = EARTH_RADIUS_A_F32 * phi.cos() * theta.cos();
+    let y = EARTH_RADIUS_B_F32 * phi.sin();
+    let z = -EARTH_RADIUS_A_F32 * phi.cos() * theta.sin(); // -Z to match Right-Handed +Y Up coords
 
     Vec3::new(x, y, z)
 }
 
 pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
-    let a = 6.378137_f64;
-    let b = 6.3567523142_f64;
-
     let phi = lat_deg.to_radians();
     let theta = lon_deg.to_radians();
 
-    let x = a * phi.cos() * theta.cos();
-    let y = b * phi.sin();
-    let z = -a * phi.cos() * theta.sin();
+    let x = EARTH_RADIUS_A_F64 * phi.cos() * theta.cos();
+    let y = EARTH_RADIUS_B_F64 * phi.sin();
+    let z = -EARTH_RADIUS_A_F64 * phi.cos() * theta.sin();
 
     [x, y, z]
 }
@@ -120,6 +121,10 @@ impl TileMesh {
                 lat = -90.0;
             }
 
+            let phi = (lat as f64).to_radians();
+            let cos_phi = phi.cos();
+            let sin_phi = phi.sin();
+
             for col in 0..grid_size {
                 let is_skirt_col = col == 0 || col == grid_size - 1;
                 let logical_col = (col.max(1) - 1).min(segments);
@@ -134,15 +139,21 @@ impl TileMesh {
                     0.0
                 };
 
-                let surface_pos_f64 = lon_lat_to_ecef_f64(lon as f64, lat as f64);
+                let theta = (lon as f64).to_radians();
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+
+                let x = EARTH_RADIUS_A_F64 * cos_phi * cos_theta;
+                let y = EARTH_RADIUS_B_F64 * sin_phi;
+                let z = -EARTH_RADIUS_A_F64 * cos_phi * sin_theta;
+
+                let surface_pos_f64 = [x, y, z];
                 
                 // Normal based on WGS84 ellipsoid
                 let normal_f64 = {
-                    let a2 = 6.378137_f64 * 6.378137_f64;
-                    let b2 = 6.3567523142_f64 * 6.3567523142_f64;
-                    let nx = surface_pos_f64[0] / a2;
-                    let ny = surface_pos_f64[1] / b2;
-                    let nz = surface_pos_f64[2] / a2;
+                    let nx = x * INV_A2_F64;
+                    let ny = y * INV_B2_F64;
+                    let nz = z * INV_A2_F64;
                     let len = (nx * nx + ny * ny + nz * nz).sqrt();
                     [nx / len, ny / len, nz / len]
                 };
