@@ -236,9 +236,7 @@ impl<'a> ApplicationHandler for App<'a> {
         }
 
         if let Some(window) = &self.window {
-            if !self.pressed_keys.is_empty() && self.wgpu_state.as_ref().map_or(false, |s| s.debug_mode) {
-                window.request_redraw();
-            }
+            window.request_redraw();
         }
     }
 }
