@@ -31,3 +31,5 @@ mod test_drag_zoom;
 mod test_tile_cache;
 #[cfg(test)]
 mod test_tile_fetcher;
+#[cfg(test)]
+mod test_mesh_worker;

@@ -1,6 +1,7 @@
 use crate::camera::camera::Camera;
-use crate::globe::geometry::{TileMesh, Vertex};
+use crate::globe::geometry::Vertex;
 use crate::globe::quadtree::{QuadtreeManager, TileId};
+use crate::io::mesh_worker::MeshWorkerPool;
 use crate::io::texture_manager::TileTextureManager;
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
@@ -155,6 +156,7 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub texture_manager: TileTextureManager,
+    pub mesh_worker: MeshWorkerPool,
 }
 
 fn create_depth_texture(
@@ -504,6 +506,7 @@ impl<'a> WgpuState<'a> {
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             texture_manager,
+            mesh_worker: MeshWorkerPool::new(),
         }
     }
 
@@ -542,11 +545,16 @@ impl<'a> WgpuState<'a> {
         // Remove culled tiles
         self.tile_cache.retain(|id, _| active_ids.contains(id));
 
-        // Generate missing tiles
+        // Request missing tiles
         for (id, _, _) in visible_tiles {
             if !self.tile_cache.contains_key(id) {
-                let mesh = TileMesh::generate(id, 16);
+                self.mesh_worker.request_mesh(*id, 16);
+            }
+        }
 
+        // Process completed meshes
+        for (id, mesh) in self.mesh_worker.process_results() {
+            if active_ids.contains(&id) {
                 let vertex_buffer =
                     self.device
                         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -564,7 +572,7 @@ impl<'a> WgpuState<'a> {
                         });
 
                 self.tile_cache.insert(
-                    *id,
+                    id,
                     TileBuffers {
                         vertex_buffer,
                         index_buffer,
