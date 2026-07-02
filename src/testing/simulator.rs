@@ -30,8 +30,7 @@ impl Simulator {
             if part.is_empty() {
                 continue;
             }
-            if part.starts_with("drag:") {
-                let params = &part[5..]; // "0,0->100,100:10"
+            if let Some(params) = part.strip_prefix("drag:") {
                 let segments: Vec<&str> = params.split(':').collect();
                 if segments.len() == 2 {
                     let frames: u32 = segments[1].parse().unwrap_or(1);
@@ -51,8 +50,8 @@ impl Simulator {
                         }
                     }
                 }
-            } else if part.starts_with("wait:") {
-                let frames = part[5..].parse().unwrap_or(1);
+            } else if let Some(frames_str) = part.strip_prefix("wait:") {
+                let frames = frames_str.parse().unwrap_or(1);
                 actions.push(SimulatedAction::Wait { frames, current_frame: 0 });
             }
         }
@@ -61,7 +60,7 @@ impl Simulator {
 
     pub fn pump_events(&mut self) -> Vec<WindowEvent> {
         let mut events = Vec::new();
-        let device_id = unsafe { DeviceId::dummy() };
+        let device_id = DeviceId::dummy();
 
         if let Some(action) = self.actions.first_mut() {
             match action {
@@ -97,7 +96,7 @@ impl Simulator {
                         });
                     }
                 }
-                SimulatedAction::Wait { frames, current_frame } => {
+                SimulatedAction::Wait { frames: _, current_frame } => {
                     *current_frame += 1;
                 }
             }

@@ -1,16 +1,17 @@
-use cesium_rs::camera::camera::Camera;
-use glam::{Mat4, Quat, Vec3};
+use crate::camera::camera::Camera;
+use glam::{Quat, Vec3};
 
-fn main() {
+#[test]
+fn test_point() {
     let mut cam = Camera::new(Vec3::new(0.0, 0.0, 9.0), Vec3::ZERO);
     cam.set_local_transform(Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY);
     let camera_pos = cam.global_transform().0;
     let aspect_ratio = 16.0 / 9.0;
     let view_proj = cam.get_projection_matrix(aspect_ratio) * cam.get_view_matrix();
-    let frustum = cesium_rs::globe::quadtree::Frustum::from_matrix(view_proj);
+    let frustum = crate::globe::quadtree::Frustum::from_matrix(view_proj);
 
-    let mut node =
-        cesium_rs::globe::quadtree::QuadtreeNode::new(cesium_rs::globe::quadtree::TileId {
+    let node =
+        crate::globe::quadtree::QuadtreeNode::new(crate::globe::quadtree::TileId {
             z: 3,
             x: 3,
             y: 7,
@@ -49,28 +50,7 @@ fn main() {
     }
     println!("Surface points visible for Z=5 X=7 Y=15: {}", any_visible);
 
-    // Simulate fallback
-    let mut found = false;
-    let steps = 10;
-    let z_pow = 32.0;
-    let lon_min = -180.0 + 7.0 * 360.0 / 32.0;
-    let lon_max = -180.0 + 8.0 * 360.0 / 32.0;
-    let lat_max = 0.0;
-    let lat_min = -11.17;
-    for i in 0..=steps {
-        for j in 0..=steps {
-            let u = i as f32 / steps as f32;
-            let v = j as f32 / steps as f32;
-            let lon = lon_min + u * (lon_max - lon_min);
-            let lat = lat_min + v * (lat_max - lat_min);
-            let p = get_tile_corner(lon, lat, 0.0);
-            if frustum.contains_point(p) {
-                found = true;
-                break;
-            }
-        }
-    }
-    println!("Dense fallback visible for Z=5 X=7 Y=15: {}", found);
+
 
     let obb_pass = frustum.intersects_obb(&node.obb);
     println!("OBB pass for Z=5, X=7, Y=15: {}", obb_pass);

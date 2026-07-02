@@ -37,7 +37,7 @@
 //! - `altitude() -> f32`: Returns current height above the scaled WGS84 surface.
 //! - `screen_to_world_ray(screen_x, screen_y, w, h) -> (Vec3, Vec3)`: Projects screen coordinates to a 3D ray.
 
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3};
 
 pub struct Camera {
     // 1. Anchor Transform (The focal point / tracking target)
