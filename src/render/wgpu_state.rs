@@ -669,7 +669,11 @@ impl<'a> WgpuState<'a> {
             timestamp_writes: None,
         });
 
-        let camera_pos = self.camera.global_transform().0;
+        let camera_pos = if self.debug_mode {
+            self.debug_camera.position
+        } else {
+            self.camera.global_transform().0
+        };
         let camera_pos_f64 = [
             camera_pos.x as f64,
             camera_pos.y as f64,
@@ -759,7 +763,9 @@ impl<'a> WgpuState<'a> {
                     self.debug_mode = is_debug;
                     if is_debug && !self.debug_camera_initialized {
                         let (global_pos, global_ori) = self.camera.global_transform();
-                        let (yaw, pitch, _) = global_ori.to_euler(glam::EulerRot::YXZ);
+                        let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
+                        let pitch = forward.y.asin();
+                        let yaw = forward.x.atan2(-forward.z);
                         self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
                         self.debug_camera_initialized = true;
                     }
@@ -771,7 +777,9 @@ impl<'a> WgpuState<'a> {
                         ui.label("God Camera State:");
                         if ui.button("Snap to Main Camera").clicked() {
                             let (global_pos, global_ori) = self.camera.global_transform();
-                            let (yaw, pitch, _) = global_ori.to_euler(glam::EulerRot::YXZ);
+                            let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
+                            let pitch = forward.y.asin();
+                            let yaw = forward.x.atan2(-forward.z);
                             self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
                         }
                     });
