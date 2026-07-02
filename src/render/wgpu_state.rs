@@ -146,6 +146,7 @@ pub struct WgpuState<'a> {
     pub camera: Camera,
     pub debug_mode: bool,
     pub debug_camera: crate::camera::god_camera::GodCamera,
+    pub debug_camera_initialized: bool,
     debug_pipeline: wgpu::RenderPipeline,
     debug_vertex_buffer: wgpu::Buffer,
     num_debug_vertices: u32,
@@ -494,6 +495,7 @@ impl<'a> WgpuState<'a> {
             camera,
             debug_mode: false,
             debug_camera: crate::camera::god_camera::GodCamera::default(),
+            debug_camera_initialized: false,
             debug_pipeline,
             debug_vertex_buffer,
             num_debug_vertices: 0,
@@ -755,16 +757,24 @@ impl<'a> WgpuState<'a> {
                     .changed()
                 {
                     self.debug_mode = is_debug;
-                    if is_debug {
+                    if is_debug && !self.debug_camera_initialized {
                         let (global_pos, global_ori) = self.camera.global_transform();
                         let (yaw, pitch, _) = global_ori.to_euler(glam::EulerRot::YXZ);
                         self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
+                        self.debug_camera_initialized = true;
                     }
                 }
 
                 if self.debug_mode {
                     ui.separator();
-                    ui.label("God Camera State:");
+                    ui.horizontal(|ui| {
+                        ui.label("God Camera State:");
+                        if ui.button("Snap to Main Camera").clicked() {
+                            let (global_pos, global_ori) = self.camera.global_transform();
+                            let (yaw, pitch, _) = global_ori.to_euler(glam::EulerRot::YXZ);
+                            self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label("Pos:");
                         ui.add(egui::DragValue::new(&mut self.debug_camera.position.x).speed(0.1));
