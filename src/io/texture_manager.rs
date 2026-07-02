@@ -1,18 +1,19 @@
 use crate::globe::quadtree::TileId;
-use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
+use crate::io::tile_cache::TileCacheManager;
+use crate::io::config::TileEngineConfig;
+use crate::io::tile_fetcher::{TilePriority, TileFetcher};
 
 pub struct TileTextureManager {
-    cache: HashMap<TileId, (wgpu::Texture, wgpu::BindGroup)>,
-    requesting: HashSet<TileId>,
+    pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
     rx: Receiver<(TileId, Result<Vec<u8>, String>)>,
-    fetcher: crate::io::tile_fetcher::TileFetcher,
+    pub fetcher: TileFetcher,
     pub bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
 
 impl TileTextureManager {
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, config: &TileEngineConfig) -> Self {
         let (tx, rx) = mpsc::channel();
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -48,11 +49,11 @@ impl TileTextureManager {
             ..Default::default()
         });
 
-        let fetcher = crate::io::tile_fetcher::TileFetcher::new(tx);
+        let fetcher = TileFetcher::new(tx);
+        let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
 
         Self {
-            cache: HashMap::new(),
-            requesting: HashSet::new(),
+            cache,
             rx,
             fetcher,
             bind_group_layout,
@@ -60,28 +61,19 @@ impl TileTextureManager {
         }
     }
 
-    pub fn request_tile(&mut self, id: TileId, _device: &wgpu::Device, _queue: &wgpu::Queue) {
-        if self.cache.contains_key(&id) || self.requesting.contains(&id) {
+    pub fn request_tile(&mut self, id: TileId, priority: TilePriority) {
+        if self.cache.get_state(&id).is_some() {
             return;
         }
 
-        self.requesting.insert(id);
-        self.fetcher.request_tile(id, crate::io::tile_fetcher::TilePriority::High);
+        self.cache.mark_fetching(id);
+        self.fetcher.request_tile(id, priority);
     }
 
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         while let Ok((id, result)) = self.rx.try_recv() {
-            self.requesting.remove(&id);
-
             match result {
                 Ok(rgba) => {
-                    log::info!(
-                        "Successfully downloaded and decoded tile z:{} x:{} y:{}",
-                        id.z,
-                        id.x,
-                        id.y
-                    );
-
                     let size = wgpu::Extent3d {
                         width: 256,
                         height: 256,
@@ -132,7 +124,7 @@ impl TileTextureManager {
                         label: Some(&format!("Tile Bind Group {:?}", id)),
                     });
 
-                    self.cache.insert(id, (texture, bind_group));
+                    self.cache.mark_ready(id, (texture, bind_group));
                 }
                 Err(e) => {
                     log::error!(
@@ -142,21 +134,9 @@ impl TileTextureManager {
                         id.y,
                         e
                     );
+                    self.cache.mark_failed(id);
                 }
             }
         }
-    }
-
-    pub fn cleanup_cache(&mut self, visible_tiles: &[TileId]) {
-        let visible_set: HashSet<TileId> = visible_tiles.iter().copied().collect();
-        self.cache.retain(|id, _| visible_set.contains(id));
-    }
-
-    pub fn get_texture(&self, id: TileId) -> Option<&(wgpu::Texture, wgpu::BindGroup)> {
-        self.cache.get(&id)
-    }
-
-    pub fn is_loading_complete(&self) -> bool {
-        self.requesting.is_empty()
     }
 }

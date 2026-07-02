@@ -96,6 +96,10 @@ impl TileFetcher {
         self.notify.notify_one();
     }
 
+    pub fn is_loading_complete(&self) -> bool {
+        self.queue.lock().unwrap().is_empty()
+    }
+
     async fn worker_loop(
         client: reqwest::Client,
         queue: Arc<Mutex<BinaryHeap<PrioritizedRequest>>>,

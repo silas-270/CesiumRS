@@ -33,3 +33,5 @@ mod test_tile_cache;
 mod test_tile_fetcher;
 #[cfg(test)]
 mod test_mesh_worker;
+#[cfg(test)]
+mod orchestrator_tests;
