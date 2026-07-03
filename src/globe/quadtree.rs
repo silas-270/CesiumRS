@@ -35,6 +35,7 @@ pub struct QuadtreeNode {
     pub radius: f32,
     pub lod_radius: f32,
     pub obb: OrientedBoundingBox,
+    pub tight_obbs: Option<Box<Vec<OrientedBoundingBox>>>,
     pub surface_points: [Vec3; 9],
     pub horizon_culling_point: Option<Vec3>,
     pub visible: bool,
@@ -208,7 +209,7 @@ fn compute_horizon_culling_point(direction_to_point: Vec3, corners: &[Vec3]) -> 
 
 impl QuadtreeNode {
     pub fn new(id: TileId) -> Self {
-        let (center, radius, lod_radius, surface_points, obb) = Self::compute_bounding_volume(&id);
+        let (center, radius, lod_radius, surface_points, obb, tight_obbs) = Self::compute_bounding_volume(&id);
         let geographic_corners = Self::compute_geographic_corners(&id);
         let horizon_culling_point =
             compute_horizon_culling_point(center.normalize(), &geographic_corners);
@@ -219,6 +220,7 @@ impl QuadtreeNode {
             radius,
             lod_radius,
             obb,
+            tight_obbs,
             surface_points,
             horizon_culling_point,
             visible: false,
@@ -226,7 +228,77 @@ impl QuadtreeNode {
         }
     }
 
-    fn compute_bounding_volume(id: &TileId) -> (Vec3, f32, f32, [Vec3; 9], OrientedBoundingBox) {
+    fn compute_sub_obb(id: &TileId, u_min: f32, u_max: f32, v_min: f32, v_max: f32) -> OrientedBoundingBox {
+        let z_pow = (1_u32 << id.z) as f32;
+        let base_lon = -180.0 + (id.x as f32) * 360.0 / z_pow;
+        let lon_span = 360.0 / z_pow;
+        
+        let sub_lon_min = base_lon + u_min * lon_span;
+        let sub_lon_max = base_lon + u_max * lon_span;
+        
+        let y_min = id.y as f32 + v_min;
+        let y_max = id.y as f32 + v_max;
+        
+        let mut sub_lat_max = web_mercator_y_to_lat(y_min, id.z);
+        let mut sub_lat_min = web_mercator_y_to_lat(y_max, id.z);
+        
+        if id.y == 0 && v_min == 0.0 {
+            sub_lat_max = 90.0;
+        }
+        if id.y == (1_u32 << id.z) - 1 && v_max == 1.0 {
+            sub_lat_min = -90.0;
+        }
+
+        let center_lon = (sub_lon_min + sub_lon_max) * 0.5;
+        let center_lat = (sub_lat_min + sub_lat_max) * 0.5;
+        let surface_center = get_tile_corner(center_lon, center_lat, 0.0);
+
+        let a2 = 6.378137_f32 * 6.378137_f32;
+        let b2 = 6.3567523142_f32 * 6.3567523142_f32;
+        let normal = Vec3::new(
+            surface_center.x / a2,
+            surface_center.y / b2,
+            surface_center.z / a2,
+        )
+        .normalize();
+
+        let mut east = Vec3::new(0.0, 1.0, 0.0).cross(normal).normalize_or_zero();
+        if east.length_squared() < 0.1 {
+            east = Vec3::new(1.0, 0.0, 0.0);
+        }
+        let north = normal.cross(east).normalize();
+
+        let mut min_ext = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut max_ext = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+
+        let steps = 4;
+        for i in 0..=steps {
+            let u = i as f32 / steps as f32;
+            let lon = sub_lon_min + u * (sub_lon_max - sub_lon_min);
+            for j in 0..=steps {
+                let v = j as f32 / steps as f32;
+                let lat = sub_lat_min + v * (sub_lat_max - sub_lat_min);
+                let p = get_tile_corner(lon, lat, 0.0);
+                let rel = p - surface_center;
+                let x = rel.dot(east);
+                let y = rel.dot(north);
+                let z = rel.dot(normal);
+                min_ext = min_ext.min(Vec3::new(x, y, z));
+                max_ext = max_ext.max(Vec3::new(x, y, z));
+            }
+        }
+
+        let offset = (max_ext + min_ext) * 0.5;
+        let obb_center = surface_center + east * offset.x + north * offset.y + normal * offset.z;
+        let extents = (max_ext - min_ext) * 0.5;
+
+        OrientedBoundingBox {
+            center: obb_center,
+            half_axes: [east * extents.x, north * extents.y, normal * extents.z],
+        }
+    }
+
+    fn compute_bounding_volume(id: &TileId) -> (Vec3, f32, f32, [Vec3; 9], OrientedBoundingBox, Option<Box<Vec<OrientedBoundingBox>>>) {
         let z_pow = (1_u32 << id.z) as f32;
 
         let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
@@ -330,7 +402,24 @@ impl QuadtreeNode {
             half_axes: [east * extents.x, north * extents.y, normal * extents.z],
         };
 
-        (surface_center, radius, lod_radius, points, obb)
+        let mut tight_obbs = None;
+        if id.z <= 4 {
+            let mut obbs = Vec::new();
+            let subdivisions = 8;
+            for u_idx in 0..subdivisions {
+                for v_idx in 0..subdivisions {
+                    let u_min = u_idx as f32 / subdivisions as f32;
+                    let u_max = (u_idx + 1) as f32 / subdivisions as f32;
+                    let v_min = v_idx as f32 / subdivisions as f32;
+                    let v_max = (v_idx + 1) as f32 / subdivisions as f32;
+
+                    obbs.push(Self::compute_sub_obb(id, u_min, u_max, v_min, v_max));
+                }
+            }
+            tight_obbs = Some(Box::new(obbs));
+        }
+
+        (surface_center, radius, lod_radius, points, obb, tight_obbs)
     }
 
     fn compute_geographic_corners(id: &TileId) -> [Vec3; 4] {
@@ -400,6 +489,30 @@ impl QuadtreeNode {
             self.visible = false;
             self.children = None;
             return;
+        }
+
+        if let Some(obbs) = &self.tight_obbs {
+            let mut any_intersect = false;
+            for obb in obbs.iter() {
+                if frustum.intersects_obb(obb) {
+                    let normal = obb.half_axes[2].normalize_or_zero();
+                    let cam_to_center = camera_pos - obb.center;
+                    
+                    let max_extent = obb.half_axes[0].length().max(obb.half_axes[1].length());
+                    // Only consider the sub-OBB visible if it's not strictly behind the horizon.
+                    // The tangent plane at the center of the sub-OBB is a good approximation.
+                    // We allow a margin of `max_extent` to account for the curvature of the sub-OBB.
+                    if normal.dot(cam_to_center) > -max_extent {
+                        any_intersect = true;
+                        break;
+                    }
+                }
+            }
+            if !any_intersect {
+                self.visible = false;
+                self.children = None;
+                return;
+            }
         }
 
         // Surface-point frustum test: check if any of the tile's surface
