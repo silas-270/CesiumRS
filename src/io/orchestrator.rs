@@ -20,22 +20,11 @@ pub struct TileOrchestrator {
     last_camera_pos: Option<Vec3>,
 }
 
-use crate::io::providers::{OpenStreetMapImageryProvider, EllipsoidTerrainProvider};
-use std::sync::Arc;
-
 impl TileOrchestrator {
     pub fn new(device: &wgpu::Device, config: TileEngineConfig) -> Self {
-        let reqwest_client = reqwest::Client::builder()
-            .user_agent("CesiumRS/0.1.0")
-            .build()
-            .expect("Failed to build reqwest client");
-
-        let default_imagery = Arc::new(OpenStreetMapImageryProvider::new(reqwest_client.clone()));
-        let default_terrain = Arc::new(EllipsoidTerrainProvider::new());
-
         Self {
-            texture_manager: TileTextureManager::new(device, &config, default_imagery),
-            mesh_worker: MeshWorkerPool::new(default_terrain),
+            texture_manager: TileTextureManager::new(device, &config),
+            mesh_worker: MeshWorkerPool::new(),
             config,
             last_camera_pos: None,
         }
@@ -55,6 +44,8 @@ impl TileOrchestrator {
                 let norm_vel = velocity.normalize();
                 
                 for (id, center, _) in visible_tiles {
+                    if id.z < 4 { continue; } // Prevent root-level prefetch flooding
+
                     // Very naive prefetch: if a tile is "in front" of the movement, guess its neighbors.
                     // A better approach is to translate the velocity into lon/lat delta and request those tiles.
                     // For now, let's just use the radius and center to estimate if we are moving towards it.
@@ -81,7 +72,7 @@ impl TileOrchestrator {
 
         // Request visible tiles with High priority
         for (id, _, _) in visible_tiles {
-            self.mesh_worker.request_mesh(*id);
+            self.mesh_worker.request_mesh(*id, 16);
             self.texture_manager.request_tile(*id, TilePriority::High);
         }
 

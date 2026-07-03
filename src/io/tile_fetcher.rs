@@ -1,11 +1,9 @@
 use crate::globe::quadtree::TileId;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::{mpsc, Arc, Mutex};
 use tokio::runtime::Runtime;
 use tokio::sync::Notify;
-
-use crate::io::providers::ImageryProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TilePriority {
@@ -58,56 +56,56 @@ impl Ord for PrioritizedRequest {
 
 pub struct TileFetcher {
     _runtime: Runtime,
-    queue: Arc<Mutex<BinaryHeap<PrioritizedRequest>>>,
+    queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
     notify: Arc<Notify>,
-    provider: Arc<dyn ImageryProvider>,
 }
 
 impl TileFetcher {
-    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>, provider: Arc<dyn ImageryProvider>) -> Self {
+    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("Failed to build tokio runtime");
 
-        let queue = Arc::new(Mutex::new(BinaryHeap::new()));
+        let client = reqwest::Client::builder()
+            .user_agent("CesiumRS/0.1.0")
+            .build()
+            .expect("Failed to build reqwest client");
+
+        let queue = Arc::new(Mutex::new((BinaryHeap::new(), HashSet::new())));
         let notify = Arc::new(Notify::new());
 
         let worker_queue = queue.clone();
         let worker_notify = notify.clone();
         let worker_tx = tx.clone();
-        let worker_provider = provider.clone();
 
         runtime.spawn(async move {
-            Self::worker_loop(worker_provider, worker_queue, worker_notify, worker_tx).await;
+            Self::worker_loop(client, worker_queue, worker_notify, worker_tx).await;
         });
 
         Self {
             _runtime: runtime,
             queue,
             notify,
-            provider,
         }
-    }
-
-    pub fn set_provider(&mut self, provider: Arc<dyn ImageryProvider>) {
-        self.provider = provider;
-        // Optionally notify or clear queue.
     }
 
     pub fn request_tile(&self, id: TileId, priority: TilePriority) {
         let mut q = self.queue.lock().unwrap();
-        q.push(PrioritizedRequest { priority, id });
-        self.notify.notify_one();
+        if !q.1.contains(&id) {
+            q.1.insert(id);
+            q.0.push(PrioritizedRequest { priority, id });
+            self.notify.notify_one();
+        }
     }
 
     pub fn is_loading_complete(&self) -> bool {
-        self.queue.lock().unwrap().is_empty()
+        self.queue.lock().unwrap().0.is_empty()
     }
 
     async fn worker_loop(
-        provider: Arc<dyn ImageryProvider>,
-        queue: Arc<Mutex<BinaryHeap<PrioritizedRequest>>>,
+        client: reqwest::Client,
+        queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
         notify: Arc<Notify>,
         tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>,
     ) {
@@ -117,17 +115,21 @@ impl TileFetcher {
             // Get the next request or wait
             let request = {
                 let mut q = queue.lock().unwrap();
-                q.pop()
+                let req = q.0.pop();
+                if let Some(r) = &req {
+                    q.1.remove(&r.id);
+                }
+                req
             };
 
             if let Some(req) = request {
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let provider_clone = provider.clone();
+                let client_clone = client.clone();
                 let tx_clone = tx.clone();
                 let id = req.id;
 
                 tokio::spawn(async move {
-                    let res = Self::fetch_and_decode(provider_clone, id).await;
+                    let res = Self::fetch_and_decode(client_clone, id).await;
                     let _ = tx_clone.send((id, res));
                     drop(permit);
                 });
@@ -137,8 +139,23 @@ impl TileFetcher {
         }
     }
 
-    async fn fetch_and_decode(provider: Arc<dyn ImageryProvider>, id: TileId) -> Result<Vec<u8>, String> {
-        let bytes = provider.request_image(&id).await?;
+    async fn fetch_and_decode(client: reqwest::Client, id: TileId) -> Result<Vec<u8>, String> {
+        let url = format!("https://tile.openstreetmap.org/{}/{}/{}.png", id.z, id.x, id.y);
+
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("HTTP error: {}", response.status()));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read bytes: {}", e))?;
 
         let result = tokio::task::spawn_blocking(move || {
             image::load_from_memory(&bytes)

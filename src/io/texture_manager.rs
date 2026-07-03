@@ -3,8 +3,6 @@ use std::sync::mpsc::{self, Receiver};
 use crate::io::tile_cache::TileCacheManager;
 use crate::io::config::TileEngineConfig;
 use crate::io::tile_fetcher::{TilePriority, TileFetcher};
-use crate::io::providers::ImageryProvider;
-use std::sync::Arc;
 
 pub struct TileTextureManager {
     pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
@@ -15,7 +13,7 @@ pub struct TileTextureManager {
 }
 
 impl TileTextureManager {
-    pub fn new(device: &wgpu::Device, config: &TileEngineConfig, provider: Arc<dyn ImageryProvider>) -> Self {
+    pub fn new(device: &wgpu::Device, config: &TileEngineConfig) -> Self {
         let (tx, rx) = mpsc::channel();
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -51,10 +49,11 @@ impl TileTextureManager {
             ..Default::default()
         });
 
-        let fetcher = TileFetcher::new(tx, provider);
+        let fetcher = TileFetcher::new(tx);
+        let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
 
         Self {
-            cache: TileCacheManager::new(config.max_cache_size, config.negative_cache_duration),
+            cache,
             rx,
             fetcher,
             bind_group_layout,
@@ -73,6 +72,16 @@ impl TileTextureManager {
 
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         while let Ok((id, result)) = self.rx.try_recv() {
+            // Check if we still care about this tile (it hasn't been evicted from LRU)
+            let is_still_needed = match self.cache.get_state(&id) {
+                Some(crate::io::tile_cache::TileState::Fetching) => true,
+                _ => false,
+            };
+
+            if !is_still_needed {
+                continue; // Drop the result, we don't need it anymore
+            }
+
             match result {
                 Ok(rgba) => {
                     let size = wgpu::Extent3d {

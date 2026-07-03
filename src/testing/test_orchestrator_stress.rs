@@ -96,15 +96,14 @@ fn test_tile_fetcher_priority_queue_ordering() {
 // ---
 #[test]
 fn test_mesh_worker_stress_throughput() {
-    use std::sync::Arc;
-    let provider = Arc::new(crate::io::providers::EllipsoidTerrainProvider::new());
-    let mut pool = MeshWorkerPool::new(provider);
+    let mut pool = MeshWorkerPool::new();
     let count = 200; // Use 200 to keep test time reasonable
 
     let start = Instant::now();
     for i in 0..count {
         pool.request_mesh(
             TileId { z: 10, x: i % 1024, y: i % 1024 },
+            16,
         );
     }
 

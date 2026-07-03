@@ -472,8 +472,19 @@ impl QuadtreeNode {
 
         let dist = (self.center - camera_pos).length();
 
-        // Subdivide condition: closer than lod_radius * lod_factor
-        if dist < self.lod_radius * lod_factor && self.id.z < MAX_ZOOM {
+        // Hysteresis logic: Subdivide at 1.0x, but don't collapse until 1.05x
+        let is_subdivided = self.children.is_some();
+        let subdivide_dist = self.lod_radius * lod_factor;
+        let collapse_dist = subdivide_dist * 1.05;
+
+        let should_be_subdivided = if is_subdivided {
+            dist < collapse_dist
+        } else {
+            dist < subdivide_dist
+        };
+
+        // Subdivide condition
+        if should_be_subdivided && self.id.z < MAX_ZOOM {
             if self.children.is_none() {
                 self.subdivide();
             }
