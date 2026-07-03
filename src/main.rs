@@ -8,6 +8,18 @@ struct Cli {
     #[arg(long)]
     pub verify: bool,
 
+    #[arg(long)]
+    pub stress: bool,
+
+    #[arg(long, default_value_t = String::from("flight"))]
+    pub stress_mode: String,
+
+    #[arg(long)]
+    pub prefetch: bool,
+
+    #[arg(long, default_value_t = 512)]
+    pub cache_size: usize,
+
     #[arg(long, default_value_t = 0.0)]
     pub cam_x: f64,
 
@@ -35,9 +47,13 @@ fn main() {
     }
 
     let cli = Cli::parse();
-    let config = if cli.verify {
+    let config = if cli.verify || cli.stress {
         Some(VerifyConfig {
             enabled: cli.verify,
+            stress: cli.stress,
+            stress_mode: cli.stress_mode,
+            prefetch: cli.prefetch,
+            cache_size: cli.cache_size,
             cam_x: cli.cam_x,
             cam_y: cli.cam_y,
             cam_z: cli.cam_z,
@@ -48,5 +64,20 @@ fn main() {
         None
     };
 
-    run(config);
+    if let Some(cfg) = config {
+        run(Some(cfg));
+    } else {
+        use cesium_rs::{Viewer, ViewerOptions, GlobeOptions};
+
+        let viewer = Viewer::new(ViewerOptions {
+            globe: GlobeOptions {
+                tile_cache_size: 2048,
+                enable_prefetch: true,
+                maximum_screen_space_error: 2.0,
+            },
+            ..Default::default()
+        });
+        
+        viewer.run();
+    }
 }

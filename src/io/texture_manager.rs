@@ -49,7 +49,7 @@ impl TileTextureManager {
             ..Default::default()
         });
 
-        let fetcher = TileFetcher::new(tx);
+        let fetcher = TileFetcher::new(tx, config.base_imagery_url.clone());
         let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
 
         Self {
@@ -148,5 +148,9 @@ impl TileTextureManager {
                 }
             }
         }
+    }
+
+    pub fn resize(&mut self, new_capacity: std::num::NonZeroUsize) {
+        self.cache.resize(new_capacity);
     }
 }

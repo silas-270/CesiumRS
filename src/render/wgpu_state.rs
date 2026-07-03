@@ -154,6 +154,8 @@ pub struct WgpuState<'a> {
     pub debug_mode: bool,
     pub debug_camera: crate::camera::god_camera::GodCamera,
     pub debug_camera_initialized: bool,
+    pub last_requested_tiles_count: usize,
+    pub last_missing_tiles_count: usize,
     debug_pipeline: wgpu::RenderPipeline,
     debug_vertex_buffer: wgpu::Buffer,
     num_debug_vertices: u32,
@@ -212,7 +214,7 @@ fn execute_egui<'rp>(
 }
 
 impl<'a> WgpuState<'a> {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(window: Arc<Window>, engine_config: crate::io::config::TileEngineConfig) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -310,7 +312,7 @@ impl<'a> WgpuState<'a> {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let config_engine = crate::io::config::TileEngineConfig::default();
+        let config_engine = engine_config;
         let orchestrator = crate::io::orchestrator::TileOrchestrator::new(&device, config_engine);
 
         let push_constant_ranges = [wgpu::PushConstantRange {
@@ -473,7 +475,7 @@ impl<'a> WgpuState<'a> {
             cache: None,
         });
 
-        let tile_cache = LruCache::new(NonZeroUsize::new(512).unwrap());
+        let tile_cache = LruCache::new(orchestrator.config.mesh_cache_size);
 
         let egui_ctx = egui::Context::default();
         let egui_state = EguiState::new(
@@ -502,8 +504,10 @@ impl<'a> WgpuState<'a> {
             camera_bind_group,
             camera,
             debug_mode: false,
-            debug_camera: crate::camera::god_camera::GodCamera::default(),
+            debug_camera: crate::camera::god_camera::GodCamera::new(glam::Vec3::ZERO, 0.0, 0.0),
             debug_camera_initialized: false,
+            last_requested_tiles_count: 0,
+            last_missing_tiles_count: 0,
             debug_pipeline,
             debug_vertex_buffer,
             num_debug_vertices: 0,
@@ -539,6 +543,14 @@ impl<'a> WgpuState<'a> {
                 bytemuck::cast_slice(&[self.camera_uniform]),
             );
         }
+    }
+
+    pub fn get_fetch_stats(&self) -> (usize, usize) {
+        (self.last_requested_tiles_count, self.last_missing_tiles_count)
+    }
+
+    pub fn resize_tile_cache(&mut self, size: std::num::NonZeroUsize) {
+        self.tile_cache.resize(size);
     }
 
     pub fn update_tile_cache(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
@@ -605,6 +617,10 @@ impl<'a> WgpuState<'a> {
         let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| {
             self.tile_cache.peek(id).is_some()
         });
+
+        let missing_count = requested_tiles.iter().filter(|(id, _, _)| self.tile_cache.peek(id).is_none()).count();
+        self.last_requested_tiles_count = requested_tiles.len();
+        self.last_missing_tiles_count = missing_count;
 
         let mut active_tiles = requested_tiles.clone();
         for t in &renderable_tiles {
@@ -846,6 +862,22 @@ impl<'a> WgpuState<'a> {
                             roll_deg.to_radians(),
                         );
                     }
+                }
+
+                ui.separator();
+                ui.label("Caching & Performance");
+                ui.checkbox(&mut self.orchestrator.config.enable_prefetch, "Preload Neighboring Tiles");
+                
+                let mut texture_cache_size = self.orchestrator.config.max_cache_size.get();
+                if ui.add(egui::Slider::new(&mut texture_cache_size, 512..=8192).text("Texture Cache Size")).changed() {
+                    self.orchestrator.config.max_cache_size = std::num::NonZeroUsize::new(texture_cache_size).unwrap();
+                    self.orchestrator.texture_manager.resize(self.orchestrator.config.max_cache_size);
+                }
+
+                let mut mesh_cache_size = self.orchestrator.config.mesh_cache_size.get();
+                if ui.add(egui::Slider::new(&mut mesh_cache_size, 128..=2048).text("Mesh Cache Size")).changed() {
+                    self.orchestrator.config.mesh_cache_size = std::num::NonZeroUsize::new(mesh_cache_size).unwrap();
+                    self.tile_cache.resize(self.orchestrator.config.mesh_cache_size);
                 }
 
                 ui.separator();

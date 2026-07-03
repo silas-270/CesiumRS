@@ -18,10 +18,11 @@ pub struct App<'a> {
     last_mouse_pos: Option<(f64, f64)>,
     pressed_keys: HashSet<KeyCode>,
     last_frame_time: Option<Instant>,
+    config: crate::io::config::TileEngineConfig,
 }
 
-impl<'a> Default for App<'a> {
-    fn default() -> Self {
+impl<'a> App<'a> {
+    pub fn new(config: crate::io::config::TileEngineConfig) -> Self {
         Self {
             window: None,
             wgpu_state: None,
@@ -30,6 +31,7 @@ impl<'a> Default for App<'a> {
             last_mouse_pos: None,
             pressed_keys: HashSet::new(),
             last_frame_time: None,
+            config,
         }
     }
 }
@@ -53,7 +55,7 @@ impl<'a> ApplicationHandler for App<'a> {
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             self.window = Some(window.clone());
 
-            let state = pollster::block_on(WgpuState::new(window));
+            let state = pollster::block_on(WgpuState::new(window, self.config.clone()));
             self.wgpu_state = Some(state);
         }
     }

@@ -7,20 +7,27 @@ pub mod render;
 #[cfg(not(target_os = "android"))]
 pub mod testing;
 
+pub mod viewer;
+pub use viewer::{Viewer, ViewerOptions, GlobeOptions};
+
 use crate::core::app::App;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 #[cfg(not(target_os = "android"))]
 pub fn run(config: Option<testing::VerifyConfig>) {
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-
     if let Some(cfg) = config {
-        let mut app = testing::test_app::TestApp::new(cfg);
-        event_loop.run_app(&mut app).unwrap();
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Poll);
+        if cfg.stress {
+            let mut app = testing::stress_app::StressApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
+        } else {
+            let mut app = testing::test_app::TestApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
+        }
     } else {
-        let mut app = App::default();
-        event_loop.run_app(&mut app).unwrap();
+        let viewer = Viewer::new(ViewerOptions::default());
+        viewer.run();
     }
 }
 
@@ -35,6 +42,6 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut winit_app = App::default();
+    let mut winit_app = App::new(crate::io::config::TileEngineConfig::default());
     event_loop.run_app(&mut winit_app).unwrap();
 }

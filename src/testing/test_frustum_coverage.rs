@@ -102,7 +102,15 @@ fn check_frustum_coverage(cam: &Camera, screen_w: u32, screen_h: u32, name: &str
     
     let rendered_tiles = visible_tiles.len();
     
-    let points: Vec<(u32, u32)> = (0..screen_w).flat_map(|x| (0..screen_h).map(move |y| (x, y))).collect();
+    let step_x = (screen_w / 100).max(1);
+    let step_y = (screen_h / 80).max(1);
+    
+    let mut points = Vec::new();
+    for x in (0..screen_w).step_by(step_x as usize) {
+        for y in (0..screen_h).step_by(step_y as usize) {
+            points.push((x, y));
+        }
+    }
     
     // Raycast in parallel
     let results: Vec<Result<TileId, (f64, f64)>> = points.par_iter().filter_map(|&(x, y)| {
@@ -195,6 +203,17 @@ fn setup_camera(lat_deg: f32, lon_deg: f32, altitude: f32, pitch_deg: f32) -> Ca
     cam
 }
 
+fn setup_camera_direct(pos: Vec3, pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> Camera {
+    let mut cam = Camera::new(pos, Vec3::ZERO);
+    cam.set_local_transform(pos, glam::Quat::from_euler(
+        glam::EulerRot::YXZ,
+        yaw_deg.to_radians(),
+        pitch_deg.to_radians(),
+        roll_deg.to_radians()
+    ));
+    cam
+}
+
 #[test]
 fn test_equivalence_partitioning_frustum() {
     let mut failed = false;
@@ -207,22 +226,28 @@ fn test_equivalence_partitioning_frustum() {
         ("North Pole Straight Down", setup_camera(89.9, 0.0, 2.0, 0.0)),
         ("South Pole Straight Down", setup_camera(-89.9, 0.0, 2.0, 0.0)),
         ("Equator Tangent", setup_camera(0.0, 0.0, 0.01, 85.0)),
+        ("User Debug Case", setup_camera_direct(Vec3::new(5.332, 0.313, -3.546), -2.80, 123.63, -43.7)),
     ];
     
-    let w = 200;
-    let h = 150;
+    let resolutions = vec![
+        (1920, 1080, "1080p Landscape"),
+        (1080, 1920, "1080x1920 Mobile Portrait"),
+        (1080, 1080, "Square"),
+        (200, 150, "Low Res Landscape"),
+    ];
     
-    for (name, cam) in test_cases {
-        let res = check_frustum_coverage(&cam, w, h, name);
-        if !res.false_negatives.is_empty() {
-            failed = true;
-            println!("TEST FAILED for {}", name);
-        }
-        
-        // Let's assert a reasonable upper limit for false positives.
-        // It shouldn't be rendering 500 extra tiles we don't hit at this resolution.
-        if res.false_positives > 150 {
-            println!("WARNING: High number of false positives ({}) for {}", res.false_positives, name);
+    for (name, cam) in &test_cases {
+        for &(w, h, res_name) in &resolutions {
+            let full_name = format!("{} ({})", name, res_name);
+            let res = check_frustum_coverage(&cam, w, h, &full_name);
+            if !res.false_negatives.is_empty() {
+                failed = true;
+                println!("TEST FAILED for {}", full_name);
+            }
+            
+            if res.false_positives > 200 {
+                println!("WARNING: High number of false positives ({}) for {}", res.false_positives, full_name);
+            }
         }
     }
     

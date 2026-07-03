@@ -53,4 +53,8 @@ impl<T> TileCacheManager<T> {
     pub fn mark_failed(&mut self, id: TileId) {
         self.cache.put(id, TileState::Failed(Instant::now()));
     }
+
+    pub fn resize(&mut self, new_capacity: NonZeroUsize) {
+        self.cache.resize(new_capacity);
+    }
 }
