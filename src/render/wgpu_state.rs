@@ -4,10 +4,11 @@ use crate::globe::quadtree::{QuadtreeManager, TileId};
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
 use glam::{Mat4, Vec3};
-use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 
 pub struct TileBuffers {
     pub vertex_buffer: wgpu::Buffer,
@@ -145,7 +146,7 @@ pub struct WgpuState<'a> {
     solid_pipeline: wgpu::RenderPipeline,
     wireframe_pipeline: wgpu::RenderPipeline,
     depth_texture_view: wgpu::TextureView,
-    tile_cache: HashMap<TileId, TileBuffers>,
+    tile_cache: LruCache<TileId, TileBuffers>,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -161,8 +162,6 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub orchestrator: crate::io::orchestrator::TileOrchestrator,
-    pub terrain_provider_index: usize,
-    pub imagery_provider_index: usize,
 }
 
 fn create_depth_texture(
@@ -474,7 +473,7 @@ impl<'a> WgpuState<'a> {
             cache: None,
         });
 
-        let tile_cache = HashMap::new();
+        let tile_cache = LruCache::new(NonZeroUsize::new(512).unwrap());
 
         let egui_ctx = egui::Context::default();
         let egui_state = EguiState::new(
@@ -513,8 +512,6 @@ impl<'a> WgpuState<'a> {
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             orchestrator,
-            terrain_provider_index: 0,
-            imagery_provider_index: 0,
         }
     }
 
@@ -545,43 +542,38 @@ impl<'a> WgpuState<'a> {
     }
 
     pub fn update_tile_cache(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
-        let mut active_ids = std::collections::HashSet::new();
+        // Promote all actively used tiles so they aren't evicted
         for (id, _, _) in visible_tiles {
-            active_ids.insert(*id);
+            self.tile_cache.get(id);
         }
-
-        // Remove culled tiles
-        self.tile_cache.retain(|id, _| active_ids.contains(id));
 
         // Process completed meshes
         for (id, mesh) in self.orchestrator.mesh_worker.process_results() {
-            if active_ids.contains(&id) {
-                let vertex_buffer =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("Tile Vertex Buffer {:?}", id)),
-                            contents: bytemuck::cast_slice(&mesh.vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+            let vertex_buffer =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("Tile Vertex Buffer {:?}", id)),
+                        contents: bytemuck::cast_slice(&mesh.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
 
-                let index_buffer =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some(&format!("Tile Index Buffer {:?}", id)),
-                            contents: bytemuck::cast_slice(&mesh.indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        });
+            let index_buffer =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(&format!("Tile Index Buffer {:?}", id)),
+                        contents: bytemuck::cast_slice(&mesh.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
 
-                self.tile_cache.insert(
-                    id,
-                    TileBuffers {
-                        vertex_buffer,
-                        index_buffer,
-                        num_indices: mesh.indices.len() as u32,
-                        center_f64: mesh.center_f64,
-                    },
-                );
-            }
+            self.tile_cache.put(
+                id,
+                TileBuffers {
+                    vertex_buffer,
+                    index_buffer,
+                    num_indices: mesh.indices.len() as u32,
+                    center_f64: mesh.center_f64,
+                },
+            );
         }
     }
 
@@ -609,18 +601,19 @@ impl<'a> WgpuState<'a> {
         );
 
         let requested_tiles = self.quadtree_manager.get_visible_tiles();
-        self.orchestrator.update(&self.device, &self.queue, camera_pos, &requested_tiles);
 
         let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| {
-            self.tile_cache.contains_key(id)
+            self.tile_cache.peek(id).is_some()
         });
 
-        let mut active_tiles = requested_tiles;
+        let mut active_tiles = requested_tiles.clone();
         for t in &renderable_tiles {
             if !active_tiles.iter().any(|(id, _, _)| *id == t.0) {
                 active_tiles.push(*t);
             }
         }
+
+        self.orchestrator.update(&self.device, &self.queue, camera_pos, &active_tiles);
 
         self.update_tile_cache(&active_tiles);
 
@@ -704,7 +697,7 @@ impl<'a> WgpuState<'a> {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         for (id, _, _) in visible_tiles {
             if let Some(render_data) = self.orchestrator.get_render_data(*id) {
-                if let Some(buffers) = self.tile_cache.get(id) {
+                if let Some(buffers) = self.tile_cache.peek(id) {
                     let center_f64 = buffers.center_f64;
                     let push = TilePushConstants {
                         relative_center: [
@@ -736,7 +729,7 @@ impl<'a> WgpuState<'a> {
         // Draw wireframe overlay
         render_pass.set_pipeline(&self.wireframe_pipeline);
         for (id, _, _) in visible_tiles {
-            if let Some(buffers) = self.tile_cache.get(id) {
+            if let Some(buffers) = self.tile_cache.peek(id) {
                 let center_f64 = buffers.center_f64;
                 let push = TilePushConstants {
                     relative_center: [
@@ -801,54 +794,6 @@ impl<'a> WgpuState<'a> {
                     ui.separator();
                     ui.label("Controls: WASD to move, Right-Click to look");
                     ui.label("Space / Ctrl+Space for Up / Down. Shift to boost.");
-                    
-                    ui.separator();
-                    ui.label("Data Providers");
-                    ui.horizontal(|ui| {
-                        ui.label("Terrain:");
-                        let mut terrain = self.terrain_provider_index;
-                        if ui.radio_value(&mut terrain, 0, "Ellipsoid (Smooth)").changed() {
-                            self.terrain_provider_index = 0;
-                            let provider = std::sync::Arc::new(crate::io::providers::EllipsoidTerrainProvider::new());
-                            self.orchestrator.mesh_worker.set_provider(provider);
-                        }
-                        if ui.radio_value(&mut terrain, 1, "Cesium ion (Quantized-Mesh)").changed() {
-                            self.terrain_provider_index = 1;
-                            let reqwest_client = reqwest::Client::builder()
-                                .user_agent("CesiumRS/0.1.0")
-                                .build()
-                                .unwrap();
-                            
-                            // Read token from environment variable CESIUM_ION_TOKEN
-                            let token_opt = std::env::var("CESIUM_ION_TOKEN").ok().filter(|t| !t.trim().is_empty());
-                            let url = match token_opt {
-                                Some(token) => format!("https://assets.ion.cesium.com/1?v=1.2.0&access_token={}", token),
-                                None => {
-                                    log::warn!("CESIUM_ION_TOKEN env variable not set or empty. Terrain requests might fail with 401/403.");
-                                    "https://assets.ion.cesium.com/1".to_string()
-                                }
-                            };
-                            let provider = std::sync::Arc::new(crate::io::providers::CesiumTerrainProvider::new(
-                                reqwest_client, 
-                                url
-                            ));
-                            self.orchestrator.mesh_worker.set_provider(provider);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Imagery:");
-                        let mut imagery = self.imagery_provider_index;
-                        if ui.radio_value(&mut imagery, 0, "OpenStreetMap").changed() {
-                            self.imagery_provider_index = 0;
-                            let reqwest_client = reqwest::Client::builder()
-                                .user_agent("CesiumRS/0.1.0")
-                                .build()
-                                .unwrap();
-                            let provider = std::sync::Arc::new(crate::io::providers::OpenStreetMapImageryProvider::new(reqwest_client));
-                            self.orchestrator.texture_manager.fetcher.set_provider(provider);
-                        }
-                        ui.radio_value(&mut imagery, 1, "Bing Maps Aerial (Not Implemented)");
-                    });
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Snap God Camera to Main Camera").clicked() {
