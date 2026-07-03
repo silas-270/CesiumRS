@@ -23,6 +23,8 @@ egui-wgpu = "0.29.0"
 egui-winit = "0.29.0"
 lru = "0.12"
 rayon = "1.10"
+async-trait = "0.1.89"
+byteorder = "1.5.0"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.11"

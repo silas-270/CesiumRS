@@ -161,6 +161,8 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub orchestrator: crate::io::orchestrator::TileOrchestrator,
+    pub terrain_provider_index: usize,
+    pub imagery_provider_index: usize,
 }
 
 fn create_depth_texture(
@@ -511,6 +513,8 @@ impl<'a> WgpuState<'a> {
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             orchestrator,
+            terrain_provider_index: 0,
+            imagery_provider_index: 0,
         }
     }
 
@@ -797,6 +801,45 @@ impl<'a> WgpuState<'a> {
                     ui.separator();
                     ui.label("Controls: WASD to move, Right-Click to look");
                     ui.label("Space / Ctrl+Space for Up / Down. Shift to boost.");
+                    
+                    ui.separator();
+                    ui.label("Data Providers");
+                    ui.horizontal(|ui| {
+                        ui.label("Terrain:");
+                        let mut terrain = self.terrain_provider_index;
+                        if ui.radio_value(&mut terrain, 0, "Ellipsoid (Smooth)").changed() {
+                            self.terrain_provider_index = 0;
+                            let provider = std::sync::Arc::new(crate::io::providers::EllipsoidTerrainProvider::new());
+                            self.orchestrator.mesh_worker.set_provider(provider);
+                        }
+                        if ui.radio_value(&mut terrain, 1, "Cesium ion (Quantized-Mesh)").changed() {
+                            self.terrain_provider_index = 1;
+                            let reqwest_client = reqwest::Client::builder()
+                                .user_agent("CesiumRS/0.1.0")
+                                .build()
+                                .unwrap();
+                            // Example URL, users can change this.
+                            let provider = std::sync::Arc::new(crate::io::providers::CesiumTerrainProvider::new(
+                                reqwest_client, 
+                                "https://s3.amazonaws.com/cesiumjs/volumes/stk-terrain/world".to_string()
+                            ));
+                            self.orchestrator.mesh_worker.set_provider(provider);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Imagery:");
+                        let mut imagery = self.imagery_provider_index;
+                        if ui.radio_value(&mut imagery, 0, "OpenStreetMap").changed() {
+                            self.imagery_provider_index = 0;
+                            let reqwest_client = reqwest::Client::builder()
+                                .user_agent("CesiumRS/0.1.0")
+                                .build()
+                                .unwrap();
+                            let provider = std::sync::Arc::new(crate::io::providers::OpenStreetMapImageryProvider::new(reqwest_client));
+                            self.orchestrator.texture_manager.fetcher.set_provider(provider);
+                        }
+                        ui.radio_value(&mut imagery, 1, "Bing Maps Aerial (Not Implemented)");
+                    });
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Snap God Camera to Main Camera").clicked() {

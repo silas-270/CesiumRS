@@ -3,6 +3,8 @@ use std::sync::mpsc::{self, Receiver};
 use crate::io::tile_cache::TileCacheManager;
 use crate::io::config::TileEngineConfig;
 use crate::io::tile_fetcher::{TilePriority, TileFetcher};
+use crate::io::providers::ImageryProvider;
+use std::sync::Arc;
 
 pub struct TileTextureManager {
     pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
@@ -13,7 +15,7 @@ pub struct TileTextureManager {
 }
 
 impl TileTextureManager {
-    pub fn new(device: &wgpu::Device, config: &TileEngineConfig) -> Self {
+    pub fn new(device: &wgpu::Device, config: &TileEngineConfig, provider: Arc<dyn ImageryProvider>) -> Self {
         let (tx, rx) = mpsc::channel();
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -49,11 +51,10 @@ impl TileTextureManager {
             ..Default::default()
         });
 
-        let fetcher = TileFetcher::new(tx);
-        let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
+        let fetcher = TileFetcher::new(tx, provider);
 
         Self {
-            cache,
+            cache: TileCacheManager::new(config.max_cache_size, config.negative_cache_duration),
             rx,
             fetcher,
             bind_group_layout,

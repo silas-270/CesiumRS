@@ -33,8 +33,15 @@ impl GodCamera {
     }
 
     pub fn update(&mut self, dt: f32, movement: Vec3, fast: bool) {
+        // Calculate altitude above Earth's surface (approx radius 6.378137)
+        let altitude = (self.position.length() - 6.378137).max(0.0001);
+        
+        // Scale speed dynamically: slower near surface, normal speed far away.
+        let altitude_factor = altitude.clamp(0.0001, 1.0);
+
         let speed = if fast { self.fast_speed } else { self.base_speed };
-        let velocity = movement * speed * dt;
+        let dynamic_speed = speed * altitude_factor;
+        let velocity = movement * dynamic_speed * dt;
 
         let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
 
