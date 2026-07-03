@@ -818,10 +818,19 @@ impl<'a> WgpuState<'a> {
                                 .user_agent("CesiumRS/0.1.0")
                                 .build()
                                 .unwrap();
-                            // Example URL, users can change this.
+                            
+                            // Read token from environment variable CESIUM_ION_TOKEN
+                            let token_opt = std::env::var("CESIUM_ION_TOKEN").ok().filter(|t| !t.trim().is_empty());
+                            let url = match token_opt {
+                                Some(token) => format!("https://assets.ion.cesium.com/1?v=1.2.0&access_token={}", token),
+                                None => {
+                                    log::warn!("CESIUM_ION_TOKEN env variable not set or empty. Terrain requests might fail with 401/403.");
+                                    "https://assets.ion.cesium.com/1".to_string()
+                                }
+                            };
                             let provider = std::sync::Arc::new(crate::io::providers::CesiumTerrainProvider::new(
                                 reqwest_client, 
-                                "https://s3.amazonaws.com/cesiumjs/volumes/stk-terrain/world".to_string()
+                                url
                             ));
                             self.orchestrator.mesh_worker.set_provider(provider);
                         }
