@@ -604,11 +604,23 @@ impl<'a> WgpuState<'a> {
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
 
-        let visible_tiles = self.quadtree_manager.get_visible_tiles();
-        self.orchestrator.update(&self.device, &self.queue, camera_pos, &visible_tiles);
-        self.update_tile_cache(&visible_tiles);
+        let requested_tiles = self.quadtree_manager.get_visible_tiles();
+        self.orchestrator.update(&self.device, &self.queue, camera_pos, &requested_tiles);
 
-        visible_tiles
+        let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| {
+            self.tile_cache.contains_key(id)
+        });
+
+        let mut active_tiles = requested_tiles;
+        for t in &renderable_tiles {
+            if !active_tiles.iter().any(|(id, _, _)| *id == t.0) {
+                active_tiles.push(*t);
+            }
+        }
+
+        self.update_tile_cache(&active_tiles);
+
+        renderable_tiles
     }
 
     fn compute_debug_vertices(&mut self, main_view_proj: Mat4, visible_tiles: &[(TileId, Vec3, f32)], camera_pos: Vec3) {

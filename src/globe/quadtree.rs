@@ -499,6 +499,35 @@ impl QuadtreeNode {
             active_tiles.push((self.id, self.center, self.radius));
         }
     }
+
+    pub fn collect_renderable_tiles<F: Fn(&TileId) -> bool>(
+        &self,
+        active_tiles: &mut Vec<(TileId, Vec3, f32)>,
+        is_ready: &F,
+    ) -> bool {
+        if !self.visible {
+            return true;
+        }
+
+        if let Some(children) = &self.children {
+            let mut children_ready = true;
+            let mut child_tiles = Vec::new();
+            for child in children.iter() {
+                if !child.collect_renderable_tiles(&mut child_tiles, is_ready) {
+                    children_ready = false;
+                    break;
+                }
+            }
+
+            if children_ready {
+                active_tiles.extend(child_tiles);
+                return true;
+            }
+        }
+
+        active_tiles.push((self.id, self.center, self.radius));
+        is_ready(&self.id)
+    }
 }
 
 pub struct QuadtreeManager {
@@ -530,6 +559,14 @@ impl QuadtreeManager {
         let mut active_tiles = Vec::new();
         for root in self.roots.iter() {
             root.collect_visible_tiles(&mut active_tiles);
+        }
+        active_tiles
+    }
+
+    pub fn get_renderable_tiles<F: Fn(&TileId) -> bool>(&self, is_ready: F) -> Vec<(TileId, Vec3, f32)> {
+        let mut active_tiles = Vec::new();
+        for root in self.roots.iter() {
+            root.collect_renderable_tiles(&mut active_tiles, &is_ready);
         }
         active_tiles
     }
