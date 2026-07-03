@@ -38,9 +38,10 @@ impl TileOrchestrator {
         visible_tiles: &[(TileId, Vec3, f32)],
     ) {
         // Handle prefetching based on camera velocity
-        if let Some(last_pos) = self.last_camera_pos {
-            let velocity = camera_pos - last_pos;
-            if velocity.length_squared() > 1e-6 {
+        if self.config.enable_prefetch {
+            if let Some(last_pos) = self.last_camera_pos {
+                let velocity = camera_pos - last_pos;
+                if velocity.length_squared() > 1e-6 {
                 let norm_vel = velocity.normalize();
                 
                 for (id, center, _) in visible_tiles {
@@ -67,6 +68,7 @@ impl TileOrchestrator {
                     }
                 }
             }
+        }
         }
         self.last_camera_pos = Some(camera_pos);
 

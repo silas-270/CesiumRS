@@ -61,7 +61,7 @@ pub struct TileFetcher {
 }
 
 impl TileFetcher {
-    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>) -> Self {
+    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>, base_url: String) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -80,7 +80,7 @@ impl TileFetcher {
         let worker_tx = tx.clone();
 
         runtime.spawn(async move {
-            Self::worker_loop(client, worker_queue, worker_notify, worker_tx).await;
+            Self::worker_loop(client, worker_queue, worker_notify, worker_tx, base_url).await;
         });
 
         Self {
@@ -108,6 +108,7 @@ impl TileFetcher {
         queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
         notify: Arc<Notify>,
         tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>,
+        base_url: String,
     ) {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
 
@@ -128,8 +129,9 @@ impl TileFetcher {
                 let tx_clone = tx.clone();
                 let id = req.id;
 
+                let url_clone = base_url.clone();
                 tokio::spawn(async move {
-                    let res = Self::fetch_and_decode(client_clone, id).await;
+                    let res = Self::fetch_and_decode(client_clone, id, url_clone).await;
                     let _ = tx_clone.send((id, res));
                     drop(permit);
                 });
@@ -139,8 +141,11 @@ impl TileFetcher {
         }
     }
 
-    async fn fetch_and_decode(client: reqwest::Client, id: TileId) -> Result<Vec<u8>, String> {
-        let url = format!("https://tile.openstreetmap.org/{}/{}/{}.png", id.z, id.x, id.y);
+    async fn fetch_and_decode(client: reqwest::Client, id: TileId, base_url: String) -> Result<Vec<u8>, String> {
+        let url = base_url
+            .replace("{z}", &id.z.to_string())
+            .replace("{x}", &id.x.to_string())
+            .replace("{y}", &id.y.to_string());
 
         let response = client
             .get(&url)

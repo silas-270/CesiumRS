@@ -460,9 +460,11 @@ impl QuadtreeNode {
                         }
                     }
                     if !found {
-                        self.visible = false;
-                        self.children = None;
-                        return;
+                        // We cannot safely cull here. A narrow frustum can intersect the surface 
+                        // between our sample points, especially for large tiles and high zoom or narrow aspect ratios.
+                        // self.visible = false;
+                        // self.children = None;
+                        // return;
                     }
                 }
             }
