@@ -1,9 +1,14 @@
 pub mod simulator;
 pub mod test_app;
+pub mod stress_app;
 
 #[derive(Clone, Debug, Default)]
 pub struct VerifyConfig {
     pub enabled: bool,
+    pub stress: bool,
+    pub stress_mode: String,
+    pub prefetch: bool,
+    pub cache_size: usize,
     pub cam_x: f64,
     pub cam_y: f64,
     pub cam_z: f64,
@@ -40,3 +45,5 @@ mod test_orchestrator_stress;
 
 #[cfg(test)]
 mod test_terrain_parser;
+#[cfg(test)]
+mod test_frustum_coverage;
