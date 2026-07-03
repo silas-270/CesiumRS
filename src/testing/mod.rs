@@ -37,3 +37,6 @@ mod test_mesh_worker;
 mod orchestrator_tests;
 #[cfg(test)]
 mod test_orchestrator_stress;
+
+#[cfg(test)]
+mod test_terrain_parser;

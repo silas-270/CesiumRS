@@ -20,11 +20,22 @@ pub struct TileOrchestrator {
     last_camera_pos: Option<Vec3>,
 }
 
+use crate::io::providers::{OpenStreetMapImageryProvider, EllipsoidTerrainProvider};
+use std::sync::Arc;
+
 impl TileOrchestrator {
     pub fn new(device: &wgpu::Device, config: TileEngineConfig) -> Self {
+        let reqwest_client = reqwest::Client::builder()
+            .user_agent("CesiumRS/0.1.0")
+            .build()
+            .expect("Failed to build reqwest client");
+
+        let default_imagery = Arc::new(OpenStreetMapImageryProvider::new(reqwest_client.clone()));
+        let default_terrain = Arc::new(EllipsoidTerrainProvider::new());
+
         Self {
-            texture_manager: TileTextureManager::new(device, &config),
-            mesh_worker: MeshWorkerPool::new(),
+            texture_manager: TileTextureManager::new(device, &config, default_imagery),
+            mesh_worker: MeshWorkerPool::new(default_terrain),
             config,
             last_camera_pos: None,
         }
@@ -70,7 +81,7 @@ impl TileOrchestrator {
 
         // Request visible tiles with High priority
         for (id, _, _) in visible_tiles {
-            self.mesh_worker.request_mesh(*id, 16);
+            self.mesh_worker.request_mesh(*id);
             self.texture_manager.request_tile(*id, TilePriority::High);
         }
 

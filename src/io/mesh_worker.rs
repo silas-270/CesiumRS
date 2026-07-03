@@ -1,47 +1,64 @@
 use std::collections::HashSet;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
+use tokio::runtime::Runtime;
 
 use crate::globe::geometry::TileMesh;
 use crate::globe::quadtree::TileId;
+use crate::io::providers::TerrainProvider;
 
 pub struct MeshWorkerPool {
-    sender: mpsc::SyncSender<(TileId, TileMesh)>,
-    receiver: mpsc::Receiver<(TileId, TileMesh)>,
+    _runtime: Runtime,
+    sender: mpsc::Sender<(TileId, Result<TileMesh, String>)>,
+    receiver: mpsc::Receiver<(TileId, Result<TileMesh, String>)>,
     requested: HashSet<TileId>,
+    provider: Arc<dyn TerrainProvider>,
 }
 
 impl MeshWorkerPool {
-    pub fn new() -> Self {
-        // Use a bounded sync channel. If the channel fills up, spawn_blocking will block
-        // which is fine since it's on a rayon worker thread.
-        let (sender, receiver) = mpsc::sync_channel(512);
+    pub fn new(provider: Arc<dyn TerrainProvider>) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build tokio runtime");
+
         Self {
+            _runtime: runtime,
             sender,
             receiver,
             requested: HashSet::new(),
+            provider,
         }
     }
 
-    pub fn request_mesh(&mut self, id: TileId, segments: u32) {
+    pub fn set_provider(&mut self, provider: Arc<dyn TerrainProvider>) {
+        self.provider = provider;
+        // Optionally clear requested set or cancel old tasks? For now just assign.
+    }
+
+    pub fn request_mesh(&mut self, id: TileId) {
         if self.requested.contains(&id) {
             return;
         }
 
         self.requested.insert(id);
         let sender = self.sender.clone();
+        let provider = self.provider.clone();
 
-        // Use rayon for CPU-bound work — no async runtime needed.
-        rayon::spawn(move || {
-            let mesh = TileMesh::generate(&id, segments);
-            let _ = sender.send((id, mesh));
+        self._runtime.spawn(async move {
+            let res = provider.request_tile_geometry(&id).await;
+            let _ = sender.send((id, res));
         });
     }
 
     pub fn process_results(&mut self) -> Vec<(TileId, TileMesh)> {
         let mut results = Vec::new();
-        while let Ok((id, mesh)) = self.receiver.try_recv() {
+        while let Ok((id, res)) = self.receiver.try_recv() {
             self.requested.remove(&id);
-            results.push((id, mesh));
+            match res {
+                Ok(mesh) => results.push((id, mesh)),
+                Err(e) => log::error!("Failed to fetch mesh for {:?}: {}", id, e),
+            }
         }
         results
     }
