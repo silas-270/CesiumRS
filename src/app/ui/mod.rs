@@ -2,7 +2,7 @@ pub mod options;
 
 pub use options::{GlobeOptions, ViewerOptions};
 
-use crate::core::app::App;
+use crate::engine::core::app::App;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 /// The primary entry point for the CesiumRS engine.

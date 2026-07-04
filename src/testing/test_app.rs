@@ -1,4 +1,4 @@
-use crate::core::app::App;
+use crate::engine::core::app::App;
 use crate::testing::simulator::Simulator;
 use crate::testing::VerifyConfig;
 use winit::application::ApplicationHandler;
@@ -23,7 +23,7 @@ impl<'a> TestApp<'a> {
         };
 
         Self {
-            inner: App::new(crate::io::config::TileEngineConfig::default()),
+            inner: App::new(crate::engine::globe::io::config::TileEngineConfig::default()),
             config,
             simulator,
             frames_stable: 0,
@@ -73,7 +73,7 @@ impl<'a> ApplicationHandler for TestApp<'a> {
             }
 
             if let Some(state) = self.inner.wgpu_state_mut() {
-                match state.render(capture_path) {
+                match state.render(capture_path, false) {
                     Ok(_) => {
                         if capture_path.is_some() {
                             event_loop.exit();

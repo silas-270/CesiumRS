@@ -1,5 +1,5 @@
-use crate::camera::camera::Camera;
-use crate::globe::quadtree::QuadtreeManager;
+use crate::engine::camera::camera::Camera;
+use crate::engine::globe::quadtree::QuadtreeManager;
 use glam::{Quat, Vec3};
 
 #[test]

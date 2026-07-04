@@ -1,9 +1,9 @@
-use crate::globe::quadtree::TileId;
-use crate::io::config::TileEngineConfig;
-use crate::io::mesh_worker::MeshWorkerPool;
-use crate::io::texture_manager::TileTextureManager;
-use crate::io::tile_cache::TileState;
-use crate::io::tile_fetcher::TilePriority;
+use crate::engine::globe::quadtree::TileId;
+use crate::engine::globe::io::config::TileEngineConfig;
+use crate::engine::globe::io::mesh_worker::MeshWorkerPool;
+use crate::engine::globe::io::texture_manager::TileTextureManager;
+use crate::engine::globe::io::tile_cache::TileState;
+use crate::engine::globe::io::tile_fetcher::TilePriority;
 use glam::Vec3;
 
 pub struct RenderData<'a> {
@@ -36,6 +36,7 @@ impl TileOrchestrator {
         queue: &wgpu::Queue,
         camera_pos: Vec3,
         visible_tiles: &[(TileId, Vec3, f32)],
+        missing_meshes: &[TileId],
     ) {
         // Handle prefetching based on camera velocity
         if self.config.enable_prefetch {
@@ -72,9 +73,12 @@ impl TileOrchestrator {
         }
         self.last_camera_pos = Some(camera_pos);
 
+        for id in missing_meshes {
+            self.mesh_worker.request_mesh(*id, 16);
+        }
+
         // Request visible tiles with High priority
         for (id, _, _) in visible_tiles {
-            self.mesh_worker.request_mesh(*id, 16);
             self.texture_manager.request_tile(*id, TilePriority::High);
         }
 
@@ -145,5 +149,9 @@ impl TileOrchestrator {
         }
 
         None
+    }
+
+    pub fn is_loading_complete(&self) -> bool {
+        self.texture_manager.is_loading_complete() && self.mesh_worker.is_loading_complete()
     }
 }

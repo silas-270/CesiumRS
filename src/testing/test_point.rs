@@ -1,4 +1,4 @@
-use crate::camera::camera::Camera;
+use crate::engine::camera::camera::Camera;
 use glam::{Quat, Vec3};
 
 #[test]
@@ -8,10 +8,10 @@ fn test_point() {
     let camera_pos = cam.global_transform().0;
     let aspect_ratio = 16.0 / 9.0;
     let view_proj = cam.get_projection_matrix(aspect_ratio) * cam.get_view_matrix();
-    let frustum = crate::globe::quadtree::Frustum::from_matrix(view_proj);
+    let frustum = crate::engine::globe::quadtree::Frustum::from_matrix(view_proj);
 
     let node =
-        crate::globe::quadtree::QuadtreeNode::new(crate::globe::quadtree::TileId {
+        crate::engine::globe::quadtree::QuadtreeNode::new(crate::engine::globe::quadtree::TileId {
             z: 3,
             x: 3,
             y: 7,

@@ -1,16 +1,12 @@
-pub mod camera;
-pub mod core;
-pub mod globe;
-pub mod io;
-pub mod render;
+pub mod engine;
+pub mod app;
 
 #[cfg(not(target_os = "android"))]
 pub mod testing;
 
-pub mod viewer;
-pub use viewer::{Viewer, ViewerOptions, GlobeOptions};
+pub use app::ui::{Viewer, ViewerOptions, GlobeOptions};
 
-use crate::core::app::App;
+use crate::engine::core::app::App;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 #[cfg(not(target_os = "android"))]
@@ -18,7 +14,10 @@ pub fn run(config: Option<testing::VerifyConfig>) {
     if let Some(cfg) = config {
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Poll);
-        if cfg.stress {
+        if cfg.regression {
+            let mut app = testing::regression_app::RegressionApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
+        } else if cfg.stress {
             let mut app = testing::stress_app::StressApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
         } else {
@@ -42,6 +41,6 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut winit_app = App::new(crate::io::config::TileEngineConfig::default());
+    let mut winit_app = App::new(crate::engine::globe::io::config::TileEngineConfig::default());
     event_loop.run_app(&mut winit_app).unwrap();
 }

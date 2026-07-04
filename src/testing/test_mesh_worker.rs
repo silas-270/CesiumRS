@@ -1,6 +1,6 @@
 use std::time::Duration;
-use crate::globe::quadtree::TileId;
-use crate::io::mesh_worker::MeshWorkerPool;
+use crate::engine::globe::quadtree::TileId;
+use crate::engine::globe::io::mesh_worker::MeshWorkerPool;
 
 #[test]
 fn test_mesh_worker_spawns_and_returns() {

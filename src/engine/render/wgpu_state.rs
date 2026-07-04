@@ -1,6 +1,6 @@
-use crate::camera::camera::Camera;
-use crate::globe::geometry::Vertex;
-use crate::globe::quadtree::{QuadtreeManager, TileId};
+use crate::engine::camera::camera::Camera;
+use crate::engine::globe::geometry::Vertex;
+use crate::engine::globe::quadtree::{QuadtreeManager, TileId};
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
 use glam::{Mat4, Vec3};
@@ -152,7 +152,7 @@ pub struct WgpuState<'a> {
     camera_bind_group: wgpu::BindGroup,
     pub camera: Camera,
     pub debug_mode: bool,
-    pub debug_camera: crate::camera::god_camera::GodCamera,
+    pub debug_camera: crate::engine::camera::god_camera::GodCamera,
     pub debug_camera_initialized: bool,
     pub last_requested_tiles_count: usize,
     pub last_missing_tiles_count: usize,
@@ -163,7 +163,7 @@ pub struct WgpuState<'a> {
     pub egui_state: EguiState,
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
-    pub orchestrator: crate::io::orchestrator::TileOrchestrator,
+    pub orchestrator: crate::engine::globe::io::orchestrator::TileOrchestrator,
 }
 
 fn create_depth_texture(
@@ -214,7 +214,7 @@ fn execute_egui<'rp>(
 }
 
 impl<'a> WgpuState<'a> {
-    pub async fn new(window: Arc<Window>, engine_config: crate::io::config::TileEngineConfig) -> Self {
+    pub async fn new(window: Arc<Window>, engine_config: crate::engine::globe::io::config::TileEngineConfig) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -313,7 +313,7 @@ impl<'a> WgpuState<'a> {
         });
 
         let config_engine = engine_config;
-        let orchestrator = crate::io::orchestrator::TileOrchestrator::new(&device, config_engine);
+        let orchestrator = crate::engine::globe::io::orchestrator::TileOrchestrator::new(&device, config_engine);
 
         let push_constant_ranges = [wgpu::PushConstantRange {
             stages: wgpu::ShaderStages::VERTEX,
@@ -504,7 +504,7 @@ impl<'a> WgpuState<'a> {
             camera_bind_group,
             camera,
             debug_mode: false,
-            debug_camera: crate::camera::god_camera::GodCamera::new(glam::Vec3::ZERO, 0.0, 0.0),
+            debug_camera: crate::engine::camera::god_camera::GodCamera::new(glam::Vec3::ZERO, 0.0, 0.0),
             debug_camera_initialized: false,
             last_requested_tiles_count: 0,
             last_missing_tiles_count: 0,
@@ -629,7 +629,14 @@ impl<'a> WgpuState<'a> {
             }
         }
 
-        self.orchestrator.update(&self.device, &self.queue, camera_pos, &active_tiles);
+        let mut missing_meshes = Vec::new();
+        for (id, _, _) in &active_tiles {
+            if self.tile_cache.peek(id).is_none() {
+                missing_meshes.push(*id);
+            }
+        }
+
+        self.orchestrator.update(&self.device, &self.queue, camera_pos, &active_tiles, &missing_meshes);
 
         self.update_tile_cache(&active_tiles);
 
@@ -640,11 +647,11 @@ impl<'a> WgpuState<'a> {
         let mut debug_vertices = Vec::new();
         if self.debug_mode {
             let inv_view_proj = main_view_proj.inverse();
-            let frustum_corners = crate::render::wgpu_state::get_frustum_corners(inv_view_proj);
-            crate::render::wgpu_state::append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]);
+            let frustum_corners = crate::engine::render::wgpu_state::get_frustum_corners(inv_view_proj);
+            crate::engine::render::wgpu_state::append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]);
 
             for (_tile_id, center, radius) in visible_tiles {
-                crate::render::wgpu_state::append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
+                crate::engine::render::wgpu_state::append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
             }
             
             // Apply camera-relative translation to correctly position these when push constants are not available
@@ -801,7 +808,11 @@ impl<'a> WgpuState<'a> {
                         let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
                         let pitch = forward.y.asin();
                         let yaw = forward.x.atan2(-forward.z);
-                        self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
+                        self.debug_camera = crate::engine::camera::god_camera::GodCamera::new(
+                            global_pos,
+                            yaw.to_degrees(),
+                            pitch.to_degrees(),
+                        );
                         self.debug_camera_initialized = true;
                     }
                 }
@@ -817,7 +828,7 @@ impl<'a> WgpuState<'a> {
                             let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
                             let pitch = forward.y.asin();
                             let yaw = forward.x.atan2(-forward.z);
-                            self.debug_camera = crate::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
+                            self.debug_camera = crate::engine::camera::god_camera::GodCamera::new(global_pos, yaw, pitch);
                         }
                     });
 
@@ -911,7 +922,7 @@ impl<'a> WgpuState<'a> {
                 &paint_jobs,
                 &screen_descriptor,
             );
-            crate::render::wgpu_state::execute_egui(
+            crate::engine::render::wgpu_state::execute_egui(
                 &self.egui_renderer,
                 encoder,
                 view,
@@ -925,7 +936,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    fn capture_screenshot(&self, output_texture: &wgpu::Texture, out_path: &str) {
+    pub fn capture_pixels(&self, output_texture: &wgpu::Texture) -> Vec<u8> {
         let u32_size = std::mem::size_of::<u32>() as u32;
         let unpadded_bytes_per_row = self.config.width * u32_size;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -1005,10 +1016,16 @@ impl<'a> WgpuState<'a> {
         }
         drop(data);
         staging_buffer.unmap();
+        
+        rgba_data
+    }
+
+    fn capture_screenshot(&self, output_texture: &wgpu::Texture, out_path: &str) {
+        let rgba_data = self.capture_pixels(output_texture);
         let _ = image::save_buffer(out_path, &rgba_data, self.config.width, self.config.height, image::ColorType::Rgba8);
     }
 
-    pub fn render(&mut self, screenshot_out: Option<&str>) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, screenshot_out: Option<&str>, capture_memory: bool) -> Result<Option<Vec<u8>>, wgpu::SurfaceError> {
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let main_view_proj =
             self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
@@ -1038,12 +1055,22 @@ impl<'a> WgpuState<'a> {
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        if let Some(out_path) = screenshot_out {
+        let mut captured_pixels = None;
+        if capture_memory {
+            captured_pixels = Some(self.capture_pixels(&output.texture));
+        } else if let Some(out_path) = screenshot_out {
             self.capture_screenshot(&output.texture, out_path);
         }
 
         output.present();
 
-        Ok(())
+        Ok(captured_pixels)
+    }
+
+    pub fn clear_caches(&mut self) {
+        self.tile_cache.clear();
+        self.orchestrator.texture_manager.clear();
+        self.orchestrator.mesh_worker.clear();
+        self.quadtree_manager = crate::engine::globe::quadtree::QuadtreeManager::new();
     }
 }

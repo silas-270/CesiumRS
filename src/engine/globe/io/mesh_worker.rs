@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::sync::mpsc;
 
-use crate::globe::geometry::TileMesh;
-use crate::globe::quadtree::TileId;
+use crate::engine::globe::geometry::TileMesh;
+use crate::engine::globe::quadtree::TileId;
 
 pub struct MeshWorkerPool {
     sender: mpsc::SyncSender<(TileId, TileMesh)>,
@@ -44,5 +44,14 @@ impl MeshWorkerPool {
             results.push((id, mesh));
         }
         results
+    }
+
+    pub fn is_loading_complete(&self) -> bool {
+        self.requested.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.requested.clear();
+        while let Ok(_) = self.receiver.try_recv() {}
     }
 }
