@@ -7,7 +7,7 @@ pub struct PolylinePushConstants {
     pub camera_pos: [f32; 4],
     pub viewport_size: [f32; 2],
     pub thickness: f32,
-    pub padding: f32,
+    pub split_progress: f32,
 }
 
 pub struct PolylineRenderer {
@@ -114,13 +114,14 @@ impl PolylineRenderer {
         viewport_size: [f32; 2],
         thickness: f32,
         camera_pos_f64: [f64; 3],
+        split_progress: f32,
     ) {
         if let Some(vertex_buffer) = &self.vertex_buffer {
             let push = PolylinePushConstants {
                 camera_pos: [camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32, 0.0],
                 viewport_size,
                 thickness,
-                padding: 0.0,
+                split_progress,
             };
 
             render_pass.set_pipeline(&self.pipeline);
