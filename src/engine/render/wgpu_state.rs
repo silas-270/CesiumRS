@@ -72,7 +72,7 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::engine::globe::tiles::system::TileSystem,
-    pub polyline_renderers: Vec<crate::engine::render::polyline::pipeline::PolylineRenderer>,
+    pub flights: Vec<(crate::engine::render::polyline::bvh::PolylineBVH, crate::engine::render::polyline::pipeline::PolylineRenderer)>,
 }
 
 fn create_depth_texture(
@@ -251,8 +251,7 @@ impl<'a> WgpuState<'a> {
             Some(2048),
         );
         let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
-
-        let mut polyline_renderers = Vec::new();
+        let mut flights = Vec::new();
         if let Ok(entries) = std::fs::read_dir(".") {
             for entry in entries {
                 if let Ok(entry) = entry {
@@ -260,13 +259,13 @@ impl<'a> WgpuState<'a> {
                     if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
                         if filename.starts_with("flight_") && filename.ends_with(".json") {
                             if let Ok(property) = crate::engine::flight::load_flight_path(&path) {
-                                let builder = crate::engine::render::polyline::builder::AdaptiveSubdivisionBuilder::new(5.0)
-                                    .with_force_all_samples(true);
-                                let vertices = builder.build(&property);
-                                println!("Polyline loaded: {}, vertices: {}", filename, vertices.len());
-                                let mut renderer = crate::engine::render::polyline::pipeline::PolylineRenderer::new(&device, &config, &camera_bind_group_layout);
-                                renderer.update_geometry(&device, &vertices);
-                                polyline_renderers.push(renderer);
+                                if let Some(bvh) = crate::engine::render::polyline::bvh::PolylineBVH::build(&property) {
+                                    println!("BVH loaded: {}", filename);
+                                    let renderer = crate::engine::render::polyline::pipeline::PolylineRenderer::new(&device, &config, &camera_bind_group_layout);
+                                    flights.push((bvh, renderer));
+                                } else {
+                                    println!("Failed to build BVH for: {}", filename);
+                                }
                             } else {
                                 println!("Failed to load flight path: {}", filename);
                             }
@@ -304,7 +303,7 @@ impl<'a> WgpuState<'a> {
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             tile_system,
-            polyline_renderers,
+            flights,
         }
     }
 
@@ -385,8 +384,27 @@ impl<'a> WgpuState<'a> {
             (self.camera.get_view_matrix(), self.camera.get_projection_matrix(aspect_ratio))
         };
 
-        let camera_pos = self.camera.global_transform().0;
-        self.quadtree_manager.update(camera_pos, main_view_proj);
+        let (camera_pos_f32, _) = self.camera.global_transform();
+        let camera_pos = glam::DVec3::new(camera_pos_f32.x as f64, camera_pos_f32.y as f64, camera_pos_f32.z as f64);
+        self.quadtree_manager.update(camera_pos_f32, main_view_proj);
+
+        let frustum_planes = self.camera.calculate_frustum_planes(aspect_ratio);
+        let max_screen_error = 1.0; // 1 pixel error max
+
+        for (bvh, renderer) in &mut self.flights {
+            let visible_strips = bvh.collect_visible_segments(camera_pos, &frustum_planes, max_screen_error);
+            let mut vertices = Vec::new();
+            for strip in visible_strips {
+                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip);
+                if !vertices.is_empty() && !strip_verts.is_empty() {
+                    // Insert degenerate vertices to break the triangle strip
+                    vertices.push(*vertices.last().unwrap());
+                    vertices.push(*strip_verts.first().unwrap());
+                }
+                vertices.append(&mut strip_verts);
+            }
+            renderer.update_geometry(&self.device, &self.queue, &vertices);
+        }
 
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
@@ -425,7 +443,7 @@ impl<'a> WgpuState<'a> {
             }
         }
 
-        self.tile_system.update(&self.device, &self.queue, camera_pos, &active_tiles, &missing_meshes);
+        self.tile_system.update(&self.device, &self.queue, camera_pos_f32, &active_tiles, &missing_meshes);
 
         self.update_tile_cache(&active_tiles);
 
@@ -573,7 +591,7 @@ impl<'a> WgpuState<'a> {
             render_pass.draw(0..self.num_debug_vertices, 0..1);
         }
 
-        for renderer in &self.polyline_renderers {
+        for (_, renderer) in &self.flights {
             renderer.draw(&mut render_pass, &self.camera_bind_group, [self.config.width as f32, self.config.height as f32], 4.0, camera_pos_f64);
         }
     }

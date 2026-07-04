@@ -14,6 +14,7 @@ pub struct PolylineRenderer {
     pub pipeline: wgpu::RenderPipeline,
     pub vertex_buffer: Option<wgpu::Buffer>,
     pub num_vertices: u32,
+    pub vertex_capacity: u32,
 }
 
 impl PolylineRenderer {
@@ -84,17 +85,25 @@ impl PolylineRenderer {
             pipeline,
             vertex_buffer: None,
             num_vertices: 0,
+            vertex_capacity: 0,
         }
     }
 
-    pub fn update_geometry(&mut self, device: &wgpu::Device, vertices: &[PolylineVertex]) {
+    pub fn update_geometry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[PolylineVertex]) {
         self.num_vertices = vertices.len() as u32;
         if self.num_vertices > 0 {
-            self.vertex_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Polyline Vertex Buffer"),
-                contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            }));
+            if self.num_vertices > self.vertex_capacity {
+                self.vertex_capacity = self.num_vertices.max(1024); // grow with some extra padding
+                self.vertex_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Polyline Vertex Buffer"),
+                    size: (self.vertex_capacity as usize * std::mem::size_of::<PolylineVertex>()) as wgpu::BufferAddress,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            if let Some(buffer) = &self.vertex_buffer {
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(vertices));
+            }
         }
     }
 

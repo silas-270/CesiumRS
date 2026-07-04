@@ -30,42 +30,53 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
     let rel_curr = model.position - push_constants.camera_pos.xyz;
-    let rel_prev = model.previous - push_constants.camera_pos.xyz;
-    let rel_next = model.next - push_constants.camera_pos.xyz;
-    
     let clip_curr = camera.view_proj * vec4<f32>(rel_curr, 1.0);
-    let clip_prev = camera.view_proj * vec4<f32>(rel_prev, 1.0);
-    let clip_next = camera.view_proj * vec4<f32>(rel_next, 1.0);
 
-    let ndc_curr = clip_curr.xy / clip_curr.w;
-    let ndc_prev = clip_prev.xy / clip_prev.w;
-    let ndc_next = clip_next.xy / clip_next.w;
-
-    let raw_dir1 = ndc_curr - ndc_prev;
-    let raw_dir2 = ndc_next - ndc_curr;
-    
-    var dir1 = vec2<f32>(1.0, 0.0);
-    if length(raw_dir1) > 0.00001 {
-        dir1 = normalize(raw_dir1);
+    // 1. Calculate 3D tangent
+    var tangent_3d = model.next - model.previous;
+    if length(tangent_3d) < 0.000001 {
+        tangent_3d = vec3<f32>(1.0, 0.0, 0.0);
     }
+    tangent_3d = normalize(tangent_3d);
+
+    // 2. Earth surface normal (straight up) at current position
+    // Since coordinates are relative to Earth center at (0,0,0)
+    var up_3d = model.position;
+    if length(up_3d) < 0.000001 {
+        up_3d = vec3<f32>(0.0, 0.0, 1.0);
+    }
+    up_3d = normalize(up_3d);
+
+    // 3. Horizontal normal perpendicular to tangent and up vector
+    var normal_3d = cross(up_3d, tangent_3d);
+    if length(normal_3d) < 0.00001 {
+        // Fallback for vertical climb/dive
+        normal_3d = cross(tangent_3d, vec3<f32>(0.0, 0.0, 1.0));
+    }
+    normal_3d = normalize(normal_3d);
+
+    // 4. Calculate how many pixels the physical width (e.g. 20 meters = 0.00002 Megameters) spans on screen
+    let physical_half_width = 0.00002; // 20 meters in Megameters
+    let clip_offset = camera.view_proj * vec4<f32>(normal_3d * physical_half_width, 0.0);
+    let ndc_offset = clip_offset.xy / max(clip_curr.w, 0.000001);
+    let offset_pixels = ndc_offset * push_constants.viewport_size * 0.5;
     
-    var dir2 = vec2<f32>(1.0, 0.0);
-    if length(raw_dir2) > 0.00001 {
-        dir2 = normalize(raw_dir2);
+    let physical_pixels = length(offset_pixels);
+    let min_pixels = push_constants.thickness / 2.0;
+    let final_pixels = max(physical_pixels, min_pixels);
+
+    // 5. Extrude in screen space along the projected normal direction
+    var normal_ndc = vec2<f32>(1.0, 0.0);
+    if physical_pixels > 0.00001 {
+        normal_ndc = offset_pixels / physical_pixels;
+    } else {
+        let normal_clip = camera.view_proj * vec4<f32>(normal_3d, 0.0);
+        if length(normal_clip.xy) > 0.00001 {
+            normal_ndc = normalize(normal_clip.xy);
+        }
     }
 
-    // Average direction (tangent)
-    var tangent = normalize(dir1 + dir2);
-    if length(tangent) < 0.1 {
-        tangent = vec2<f32>(1.0, 0.0);
-    }
-
-    let normal = vec2<f32>(-tangent.y, tangent.x);
-
-    // Extrude in screen space
-    let extrusion_pixels = normal * model.side * (push_constants.thickness / 2.0);
-    
-    // Convert pixel extrusion back to NDC (-1 to 1)
+    let extrusion_pixels = normal_ndc * model.side * final_pixels;
     let extrusion_ndc = extrusion_pixels / push_constants.viewport_size * 2.0;
 
     let final_clip_xy = clip_curr.xy + extrusion_ndc * clip_curr.w;

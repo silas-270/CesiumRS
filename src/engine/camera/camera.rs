@@ -209,6 +209,34 @@ impl Camera {
         Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar)
     }
 
+    pub fn calculate_frustum_planes(&self, aspect_ratio: f32) -> [(glam::DVec3, f64); 6] {
+        let vp = self.get_projection_matrix(aspect_ratio) * self.get_view_matrix();
+        let r0 = vp.row(0);
+        let r1 = vp.row(1);
+        let r2 = vp.row(2);
+        let r3 = vp.row(3);
+
+        let mut planes = [
+            r3 + r0, // Left
+            r3 - r0, // Right
+            r3 + r1, // Bottom
+            r3 - r1, // Top
+            r3 + r2, // Near
+            r3 - r2, // Far
+        ];
+
+        let mut result = [(glam::DVec3::ZERO, 0.0); 6];
+        for i in 0..6 {
+            let n = glam::Vec3::new(planes[i].x, planes[i].y, planes[i].z);
+            let len = n.length();
+            if len > 0.0001 {
+                let norm = n / len;
+                result[i] = (glam::DVec3::new(norm.x as f64, norm.y as f64, norm.z as f64), (planes[i].w / len) as f64);
+            }
+        }
+        result
+    }
+
     // --- RAYCASTING & DRAGGING (Earth Free Mode) ---
 
     pub fn screen_to_world_ray(
