@@ -4,7 +4,7 @@ use crate::engine::property::Property;
 
 #[test]
 fn test_flight_parsing() {
-    let prop = load_flight_path("flight_STR_FRA.json").expect("Failed to load flight JSON");
+    let prop = load_flight_path("flight_FRA_STR.json").expect("Failed to load flight JSON");
 
     // The first point is at 0ms.
     let start_pos = prop.evaluate(SimulationTime::new(0.0)).expect("No position at start");
