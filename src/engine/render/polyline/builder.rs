@@ -46,6 +46,7 @@ impl PolylineVertex {
 pub struct AdaptiveSubdivisionBuilder {
     pub tolerance: f64,
     pub min_step: f64, // Minimum time step in seconds to avoid infinite recursion
+    pub force_all_samples: bool,
 }
 
 impl AdaptiveSubdivisionBuilder {
@@ -53,20 +54,62 @@ impl AdaptiveSubdivisionBuilder {
         Self {
             tolerance,
             min_step: 0.1, // 100ms
+            force_all_samples: false,
         }
     }
 
+    pub fn with_force_all_samples(mut self, force: bool) -> Self {
+        self.force_all_samples = force;
+        self
+    }
+
     pub fn build(&self, property: &SampledPositionProperty) -> Vec<PolylineVertex> {
-        let samples = property.samples();
-        if samples.is_empty() {
+        if self.force_all_samples {
+            let samples = property.samples();
+            if samples.is_empty() {
+                return Vec::new();
+            }
+
+            let mut path_points: Vec<DVec3> = Vec::new();
+            for (_, p) in samples {
+                if path_points.is_empty() || path_points.last().unwrap().distance(*p) > 0.000001 {
+                    path_points.push(*p);
+                }
+            }
+            return self.generate_vertices(&path_points);
+        }
+
+        let start_time = match property.start_time() {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+        let stop_time = match property.stop_time() {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        if start_time.seconds >= stop_time.seconds {
             return Vec::new();
         }
 
-        let mut path_points: Vec<DVec3> = Vec::new();
-        for (_, p) in samples {
-            if path_points.is_empty() || path_points.last().unwrap().distance(*p) > 0.000001 {
-                path_points.push(*p);
-            }
+        let mut path_points = Vec::new();
+        
+        let mut current_time = start_time.seconds;
+        let mut last_p = property.evaluate(SimulationTime::new(current_time)).unwrap();
+        path_points.push(last_p);
+
+        let max_step = 60.0 * 5.0; // 5 minutes max step
+        
+        while current_time < stop_time.seconds {
+            let next_time = (current_time + max_step).min(stop_time.seconds);
+            let p_start = last_p;
+            let p_end = property.evaluate(SimulationTime::new(next_time)).unwrap();
+            
+            self.subdivide(property, current_time, next_time, p_start, p_end, &mut path_points);
+            
+            path_points.push(p_end);
+            current_time = next_time;
+            last_p = p_end;
         }
 
         self.generate_vertices(&path_points)
