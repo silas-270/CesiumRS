@@ -1,0 +1,213 @@
+use glam::DVec3;
+use crate::engine::property::sampled::SampledPositionProperty;
+use crate::engine::time::SimulationTime;
+use crate::engine::property::Property;
+use crate::engine::render::polyline::builder::PolylineVertex;
+
+#[derive(Clone, Debug)]
+pub struct PolylineNode {
+    pub t_start: f64,
+    pub t_end: f64,
+    pub p_start: DVec3,
+    pub p_end: DVec3,
+    pub center: DVec3,
+    pub radius: f64,
+    pub max_geometric_error: f64,
+    pub children: Option<Box<[PolylineNode; 2]>>,
+}
+
+pub struct PolylineBVH {
+    pub root: PolylineNode,
+}
+
+impl PolylineBVH {
+    pub fn build(property: &SampledPositionProperty) -> Option<Self> {
+        let start_time = property.start_time()?;
+        let stop_time = property.stop_time()?;
+
+        if start_time.seconds >= stop_time.seconds {
+            return None;
+        }
+
+        let p_start = property.evaluate(start_time)?;
+        let p_end = property.evaluate(stop_time)?;
+
+        // Recursive build with max depth 16 and min time step 0.02s
+        let root = Self::build_node(property, start_time.seconds, stop_time.seconds, p_start, p_end, 0, 16);
+        
+        Some(Self { root })
+    }
+
+    fn build_node(
+        property: &SampledPositionProperty,
+        t_start: f64,
+        t_end: f64,
+        p_start: DVec3,
+        p_end: DVec3,
+        depth: u32,
+        max_depth: u32,
+    ) -> PolylineNode {
+        let t_mid = (t_start + t_end) * 0.5;
+        let p_mid = property.evaluate(SimulationTime::new(t_mid)).unwrap_or_else(|| p_start.lerp(p_end, 0.5));
+
+        // Geometric error calculation
+        let line_vec = p_end - p_start;
+        let length_sq = line_vec.length_squared();
+        
+        // Sample points to find max error and bounding sphere radius
+        let num_samples = 10;
+        let dt = (t_end - t_start) / num_samples as f64;
+        
+        let mut max_err = 0.0f64;
+        let mut center = (p_start + p_end) * 0.5;
+        let mut radius = (p_start - center).length();
+
+        for i in 1..num_samples {
+            let t = t_start + i as f64 * dt;
+            if let Some(p) = property.evaluate(SimulationTime::new(t)) {
+                // Update bounds
+                let dist_to_center = (p - center).length();
+                if dist_to_center > radius {
+                    radius = dist_to_center; // Simplified sphere expansion
+                }
+
+                // Update geometric error from line segment
+                let dist_to_line = if length_sq < 1e-8 {
+                    (p - p_start).length()
+                } else {
+                    let proj_t = ((p - p_start).dot(line_vec) / length_sq).clamp(0.0, 1.0);
+                    let projection = p_start + line_vec * proj_t;
+                    (p - projection).length()
+                };
+
+                if dist_to_line > max_err {
+                    max_err = dist_to_line;
+                }
+            }
+        }
+
+        // Subdivide if needed
+        // We subdivide if error > 0.05 meters (5e-8 Megameters) and we haven't hit max depth
+        // or min step size of 0.02s
+        let mut children = None;
+        if depth < max_depth && (t_end - t_start) > 0.02 && max_err > 5e-8 {
+            let left = Self::build_node(property, t_start, t_mid, p_start, p_mid, depth + 1, max_depth);
+            let right = Self::build_node(property, t_mid, t_end, p_mid, p_end, depth + 1, max_depth);
+            
+            // Re-adjust parent bounding sphere to encompass children
+            let dist = (left.center - right.center).length();
+            center = (left.center + right.center) * 0.5;
+            radius = (dist * 0.5) + left.radius.max(right.radius);
+
+            children = Some(Box::new([left, right]));
+        }
+
+        // Pad radius slightly for safety (e.g. 10km = 0.01 Megameters)
+        radius += max_err + 0.01;
+
+        PolylineNode {
+            t_start,
+            t_end,
+            p_start,
+            p_end,
+            center,
+            radius,
+            max_geometric_error: max_err,
+            children,
+        }
+    }
+
+    pub fn collect_visible_segments(
+        &self,
+        camera_pos: DVec3,
+        frustum_planes: &[(DVec3, f64); 6],
+        max_screen_error: f64,
+    ) -> Vec<Vec<DVec3>> {
+        let mut strips = Vec::new();
+        let mut current_strip = Vec::new();
+        self.traverse(&self.root, camera_pos, frustum_planes, max_screen_error, &mut strips, &mut current_strip);
+        if current_strip.len() > 1 {
+            strips.push(current_strip);
+        }
+        strips
+    }
+
+    fn traverse(
+        &self,
+        node: &PolylineNode,
+        camera_pos: DVec3,
+        frustum_planes: &[(DVec3, f64); 6],
+        max_screen_error: f64,
+        strips: &mut Vec<Vec<DVec3>>,
+        current_strip: &mut Vec<DVec3>,
+    ) {
+        // Frustum Culling
+        for (normal, d) in frustum_planes {
+            let dist = normal.dot(node.center) + d;
+            if dist < -node.radius {
+                // If we cull a node, the line is broken. Save the current strip if it has points.
+                if current_strip.len() > 1 {
+                    strips.push(std::mem::take(current_strip));
+                } else {
+                    current_strip.clear();
+                }
+                return; // Fully outside
+            }
+        }
+
+        // LOD check
+        // distance in megameters. max(0.000001) is 1 meter min distance.
+        let distance = (node.center - camera_pos).length().max(0.000001);
+        let screen_error_approx = (node.max_geometric_error * 1732.0) / distance; // tuning factor
+
+        if screen_error_approx <= max_screen_error || node.children.is_none() {
+            // Render this node as a single segment
+            if current_strip.is_empty() {
+                current_strip.push(node.p_start);
+            } else if current_strip.last().unwrap().distance(node.p_start) > 1e-5 {
+                // Disconnected! Break the strip.
+                if current_strip.len() > 1 {
+                    strips.push(std::mem::take(current_strip));
+                } else {
+                    current_strip.clear();
+                }
+                current_strip.push(node.p_start);
+            }
+            current_strip.push(node.p_end);
+        } else {
+            // Recurse
+            let children = node.children.as_ref().unwrap();
+            self.traverse(&children[0], camera_pos, frustum_planes, max_screen_error, strips, current_strip);
+            self.traverse(&children[1], camera_pos, frustum_planes, max_screen_error, strips, current_strip);
+        }
+    }
+}
+
+pub fn generate_vertices(points: &[DVec3]) -> Vec<PolylineVertex> {
+    let mut vertices = Vec::with_capacity(points.len() * 2);
+    for i in 0..points.len() {
+        let curr = points[i];
+        
+        let prev = if i > 0 { points[i - 1] } else { curr + (curr - points[i + 1]).normalize_or_zero() * 1.0 };
+        let next = if i < points.len() - 1 { points[i + 1] } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
+
+        let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
+        let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];
+        let next_f32 = [next.x as f32, next.y as f32, next.z as f32];
+
+        vertices.push(PolylineVertex {
+            position: curr_f32,
+            previous: prev_f32,
+            next: next_f32,
+            side: 1.0,
+        });
+
+        vertices.push(PolylineVertex {
+            position: curr_f32,
+            previous: prev_f32,
+            next: next_f32,
+            side: -1.0,
+        });
+    }
+    vertices
+}
