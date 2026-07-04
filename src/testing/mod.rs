@@ -55,3 +55,5 @@ mod test_parametric_sweeps;
 mod test_z_sweep;
 #[cfg(test)]
 mod test_entity;
+#[cfg(test)]
+mod test_flight_parser;

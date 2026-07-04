@@ -70,6 +70,28 @@ pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
     [x, y, z]
 }
 
+pub fn lon_lat_alt_to_ecef_f64(lon_deg: f64, lat_deg: f64, alt_meters: f64) -> [f64; 3] {
+    let surface_pos = lon_lat_to_ecef_f64(lon_deg, lat_deg);
+    
+    if alt_meters == 0.0 {
+        return surface_pos;
+    }
+    
+    let nx = surface_pos[0] * INV_A2_F64;
+    let ny = surface_pos[1] * INV_B2_F64;
+    let nz = surface_pos[2] * INV_A2_F64;
+    let len = (nx * nx + ny * ny + nz * nz).sqrt();
+    
+    let normal = [nx / len, ny / len, nz / len];
+    let alt_megameters = alt_meters / 1_000_000.0;
+    
+    [
+        surface_pos[0] + normal[0] * alt_megameters,
+        surface_pos[1] + normal[1] * alt_megameters,
+        surface_pos[2] + normal[2] * alt_megameters,
+    ]
+}
+
 pub struct TileMesh {
 
     pub vertices: Vec<Vertex>,

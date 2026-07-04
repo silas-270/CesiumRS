@@ -72,6 +72,7 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::engine::globe::tiles::system::TileSystem,
+    pub polyline_renderer: crate::engine::render::polyline::pipeline::PolylineRenderer,
 }
 
 fn create_depth_texture(
@@ -251,6 +252,16 @@ impl<'a> WgpuState<'a> {
         );
         let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
 
+        let mut polyline_renderer = crate::engine::render::polyline::pipeline::PolylineRenderer::new(&device, &config, &camera_bind_group_layout);
+        if let Ok(property) = crate::engine::flight::load_flight_path("flight_STR_FRA.json") {
+            let builder = crate::engine::render::polyline::builder::AdaptiveSubdivisionBuilder::new(5.0);
+            let vertices = builder.build(&property);
+            println!("Polyline vertices generated: {}", vertices.len());
+            polyline_renderer.update_geometry(&device, &vertices);
+        } else {
+            println!("Failed to load flight_STR_FRA.json in WgpuState");
+        }
+
         Self {
             surface,
             device,
@@ -279,6 +290,7 @@ impl<'a> WgpuState<'a> {
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             tile_system,
+            polyline_renderer,
         }
     }
 
@@ -546,6 +558,8 @@ impl<'a> WgpuState<'a> {
             render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(..));
             render_pass.draw(0..self.num_debug_vertices, 0..1);
         }
+
+        self.polyline_renderer.draw(&mut render_pass, &self.camera_bind_group, [self.config.width as f32, self.config.height as f32], 4.0, camera_pos_f64);
     }
 
     fn render_egui<F: FnMut(&egui::Context, &mut Self)>(
