@@ -1,7 +1,7 @@
-use crate::globe::quadtree::TileId;
-use crate::io::mesh_worker::MeshWorkerPool;
-use crate::io::tile_cache::TileCacheManager;
-use crate::io::orchestrator::TileOrchestrator;
+use crate::engine::globe::quadtree::TileId;
+use crate::engine::globe::io::mesh_worker::MeshWorkerPool;
+use crate::engine::globe::io::tile_cache::TileCacheManager;
+use crate::engine::globe::io::orchestrator::TileOrchestrator;
 use std::time::{Duration, Instant};
 
 // ---
@@ -49,7 +49,7 @@ fn test_parent_fallback_math_stress_deep() {
 // ---
 #[test]
 fn test_tile_fetcher_priority_queue_ordering() {
-    use crate::io::tile_fetcher::TilePriority;
+    use crate::engine::globe::io::tile_fetcher::TilePriority;
     use std::cmp::Ordering;
 
     // Verify the Ord implementation directly

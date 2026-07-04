@@ -8,7 +8,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::render::wgpu_state::WgpuState;
+use crate::engine::render::wgpu_state::WgpuState;
 
 pub struct App<'a> {
     window: Option<Arc<Window>>,
@@ -18,11 +18,11 @@ pub struct App<'a> {
     last_mouse_pos: Option<(f64, f64)>,
     pressed_keys: HashSet<KeyCode>,
     last_frame_time: Option<Instant>,
-    config: crate::io::config::TileEngineConfig,
+    config: crate::engine::globe::io::config::TileEngineConfig,
 }
 
 impl<'a> App<'a> {
-    pub fn new(config: crate::io::config::TileEngineConfig) -> Self {
+    pub fn new(config: crate::engine::globe::io::config::TileEngineConfig) -> Self {
         Self {
             window: None,
             wgpu_state: None,
@@ -50,7 +50,9 @@ impl<'a> ApplicationHandler for App<'a> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             let window_attributes =
-                Window::default_attributes().with_title("CesiumRS WGS84 Ellipsoid");
+                Window::default_attributes()
+                    .with_title("CesiumRS WGS84 Ellipsoid")
+                    .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
 
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             self.window = Some(window.clone());
@@ -85,7 +87,7 @@ impl<'a> ApplicationHandler for App<'a> {
             WindowEvent::Resized(physical_size) => {
                 state.resize(physical_size);
             }
-            WindowEvent::RedrawRequested => match state.render(None) {
+            WindowEvent::RedrawRequested => match state.render(None, false) {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                 Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),

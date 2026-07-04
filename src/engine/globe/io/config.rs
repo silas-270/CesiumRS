@@ -10,6 +10,7 @@ pub struct TileEngineConfig {
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
     pub base_imagery_url: String,
+    pub offline_mode: bool,
 }
 
 impl Default for TileEngineConfig {
@@ -22,6 +23,7 @@ impl Default for TileEngineConfig {
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),
             base_imagery_url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string(),
+            offline_mode: false,
         }
     }
 }

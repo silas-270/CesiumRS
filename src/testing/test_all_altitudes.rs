@@ -1,5 +1,5 @@
-use crate::camera::camera::Camera;
-use crate::globe::quadtree::QuadtreeManager;
+use crate::engine::camera::camera::Camera;
+use crate::engine::globe::quadtree::QuadtreeManager;
 use glam::{Quat, Vec3};
 
 #[test]
@@ -23,7 +23,7 @@ fn test_all_altitudes() {
         let mut ghost_count = 0;
 
         for (id, _, _) in tiles.iter() {
-            let frustum = crate::globe::quadtree::Frustum::from_matrix(view_proj);
+            let frustum = crate::engine::globe::quadtree::Frustum::from_matrix(view_proj);
             let a2 = 6.378137_f32 * 6.378137_f32;
             let b2 = 6.3567524_f32 * 6.3567524_f32;
 
@@ -33,9 +33,9 @@ fn test_all_altitudes() {
             let z_pow = (1_u32 << id.z) as f32;
             let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
             let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
-            let mut lat_max = crate::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z);
+            let mut lat_max = crate::engine::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z);
             let mut lat_min =
-                crate::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z);
+                crate::engine::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z);
             if id.y == 0 {
                 lat_max = 90.0;
             }

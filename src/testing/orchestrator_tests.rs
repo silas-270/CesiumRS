@@ -1,5 +1,5 @@
-use crate::globe::quadtree::TileId;
-use crate::io::orchestrator::TileOrchestrator;
+use crate::engine::globe::quadtree::TileId;
+use crate::engine::globe::io::orchestrator::TileOrchestrator;
 
 #[test]
 fn test_compute_fallback_uv_1_level() {

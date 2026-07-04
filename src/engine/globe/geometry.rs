@@ -1,4 +1,4 @@
-use crate::globe::quadtree::TileId;
+use crate::engine::globe::quadtree::TileId;
 use glam::Vec3;
 
 const EARTH_RADIUS_A_F32: f32 = 6.378137;
@@ -87,8 +87,8 @@ impl TileMesh {
         let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
         let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
 
-        let mut center_lat_max = crate::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z) as f64;
-        let mut center_lat_min = crate::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z) as f64;
+        let mut center_lat_max = crate::engine::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z) as f64;
+        let mut center_lat_min = crate::engine::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z) as f64;
         if id.y == 0 {
             center_lat_max = 90.0;
         }
@@ -110,7 +110,7 @@ impl TileMesh {
             let v = logical_row as f32 / segments as f32;
 
             let global_y = id.y as f32 + v;
-            let mut lat = crate::globe::quadtree::web_mercator_y_to_lat(global_y, id.z);
+            let mut lat = crate::engine::globe::quadtree::web_mercator_y_to_lat(global_y, id.z);
 
             let is_north_pole_cap = id.y == 0 && row == 0;
             let is_south_pole_cap = id.y == (1_u32 << id.z) - 1 && row == grid_size - 1;

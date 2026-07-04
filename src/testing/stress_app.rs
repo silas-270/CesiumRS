@@ -1,4 +1,4 @@
-use crate::core::app::App;
+use crate::engine::core::app::App;
 use crate::testing::VerifyConfig;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -21,7 +21,7 @@ impl<'a> StressApp<'a> {
         let mut log_file = File::create(&filename).unwrap();
         writeln!(log_file, "frame,speed_multiplier,requested_tiles,missing_tiles").unwrap();
         Self {
-            inner: App::new(crate::io::config::TileEngineConfig::default()),
+            inner: App::new(crate::engine::globe::io::config::TileEngineConfig::default()),
             frame_count: 0,
             log_file,
             setup_done: false,
@@ -87,7 +87,7 @@ impl<'a> ApplicationHandler for StressApp<'a> {
                     state.camera.set_eye(glam::Vec3::new(eye_x, eye_y, 0.0), glam::Vec3::new(look_x, look_y, 0.0));
                 }
 
-                match state.render(None) {
+                match state.render(None, false) {
                     Ok(_) => {
                         let (req, miss) = state.get_fetch_stats();
                         writeln!(self.log_file, "{},{},{},{}", self.frame_count, speed_multiplier, req, miss).unwrap();

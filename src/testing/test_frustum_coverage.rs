@@ -1,5 +1,5 @@
-use crate::camera::camera::Camera;
-use crate::globe::quadtree::{QuadtreeManager, TileId};
+use crate::engine::camera::camera::Camera;
+use crate::engine::globe::quadtree::{QuadtreeManager, TileId};
 use glam::{DVec3, Vec3, Vec4};
 use rayon::prelude::*;
 use std::collections::HashSet;

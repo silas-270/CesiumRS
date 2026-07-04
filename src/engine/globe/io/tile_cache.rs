@@ -1,7 +1,7 @@
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-use crate::globe::quadtree::TileId;
+use crate::engine::globe::quadtree::TileId;
 
 pub enum TileState<T> {
     Fetching,
@@ -56,5 +56,13 @@ impl<T> TileCacheManager<T> {
 
     pub fn resize(&mut self, new_capacity: NonZeroUsize) {
         self.cache.resize(new_capacity);
+    }
+
+    pub fn has_fetching(&self) -> bool {
+        self.cache.iter().any(|(_, state)| matches!(state, TileState::Fetching))
+    }
+
+    pub fn clear(&mut self) {
+        self.cache.clear();
     }
 }

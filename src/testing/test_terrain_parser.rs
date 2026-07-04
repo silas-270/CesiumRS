@@ -1,4 +1,4 @@
-use crate::globe::terrain_parser::parse_quantized_mesh;
+use crate::engine::globe::terrain_parser::parse_quantized_mesh;
 use std::io::Write;
 
 fn encode_zigzag(delta: i16) -> u16 {

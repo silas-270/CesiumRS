@@ -1,4 +1,4 @@
-use crate::globe::quadtree::TileId;
+use crate::engine::globe::quadtree::TileId;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::{mpsc, Arc, Mutex};
@@ -61,7 +61,7 @@ pub struct TileFetcher {
 }
 
 impl TileFetcher {
-    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>, base_url: String) -> Self {
+    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>, base_url: String, offline_mode: bool) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -69,6 +69,7 @@ impl TileFetcher {
 
         let client = reqwest::Client::builder()
             .user_agent("CesiumRS/0.1.0")
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .expect("Failed to build reqwest client");
 
@@ -80,7 +81,7 @@ impl TileFetcher {
         let worker_tx = tx.clone();
 
         runtime.spawn(async move {
-            Self::worker_loop(client, worker_queue, worker_notify, worker_tx, base_url).await;
+            Self::worker_loop(client, worker_queue, worker_notify, worker_tx, base_url, offline_mode).await;
         });
 
         Self {
@@ -109,6 +110,7 @@ impl TileFetcher {
         notify: Arc<Notify>,
         tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>,
         base_url: String,
+        offline_mode: bool,
     ) {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
 
@@ -131,7 +133,11 @@ impl TileFetcher {
 
                 let url_clone = base_url.clone();
                 tokio::spawn(async move {
-                    let res = Self::fetch_and_decode(client_clone, id, url_clone).await;
+                    let res = if offline_mode {
+                        Ok(vec![255; 256 * 256 * 4])
+                    } else {
+                        Self::fetch_and_decode(client_clone, id, url_clone).await
+                    };
                     let _ = tx_clone.send((id, res));
                     drop(permit);
                 });

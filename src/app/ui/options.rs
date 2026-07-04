@@ -1,4 +1,4 @@
-use crate::io::config::TileEngineConfig;
+use crate::engine::globe::io::config::TileEngineConfig;
 use std::num::NonZeroUsize;
 
 /// Configuration options for the Globe (terrain, imagery base, caching, performance)

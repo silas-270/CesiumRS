@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::io::tile_fetcher::{TilePriority, TileFetcher};
-    use crate::globe::quadtree::TileId;
+    use crate::engine::globe::io::tile_fetcher::{TilePriority, TileFetcher};
+    use crate::engine::globe::quadtree::TileId;
     use std::sync::mpsc;
     use std::time::Duration;
 
