@@ -1,10 +1,10 @@
 use crate::engine::globe::quadtree::TileId;
 use glam::Vec3;
 
-const EARTH_RADIUS_A_F32: f32 = 6.378137;
-const EARTH_RADIUS_B_F32: f32 = 6.3567523142;
-const EARTH_RADIUS_A_F64: f64 = 6.378137;
-const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
+pub const EARTH_RADIUS_A_F32: f32 = 6.378137;
+pub const EARTH_RADIUS_B_F32: f32 = 6.3567523142;
+pub const EARTH_RADIUS_A_F64: f64 = 6.378137;
+pub const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
 const INV_A2_F64: f64 = 1.0 / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64);
 const INV_B2_F64: f64 = 1.0 / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64);
 

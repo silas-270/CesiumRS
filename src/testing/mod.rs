@@ -53,3 +53,5 @@ mod test_frustum_coverage;
 mod test_parametric_sweeps;
 #[cfg(test)]
 mod test_z_sweep;
+#[cfg(test)]
+mod test_entity;
