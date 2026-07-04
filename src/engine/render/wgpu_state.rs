@@ -72,7 +72,7 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::engine::globe::tiles::system::TileSystem,
-    pub flights: Vec<(crate::engine::render::polyline::bvh::PolylineBVH, crate::engine::render::polyline::pipeline::PolylineRenderer)>,
+    pub flights: Vec<(String, crate::engine::render::polyline::bvh::PolylineBVH, crate::engine::render::polyline::pipeline::PolylineRenderer)>,
 }
 
 fn create_depth_texture(
@@ -262,7 +262,7 @@ impl<'a> WgpuState<'a> {
                                 if let Some(bvh) = crate::engine::render::polyline::bvh::PolylineBVH::build(&property) {
                                     println!("BVH loaded: {}", filename);
                                     let renderer = crate::engine::render::polyline::pipeline::PolylineRenderer::new(&device, &config, &camera_bind_group_layout);
-                                    flights.push((bvh, renderer));
+                                    flights.push((filename.to_string(), bvh, renderer));
                                 } else {
                                     println!("Failed to build BVH for: {}", filename);
                                 }
@@ -385,15 +385,15 @@ impl<'a> WgpuState<'a> {
         };
 
         let (camera_pos_f32, _) = self.camera.global_transform();
-        let camera_pos = glam::DVec3::new(camera_pos_f32.x as f64, camera_pos_f32.y as f64, camera_pos_f32.z as f64);
+        let cam_pos_dvec3 = glam::DVec3::new(camera_pos_f32.x as f64, camera_pos_f32.y as f64, camera_pos_f32.z as f64);
         self.quadtree_manager.update(camera_pos_f32, main_view_proj);
 
-        let frustum_planes = self.camera.calculate_frustum_planes(aspect_ratio);
-        let max_screen_error = 1.0; // 1 pixel error max
-
-        for (bvh, renderer) in &mut self.flights {
-            let visible_strips = bvh.collect_visible_segments(camera_pos, &frustum_planes, max_screen_error);
+        let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
+        
+        for (_, bvh, renderer) in &mut self.flights {
             let mut vertices = Vec::new();
+            
+            let visible_strips = bvh.collect_visible_segments(cam_pos_dvec3, &frustum, 5e-8);
             for strip in visible_strips {
                 let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip);
                 if !vertices.is_empty() && !strip_verts.is_empty() {
@@ -591,8 +591,18 @@ impl<'a> WgpuState<'a> {
             render_pass.draw(0..self.num_debug_vertices, 0..1);
         }
 
-        for (_, renderer) in &self.flights {
-            renderer.draw(&mut render_pass, &self.camera_bind_group, [self.config.width as f32, self.config.height as f32], 4.0, camera_pos_f64);
+        for (filename, _, renderer) in &self.flights {
+            // "leave FRA to JFK completely orange and split the STR to FRA in half"
+            let split = if filename.contains("STR_FRA") { 0.5 } else { -1.0 };
+            
+            renderer.draw(
+                &mut render_pass, 
+                &self.camera_bind_group, 
+                [self.config.width as f32, self.config.height as f32], 
+                12.0, // Minimal pixel width (3 times the previous 4.0)
+                camera_pos_f64,
+                split,
+            );
         }
     }
 

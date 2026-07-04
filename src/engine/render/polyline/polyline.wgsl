@@ -10,18 +10,20 @@ struct VertexInput {
     @location(1) previous: vec3<f32>,
     @location(2) next: vec3<f32>,
     @location(3) side: f32, // 1.0 or -1.0
+    @location(4) progress: f32,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) progress: f32,
 };
 
 struct PushConstants {
     camera_pos: vec4<f32>,
     viewport_size: vec2<f32>,
     thickness: f32,
-    padding: f32,
+    split_progress: f32,
 };
 var<push_constant> push_constants: PushConstants;
 
@@ -40,7 +42,6 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     tangent_3d = normalize(tangent_3d);
 
     // 2. Earth surface normal (straight up) at current position
-    // Since coordinates are relative to Earth center at (0,0,0)
     var up_3d = model.position;
     if length(up_3d) < 0.000001 {
         up_3d = vec3<f32>(0.0, 0.0, 1.0);
@@ -50,16 +51,18 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     // 3. Horizontal normal perpendicular to tangent and up vector
     var normal_3d = cross(up_3d, tangent_3d);
     if length(normal_3d) < 0.00001 {
-        // Fallback for vertical climb/dive
         normal_3d = cross(tangent_3d, vec3<f32>(0.0, 0.0, 1.0));
     }
     normal_3d = normalize(normal_3d);
 
-    // 4. Calculate how many pixels the physical width (e.g. 20 meters = 0.00002 Megameters) spans on screen
-    let physical_half_width = 0.00002; // 20 meters in Megameters
-    let clip_offset = camera.view_proj * vec4<f32>(normal_3d * physical_half_width, 0.0);
-    let ndc_offset = clip_offset.xy / max(clip_curr.w, 0.000001);
-    let offset_pixels = ndc_offset * push_constants.viewport_size * 0.5;
+    // 4. Robust Edge-of-Screen Extrusion (fixes distortion when w changes rapidly)
+    let physical_half_width = 0.00006; // 60 meters in Megameters
+    let extruded_3d = rel_curr + normal_3d * physical_half_width;
+    let clip_extruded = camera.view_proj * vec4<f32>(extruded_3d, 1.0);
+    
+    let ndc_curr = clip_curr.xy / max(clip_curr.w, 0.000001);
+    let ndc_extruded = clip_extruded.xy / max(clip_extruded.w, 0.000001);
+    let offset_pixels = (ndc_extruded - ndc_curr) * push_constants.viewport_size * 0.5;
     
     let physical_pixels = length(offset_pixels);
     let min_pixels = push_constants.thickness / 2.0;
@@ -83,13 +86,22 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
     out.clip_position = vec4<f32>(final_clip_xy, clip_curr.z, clip_curr.w);
     
-    // Simple glowing orange color
-    out.color = vec4<f32>(1.0, 0.5, 0.0, 1.0);
+    // Pass progress forward
+    out.progress = model.progress;
 
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    // If split_progress < 0, entirely orange. Else split based on progress.
+    if push_constants.split_progress >= 0.0 {
+        if in.progress < push_constants.split_progress {
+            return vec4<f32>(1.0, 0.5, 0.0, 1.0); // Orange
+        } else {
+            return vec4<f32>(1.0, 1.0, 1.0, 1.0); // White
+        }
+    }
+    
+    return vec4<f32>(1.0, 0.5, 0.0, 1.0); // Orange (Default)
 }

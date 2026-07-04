@@ -18,6 +18,8 @@ pub struct PolylineNode {
 
 pub struct PolylineBVH {
     pub root: PolylineNode,
+    pub global_start: f64,
+    pub global_duration: f64,
 }
 
 impl PolylineBVH {
@@ -35,7 +37,11 @@ impl PolylineBVH {
         // Recursive build with max depth 16 and min time step 0.02s
         let root = Self::build_node(property, start_time.seconds, stop_time.seconds, p_start, p_end, 0, 16);
         
-        Some(Self { root })
+        Some(Self { 
+            root,
+            global_start: start_time.seconds,
+            global_duration: stop_time.seconds - start_time.seconds,
+        })
     }
 
     fn build_node(
@@ -122,7 +128,7 @@ impl PolylineBVH {
         camera_pos: DVec3,
         frustum_planes: &[(DVec3, f64); 6],
         max_screen_error: f64,
-    ) -> Vec<Vec<DVec3>> {
+    ) -> Vec<Vec<(DVec3, f32)>> {
         let mut strips = Vec::new();
         let mut current_strip = Vec::new();
         self.traverse(&self.root, camera_pos, frustum_planes, max_screen_error, &mut strips, &mut current_strip);
@@ -138,8 +144,8 @@ impl PolylineBVH {
         camera_pos: DVec3,
         frustum_planes: &[(DVec3, f64); 6],
         max_screen_error: f64,
-        strips: &mut Vec<Vec<DVec3>>,
-        current_strip: &mut Vec<DVec3>,
+        strips: &mut Vec<Vec<(DVec3, f32)>>,
+        current_strip: &mut Vec<(DVec3, f32)>,
     ) {
         // Frustum Culling
         for (normal, d) in frustum_planes {
@@ -162,18 +168,21 @@ impl PolylineBVH {
 
         if screen_error_approx <= max_screen_error || node.children.is_none() {
             // Render this node as a single segment
+            let progress_start = if self.global_duration > 0.0 { ((node.t_start - self.global_start) / self.global_duration) as f32 } else { 0.0 };
+            let progress_end = if self.global_duration > 0.0 { ((node.t_end - self.global_start) / self.global_duration) as f32 } else { 0.0 };
+            
             if current_strip.is_empty() {
-                current_strip.push(node.p_start);
-            } else if current_strip.last().unwrap().distance(node.p_start) > 1e-5 {
+                current_strip.push((node.p_start, progress_start));
+            } else if current_strip.last().unwrap().0.distance(node.p_start) > 1e-5 {
                 // Disconnected! Break the strip.
                 if current_strip.len() > 1 {
                     strips.push(std::mem::take(current_strip));
                 } else {
                     current_strip.clear();
                 }
-                current_strip.push(node.p_start);
+                current_strip.push((node.p_start, progress_start));
             }
-            current_strip.push(node.p_end);
+            current_strip.push((node.p_end, progress_end));
         } else {
             // Recurse
             let children = node.children.as_ref().unwrap();
@@ -183,13 +192,13 @@ impl PolylineBVH {
     }
 }
 
-pub fn generate_vertices(points: &[DVec3]) -> Vec<PolylineVertex> {
+pub fn generate_vertices(points: &[(DVec3, f32)]) -> Vec<PolylineVertex> {
     let mut vertices = Vec::with_capacity(points.len() * 2);
     for i in 0..points.len() {
-        let curr = points[i];
+        let (curr, prog) = points[i];
         
-        let prev = if i > 0 { points[i - 1] } else { curr + (curr - points[i + 1]).normalize_or_zero() * 1.0 };
-        let next = if i < points.len() - 1 { points[i + 1] } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
+        let prev = if i > 0 { points[i - 1].0 } else { curr + (curr - points[i + 1].0).normalize_or_zero() * 1.0 };
+        let next = if i < points.len() - 1 { points[i + 1].0 } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
 
         let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
         let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];
@@ -200,6 +209,7 @@ pub fn generate_vertices(points: &[DVec3]) -> Vec<PolylineVertex> {
             previous: prev_f32,
             next: next_f32,
             side: 1.0,
+            progress: prog,
         });
 
         vertices.push(PolylineVertex {
@@ -207,6 +217,7 @@ pub fn generate_vertices(points: &[DVec3]) -> Vec<PolylineVertex> {
             previous: prev_f32,
             next: next_f32,
             side: -1.0,
+            progress: prog,
         });
     }
     vertices
