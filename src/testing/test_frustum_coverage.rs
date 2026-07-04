@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 
 // --- Math Helpers ---
-fn intersect_ellipsoid(ray_origin: Vec3, ray_dir: Vec3) -> Option<DVec3> {
+pub(crate) fn intersect_ellipsoid(ray_origin: Vec3, ray_dir: Vec3) -> Option<DVec3> {
     let a = 6.378137;
     let b = 6.3567523142;
     
@@ -22,21 +22,17 @@ fn intersect_ellipsoid(ray_origin: Vec3, ray_dir: Vec3) -> Option<DVec3> {
     let t = (-qb - discriminant.sqrt()) / (2.0 * qa);
     if t < 0.0 { return None; }
     
-    Some(DVec3::new(
-        ray_origin.x as f64 + ray_dir.x as f64 * t,
-        ray_origin.y as f64 + ray_dir.y as f64 * t,
-        ray_origin.z as f64 + ray_dir.z as f64 * t,
-    ))
+    let scaled_hit = ro + rd * t;
+    Some(DVec3::new(scaled_hit.x * a, scaled_hit.y * b, scaled_hit.z * a))
 }
 
-fn dvec3_to_lat_lon(point: DVec3) -> (f64, f64) {
+pub(crate) fn dvec3_to_lat_lon(pos: DVec3) -> (f64, f64) {
     let a = 6.378137;
     let b = 6.3567523142;
-    
-    let phi = (point.y / b).asin();
-    let theta = (point.z / -a).atan2(point.x / a);
-    
-    (phi.to_degrees(), theta.to_degrees())
+    let scaled = DVec3::new(pos.x / a, pos.y / b, pos.z / a).normalize();
+    let lat = scaled.y.asin().to_degrees();
+    let lon = (-scaled.z).atan2(scaled.x).to_degrees();
+    (lat, lon)
 }
 
 fn lat_to_web_mercator_y(lat: f64, z: u8) -> u32 {
@@ -65,7 +61,7 @@ fn lat_to_web_mercator_y(lat: f64, z: u8) -> u32 {
     }
 }
 
-fn tile_contains(tile: &TileId, lat: f64, lon: f64) -> bool {
+pub(crate) fn tile_contains(tile: &TileId, lat: f64, lon: f64) -> bool {
     let z_pow = (1_u32 << tile.z) as f64;
     
     let mut expected_x = (((lon + 180.0) / 360.0) * z_pow).floor() as u32;
@@ -172,7 +168,7 @@ fn check_frustum_coverage(cam: &Camera, screen_w: u32, screen_h: u32, name: &str
     }
 }
 
-fn setup_camera(lat_deg: f32, lon_deg: f32, altitude: f32, pitch_deg: f32) -> Camera {
+pub(crate) fn setup_camera(lat_deg: f32, lon_deg: f32, altitude: f32, pitch_offset_deg: f32) -> Camera {
     let a = 6.378137;
     let b = 6.3567523142;
     
@@ -195,8 +191,8 @@ fn setup_camera(lat_deg: f32, lon_deg: f32, altitude: f32, pitch_deg: f32) -> Ca
     let mut cam = Camera::new(pos, Vec3::ZERO);
     cam.set_eye(pos, Vec3::ZERO); // Looks straight down (-Z points to center)
     
-    if pitch_deg != 0.0 {
-        let pitch_quat = glam::Quat::from_axis_angle(Vec3::X, pitch_deg.to_radians());
+    if pitch_offset_deg != 0.0 {
+        let pitch_quat = glam::Quat::from_axis_angle(Vec3::X, pitch_offset_deg.to_radians());
         cam.rotate_local(pitch_quat);
     }
     
@@ -252,4 +248,134 @@ fn test_equivalence_partitioning_frustum() {
     }
     
     assert!(!failed, "One or more cases produced false negatives!");
+}
+
+struct Lcg {
+    state: u32,
+}
+impl Lcg {
+    fn next_f32(&mut self) -> f32 {
+        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
+        (self.state as f32) / (u32::MAX as f32)
+    }
+}
+
+fn setup_fuzz_camera(lat_deg: f32, lon_deg: f32, altitude: f32, pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> Camera {
+    let a = 6.378137;
+    let b = 6.3567523142;
+    
+    let phi = lat_deg.to_radians();
+    let theta = lon_deg.to_radians();
+    
+    let surface_x = a * phi.cos() * theta.cos();
+    let surface_y = b * phi.sin();
+    let surface_z = -a * phi.cos() * theta.sin();
+    let surface_pos = Vec3::new(surface_x, surface_y, surface_z);
+    
+    let normal = Vec3::new(
+        surface_x / (a*a),
+        surface_y / (b*b),
+        surface_z / (a*a),
+    ).normalize();
+    
+    let pos = surface_pos + normal * altitude;
+    
+    let mut cam = Camera::new(pos, Vec3::ZERO);
+    cam.set_local_transform(pos, glam::Quat::from_euler(
+        glam::EulerRot::YXZ,
+        yaw_deg.to_radians(),
+        pitch_deg.to_radians(),
+        roll_deg.to_radians()
+    ));
+    cam
+}
+
+#[test]
+fn test_fuzz_frustum_coverage() {
+    let mut lcg = Lcg { state: 42 };
+    let mut failed = false;
+    
+    let w = 1920;
+    let h = 1080;
+    
+    println!("Starting 10,000 random fuzzing tests...");
+    
+    use std::io::Write;
+    let mut file = std::fs::File::create("fuzz_results.csv").unwrap();
+    writeln!(file, "case_id,lat,lon,alt,pitch,yaw,roll,rendered,hit,false_positives,false_negatives").unwrap();
+    
+    for i in 0..10000 {
+        let lat = -85.0 + lcg.next_f32() * 170.0;
+        let lon = -180.0 + lcg.next_f32() * 360.0;
+        let alt = 0.00001 + lcg.next_f32() * 10.0;
+        
+        let pitch = -90.0 + lcg.next_f32() * 180.0;
+        let yaw = lcg.next_f32() * 360.0;
+        let roll = -180.0 + lcg.next_f32() * 360.0;
+        
+        let cam = setup_fuzz_camera(lat, lon, alt, pitch, yaw, roll);
+        
+        let mut quadtree = QuadtreeManager::new();
+        let view_proj = cam.get_projection_matrix(w as f32 / h as f32) * cam.get_view_matrix();
+        for _ in 0..30 {
+            quadtree.update(cam.global_transform().0, view_proj);
+        }
+        let visible_tiles_data = quadtree.get_visible_tiles();
+        let visible_tiles: Vec<TileId> = visible_tiles_data.iter().map(|(id, _, _)| *id).collect();
+        let rendered_tiles = visible_tiles.len();
+        
+        if rendered_tiles == 0 {
+            writeln!(file, "{},{},{},{},{},{},{},0,0,0,0", i, lat, lon, alt, pitch, yaw, roll).unwrap();
+            continue;
+        }
+        
+        let step_x = (w / 100).max(1);
+        let step_y = (h / 80).max(1);
+        
+        let mut points = Vec::new();
+        for x in (0..w).step_by(step_x as usize) {
+            for y in (0..h).step_by(step_y as usize) {
+                points.push((x, y));
+            }
+        }
+        
+        let results: Vec<Result<TileId, (f64, f64)>> = points.par_iter().filter_map(|&(x, y)| {
+            let (ray_origin, ray_dir) = cam.screen_to_world_ray(x as f32, y as f32, w as f32, h as f32);
+            if let Some(hit) = intersect_ellipsoid(ray_origin, ray_dir) {
+                let view_pos = cam.get_view_matrix() * Vec4::new(hit.x as f32, hit.y as f32, hit.z as f32, 1.0);
+                if view_pos.z > 0.0 { return None; }
+                let (hit_lat, hit_lon) = dvec3_to_lat_lon(hit);
+                for tile in &visible_tiles {
+                    if tile_contains(tile, hit_lat, hit_lon) {
+                        return Some(Ok(*tile));
+                    }
+                }
+                return Some(Err((hit_lat, hit_lon)));
+            }
+            None
+        }).collect();
+        
+        let mut hit_set = std::collections::HashSet::new();
+        let mut false_negatives = 0;
+        
+        for res in results {
+            match res {
+                Ok(tile) => { hit_set.insert(tile); },
+                Err(_) => { false_negatives += 1; },
+            }
+        }
+        
+        let hit_tiles = hit_set.len();
+        let false_positives = rendered_tiles.saturating_sub(hit_tiles);
+        
+        if false_negatives > 0 {
+            failed = true;
+        }
+        
+        writeln!(file, "{},{},{},{},{},{},{},{},{},{},{}", 
+            i, lat, lon, alt, pitch, yaw, roll, 
+            rendered_tiles, hit_tiles, false_positives, false_negatives).unwrap();
+    }
+    
+    assert!(!failed, "Fuzzing caught a false negative!");
 }

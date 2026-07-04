@@ -47,3 +47,7 @@ mod test_orchestrator_stress;
 mod test_terrain_parser;
 #[cfg(test)]
 mod test_frustum_coverage;
+#[cfg(test)]
+mod test_parametric_sweeps;
+#[cfg(test)]
+mod test_z_sweep;
