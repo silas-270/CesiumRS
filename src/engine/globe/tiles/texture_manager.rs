@@ -1,8 +1,8 @@
 use crate::engine::globe::quadtree::TileId;
 use std::sync::mpsc::{self, Receiver};
-use crate::engine::globe::io::tile_cache::TileCacheManager;
-use crate::engine::globe::io::config::TileEngineConfig;
-use crate::engine::globe::io::tile_fetcher::{TilePriority, TileFetcher};
+use crate::engine::globe::tiles::tile_cache::TileCacheManager;
+use crate::engine::globe::tiles::config::TileEngineConfig;
+use crate::engine::globe::tiles::tile_fetcher::{TilePriority, TileFetcher};
 
 pub struct TileTextureManager {
     pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
@@ -74,7 +74,7 @@ impl TileTextureManager {
         while let Ok((id, result)) = self.rx.try_recv() {
             // Check if we still care about this tile (it hasn't been evicted from LRU)
             let is_still_needed = match self.cache.get_state(&id) {
-                Some(crate::engine::globe::io::tile_cache::TileState::Fetching) => true,
+                Some(crate::engine::globe::tiles::tile_cache::TileState::Fetching) => true,
                 _ => false,
             };
 

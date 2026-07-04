@@ -1,2 +1,2 @@
 pub mod camera;
-pub mod god_camera;
+pub use camera::GodCamera;

@@ -18,11 +18,11 @@ pub struct App<'a> {
     last_mouse_pos: Option<(f64, f64)>,
     pressed_keys: HashSet<KeyCode>,
     last_frame_time: Option<Instant>,
-    config: crate::engine::globe::io::config::TileEngineConfig,
+    config: crate::engine::globe::tiles::config::TileEngineConfig,
 }
 
 impl<'a> App<'a> {
-    pub fn new(config: crate::engine::globe::io::config::TileEngineConfig) -> Self {
+    pub fn new(config: crate::engine::globe::tiles::config::TileEngineConfig) -> Self {
         Self {
             window: None,
             wgpu_state: None,
@@ -33,6 +33,103 @@ impl<'a> App<'a> {
             last_frame_time: None,
             config,
         }
+    }
+
+    fn render_ui(ctx: &egui::Context, state: &mut WgpuState) {
+        egui::Window::new("Flight Tracker Debug").resizable(false).show(ctx, |ui| {
+            ui.label(format!("Altitude: {:.4}", state.camera.altitude()));
+
+            let mut is_debug = state.debug_mode;
+            if ui.checkbox(&mut is_debug, "Debug Mode (Dual Camera)").changed() {
+                state.debug_mode = is_debug;
+                if is_debug && !state.debug_camera_initialized {
+                    let (global_pos, global_ori) = state.camera.global_transform();
+                    let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
+                    let pitch = forward.y.asin();
+                    let yaw = forward.x.atan2(-forward.z);
+                    state.debug_camera = crate::engine::camera::GodCamera::new(
+                        global_pos,
+                        yaw.to_degrees(),
+                        pitch.to_degrees(),
+                    );
+                    state.debug_camera_initialized = true;
+                }
+            }
+
+            if state.debug_mode {
+                ui.separator();
+                ui.label("Controls: WASD to move, Right-Click to look");
+                ui.label("Space / Ctrl+Space for Up / Down. Shift to boost.");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Snap God Camera to Main Camera").clicked() {
+                        let (global_pos, global_ori) = state.camera.global_transform();
+                        let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
+                        let pitch = forward.y.asin();
+                        let yaw = forward.x.atan2(-forward.z);
+                        state.debug_camera = crate::engine::camera::GodCamera::new(global_pos, yaw, pitch);
+                    }
+                });
+
+                ui.separator();
+                ui.label("Main Camera State:");
+                ui.horizontal(|ui| {
+                    ui.label("Pos:");
+                    ui.add(egui::DragValue::new(&mut state.camera.local_pos.x).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut state.camera.local_pos.y).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut state.camera.local_pos.z).speed(0.1));
+                });
+
+                let (yaw, pitch, roll) = state.camera.local_ori.to_euler(glam::EulerRot::YXZ);
+                let mut yaw_deg = yaw.to_degrees();
+                let mut pitch_deg = pitch.to_degrees();
+                let mut roll_deg = roll.to_degrees();
+
+                ui.horizontal(|ui| {
+                    ui.label("Rot:");
+                    ui.add(egui::DragValue::new(&mut pitch_deg).speed(1.0).prefix("P: "));
+                    ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
+                    ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Lens:");
+                    ui.add(egui::Slider::new(&mut state.camera.focal_length, 12.0..=200.0).text("Focal Length (mm)"));
+                });
+
+                if pitch_deg != pitch.to_degrees()
+                    || yaw_deg != yaw.to_degrees()
+                    || roll_deg != roll.to_degrees()
+                {
+                    state.camera.local_ori = glam::Quat::from_euler(
+                        glam::EulerRot::YXZ,
+                        yaw_deg.to_radians(),
+                        pitch_deg.to_radians(),
+                        roll_deg.to_radians(),
+                    );
+                }
+            }
+
+            ui.separator();
+            ui.label("Caching & Performance");
+            ui.checkbox(&mut state.tile_system.config.enable_prefetch, "Preload Neighboring Tiles");
+            
+            let mut texture_cache_size = state.tile_system.config.max_cache_size.get();
+            if ui.add(egui::Slider::new(&mut texture_cache_size, 512..=8192).text("Texture Cache Size")).changed() {
+                state.tile_system.config.max_cache_size = std::num::NonZeroUsize::new(texture_cache_size).unwrap();
+                state.tile_system.texture_manager.resize(state.tile_system.config.max_cache_size);
+            }
+
+            let mut mesh_cache_size = state.tile_system.config.mesh_cache_size.get();
+            if ui.add(egui::Slider::new(&mut mesh_cache_size, 128..=2048).text("Mesh Cache Size")).changed() {
+                state.tile_system.config.mesh_cache_size = std::num::NonZeroUsize::new(mesh_cache_size).unwrap();
+                state.resize_tile_cache(state.tile_system.config.mesh_cache_size);
+            }
+
+            ui.separator();
+            let (req, mis) = state.get_fetch_stats();
+            ui.label(format!("Missing Tiles: {} / Requested: {}", mis, req));
+        });
     }
 }
 
@@ -87,11 +184,13 @@ impl<'a> ApplicationHandler for App<'a> {
             WindowEvent::Resized(physical_size) => {
                 state.resize(physical_size);
             }
-            WindowEvent::RedrawRequested => match state.render(None, false) {
-                Ok(_) => {}
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                Err(e) => log::error!("{:?}", e),
+            WindowEvent::RedrawRequested => {
+                match state.render(None, false, |ctx, s| Self::render_ui(ctx, s)) {
+                    Ok(_) => {}
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                    Err(e) => log::error!("{:?}", e),
+                }
             },
             WindowEvent::MouseInput {
                 state: element_state,

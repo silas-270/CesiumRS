@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::engine::globe::io::tile_cache::{TileCacheManager, TileState};
+    use crate::engine::globe::tiles::tile_cache::{TileCacheManager, TileState};
     use crate::engine::globe::quadtree::TileId;
     use std::num::NonZeroUsize;
     use std::time::Duration;

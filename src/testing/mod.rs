@@ -41,9 +41,9 @@ mod test_tile_fetcher;
 #[cfg(test)]
 mod test_mesh_worker;
 #[cfg(test)]
-mod orchestrator_tests;
+mod tile_system_tests;
 #[cfg(test)]
-mod test_orchestrator_stress;
+mod test_tile_system_stress;
 
 #[cfg(test)]
 mod test_terrain_parser;
