@@ -1,7 +1,7 @@
 # CesiumRS - Flight Tracker Engine Roadmap
 
 ## 🎯 End Goal
-A highly performant, custom 3D WebGPU-based flight tracker engine built in Rust. It ingests an external array of coordinates and timestamps, smoothly interpolates the route in 3D space, and animates a 3D airplane model along that path. It operates as the core rendering backend, exposing a clean interface to a frontend UI (e.g., Kotlin on Android).
+A highly performant, custom 3D flight tracker engine built in Rust. It ingests an external array of coordinates and timestamps, smoothly interpolates the route in 3D space, and animates a 3D airplane model along that path. It operates as the core rendering backend, exposing a clean interface to a frontend UI (e.g., Kotlin on Android).
 
 **Key Features to Deliver:**
 - **Smooth Flight Paths:** 3D Spline interpolation for seamless movement and banking.
