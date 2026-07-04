@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::engine::globe::io::tile_fetcher::{TilePriority, TileFetcher};
+    use crate::engine::globe::tiles::tile_fetcher::{TilePriority, TileFetcher};
     use crate::engine::globe::quadtree::TileId;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -17,7 +17,7 @@ mod tests {
     #[test]
     fn test_fetch_valid_tile() {
         let (tx, rx) = mpsc::channel();
-        let fetcher = TileFetcher::new(tx, "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string());
+        let fetcher = TileFetcher::new(tx, "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string(), false);
         
         let valid_tile = TileId { z: 0, x: 0, y: 0 };
         fetcher.request_tile(valid_tile, TilePriority::High);
@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn test_fetch_invalid_tile() {
         let (tx, rx) = mpsc::channel();
-        let fetcher = TileFetcher::new(tx, "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string());
+        let fetcher = TileFetcher::new(tx, "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string(), false);
         
         // Invalid tile (Z=20 out of bounds or x/y out of bounds for OSM, which causes 404/400)
         let invalid_tile = TileId { z: 20, x: 9999999, y: 9999999 };

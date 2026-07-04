@@ -1,7 +1,7 @@
 use crate::engine::globe::quadtree::TileId;
-use crate::engine::globe::io::mesh_worker::MeshWorkerPool;
-use crate::engine::globe::io::tile_cache::TileCacheManager;
-use crate::engine::globe::io::orchestrator::TileOrchestrator;
+use crate::engine::globe::tiles::mesh_worker::MeshWorkerPool;
+use crate::engine::globe::tiles::tile_cache::TileCacheManager;
+use crate::engine::globe::tiles::system::TileSystem;
 use std::time::{Duration, Instant};
 
 // ---
@@ -23,7 +23,7 @@ fn test_parent_fallback_math_stress_deep() {
 
     let mut uv = [0.0; 4];
     for _ in 0..iterations {
-        uv = TileOrchestrator::compute_fallback_uv(child, parent);
+        uv = TileSystem::compute_fallback_uv(child, parent);
     }
     let duration = start.elapsed();
     let per_op = duration / iterations;
@@ -49,7 +49,7 @@ fn test_parent_fallback_math_stress_deep() {
 // ---
 #[test]
 fn test_tile_fetcher_priority_queue_ordering() {
-    use crate::engine::globe::io::tile_fetcher::TilePriority;
+    use crate::engine::globe::tiles::tile_fetcher::TilePriority;
     use std::cmp::Ordering;
 
     // Verify the Ord implementation directly
@@ -179,7 +179,7 @@ fn test_root_tile_has_no_parent() {
 // Test 6: Edge case — TileId coordinate bounds at max zoom
 // Verifies that: 
 //   a) saturating_add on u32 does NOT cap at tile-grid max (only at u32::MAX)
-//   b) the orchestrator's explicit bounds check `n.x <= max_x_y` is therefore
+//   b) the tile_system's explicit bounds check `n.x <= max_x_y` is therefore
 //      the correct guard and must be preserved
 //   c) parent traversal terminates correctly after exactly `z` steps
 // ---
@@ -190,15 +190,15 @@ fn test_tile_neighbor_boundary_no_overflow() {
     let edge_tile = TileId { z, x: max_coord, y: max_coord };
 
     // u32::saturating_add caps at u32::MAX (4294967295), NOT at max_coord.
-    // This means the orchestrator MUST use an explicit bounds check.
+    // This means the tile_system MUST use an explicit bounds check.
     let next_x = edge_tile.x.saturating_add(1);
     assert_eq!(next_x, max_coord + 1, 
         "saturating_add returned unexpected value — behavior changed");
-    // Confirm the orchestrator's guard logic correctly filters this out:
+    // Confirm the tile_system's guard logic correctly filters this out:
     assert!(next_x > max_coord,
         "Without an explicit bounds check, this neighbor would be out of the tile grid!");
     println!("Confirmed: saturating_add({}, 1) = {}, > max_coord={}", max_coord, next_x, max_coord);
-    println!("The orchestrator's `n.x <= max_x_y` guard is essential and must NOT be removed.");
+    println!("The tile_system's `n.x <= max_x_y` guard is essential and must NOT be removed.");
 
     // Parent traversal at max zoom should terminate at z=0 in exactly 20 steps
     let mut current = edge_tile;

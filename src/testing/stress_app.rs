@@ -21,7 +21,7 @@ impl<'a> StressApp<'a> {
         let mut log_file = File::create(&filename).unwrap();
         writeln!(log_file, "frame,speed_multiplier,requested_tiles,missing_tiles").unwrap();
         Self {
-            inner: App::new(crate::engine::globe::io::config::TileEngineConfig::default()),
+            inner: App::new(crate::engine::globe::tiles::config::TileEngineConfig::default()),
             frame_count: 0,
             log_file,
             setup_done: false,
@@ -36,11 +36,11 @@ impl<'a> ApplicationHandler for StressApp<'a> {
         if !self.setup_done {
             if let Some(state) = self.inner.wgpu_state_mut() {
                 // Apply config limits
-                state.orchestrator.config.enable_prefetch = self.config.prefetch;
+                state.tile_system.config.enable_prefetch = self.config.prefetch;
                 let cache_size = std::num::NonZeroUsize::new(self.config.cache_size).unwrap();
-                state.orchestrator.config.max_cache_size = cache_size;
-                state.orchestrator.config.mesh_cache_size = cache_size;
-                state.orchestrator.texture_manager.resize(cache_size);
+                state.tile_system.config.max_cache_size = cache_size;
+                state.tile_system.config.mesh_cache_size = cache_size;
+                state.tile_system.texture_manager.resize(cache_size);
                 state.resize_tile_cache(cache_size);
                 
                 state.camera.set_eye(
@@ -87,7 +87,7 @@ impl<'a> ApplicationHandler for StressApp<'a> {
                     state.camera.set_eye(glam::Vec3::new(eye_x, eye_y, 0.0), glam::Vec3::new(look_x, look_y, 0.0));
                 }
 
-                match state.render(None, false) {
+                match state.render(None, false, |_, _| {}) {
                     Ok(_) => {
                         let (req, miss) = state.get_fetch_stats();
                         writeln!(self.log_file, "{},{},{},{}", self.frame_count, speed_multiplier, req, miss).unwrap();

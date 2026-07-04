@@ -1,9 +1,9 @@
 use crate::engine::globe::quadtree::TileId;
-use crate::engine::globe::io::config::TileEngineConfig;
-use crate::engine::globe::io::mesh_worker::MeshWorkerPool;
-use crate::engine::globe::io::texture_manager::TileTextureManager;
-use crate::engine::globe::io::tile_cache::TileState;
-use crate::engine::globe::io::tile_fetcher::TilePriority;
+use crate::engine::globe::tiles::config::TileEngineConfig;
+use crate::engine::globe::tiles::mesh_worker::MeshWorkerPool;
+use crate::engine::globe::tiles::texture_manager::TileTextureManager;
+use crate::engine::globe::tiles::tile_cache::TileState;
+use crate::engine::globe::tiles::tile_fetcher::TilePriority;
 use glam::Vec3;
 
 pub struct RenderData<'a> {
@@ -13,14 +13,14 @@ pub struct RenderData<'a> {
     pub uv_scale_offset: [f32; 4],
 }
 
-pub struct TileOrchestrator {
+pub struct TileSystem {
     pub config: TileEngineConfig,
     pub texture_manager: TileTextureManager,
     pub mesh_worker: MeshWorkerPool,
     last_camera_pos: Option<Vec3>,
 }
 
-impl TileOrchestrator {
+impl TileSystem {
     pub fn new(device: &wgpu::Device, config: TileEngineConfig) -> Self {
         Self {
             texture_manager: TileTextureManager::new(device, &config),

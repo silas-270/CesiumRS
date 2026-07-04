@@ -23,7 +23,7 @@ impl<'a> TestApp<'a> {
         };
 
         Self {
-            inner: App::new(crate::engine::globe::io::config::TileEngineConfig::default()),
+            inner: App::new(crate::engine::globe::tiles::config::TileEngineConfig::default()),
             config,
             simulator,
             frames_stable: 0,
@@ -60,7 +60,7 @@ impl<'a> ApplicationHandler for TestApp<'a> {
             let mut capture_path = None;
             if self.simulator.actions.is_empty() {
                 if let Some(state) = self.inner.wgpu_state_mut() {
-                    if state.orchestrator.texture_manager.fetcher.is_loading_complete() {
+                    if state.tile_system.texture_manager.fetcher.is_loading_complete() {
                         self.frames_stable += 1;
                     } else {
                         self.frames_stable = 0;
@@ -73,7 +73,7 @@ impl<'a> ApplicationHandler for TestApp<'a> {
             }
 
             if let Some(state) = self.inner.wgpu_state_mut() {
-                match state.render(capture_path, false) {
+                match state.render(capture_path, false, |_, _| {}) {
                     Ok(_) => {
                         if capture_path.is_some() {
                             event_loop.exit();
