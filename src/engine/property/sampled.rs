@@ -35,6 +35,18 @@ impl SampledPositionProperty {
             Err(i) => self.samples.insert(i, (time, position)), // Insert at correct sorted position
         }
     }
+
+    pub fn start_time(&self) -> Option<SimulationTime> {
+        self.samples.first().map(|(t, _)| *t)
+    }
+
+    pub fn stop_time(&self) -> Option<SimulationTime> {
+        self.samples.last().map(|(t, _)| *t)
+    }
+
+    pub fn samples(&self) -> &[(SimulationTime, DVec3)] {
+        &self.samples
+    }
 }
 
 impl Property<DVec3> for SampledPositionProperty {

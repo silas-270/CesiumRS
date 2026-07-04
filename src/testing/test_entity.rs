@@ -61,3 +61,34 @@ fn test_enu_and_velocity() {
     // Up column (z_axis) should match up vector
     assert_eq!(enu.z_axis, up);
 }
+
+#[test]
+fn test_adaptive_subdivision_stress() {
+    use std::time::Instant;
+    let mut prop = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+
+    // Create a very long flight: New York to Singapore
+    // Approximate coordinates
+    let ny_lon = -74.0060;
+    let ny_lat = 40.7128;
+    let sin_lon = 103.8198;
+    let sin_lat = 1.3521;
+
+    prop.add_sample(SimulationTime::new(0.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(ny_lon, ny_lat, 10000.0)));
+    // Add midpoint to help the spline (flying over north pole roughly)
+    prop.add_sample(SimulationTime::new(3600.0 * 8.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(14.0, 85.0, 10000.0)));
+    prop.add_sample(SimulationTime::new(3600.0 * 16.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(sin_lon, sin_lat, 10000.0)));
+
+    let builder = crate::engine::render::polyline::builder::AdaptiveSubdivisionBuilder::new(5.0);
+    
+    let start_time = Instant::now();
+    let vertices = builder.build(&prop);
+    let duration = start_time.elapsed();
+
+    println!("Adaptive Subdivision Stress Test Results:");
+    println!("Tolerance: {} meters", builder.tolerance);
+    println!("Generated Vertices: {}", vertices.len());
+    println!("Time Taken: {:?}", duration);
+
+    assert!(vertices.len() > 10);
+}
