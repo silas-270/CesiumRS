@@ -45,7 +45,6 @@ pub struct FlightTrackerApp {
     pub flights: Vec<FlightEntity>,
     pub airplane_renderer: Option<ModelRenderer>,
     pub last_update_time: std::time::Instant,
-    pub plane_state: Option<crate::engine::math::kinematic_state::KinematicState>,
 }
 
 impl FlightTrackerApp {
@@ -56,7 +55,19 @@ impl FlightTrackerApp {
             flights: Vec::new(),
             airplane_renderer: None,
             last_update_time: std::time::Instant::now(),
-            plane_state: None,
+        }
+    }
+
+    pub fn get_plane_state_at(&self, progress_val: f64) -> Option<crate::engine::math::trajectory::TransformState> {
+        if let Some(flight) = self.flights.first() {
+            let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
+            let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+            let time = crate::engine::time::SimulationTime::new(start_t + progress_val * (stop_t - start_t));
+            
+            let evaluator = crate::engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 2.0);
+            evaluator.evaluate(time)
+        } else {
+            None
         }
     }
 
@@ -139,57 +150,7 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         let now = std::time::Instant::now();
-        let dt = now.duration_since(self.last_update_time).as_secs_f64();
         self.last_update_time = now;
-
-        if let Some(flight) = self.flights.first() {
-            let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
-            let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
-            let current_progress = *self.progress.lock().unwrap();
-            let time = crate::engine::time::SimulationTime::new(start_t + current_progress * (stop_t - start_t));
-            
-            if let Some(pos) = flight.property.evaluate(time) {
-                let next_time = crate::engine::time::SimulationTime::new(time.seconds + 0.1);
-                if let Some(next_pos) = flight.property.evaluate(next_time) {
-                    let pos_f32 = glam::Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
-                    let next_pos_f32 = glam::Vec3::new(next_pos.x as f32, next_pos.y as f32, next_pos.z as f32);
-                    
-                    let forward = if (next_pos_f32 - pos_f32).length_squared() > 1e-6 {
-                        (next_pos_f32 - pos_f32).normalize()
-                    } else {
-                        glam::Vec3::new(0.0, 1.0, 0.0)
-                    };
-
-                    let up = pos_f32.normalize();
-                    let right = forward.cross(up).normalize();
-                    let adjusted_forward = up.cross(right).normalize();
-
-                    let rotation = glam::Mat4::from_cols(
-                        right.extend(0.0),
-                        adjusted_forward.extend(0.0),
-                        up.extend(0.0),
-                        glam::Vec3::ZERO.extend(1.0),
-                    );
-                    let target_quat = glam::Quat::from_mat4(&rotation).normalize();
-                    
-                    let target_dquat = glam::DQuat::from_xyzw(
-                        target_quat.x as f64, target_quat.y as f64, target_quat.z as f64, target_quat.w as f64
-                    );
-
-                    if let Some(state) = &mut self.plane_state {
-                        state.position = glam::DVec3::new(pos.x, pos.y, pos.z);
-                        state.target_rotation = target_dquat;
-                        state.update(dt);
-                    } else {
-                        self.plane_state = Some(crate::engine::math::kinematic_state::KinematicState::new(
-                            glam::DVec3::new(pos.x, pos.y, pos.z),
-                            target_dquat,
-                            2.0, // Rotational inertia factor
-                        ));
-                    }
-                }
-            }
-        }
     }
 
     fn render<'a>(
@@ -211,7 +172,8 @@ impl GlobeExtension for FlightTrackerApp {
 
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
-            if let Some(state) = &self.plane_state {
+            let current_progress = *self.progress.lock().unwrap();
+            if let Some(state) = self.get_plane_state_at(current_progress) {
                 let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
                 let up = pos_f32.normalize();
                 
@@ -222,7 +184,7 @@ impl GlobeExtension for FlightTrackerApp {
                 let relative_pos = (pos_f32 + lift) - cam;
                 let translation = glam::Mat4::from_translation(relative_pos);
 
-                let cur_rot = state.current_rotation;
+                let cur_rot = state.rotation;
                 let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
                 let rotation = glam::Mat4::from_quat(rot_f32);
 
