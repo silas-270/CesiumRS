@@ -117,14 +117,5 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // If split_progress < 0, entirely orange. Else split based on progress.
-    if push_constants.split_progress >= 0.0 {
-        if in.progress < push_constants.split_progress {
-            return vec4<f32>(1.0, 0.5, 0.0, 1.0); // Orange
-        } else {
-            return vec4<f32>(1.0, 1.0, 1.0, 1.0); // White
-        }
-    }
-    
-    return vec4<f32>(1.0, 0.5, 0.0, 1.0); // Orange (Default)
+    return in.color;
 }
