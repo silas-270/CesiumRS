@@ -44,6 +44,8 @@ pub struct FlightTrackerApp {
     pub flights: Vec<FlightEntity>,
     pub airplane_renderer: Option<ModelRenderer>,
     pub start_time: std::time::Instant,
+    pub last_update_time: std::time::Instant,
+    pub plane_state: Option<crate::engine::math::kinematic_state::KinematicState>,
 }
 
 impl FlightTrackerApp {
@@ -52,6 +54,8 @@ impl FlightTrackerApp {
             flights: Vec::new(),
             airplane_renderer: None,
             start_time: std::time::Instant::now(),
+            last_update_time: std::time::Instant::now(),
+            plane_state: None,
         }
     }
 
@@ -137,6 +141,57 @@ impl GlobeExtension for FlightTrackerApp {
             }
             flight.renderer.update_geometry(device, queue, &vertices);
         }
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_update_time).as_secs_f64();
+        self.last_update_time = now;
+
+        if let Some(flight) = self.flights.first() {
+            let elapsed = self.start_time.elapsed().as_secs_f64() * 50.0;
+            let time = crate::engine::time::SimulationTime::new(elapsed % 3600.0);
+            
+            if let Some(pos) = flight.property.evaluate(time) {
+                let next_time = crate::engine::time::SimulationTime::new(time.seconds + 0.1);
+                if let Some(next_pos) = flight.property.evaluate(next_time) {
+                    let pos_f32 = glam::Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
+                    let next_pos_f32 = glam::Vec3::new(next_pos.x as f32, next_pos.y as f32, next_pos.z as f32);
+                    
+                    let forward = if (next_pos_f32 - pos_f32).length_squared() > 1e-6 {
+                        (next_pos_f32 - pos_f32).normalize()
+                    } else {
+                        glam::Vec3::new(0.0, 1.0, 0.0)
+                    };
+
+                    let up = pos_f32.normalize();
+                    let right = forward.cross(up).normalize();
+                    let adjusted_forward = up.cross(right).normalize();
+
+                    let rotation = glam::Mat4::from_cols(
+                        right.extend(0.0),
+                        adjusted_forward.extend(0.0),
+                        up.extend(0.0),
+                        glam::Vec3::ZERO.extend(1.0),
+                    );
+                    let target_quat = glam::Quat::from_mat4(&rotation).normalize();
+                    
+                    let target_dquat = glam::DQuat::from_xyzw(
+                        target_quat.x as f64, target_quat.y as f64, target_quat.z as f64, target_quat.w as f64
+                    );
+
+                    if let Some(state) = &mut self.plane_state {
+                        state.position = glam::DVec3::new(pos.x, pos.y, pos.z);
+                        state.target_rotation = target_dquat;
+                        state.update(dt);
+                    } else {
+                        self.plane_state = Some(crate::engine::math::kinematic_state::KinematicState::new(
+                            glam::DVec3::new(pos.x, pos.y, pos.z),
+                            target_dquat,
+                            2.0, // Rotational inertia factor
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     fn render<'a>(
@@ -158,60 +213,39 @@ impl GlobeExtension for FlightTrackerApp {
 
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
-            if let Some(flight) = self.flights.first() {
-                // Freeze the plane at the start for testing
-                let time = SimulationTime::new(0.0);
+            if let Some(state) = &self.plane_state {
+                let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
+                let up = pos_f32.normalize();
                 
-                if let Some(pos) = flight.property.evaluate(time) {
-                    let next_time = SimulationTime::new(time.seconds + 0.1);
-                    if let Some(next_pos) = flight.property.evaluate(next_time) {
-                        let pos_f32 = Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
-                        let next_pos_f32 = Vec3::new(next_pos.x as f32, next_pos.y as f32, next_pos.z as f32);
-                        
-                        let forward = (next_pos_f32 - pos_f32).normalize();
-                        let up = pos_f32.normalize();
-                        let right = forward.cross(up).normalize();
-                        let adjusted_forward = up.cross(right).normalize();
+                // Lift the plane by 10km so it doesn't clip the earth during testing
+                let lift = up * (10000.0 / 6378137.0);
+                
+                let cam = glam::Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
+                let relative_pos = (pos_f32 + lift) - cam;
+                let translation = glam::Mat4::from_translation(relative_pos);
 
-                        let scale_factor = 1.0 / 6378137.0; // Base engine scale (meters to earth radii)
-                        // If model is huge, maybe scale it down. But let's leave base scale.
-                        // Wait, 1.0 engine unit = 6378137 meters. So if model is 67 meters, it becomes 67 * scale_factor = ~0.00001 engine units.
-                        let scale = Mat4::from_scale(Vec3::splat(scale_factor));
+                let cur_rot = state.current_rotation;
+                let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
+                let rotation = glam::Mat4::from_quat(rot_f32);
 
-                        // Pre-rotate model to fix Y-up/Z-forward mismatch (rotate -90 deg around local X)
-                        let pre_rotation = Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+                // TEMP: User requested 500km size for testing
+                let scale_factor = 500000.0 / 6378137.0; 
+                let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
-                        // Apply standard -Z forward orientation
-                        let rotation = Mat4::from_cols(
-                            right.extend(0.0),
-                            up.extend(0.0),
-                            (-adjusted_forward).extend(0.0),
-                            Vec3::ZERO.extend(1.0),
-                        );
+                let model_matrix = translation * rotation * scale;
 
-                        // Position relative to camera using camera_pos_f64
-                        let cam = Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
-                        // Lift the plane significantly (100km) to ensure it doesn't clip into the ground
-                        let lift = up * 0.1;
-                        let relative_pos = (pos_f32 + lift) - cam;
-                        
-                        let translation = Mat4::from_translation(relative_pos);
-                        let model_matrix = translation * rotation * pre_rotation * scale;
+                use crate::engine::render::model::pipeline::ModelPushConstants;
+                let push = ModelPushConstants {
+                    model_matrix_0: model_matrix.x_axis.to_array(),
+                    model_matrix_1: model_matrix.y_axis.to_array(),
+                    model_matrix_2: model_matrix.z_axis.to_array(),
+                    model_matrix_3: model_matrix.w_axis.to_array(),
+                    camera_pos: [camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32, 1.0],
+                    viewport_size,
+                    padding: [0.0, 0.0],
+                };
 
-                        use crate::engine::render::model::pipeline::ModelPushConstants;
-                        let push = ModelPushConstants {
-                            model_matrix_0: model_matrix.x_axis.to_array(),
-                            model_matrix_1: model_matrix.y_axis.to_array(),
-                            model_matrix_2: model_matrix.z_axis.to_array(),
-                            model_matrix_3: model_matrix.w_axis.to_array(),
-                            camera_pos: [camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32, 1.0],
-                            viewport_size,
-                            padding: [0.0, 0.0],
-                        };
-
-                        airplane.draw(render_pass, camera_bind_group, push);
-                    }
-                }
+                airplane.draw(render_pass, camera_bind_group, push);
             }
         }
     }
