@@ -64,17 +64,29 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     }
     normal_3d = normalize(normal_3d);
 
-    // 4. Robust Edge-of-Screen Extrusion (fixes distortion when w changes rapidly)
-    let physical_half_width = 0.0001; // 100 meters in Megameters
-    let physical_half_height = 0.000001; // 1 meter (2m total height)
-
-    // We want the width to be exactly 'thickness' pixels when viewed straight on.
-    // In perspective projection, screen_size_pixels = (physical_size / distance) * (viewport_height / (2.0 * tan(fov / 2.0)))
-    // Assuming standard 45 deg fov, the fov factor is roughly 2.4. We can use a tuning constant.
+    // 4. Robust Edge-of-Screen Extrusion
+    let physical_half_width = 0.0002; // 200 meters in Megameters (400m total width)
+    
     let dist_to_cam = length(rel_curr);
     
+    // 3D Extrusion Fade Logic
+    // Only show 3D height when close to the ground AND looking sideways
+    let view_dir = normalize(rel_curr);
+    let view_dot_up = dot(view_dir, up_3d); // -1.0 is top-down, 0.0 is sideways
+    
+    // Fade in between -0.8 (steep angle) and -0.4 (shallow angle)
+    let angle_factor = smoothstep(-0.8, -0.4, view_dot_up);
+    
+    // Fade in between 200km (0.2 MM) and 50km (0.05 MM)
+    let dist_factor = 1.0 - smoothstep(0.05, 0.2, dist_to_cam);
+    
+    let height_multiplier = angle_factor * dist_factor;
+    
+    // Base physical height (1m half height = 2m total), scaled by fade logic
+    let physical_half_height = 0.000001 * height_multiplier;
+
+    // We want the width to be exactly 'thickness' pixels when viewed straight on.
     // Approximate pixels per megameter at this distance
-    // 1.0 megameter at distance dist_to_cam will be: (1.0 / dist_to_cam) * viewport.y * 1.5 pixels
     let pixels_per_mm = (1.0 / max(dist_to_cam, 0.000001)) * push_constants.viewport_size.y * 1.5;
     
     let width_pixels = (physical_half_width * 2.0) * pixels_per_mm;
@@ -88,7 +100,9 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let final_half_width = physical_half_width * scale_multiplier;
     
     let height_pixels = (physical_half_height * 2.0) * pixels_per_mm;
-    let min_height_pixels = 1.0;
+    
+    // Scale minimum pixel thickness by height_multiplier so it fully vanishes when faded out
+    let min_height_pixels = 1.0 * height_multiplier; 
     var height_scale_multiplier = 1.0;
     if height_pixels > 0.00001 {
         height_scale_multiplier = max(1.0, min_height_pixels / height_pixels);
