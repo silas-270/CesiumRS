@@ -192,11 +192,11 @@ impl GlobeExtension for FlightTrackerApp {
                 let scale_factor = 500000.0 / 6378137.0; 
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
-                // The A350.glb model has native axes: X = Nose, Y = Left Wing, Z = Top.
-                // We map these to standard glTF axes: -Z = Forward, -X = Left, Y = Up.
+                // The A350.glb model has native axes: -X = Nose, Y = Right Wing, Z = Top.
+                // We map these to standard glTF axes: -Z = Forward, X = Right, Y = Up.
                 let model_correction = glam::Mat4::from_cols(
-                    glam::Vec3::new(0.0, 0.0, -1.0).extend(0.0), // Model X (Nose) -> Standard -Z (Forward)
-                    glam::Vec3::new(-1.0, 0.0, 0.0).extend(0.0), // Model Y (Left Wing) -> Standard -X (Left)
+                    glam::Vec3::new(0.0, 0.0, 1.0).extend(0.0),  // Model X (Tail) -> Standard +Z (Backward)
+                    glam::Vec3::new(1.0, 0.0, 0.0).extend(0.0),  // Model Y (Right Wing) -> Standard +X (Right)
                     glam::Vec3::new(0.0, 1.0, 0.0).extend(0.0),  // Model Z (Top) -> Standard +Y (Up)
                     glam::Vec3::ZERO.extend(1.0),
                 );
