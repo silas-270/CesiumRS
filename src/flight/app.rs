@@ -68,7 +68,7 @@ impl FlightTrackerApp {
             let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
             let time = crate::engine::time::SimulationTime::new(start_t + progress_val * (stop_t - start_t));
             
-            let evaluator = crate::engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 120.0);
+            let evaluator = crate::engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 30.0);
             evaluator.evaluate(time)
         } else {
             None

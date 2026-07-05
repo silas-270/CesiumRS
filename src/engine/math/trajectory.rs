@@ -97,8 +97,11 @@ impl<'a> TrajectoryEvaluator<'a> {
             let g_mm = 9.81e-6;
             let gravity_vector = -earth_up * g_mm;
             
+            // Apply a cinematic multiplier to the centripetal acceleration so the banking is visually noticeable
+            let cinematic_g_multiplier = 2.5;
+            
             // Perceived gravity is actual gravity minus the acceleration (F_apparent = m*g - m*a)
-            let perceived_gravity = gravity_vector - avg_a;
+            let perceived_gravity = gravity_vector - avg_a * cinematic_g_multiplier;
             
             if perceived_gravity.length_squared() > 1e-20 {
                 // The plane aligns its "up" vector to oppose perceived gravity
