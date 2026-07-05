@@ -70,8 +70,8 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let pixels_per_engine_unit = (1.0 / dist_to_cam) * push.viewport_size.y * fov_factor;
     let size_pixels = physical_size_engine * pixels_per_engine_unit;
 
-    // 5. Enforce minimum pixel size (e.g. 64 pixels)
-    let min_pixels = 64.0;
+    // 5. Enforce minimum pixel size (e.g. 500 pixels for testing)
+    let min_pixels = 500.0;
     var scale_multiplier = 1.0;
     if size_pixels > 0.00001 {
         scale_multiplier = max(1.0, min_pixels / size_pixels);
@@ -101,12 +101,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.normal);
     
     let diffuse = max(dot(normal, light_dir), 0.0);
-    let ambient = 0.3;
+    let ambient = 0.5;
     let light_intensity = diffuse * 0.7 + ambient;
     
-    // Sample texture
+    // Sample texture and add a prominent red tint so it can't be missed
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv).rgb;
-    let color = tex_color * light_intensity;
+    let color = (tex_color + vec3<f32>(0.5, 0.0, 0.0)) * light_intensity;
     
     return vec4<f32>(color, 1.0);
 }
