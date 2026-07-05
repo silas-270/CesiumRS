@@ -95,11 +95,12 @@ fn vs_main(
     // Scale the ribbon's physical width and height by the same multiplier
     let final_half_width = physical_half_width * scale_multiplier;
     
-    // Height uses the exact same scaling logic so proportions stay perfectly identical
-    let final_half_height = physical_half_height * scale_multiplier;
+    // Cap the height scaling so the ribbon volume doesn't become too thick vertically at high zooms
+    let height_scale_multiplier = min(scale_multiplier, 4500.0);
+    let final_half_height = physical_half_height * height_scale_multiplier;
     
-    // Elevate 10m to avoid clipping
-    let elevation_offset = up_3d * 0.00001;
+    // Elevate 5m to avoid clipping
+    let elevation_offset = up_3d * 0.000005;
 
     let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side + tangent * final_half_width * model.forward;
     let extruded_3d = rel_curr + corner_offset_3d + elevation_offset;
