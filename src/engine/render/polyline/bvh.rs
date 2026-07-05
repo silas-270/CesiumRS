@@ -210,6 +210,25 @@ pub fn generate_vertices(points: &[(DVec3, f32)], camera_pos: DVec3) -> Vec<Poly
     
     // Helper closure to emit a single face strip
     let emit_strip = |verts: &mut Vec<PolylineVertex>, side_a: f32, v_side_a: f32, side_b: f32, v_side_b: f32, face: f32| {
+        // Start cap (if this is the absolute start of the flight path)
+        if !points.is_empty() && points[0].1 < 1e-5 {
+            let (curr, prog) = points[0];
+            let next = if points.len() > 1 { points[1].0 } else { curr + DVec3::X };
+            let prev = curr + (curr - next).normalize_or_zero() * 1.0;
+            let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
+            let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];
+            let next_f32 = [next.x as f32, next.y as f32, next.z as f32];
+
+            verts.push(PolylineVertex {
+                position: curr_f32, previous: prev_f32, next: next_f32,
+                side: side_a, v_side: v_side_a, face, progress: prog, forward: -1.0,
+            });
+            verts.push(PolylineVertex {
+                position: curr_f32, previous: prev_f32, next: next_f32,
+                side: side_b, v_side: v_side_b, face, progress: prog, forward: -1.0,
+            });
+        }
+
         for i in 0..points.len() {
             let (curr, prog) = points[i];
             let prev = if i > 0 { points[i - 1].0 } else { curr + (curr - points[i + 1].0).normalize_or_zero() * 1.0 };
@@ -221,12 +240,31 @@ pub fn generate_vertices(points: &[(DVec3, f32)], camera_pos: DVec3) -> Vec<Poly
 
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: prog,
+                side: side_a, v_side: v_side_a, face, progress: prog, forward: 0.0,
             });
 
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: prog,
+                side: side_b, v_side: v_side_b, face, progress: prog, forward: 0.0,
+            });
+        }
+
+        // End cap (if this is the absolute end of the flight path)
+        if !points.is_empty() && points.last().unwrap().1 > 1.0 - 1e-5 {
+            let (curr, prog) = *points.last().unwrap();
+            let prev = if points.len() > 1 { points[points.len() - 2].0 } else { curr + DVec3::X };
+            let next = curr + (curr - prev).normalize_or_zero() * 1.0;
+            let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
+            let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];
+            let next_f32 = [next.x as f32, next.y as f32, next.z as f32];
+
+            verts.push(PolylineVertex {
+                position: curr_f32, previous: prev_f32, next: next_f32,
+                side: side_a, v_side: v_side_a, face, progress: prog, forward: 1.0,
+            });
+            verts.push(PolylineVertex {
+                position: curr_f32, previous: prev_f32, next: next_f32,
+                side: side_b, v_side: v_side_b, face, progress: prog, forward: 1.0,
             });
         }
     };

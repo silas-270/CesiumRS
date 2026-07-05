@@ -593,7 +593,7 @@ impl<'a> WgpuState<'a> {
 
         for (filename, _, renderer) in &self.flights {
             // "leave FRA to JFK completely orange and split the STR to FRA in half"
-            let split = if filename.contains("STR_FRA") { 0.5 } else { -1.0 };
+            let split = if filename.contains("STR") { 0.5 } else { -1.0 };
             
             renderer.draw(
                 &mut render_pass, 
