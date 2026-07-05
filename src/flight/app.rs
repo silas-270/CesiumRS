@@ -178,22 +178,47 @@ impl GlobeExtension for FlightTrackerApp {
         viewport_size: [f32; 2],
         camera_pos_f64: [f64; 3],
     ) {
+        let current_progress = *self.progress.lock().unwrap();
+        let state_opt = self.get_plane_state_at(current_progress);
+        
+        let mut scale_factor = 1.0;
+        if let Some(state) = &state_opt {
+            let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
+            let cam = glam::Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
+            let relative_pos = pos_f32 - cam;
+            let distance = relative_pos.length(); // Distance in Megameters
+            
+            // Desired length of the airplane in Megameters (e.g. 5% of the distance)
+            let desired_length_mm = distance * 0.05;
+            
+            let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
+            let max_length_mm = 3000.0 * 1000.0 / 1_000_000.0; // 3000 km
+            
+            let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
+            
+            // Assuming the A350 model is approximately 67 local units (meters) long.
+            scale_factor = clamped_length_mm / 67.0;
+        }
+
         for flight in &self.flights {
+            let mut config = flight.config.clone();
+            // A350 fuselage width is ~5.96 meters. Half-width is 2.98 meters.
+            // Scale the physical half-width to match the scaled airplane.
+            config.physical_half_width = (2.98 / 1_000_000.0) * scale_factor;
+
             flight.renderer.draw(
                 render_pass, 
                 camera_bind_group, 
                 viewport_size, 
                 camera_pos_f64,
-                &flight.config,
+                &config,
             );
         }
 
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
-            let current_progress = *self.progress.lock().unwrap();
-            if let Some(state) = self.get_plane_state_at(current_progress) {
+            if let Some(state) = state_opt {
                 let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
-                
                 let cam = glam::Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
                 let relative_pos = pos_f32 - cam;
                 let translation = glam::Mat4::from_translation(relative_pos);
@@ -201,20 +226,6 @@ impl GlobeExtension for FlightTrackerApp {
                 let cur_rot = state.rotation;
                 let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
                 let rotation = glam::Mat4::from_quat(rot_f32);
-
-                // Dynamic scaling based on camera distance
-                let distance = relative_pos.length(); // Distance in Megameters
-                
-                // Desired length of the airplane in Megameters (e.g. 5% of the distance)
-                let desired_length_mm = distance * 0.05;
-                
-                let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
-                let max_length_mm = 3000.0 * 1000.0 / 1_000_000.0; // 3000 km
-                
-                let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
-                
-                // Assuming the A350 model is approximately 67 local units (meters) long.
-                let scale_factor = clamped_length_mm / 67.0; 
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
                 // Apply a constant yaw correction to align the A350.glb model with standard axes
