@@ -18,8 +18,9 @@ struct VertexInput {
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) face_shade: f32,
     @location(1) uv: vec2<f32>,
+    @location(2) progress: f32,
 };
 
 struct PushConstants {
@@ -102,12 +103,7 @@ fn vs_main(
 
     out.clip_position = clip_final;
     out.uv = vec2<f32>(model.side, model.forward);
-    
-    // Calculate color based on split_progress and face lighting
-    var base_color = vec3<f32>(1.0, 0.4, 0.0); // Orange
-    if push_constants.split_progress >= 0.0 && model.progress > push_constants.split_progress {
-        base_color = vec3<f32>(0.9, 0.9, 0.9); // White
-    }
+    out.progress = model.progress;
     
     // Add shading depending on face
     var face_shade = 1.0;
@@ -119,9 +115,7 @@ fn vs_main(
         face_shade = 0.7;
     }
     
-    base_color = base_color * face_shade;
-
-    out.color = vec4<f32>(base_color, 1.0);
+    out.face_shade = face_shade;
     return out;
 }
 
@@ -130,5 +124,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if length(in.uv) > 1.0 {
         discard;
     }
-    return in.color;
+    
+    var base_color = vec3<f32>(1.0, 0.4, 0.0); // Orange
+    if push_constants.split_progress >= 0.0 && in.progress > push_constants.split_progress {
+        base_color = vec3<f32>(0.9, 0.9, 0.9); // White
+    }
+    
+    return vec4<f32>(base_color * in.face_shade, 1.0);
 }
