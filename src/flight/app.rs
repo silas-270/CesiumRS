@@ -206,8 +206,19 @@ impl GlobeExtension for FlightTrackerApp {
                 let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
                 let rotation = glam::Mat4::from_quat(rot_f32);
 
-                // TEMP: User requested 500km size for testing
-                let scale_factor = 500000.0 / 6378137.0; 
+                // Dynamic scaling based on camera distance
+                let distance = relative_pos.length(); // Distance in Megameters
+                
+                // Desired length of the airplane in Megameters (e.g. 5% of the distance)
+                let desired_length_mm = distance * 0.05;
+                
+                let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
+                let max_length_mm = 2000.0 * 1000.0 / 1_000_000.0; // 2000 km
+                
+                let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
+                
+                // Assuming the A350 model is approximately 67 local units (meters) long.
+                let scale_factor = clamped_length_mm / 67.0; 
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
                 // Apply a constant yaw correction to align the A350.glb model with standard axes
