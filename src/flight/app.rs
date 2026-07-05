@@ -166,7 +166,7 @@ impl GlobeExtension for FlightTrackerApp {
                         let right = forward.cross(up).normalize();
                         let adjusted_forward = up.cross(right).normalize();
 
-                        let scale = Mat4::from_scale(Vec3::splat(1.0 / 6378137.0 * 10.0)); // scale so it's visible, globe is unit radius
+                        let scale = Mat4::from_scale(Vec3::splat(1.0 / 6378137.0 * 50000.0)); // MASSIVE scale so it's guaranteed to be seen!
 
                         // Apply standard -Z forward orientation
                         let rotation = Mat4::from_cols(
@@ -178,7 +178,9 @@ impl GlobeExtension for FlightTrackerApp {
 
                         // Position relative to camera using camera_pos_f64
                         let cam = Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
-                        let relative_pos = pos_f32 - cam;
+                        // Lift the plane by 10km so it doesn't clip into the ground
+                        let lift = up * (10000.0 / 6378137.0);
+                        let relative_pos = (pos_f32 + lift) - cam;
                         
                         let translation = Mat4::from_translation(relative_pos);
                         let model_matrix = translation * rotation * scale;
