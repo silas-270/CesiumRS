@@ -217,8 +217,8 @@ impl GlobeExtension for FlightTrackerApp {
                 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
                 
-                // Assuming the A350 model is approximately 67 local units (meters) long.
-                let scale_factor = clamped_length_mm / 67.0; 
+                // Assuming the A350 model is approximately 1.0 local units long.
+                let scale_factor = clamped_length_mm / 1.0; 
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
                 // Apply a constant yaw correction to align the A350.glb model with standard axes
