@@ -27,4 +27,7 @@ pub trait GlobeExtension {
         viewport_size: [f32; 2],
         camera_pos_f64: [f64; 3],
     );
+
+    /// Called every frame to allow extensions to draw their own egui UI
+    fn ui(&mut self, _ctx: &egui::Context) {}
 }

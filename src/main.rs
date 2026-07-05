@@ -86,20 +86,7 @@ fn main() {
         });
         
         let progress = Arc::new(Mutex::new(0.0));
-        let progress_clone = progress.clone();
-        
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            loop {
-                let elapsed = start.elapsed().as_secs_f64();
-                let p = (elapsed / 60.0).clamp(0.0, 1.0);
-                *progress_clone.lock().unwrap() = p;
-                if p >= 1.0 {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(16));
-            }
-        });
+        // Progress is now controlled via the debug UI
 
         let mut flight_app = Box::new(cesium_rs::flight::app::FlightTrackerApp::new(progress));
         

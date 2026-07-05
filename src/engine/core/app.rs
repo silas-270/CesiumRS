@@ -113,25 +113,13 @@ impl<'a> App<'a> {
             }
 
             ui.separator();
-            ui.label("Caching & Performance");
-            ui.checkbox(&mut state.tile_system.config.enable_prefetch, "Preload Neighboring Tiles");
-            
-            let mut texture_cache_size = state.tile_system.config.max_cache_size.get();
-            if ui.add(egui::Slider::new(&mut texture_cache_size, 512..=8192).text("Texture Cache Size")).changed() {
-                state.tile_system.config.max_cache_size = std::num::NonZeroUsize::new(texture_cache_size).unwrap();
-                state.tile_system.texture_manager.resize(state.tile_system.config.max_cache_size);
-            }
-
-            let mut mesh_cache_size = state.tile_system.config.mesh_cache_size.get();
-            if ui.add(egui::Slider::new(&mut mesh_cache_size, 128..=2048).text("Mesh Cache Size")).changed() {
-                state.tile_system.config.mesh_cache_size = std::num::NonZeroUsize::new(mesh_cache_size).unwrap();
-                state.resize_tile_cache(state.tile_system.config.mesh_cache_size);
-            }
-
-            ui.separator();
             let (req, mis) = state.get_fetch_stats();
             ui.label(format!("Missing Tiles: {} / Requested: {}", mis, req));
         });
+
+        if let Some(ext) = &mut state.extension {
+            ext.ui(ctx);
+        }
     }
 }
 
