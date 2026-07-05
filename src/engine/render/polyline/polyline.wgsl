@@ -56,7 +56,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     normal_3d = normalize(normal_3d);
 
     // 4. Robust Edge-of-Screen Extrusion (fixes distortion when w changes rapidly)
-    let physical_half_width = 0.00006; // 60 meters in Megameters
+    let physical_half_width = 0.0001; // 100 meters in Megameters (so 200m total width)
     let extruded_3d = rel_curr + normal_3d * physical_half_width;
     let clip_extruded = camera.view_proj * vec4<f32>(extruded_3d, 1.0);
     
