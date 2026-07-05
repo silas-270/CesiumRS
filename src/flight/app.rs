@@ -209,7 +209,7 @@ impl GlobeExtension for FlightTrackerApp {
                 let desired_length_mm = distance * 0.05;
                 
                 let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
-                let max_length_mm = 2000.0 * 1000.0 / 1_000_000.0; // 2000 km
+                let max_length_mm = 3000.0 * 1000.0 / 1_000_000.0; // 3000 km
                 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
                 
