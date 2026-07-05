@@ -217,4 +217,13 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
     }
+
+    fn ui(&mut self, ctx: &egui::Context) {
+        egui::Window::new("Flight Controls").show(ctx, |ui| {
+            let mut p = *self.progress.lock().unwrap() as f32;
+            if ui.add(egui::Slider::new(&mut p, 0.0..=1.0).text("Flight Progress")).changed() {
+                *self.progress.lock().unwrap() = p as f64;
+            }
+        });
+    }
 }

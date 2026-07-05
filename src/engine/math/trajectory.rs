@@ -73,12 +73,12 @@ impl<'a> TrajectoryEvaluator<'a> {
         };
 
         let right = forward.cross(up).normalize_or_zero();
-        let adjusted_forward = up.cross(right).normalize_or_zero();
+        let true_up = right.cross(forward).normalize_or_zero();
 
         let rotation_mat = Mat4::from_cols(
             right.extend(0.0),               // Local X -> Right
-            up.extend(0.0),                  // Local Y -> Up
-            (-adjusted_forward).extend(0.0), // Local Z -> Backward
+            true_up.extend(0.0),             // Local Y -> Up
+            (-forward).extend(0.0),          // Local Z -> Backward
             Vec3::ZERO.extend(1.0),
         );
 
