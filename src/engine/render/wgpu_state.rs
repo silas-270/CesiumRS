@@ -254,7 +254,7 @@ impl<'a> WgpuState<'a> {
         );
         let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
         if let Some(ext) = &mut extension {
-            ext.init(&device, &config, &camera_bind_group_layout);
+            ext.init(&device, &queue, &config, &camera_bind_group_layout);
         }
 
         Self {
