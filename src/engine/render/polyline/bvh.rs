@@ -192,8 +192,21 @@ impl PolylineBVH {
     }
 }
 
-pub fn generate_vertices(points: &[(DVec3, f32)]) -> Vec<PolylineVertex> {
-    let mut vertices = Vec::with_capacity(points.len() * 8 + 6);
+pub fn generate_vertices(points: &[(DVec3, f32)], camera_pos: DVec3) -> Vec<PolylineVertex> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+
+    // Calculate LOD distance based on the center of the strip
+    let center = points.iter().fold(DVec3::ZERO, |acc, p| acc + p.0) / points.len() as f64;
+    let dist = center.distance(camera_pos);
+    let is_3d = dist < 0.2; // 200km threshold
+
+    let mut vertices = if is_3d {
+        Vec::with_capacity(points.len() * 8 + 6)
+    } else {
+        Vec::with_capacity(points.len() * 2)
+    };
     
     // Helper closure to emit a single face strip
     let emit_strip = |verts: &mut Vec<PolylineVertex>, side_a: f32, v_side_a: f32, side_b: f32, v_side_b: f32, face: f32| {
@@ -218,7 +231,9 @@ pub fn generate_vertices(points: &[(DVec3, f32)]) -> Vec<PolylineVertex> {
         }
     };
 
-    if points.is_empty() {
+    if !is_3d {
+        // LOD 2D Ribbon: just emit the top face with v_side = 0.0
+        emit_strip(&mut vertices, -1.0, 0.0, 1.0, 0.0, 0.0);
         return vertices;
     }
 

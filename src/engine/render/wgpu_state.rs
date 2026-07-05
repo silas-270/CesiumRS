@@ -395,7 +395,7 @@ impl<'a> WgpuState<'a> {
             
             let visible_strips = bvh.collect_visible_segments(cam_pos_dvec3, &frustum, 5e-8);
             for strip in visible_strips {
-                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip);
+                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip, cam_pos_dvec3);
                 if !vertices.is_empty() && !strip_verts.is_empty() {
                     // Insert degenerate vertices to break the triangle strip
                     vertices.push(*vertices.last().unwrap());
