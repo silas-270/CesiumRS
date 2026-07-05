@@ -28,8 +28,10 @@ pub fn run(config: Option<testing::VerifyConfig>) {
             event_loop.run_app(&mut app).unwrap();
         }
     } else {
-        let viewer = Viewer::new(ViewerOptions::default());
-        viewer.run(None);
+        let mut app = crate::android_perf_app::AndroidPerfApp::new();
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.run_app(&mut app).unwrap();
     }
 }
 

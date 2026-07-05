@@ -50,54 +50,46 @@ impl<'a> ApplicationHandler for AndroidPerfApp<'a> {
                 // 15 - 30s: Tilt down
                 // 30 - 60s: Fly forward
                 
-                let target_lon_rad = 9.2_f32.to_radians(); // Stuttgart
-                let target_lat_rad = 48.7_f32.to_radians();
-                let mercator_y = (std::f32::consts::PI / 4.0 + target_lat_rad / 2.0).tan().ln();
+                let str_surface = crate::engine::globe::geometry::lon_lat_to_ecef(9.2, 48.7);
+                let str_normal = str_surface.normalize();
+                let fra_surface = crate::engine::globe::geometry::lon_lat_to_ecef(8.5, 50.0);
+                let fra_normal = fra_surface.normalize();
                 
                 let mut eye = state.camera.local_pos;
-                let mut target = eye + glam::Vec3::new(0.0, 0.0, -1.0); // Look down by default
+                let mut target = eye - str_normal; // Look down by default
 
                 if elapsed < 15.0 {
                     let progress = elapsed / 15.0;
-                    // Ease in out
                     let t = progress * progress * (3.0 - 2.0 * progress);
                     
-                    let start_eye = Vec3::new(0.0, 0.0, 8.0);
-                    let end_eye = Vec3::new(target_lon_rad, mercator_y, 0.05); // Above STR
+                    let start_eye = Vec3::new(0.0, 0.0, 15.0);
+                    let end_eye = str_surface + str_normal * 0.1; // 100km above STR
                     
                     eye = start_eye.lerp(end_eye, t);
-                    target = eye + Vec3::new(0.0, 0.0, -1.0); // Look straight down
+                    // Interpolate target from pointing at origin, to pointing at surface
+                    target = eye - Vec3::new(0.0, 0.0, 1.0).lerp(str_normal, t);
                 } else if elapsed < 30.0 {
                     let progress = (elapsed - 15.0) / 15.0;
                     let t = progress * progress * (3.0 - 2.0 * progress);
                     
-                    eye = Vec3::new(target_lon_rad, mercator_y, 0.05);
+                    eye = str_surface + str_normal * 0.1;
                     
-                    let start_target = eye + Vec3::new(0.0, 0.0, -1.0);
-                    // Tilt to look along the horizon (slightly down and towards FRA)
-                    let fra_lon_rad = 8.5_f32.to_radians();
-                    let fra_lat_rad = 50.0_f32.to_radians();
-                    let fra_mercator_y = (std::f32::consts::PI / 4.0 + fra_lat_rad / 2.0).tan().ln();
-                    
-                    let dir = Vec3::new(fra_lon_rad - target_lon_rad, fra_mercator_y - mercator_y, -0.01).normalize();
-                    let end_target = eye + dir;
+                    let start_target = eye - str_normal;
+                    let dir_to_fra = (fra_surface - str_surface).normalize();
+                    let end_target = eye + dir_to_fra - str_normal * 0.15; // Look ahead and slightly down
                     
                     target = start_target.lerp(end_target, t);
                 } else if elapsed < 60.0 {
                     let progress = (elapsed - 30.0) / 30.0;
                     
-                    let fra_lon_rad = 8.5_f32.to_radians();
-                    let fra_lat_rad = 50.0_f32.to_radians();
-                    let fra_mercator_y = (std::f32::consts::PI / 4.0 + fra_lat_rad / 2.0).tan().ln();
-                    
-                    let start_eye = Vec3::new(target_lon_rad, mercator_y, 0.05);
-                    let end_eye = Vec3::new(fra_lon_rad, fra_mercator_y, 0.05);
+                    let start_eye = str_surface + str_normal * 0.1;
+                    let end_eye = fra_surface + fra_normal * 0.1;
                     
                     eye = start_eye.lerp(end_eye, progress);
+                    let current_normal = str_normal.lerp(fra_normal, progress).normalize();
                     let dir = (end_eye - start_eye).normalize();
-                    target = eye + dir + Vec3::new(0.0, 0.0, -0.05);
+                    target = eye + dir - current_normal * 0.15;
                 } else {
-                    // Loop animation
                     self.start_time = Some(Instant::now());
                 }
 
