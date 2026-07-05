@@ -66,7 +66,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
     // 4. Robust Edge-of-Screen Extrusion
     let physical_half_width = 0.0002; // 200 meters in Megameters (400m total width)
-    let physical_half_height = 0.000003; // 3 meters (6m total height)
+    let physical_half_height = 0.000015; // 15 meters (30m total height)
 
     let dist_to_cam = length(rel_curr);
     
@@ -76,7 +76,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     
     let width_pixels = (physical_half_width * 2.0) * pixels_per_mm;
     
-    let min_pixels = push_constants.thickness;
+    let min_pixels = push_constants.thickness * 1.5;
     var scale_multiplier = 1.0;
     if width_pixels > 0.00001 {
         scale_multiplier = max(1.0, min_pixels / width_pixels);
