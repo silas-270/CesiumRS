@@ -66,7 +66,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
     // 4. Robust Edge-of-Screen Extrusion
     let physical_half_width = 0.0002; // 200 meters in Megameters (400m total width)
-    let physical_half_height = 0.000001; // 1 meter (2m total height)
+    let physical_half_height = 0.000003; // 3 meters (6m total height)
 
     let dist_to_cam = length(rel_curr);
     
