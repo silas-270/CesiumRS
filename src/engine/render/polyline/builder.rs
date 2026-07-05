@@ -13,6 +13,7 @@ pub struct PolylineVertex {
     pub v_side: f32,
     pub face: f32,
     pub progress: f32,
+    pub forward: f32,
 }
 
 impl PolylineVertex {
@@ -54,6 +55,11 @@ impl PolylineVertex {
                 wgpu::VertexAttribute {
                     offset: 48,
                     shader_location: 6,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 52,
+                    shader_location: 7,
                     format: wgpu::VertexFormat::Float32,
                 },
             ],
@@ -189,6 +195,7 @@ impl AdaptiveSubdivisionBuilder {
                 v_side: 1.0,
                 face: 0.0,
                 progress: 0.0,
+                forward: 0.0,
             });
 
             vertices.push(PolylineVertex {
@@ -199,6 +206,7 @@ impl AdaptiveSubdivisionBuilder {
                 v_side: 1.0,
                 face: 0.0,
                 progress: 0.0,
+                forward: 0.0,
             });
         }
 

@@ -13,11 +13,13 @@ struct VertexInput {
     @location(4) v_side: f32,
     @location(5) face: f32,
     @location(6) progress: f32,
+    @location(7) forward: f32,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
 };
 
 struct PushConstants {
@@ -29,34 +31,38 @@ struct PushConstants {
 var<push_constant> push_constants: PushConstants;
 
 @vertex
-fn vs_main(model: VertexInput) -> VertexOutput {
+fn vs_main(
+    model: VertexInput,
+) -> VertexOutput {
     var out: VertexOutput;
 
-    // Relative to camera position
-    let cam_pos = push_constants.camera_pos.xyz;
-    
-    let rel_curr = model.position - cam_pos;
-    let rel_prev = model.previous - cam_pos;
-    let rel_next = model.next - cam_pos;
+    // 1. Transform positions relative to camera using DVec3 precision
+    let pos_3d = model.position;
+    let prev_3d = model.previous;
+    let next_3d = model.next;
 
-    // Extrude direction (horizontal)
+    let rel_curr = pos_3d - push_constants.camera_pos.xyz;
+    let rel_prev = prev_3d - push_constants.camera_pos.xyz;
+    let rel_next = next_3d - push_constants.camera_pos.xyz;
+
+    // 2. Calculate up vector based on current spherical position
+    var up_3d = normalize(pos_3d);
+
+    // 3. Compute tangent in 3D
     let dir_prev = normalize(rel_curr - rel_prev);
     let dir_next = normalize(rel_next - rel_curr);
     
-    var tangent = dir_prev + dir_next;
-    let tangent_len = length(tangent);
-    if tangent_len > 0.001 {
-        tangent = tangent / tangent_len;
-    } else {
-        tangent = dir_next;
-        if length(tangent) < 0.001 {
-            tangent = vec3<f32>(1.0, 0.0, 0.0);
-        }
+    var tangent = dir_next;
+    if length(dir_next) < 0.001 {
+        tangent = dir_prev;
+    } else if length(dir_prev) > 0.001 {
+        tangent = normalize(dir_prev + dir_next);
+    }
+    
+    if length(tangent) < 0.001 {
+        tangent = vec3<f32>(1.0, 0.0, 0.0);
     }
 
-    // Up vector is the normal to the globe surface
-    let up_3d = normalize(model.position);
-    
     // Horizontal extrusion vector (cross product)
     var normal_3d = cross(up_3d, tangent);
     if length(normal_3d) < 0.001 {
@@ -87,11 +93,15 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     // Height uses the exact same scaling logic so proportions stay perfectly identical
     let final_half_height = physical_half_height * scale_multiplier;
     
-    let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side;
-    let extruded_3d = rel_curr + corner_offset_3d;
+    // Elevate 5m to avoid clipping
+    let elevation_offset = up_3d * 0.000005;
+
+    let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side + tangent * final_half_width * model.forward;
+    let extruded_3d = rel_curr + corner_offset_3d + elevation_offset;
     let clip_final = camera.view_proj * vec4<f32>(extruded_3d, 1.0);
 
     out.clip_position = clip_final;
+    out.uv = vec2<f32>(model.side, model.forward);
     
     // Calculate color based on split_progress and face lighting
     var base_color = vec3<f32>(1.0, 0.4, 0.0); // Orange
@@ -117,5 +127,8 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    if length(in.uv) > 1.0 {
+        discard;
+    }
     return in.color;
 }
