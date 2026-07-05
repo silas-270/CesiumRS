@@ -84,6 +84,7 @@ fn main() {
             ..Default::default()
         });
         
-        viewer.run();
+        let flight_app = Box::new(cesium_rs::flight::app::FlightTrackerApp::new());
+        viewer.run(Some(flight_app));
     }
 }

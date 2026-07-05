@@ -1,5 +1,4 @@
 use crate::engine::camera::camera::Camera;
-use crate::engine::globe::geometry::Vertex;
 use crate::engine::globe::quadtree::{QuadtreeManager, TileId};
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
@@ -8,7 +7,6 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use lru::LruCache;
-use std::num::NonZeroUsize;
 
 pub struct TileBuffers {
     pub vertex_buffer: wgpu::Buffer,
@@ -72,7 +70,7 @@ pub struct WgpuState<'a> {
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::engine::globe::tiles::system::TileSystem,
-    pub flights: Vec<crate::engine::flight::FlightEntity>,
+    pub extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>,
 }
 
 fn create_depth_texture(
@@ -123,7 +121,11 @@ fn execute_egui<'rp>(
 }
 
 impl<'a> WgpuState<'a> {
-    pub async fn new(window: Arc<Window>, engine_config: crate::engine::globe::tiles::config::TileEngineConfig) -> Self {
+    pub async fn new(
+        window: Arc<Window>, 
+        engine_config: crate::engine::globe::tiles::config::TileEngineConfig,
+        mut extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>
+    ) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -147,7 +149,7 @@ impl<'a> WgpuState<'a> {
                     label: None,
                     required_features: wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::PUSH_CONSTANTS,
                     required_limits: wgpu::Limits {
-                        max_push_constant_size: 32,
+                        max_push_constant_size: 128,
                         ..Default::default()
                     },
                     memory_hints: wgpu::MemoryHints::default(),
@@ -251,40 +253,8 @@ impl<'a> WgpuState<'a> {
             Some(2048),
         );
         let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
-        let mut flights = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(".") {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-                        if filename.starts_with("flight_") && filename.ends_with(".json") {
-                            if let Ok(property) = crate::engine::flight::load_flight_path(&path) {
-                                if let Some(bvh) = crate::engine::render::polyline::bvh::PolylineBVH::build(&property) {
-                                    println!("BVH loaded: {}", filename);
-                                    let renderer = crate::engine::render::polyline::pipeline::PolylineRenderer::new(&device, &config, &camera_bind_group_layout);
-                                    let mut poly_config = crate::engine::render::polyline::pipeline::PolylineConfig::default();
-                                    
-                                    if filename.contains("STR") {
-                                        poly_config.split_progress = 0.5;
-                                        poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
-                                    }
-
-                                    flights.push(crate::engine::flight::FlightEntity {
-                                        id: filename.to_string(),
-                                        bvh,
-                                        renderer,
-                                        config: poly_config,
-                                    });
-                                } else {
-                                    println!("Failed to build BVH for: {}", filename);
-                                }
-                            } else {
-                                println!("Failed to load flight path: {}", filename);
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(ext) = &mut extension {
+            ext.init(&device, &config, &camera_bind_group_layout);
         }
 
         Self {
@@ -315,7 +285,7 @@ impl<'a> WgpuState<'a> {
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             tile_system,
-            flights,
+            extension,
         }
     }
 
@@ -402,20 +372,8 @@ impl<'a> WgpuState<'a> {
 
         let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
         
-        for flight in &mut self.flights {
-            let mut vertices = Vec::new();
-            
-            let visible_strips = flight.bvh.collect_visible_segments(cam_pos_dvec3, &frustum, 5e-8);
-            for strip in visible_strips {
-                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip, cam_pos_dvec3);
-                if !vertices.is_empty() && !strip_verts.is_empty() {
-                    // Insert degenerate vertices to break the triangle strip
-                    vertices.push(*vertices.last().unwrap());
-                    vertices.push(*strip_verts.first().unwrap());
-                }
-                vertices.append(&mut strip_verts);
-            }
-            flight.renderer.update_geometry(&self.device, &self.queue, &vertices);
+        if let Some(ext) = &mut self.extension {
+            ext.update(&self.device, &self.queue, cam_pos_dvec3, &frustum);
         }
 
         let mut gpu_view_matrix = view_matrix;
@@ -603,13 +561,12 @@ impl<'a> WgpuState<'a> {
             render_pass.draw(0..self.num_debug_vertices, 0..1);
         }
 
-        for flight in &self.flights {
-            flight.renderer.draw(
-                &mut render_pass, 
-                &self.camera_bind_group, 
-                [self.config.width as f32, self.config.height as f32], 
+        if let Some(ext) = &self.extension {
+            ext.render(
+                &mut render_pass,
+                &self.camera_bind_group,
+                [self.config.width as f32, self.config.height as f32],
                 camera_pos_f64,
-                &flight.config,
             );
         }
     }
@@ -673,7 +630,7 @@ impl<'a> WgpuState<'a> {
         &mut self, 
         screenshot_out: Option<&str>, 
         capture_memory: bool,
-        mut ui_closure: F,
+        ui_closure: F,
     ) -> Result<Option<Vec<u8>>, wgpu::SurfaceError> {
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let main_view_proj =

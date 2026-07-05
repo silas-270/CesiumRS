@@ -1,4 +1,3 @@
-use wgpu::util::DeviceExt;
 use crate::engine::render::polyline::builder::PolylineVertex;
 
 #[repr(C)]

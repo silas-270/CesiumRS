@@ -21,7 +21,7 @@ impl<'a> StressApp<'a> {
         let mut log_file = File::create(&filename).unwrap();
         writeln!(log_file, "frame,speed_multiplier,requested_tiles,missing_tiles").unwrap();
         Self {
-            inner: App::new(crate::engine::globe::tiles::config::TileEngineConfig::default()),
+            inner: App::new(crate::engine::globe::tiles::config::TileEngineConfig::default(), None),
             frame_count: 0,
             log_file,
             setup_done: false,

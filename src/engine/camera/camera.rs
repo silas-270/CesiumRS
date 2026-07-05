@@ -216,7 +216,7 @@ impl Camera {
         let r2 = vp.row(2);
         let r3 = vp.row(3);
 
-        let mut planes = [
+        let planes = [
             r3 + r0, // Left
             r3 - r0, // Right
             r3 + r1, // Bottom

@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod viewer;
+pub mod flight;
 
 #[cfg(not(target_os = "android"))]
 pub mod testing;
@@ -26,7 +27,7 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         }
     } else {
         let viewer = Viewer::new(ViewerOptions::default());
-        viewer.run();
+        viewer.run(None);
     }
 }
 
