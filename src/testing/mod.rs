@@ -57,3 +57,6 @@ mod test_z_sweep;
 mod test_entity;
 #[cfg(test)]
 mod test_flight_parser;
+#[cfg(test)]
+mod test_trajectory_alignment;  
+ 
