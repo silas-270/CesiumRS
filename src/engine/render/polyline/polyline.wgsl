@@ -25,9 +25,13 @@ struct VertexOutput {
 
 struct PushConstants {
     camera_pos: vec4<f32>,
+    color_start: vec4<f32>,
+    color_end: vec4<f32>,
     viewport_size: vec2<f32>,
     thickness: f32,
     split_progress: f32,
+    physical_half_width: f32,
+    physical_half_height: f32,
 };
 var<push_constant> push_constants: PushConstants;
 
@@ -72,8 +76,8 @@ fn vs_main(
     normal_3d = normalize(normal_3d);
 
     // 4. Robust Edge-of-Screen Extrusion
-    let physical_half_width = 0.0002; // 200 meters in Megameters (400m total width)
-    let physical_half_height = 0.000015; // 15 meters (30m total height)
+    let physical_half_width = push_constants.physical_half_width;
+    let physical_half_height = push_constants.physical_half_height;
 
     let dist_to_cam = length(rel_curr);
     
@@ -125,10 +129,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     
-    var base_color = vec3<f32>(1.0, 0.4, 0.0); // Orange
+    var base_color = push_constants.color_start.rgb;
     if push_constants.split_progress >= 0.0 && in.progress > push_constants.split_progress {
-        base_color = vec3<f32>(0.9, 0.9, 0.9); // White
+        base_color = push_constants.color_end.rgb;
     }
     
-    return vec4<f32>(base_color * in.face_shade, 1.0);
+    return vec4<f32>(base_color * in.face_shade, push_constants.color_start.a);
 }

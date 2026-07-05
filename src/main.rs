@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "android"))]
+
 use cesium_rs::run;
 use cesium_rs::testing::VerifyConfig;
 use clap::Parser;
