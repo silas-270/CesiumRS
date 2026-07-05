@@ -21,8 +21,7 @@ struct VertexOutput {
 };
 
 struct PushConstants {
-    camera_pos_high: vec3<f32>,
-    camera_pos_low: vec3<f32>,
+    camera_pos: vec4<f32>,
     viewport_size: vec2<f32>,
     thickness: f32,
     split_progress: f32,
@@ -34,7 +33,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
     // Relative to camera position
-    let cam_pos = vec3<f32>(push_constants.camera_pos_high) + push_constants.camera_pos_low;
+    let cam_pos = push_constants.camera_pos.xyz;
     
     let rel_curr = model.position - cam_pos;
     let rel_prev = model.previous - cam_pos;
@@ -71,21 +70,10 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
     // Calculate how big it is on screen
     let clip_center = camera.view_proj * vec4<f32>(rel_curr, 1.0);
-    let clip_right = camera.view_proj * vec4<f32>(rel_curr + normal_3d * physical_half_width, 1.0);
     
-    let ndc_center = clip_center.xy / max(clip_center.w, 0.000001);
-    let ndc_right = clip_right.xy / max(clip_right.w, 0.000001);
-    
-    let width_pixels = length((ndc_right - ndc_center) * push_constants.viewport_size * 0.5);
-    
-    let min_pixels = push_constants.thickness / 2.0;
-    var scale_multiplier = 1.0;
-    if width_pixels > 0.00001 {
-        scale_multiplier = max(1.0, min_pixels / width_pixels);
-    }
-    
-    let final_half_width = physical_half_width * scale_multiplier;
-    let final_half_height = physical_half_height * scale_multiplier;
+    // TEMPORARY DEBUG: Hardcode massive size
+    let final_half_width = 0.001; // 1000 meters
+    let final_half_height = 0.001; // 1000 meters
     
     let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side;
     let extruded_3d = rel_curr + corner_offset_3d;
