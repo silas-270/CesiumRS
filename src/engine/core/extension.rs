@@ -5,6 +5,7 @@ pub trait GlobeExtension {
     fn init(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     );

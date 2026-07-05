@@ -65,12 +65,13 @@ impl GlobeExtension for FlightTrackerApp {
     fn init(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         config: &wgpu::SurfaceConfiguration,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) {
         // Try loading the A350.glb model from the root directory
         if let Ok(glb_bytes) = std::fs::read("A350.glb") {
-            if let Ok(renderer) = ModelRenderer::new(device, config, camera_bind_group_layout, &glb_bytes) {
+            if let Ok(renderer) = ModelRenderer::new(device, queue, config, camera_bind_group_layout, &glb_bytes) {
                 self.airplane_renderer = Some(renderer);
             }
         }
@@ -151,9 +152,8 @@ impl GlobeExtension for FlightTrackerApp {
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
             if let Some(flight) = self.flights.first() {
-                // Determine current position
-                let elapsed_secs = self.start_time.elapsed().as_secs_f64() * 100.0; // speed up 100x for testing
-                let time = SimulationTime::new(elapsed_secs % 3600.0); // loop
+                // Freeze the plane at the start for testing
+                let time = SimulationTime::new(0.0);
                 
                 if let Some(pos) = flight.property.evaluate(time) {
                     let next_time = SimulationTime::new(time.seconds + 0.1);
@@ -166,7 +166,13 @@ impl GlobeExtension for FlightTrackerApp {
                         let right = forward.cross(up).normalize();
                         let adjusted_forward = up.cross(right).normalize();
 
-                        let scale = Mat4::from_scale(Vec3::splat(1.0 / 6378137.0 * 50000.0)); // MASSIVE scale so it's guaranteed to be seen!
+                        let scale_factor = 1.0 / 6378137.0; // Base engine scale (meters to earth radii)
+                        // If model is huge, maybe scale it down. But let's leave base scale.
+                        // Wait, 1.0 engine unit = 6378137 meters. So if model is 67 meters, it becomes 67 * scale_factor = ~0.00001 engine units.
+                        let scale = Mat4::from_scale(Vec3::splat(scale_factor));
+
+                        // Pre-rotate model to fix Y-up/Z-forward mismatch (rotate -90 deg around local X)
+                        let pre_rotation = Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
                         // Apply standard -Z forward orientation
                         let rotation = Mat4::from_cols(
@@ -183,9 +189,20 @@ impl GlobeExtension for FlightTrackerApp {
                         let relative_pos = (pos_f32 + lift) - cam;
                         
                         let translation = Mat4::from_translation(relative_pos);
-                        let model_matrix = translation * rotation * scale;
+                        let model_matrix = translation * rotation * pre_rotation * scale;
 
-                        airplane.draw(render_pass, camera_bind_group, model_matrix);
+                        use crate::engine::render::model::pipeline::ModelPushConstants;
+                        let push = ModelPushConstants {
+                            model_matrix_0: model_matrix.x_axis.to_array(),
+                            model_matrix_1: model_matrix.y_axis.to_array(),
+                            model_matrix_2: model_matrix.z_axis.to_array(),
+                            model_matrix_3: model_matrix.w_axis.to_array(),
+                            camera_pos: [camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32, 1.0],
+                            viewport_size,
+                            padding: [0.0, 0.0],
+                        };
+
+                        airplane.draw(render_pass, camera_bind_group, push);
                     }
                 }
             }
