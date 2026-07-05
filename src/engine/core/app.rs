@@ -156,7 +156,7 @@ impl<'a> ApplicationHandler for App<'a> {
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             self.window = Some(window.clone());
 
-            let mut state = pollster::block_on(WgpuState::new(window, self.config.clone(), self.extension.take()));
+            let state = pollster::block_on(WgpuState::new(window, self.config.clone(), self.extension.take()));
             self.wgpu_state = Some(state);
         }
     }
@@ -298,16 +298,21 @@ impl<'a> ApplicationHandler for App<'a> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        let dt = if let Some(last) = self.last_frame_time {
+            let elapsed = now.duration_since(last);
+            let target = std::time::Duration::from_secs_f32(1.0 / 60.0);
+            if elapsed < target {
+                std::thread::sleep(target - elapsed);
+            }
+            Instant::now().duration_since(last).as_secs_f32()
+        } else {
+            0.016
+        };
+        self.last_frame_time = Some(Instant::now());
+
         if let Some(state) = &mut self.wgpu_state {
             if state.debug_mode {
-                let now = Instant::now();
-                let dt = if let Some(last) = self.last_frame_time {
-                    now.duration_since(last).as_secs_f32()
-                } else {
-                    0.016
-                };
-                self.last_frame_time = Some(now);
-
                 let mut movement = Vec3::ZERO;
                 if self.pressed_keys.contains(&KeyCode::KeyW) {
                     movement.z += 1.0;
@@ -334,12 +339,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 }
                 if movement != Vec3::ZERO {
                     state.debug_camera.update(dt, movement.normalize_or_zero(), fast);
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
                 }
-            } else {
-                self.last_frame_time = None;
             }
         }
 

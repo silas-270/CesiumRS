@@ -1,4 +1,4 @@
-use glam::{DVec3, DVec4};
+use glam::DVec3;
 
 pub trait GlobeExtension {
     /// Called during engine initialization to load pipelines and resources

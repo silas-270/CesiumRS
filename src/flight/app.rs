@@ -1,5 +1,5 @@
 use std::path::Path;
-use glam::{DVec3, DVec4};
+use glam::DVec3;
 
 use crate::engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
 use crate::engine::time::SimulationTime;
