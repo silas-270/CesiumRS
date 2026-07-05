@@ -33,11 +33,10 @@ fn test_plane_tangent_alignment() {
     let local_forward = DVec3::new(0.0, 0.0, -1.0);
     let plane_forward = state.rotation * local_forward;
     
-    // 3. Compare them
+    // Check if the true tangent matches evaluator forward (-Z)
     let distance = true_tangent.distance(plane_forward);
-    println!("True Tangent: {:?}", true_tangent);
-    println!("Plane Forward: {:?}", plane_forward);
-    println!("Difference: {}", distance);
     
     assert!(distance < 1e-4, "Plane vector is not perfectly aligned with polyline tangent!");
 }
+
+
