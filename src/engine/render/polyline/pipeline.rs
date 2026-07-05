@@ -28,8 +28,8 @@ impl Default for PolylineConfig {
     fn default() -> Self {
         Self {
             thickness: 4.0,
-            physical_half_width: 0.0002,
-            physical_half_height: 0.000015,
+            physical_half_width: 0.0000335,  // 33.5 meters (so full width is 67m, matching A350 length)
+            physical_half_height: 0.000005,  // 5 meters
             color_start: [1.0, 0.4, 0.0, 1.0], // Orange
             color_end: [1.0, 0.4, 0.0, 1.0],   // Orange
             split_progress: -1.0,
