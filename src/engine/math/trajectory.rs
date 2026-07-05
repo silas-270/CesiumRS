@@ -33,7 +33,7 @@ impl<'a> TrajectoryEvaluator<'a> {
         
         let forward = if let Some(next_pos) = self.property.evaluate(next_time) {
             let dir = next_pos - pos;
-            if dir.length_squared() > 1e-10 {
+            if dir.length_squared() > 1e-20 {
                 let d = dir.normalize();
                 Vec3::new(d.x as f32, d.y as f32, d.z as f32)
             } else {
@@ -44,7 +44,7 @@ impl<'a> TrajectoryEvaluator<'a> {
             let prev_time = SimulationTime::new(time.seconds - delta_seconds);
             if let Some(prev_pos) = self.property.evaluate(prev_time) {
                 let dir = pos - prev_pos;
-                if dir.length_squared() > 1e-10 {
+                if dir.length_squared() > 1e-20 {
                     let d = dir.normalize();
                     Vec3::new(d.x as f32, d.y as f32, d.z as f32)
                 } else {
@@ -59,13 +59,15 @@ impl<'a> TrajectoryEvaluator<'a> {
         let up = pos_f32.normalize_or_zero();
 
         // Construct orthonormal basis
+        // We prioritize the `forward` vector so the plane perfectly aligns with the polyline.
+        // `earth_up` is only used to determine the `right` vector.
         let right = forward.cross(up).normalize_or_zero();
-        let adjusted_forward = up.cross(right).normalize_or_zero();
+        let up_adjusted = right.cross(forward).normalize_or_zero();
 
         let rotation_mat = Mat4::from_cols(
             right.extend(0.0),               // Local X -> Right
-            up.extend(0.0),                  // Local Y -> Up
-            (-adjusted_forward).extend(0.0), // Local Z -> Backward
+            up_adjusted.extend(0.0),         // Local Y -> Up (adjusted for pitch)
+            (-forward).extend(0.0),          // Local Z -> Backward (exact tangent)
             Vec3::ZERO.extend(1.0),
         );
 
