@@ -113,13 +113,10 @@ impl<'a> App<'a> {
             }
 
             ui.separator();
-            let (req, mis) = state.get_fetch_stats();
-            ui.label(format!("Missing Tiles: {} / Requested: {}", mis, req));
+            if let Some(ext) = &mut state.extension {
+                ext.render_ui(ctx, ui);
+            }
         });
-
-        if let Some(ext) = &mut state.extension {
-            ext.ui(ctx);
-        }
     }
 }
 

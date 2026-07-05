@@ -39,12 +39,9 @@ impl<'a> TrajectoryEvaluator<'a> {
             let sample_time_next = SimulationTime::new(sample_time.seconds + 0.1);
             
             if let (Some(p0), Some(p1)) = (self.property.evaluate(sample_time), self.property.evaluate(sample_time_next)) {
-                let p0_f32 = Vec3::new(p0.x as f32, p0.y as f32, p0.z as f32);
-                let p1_f32 = Vec3::new(p1.x as f32, p1.y as f32, p1.z as f32);
-                
-                let dir = p1_f32 - p0_f32;
-                if dir.length_squared() > 1e-6 {
-                    avg_forward += DVec3::new(dir.x as f64, dir.y as f64, dir.z as f64).normalize();
+                let dir = p1 - p0;
+                if dir.length_squared() > 1e-10 {
+                    avg_forward += dir.normalize();
                     valid_samples += 1;
                 }
             }
@@ -60,10 +57,10 @@ impl<'a> TrajectoryEvaluator<'a> {
             // Fallback if no valid samples
             let next_time = SimulationTime::new(time.seconds + 0.1);
             if let Some(next_pos) = self.property.evaluate(next_time) {
-                let next_pos_f32 = Vec3::new(next_pos.x as f32, next_pos.y as f32, next_pos.z as f32);
-                let dir = next_pos_f32 - pos_f32;
-                if dir.length_squared() > 1e-6 {
-                    dir.normalize()
+                let dir = next_pos - pos;
+                if dir.length_squared() > 1e-10 {
+                    let d = dir.normalize();
+                    Vec3::new(d.x as f32, d.y as f32, d.z as f32)
                 } else {
                     Vec3::new(0.0, 1.0, 0.0)
                 }
@@ -73,12 +70,12 @@ impl<'a> TrajectoryEvaluator<'a> {
         };
 
         let right = forward.cross(up).normalize_or_zero();
-        let true_up = right.cross(forward).normalize_or_zero();
+        let adjusted_forward = up.cross(right).normalize_or_zero();
 
         let rotation_mat = Mat4::from_cols(
             right.extend(0.0),               // Local X -> Right
-            true_up.extend(0.0),             // Local Y -> Up
-            (-forward).extend(0.0),          // Local Z -> Backward
+            up.extend(0.0),                  // Local Y -> Up
+            (-adjusted_forward).extend(0.0), // Local Z -> Backward
             Vec3::ZERO.extend(1.0),
         );
 
