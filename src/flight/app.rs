@@ -197,7 +197,10 @@ impl GlobeExtension for FlightTrackerApp {
         if let Some(airplane) = &self.airplane_renderer {
             let current_progress = *self.progress.lock().unwrap();
             if let Some(state) = self.get_plane_state_at(current_progress) {
-                let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
+                // Elevate 5m (0.000005 Megameters) to avoid clipping and align with ribbon elevation
+                let up_dir = state.position.normalize();
+                let elevated_position = state.position + up_dir * 0.000005;
+                let pos_f32 = glam::Vec3::new(elevated_position.x as f32, elevated_position.y as f32, elevated_position.z as f32);
                 let cam = glam::Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
                 let relative_pos = pos_f32 - cam;
                 let translation = glam::Mat4::from_translation(relative_pos);
