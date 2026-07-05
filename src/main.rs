@@ -86,7 +86,6 @@ fn main() {
         });
         
         let progress = Arc::new(Mutex::new(0.0));
-        // Progress is now controlled via the debug UI
 
         let mut flight_app = Box::new(cesium_rs::flight::app::FlightTrackerApp::new(progress));
         

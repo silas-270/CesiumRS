@@ -28,6 +28,6 @@ pub trait GlobeExtension {
         camera_pos_f64: [f64; 3],
     );
 
-    /// Called every frame to allow extensions to draw their own egui UI
-    fn ui(&mut self, _ctx: &egui::Context) {}
+    /// Called every frame during egui rendering to add custom UI elements
+    fn render_ui(&mut self, _ctx: &egui::Context, _ui: &mut egui::Ui) {}
 }
