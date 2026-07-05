@@ -60,20 +60,45 @@ impl<'a> TrajectoryEvaluator<'a> {
         let mut up = earth_up;
 
         // Calculate centripetal acceleration to simulate banking (roll)
-        let prev_time = SimulationTime::new(time.seconds - delta_seconds);
-        if let (Some(prev_pos), Some(next_pos)) = (self.property.evaluate(prev_time), self.property.evaluate(next_time)) {
-            let v1 = (pos - prev_pos) / delta_seconds;
-            let v2 = (next_pos - pos) / delta_seconds;
-            let a = (v2 - v1) / delta_seconds;
+        // To prevent abrupt changes and simulate massive inertia, we average the acceleration.
+        let num_samples = 30;
+        let mut avg_a = Vec3::ZERO;
+        let mut valid_samples = 0;
+        
+        // We look ahead much further than we look behind so the plane can anticipate curves.
+        // For example, if inertia_window is 120s, lookahead=90s, lookbehind=30s.
+        let lookbehind = self.inertia_window_seconds * 0.25;
+        let lookahead = self.inertia_window_seconds * 0.75;
+        
+        for i in 0..=num_samples {
+            let t_offset = -lookbehind + (i as f64 / num_samples as f64) * self.inertia_window_seconds;
+            let sample_time = SimulationTime::new(time.seconds + t_offset);
             
-            let a_f32 = Vec3::new(a.x as f32, a.y as f32, a.z as f32);
+            let prev_t = SimulationTime::new(sample_time.seconds - delta_seconds);
+            let next_t = SimulationTime::new(sample_time.seconds + delta_seconds);
+            
+            if let (Some(p), Some(prev), Some(next)) = (
+                self.property.evaluate(sample_time),
+                self.property.evaluate(prev_t),
+                self.property.evaluate(next_t)
+            ) {
+                let v1 = (p - prev) / delta_seconds;
+                let v2 = (next - p) / delta_seconds;
+                let a = (v2 - v1) / delta_seconds;
+                avg_a += Vec3::new(a.x as f32, a.y as f32, a.z as f32);
+                valid_samples += 1;
+            }
+        }
+
+        if valid_samples > 0 {
+            avg_a /= valid_samples as f32;
             
             // Gravity is 9.81 m/s^2. In Megameters, that's 9.81e-6 Mm/s^2.
             let g_mm = 9.81e-6;
             let gravity_vector = -earth_up * g_mm;
             
             // Perceived gravity is actual gravity minus the acceleration (F_apparent = m*g - m*a)
-            let perceived_gravity = gravity_vector - a_f32;
+            let perceived_gravity = gravity_vector - avg_a;
             
             if perceived_gravity.length_squared() > 1e-20 {
                 // The plane aligns its "up" vector to oppose perceived gravity
