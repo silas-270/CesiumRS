@@ -70,10 +70,17 @@ impl GlobeExtension for FlightTrackerApp {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) {
         // Try loading the A350.glb model from the root directory
-        if let Ok(glb_bytes) = std::fs::read("A350.glb") {
-            if let Ok(renderer) = ModelRenderer::new(device, queue, config, camera_bind_group_layout, &glb_bytes) {
-                self.airplane_renderer = Some(renderer);
-            }
+        match std::fs::read("A350.glb") {
+            Ok(glb_bytes) => {
+                match ModelRenderer::new(device, queue, config, camera_bind_group_layout, &glb_bytes) {
+                    Ok(renderer) => {
+                        println!("A350.glb successfully loaded and renderer initialized!");
+                        self.airplane_renderer = Some(renderer);
+                    },
+                    Err(e) => eprintln!("Failed to initialize ModelRenderer: {:?}", e),
+                }
+            },
+            Err(e) => eprintln!("Failed to read A350.glb from disk: {:?}", e),
         }
 
         if let Ok(entries) = std::fs::read_dir(".") {
@@ -184,8 +191,8 @@ impl GlobeExtension for FlightTrackerApp {
 
                         // Position relative to camera using camera_pos_f64
                         let cam = Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
-                        // Lift the plane by 10km so it doesn't clip into the ground
-                        let lift = up * (10000.0 / 6378137.0);
+                        // Lift the plane significantly (100km) to ensure it doesn't clip into the ground
+                        let lift = up * 0.1;
                         let relative_pos = (pos_f32 + lift) - cam;
                         
                         let translation = Mat4::from_translation(relative_pos);
