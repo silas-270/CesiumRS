@@ -192,7 +192,16 @@ impl GlobeExtension for FlightTrackerApp {
                 let scale_factor = 500000.0 / 6378137.0; 
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
-                let model_matrix = translation * rotation * scale;
+                // The A350.glb model has a non-standard axis orientation.
+                // We apply a yaw of 180 degrees and a roll of 90 degrees to align it with standard glTF axes (-Z forward, Y up).
+                let model_correction = glam::Mat4::from_euler(
+                    glam::EulerRot::YXZ, 
+                    std::f32::consts::PI,          // Yaw
+                    0.0,                           // Pitch
+                    std::f32::consts::PI / 2.0     // Roll
+                );
+
+                let model_matrix = translation * rotation * scale * model_correction;
 
                 use crate::engine::render::model::pipeline::ModelPushConstants;
                 let push = ModelPushConstants {
