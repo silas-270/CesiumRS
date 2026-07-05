@@ -56,7 +56,30 @@ impl<'a> TrajectoryEvaluator<'a> {
         };
 
         let pos_f32 = Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
-        let up = pos_f32.normalize_or_zero();
+        let earth_up = pos_f32.normalize_or_zero();
+        let mut up = earth_up;
+
+        // Calculate centripetal acceleration to simulate banking (roll)
+        let prev_time = SimulationTime::new(time.seconds - delta_seconds);
+        if let (Some(prev_pos), Some(next_pos)) = (self.property.evaluate(prev_time), self.property.evaluate(next_time)) {
+            let v1 = (pos - prev_pos) / delta_seconds;
+            let v2 = (next_pos - pos) / delta_seconds;
+            let a = (v2 - v1) / delta_seconds;
+            
+            let a_f32 = Vec3::new(a.x as f32, a.y as f32, a.z as f32);
+            
+            // Gravity is 9.81 m/s^2. In Megameters, that's 9.81e-6 Mm/s^2.
+            let g_mm = 9.81e-6;
+            let gravity_vector = -earth_up * g_mm;
+            
+            // Perceived gravity is actual gravity minus the acceleration (F_apparent = m*g - m*a)
+            let perceived_gravity = gravity_vector - a_f32;
+            
+            if perceived_gravity.length_squared() > 1e-20 {
+                // The plane aligns its "up" vector to oppose perceived gravity
+                up = -perceived_gravity.normalize();
+            }
+        }
 
         // Construct orthonormal basis
         // We prioritize the `forward` vector so the plane perfectly aligns with the polyline.

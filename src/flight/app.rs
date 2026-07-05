@@ -193,13 +193,9 @@ impl GlobeExtension for FlightTrackerApp {
             let current_progress = *self.progress.lock().unwrap();
             if let Some(state) = self.get_plane_state_at(current_progress) {
                 let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
-                let up = pos_f32.normalize();
-                
-                // Lift the plane by 10km so it doesn't clip the earth during testing
-                let lift = up * (10000.0 / 6378137.0);
                 
                 let cam = glam::Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
-                let relative_pos = (pos_f32 + lift) - cam;
+                let relative_pos = pos_f32 - cam;
                 let translation = glam::Mat4::from_translation(relative_pos);
 
                 let cur_rot = state.rotation;
