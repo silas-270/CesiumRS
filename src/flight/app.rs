@@ -10,9 +10,8 @@ use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig
 use crate::engine::core::extension::GlobeExtension;
 use crate::engine::render::model::pipeline::ModelRenderer;
 
-pub fn load_flight_path<P: AsRef<Path>>(path: P) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)?;
-    let waypoints: Vec<serde_json::Value> = serde_json::from_str(&content)?;
+pub fn load_flight_data(content: &str) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
+    let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
 
     let mut property = SampledPositionProperty::new()
         .with_algorithm(InterpolationAlgorithm::CatmullRom);
@@ -41,22 +40,28 @@ pub struct FlightEntity {
 }
 
 pub struct FlightTrackerApp {
+    pub progress: std::sync::Arc<std::sync::Mutex<f64>>,
+    pub pending_flights: Vec<(String, String, bool)>, // id, json_content, is_secondary
     pub flights: Vec<FlightEntity>,
     pub airplane_renderer: Option<ModelRenderer>,
-    pub start_time: std::time::Instant,
     pub last_update_time: std::time::Instant,
     pub plane_state: Option<crate::engine::math::kinematic_state::KinematicState>,
 }
 
 impl FlightTrackerApp {
-    pub fn new() -> Self {
+    pub fn new(progress: std::sync::Arc<std::sync::Mutex<f64>>) -> Self {
         Self {
+            progress,
+            pending_flights: Vec::new(),
             flights: Vec::new(),
             airplane_renderer: None,
-            start_time: std::time::Instant::now(),
             last_update_time: std::time::Instant::now(),
             plane_state: None,
         }
+    }
+
+    pub fn add_flight_path(&mut self, id: &str, json_content: String, is_secondary: bool) {
+        self.pending_flights.push((id.to_string(), json_content, is_secondary));
     }
 
     pub fn set_airplane_model(&mut self, _glb_bytes: Vec<u8>) {
@@ -87,34 +92,25 @@ impl GlobeExtension for FlightTrackerApp {
             Err(e) => eprintln!("Failed to read A350.glb from disk: {:?}", e),
         }
 
-        if let Ok(entries) = std::fs::read_dir(".") {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-                        if filename.starts_with("flight_") && filename.ends_with(".json") {
-                            if let Ok(property) = load_flight_path(&path) {
-                                if let Some(bvh) = PolylineBVH::build(&property) {
-                                    println!("BVH loaded: {}", filename);
-                                    let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
-                                    let mut poly_config = PolylineConfig::default();
-                                    
-                                    if filename.contains("STR") {
-                                        poly_config.split_progress = 0.5;
-                                        poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
-                                    }
-
-                                    self.flights.push(FlightEntity {
-                                        id: filename.to_string(),
-                                        bvh,
-                                        renderer,
-                                        config: poly_config,
-                                        property,
-                                    });
-                                }
-                            }
-                        }
+        for (id, content, is_secondary) in self.pending_flights.drain(..) {
+            if let Ok(property) = load_flight_data(&content) {
+                if let Some(bvh) = PolylineBVH::build(&property) {
+                    println!("BVH loaded: {}", id);
+                    let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
+                    let mut poly_config = PolylineConfig::default();
+                    
+                    if is_secondary {
+                        poly_config.split_progress = 0.5;
+                        poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
                     }
+
+                    self.flights.push(FlightEntity {
+                        id,
+                        bvh,
+                        renderer,
+                        config: poly_config,
+                        property,
+                    });
                 }
             }
         }
@@ -147,8 +143,10 @@ impl GlobeExtension for FlightTrackerApp {
         self.last_update_time = now;
 
         if let Some(flight) = self.flights.first() {
-            let elapsed = self.start_time.elapsed().as_secs_f64() * 50.0;
-            let time = crate::engine::time::SimulationTime::new(elapsed % 3600.0);
+            let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
+            let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+            let current_progress = *self.progress.lock().unwrap();
+            let time = crate::engine::time::SimulationTime::new(start_t + current_progress * (stop_t - start_t));
             
             if let Some(pos) = flight.property.evaluate(time) {
                 let next_time = crate::engine::time::SimulationTime::new(time.seconds + 0.1);
