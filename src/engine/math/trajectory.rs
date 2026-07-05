@@ -23,41 +23,27 @@ impl<'a> TrajectoryEvaluator<'a> {
     }
 
     /// Evaluates the trajectory at the given simulation time, returning a stateless TransformState.
-    /// Rotation is derived smoothly by averaging velocity within an inertia window.
+    /// Rotation is derived from the instantaneous tangent to the trajectory.
     pub fn evaluate(&self, time: SimulationTime) -> Option<TransformState> {
         let pos = self.property.evaluate(time)?;
         
-        // Number of samples to take looking into the past for inertia
-        let num_samples = 5;
-        let time_step = self.inertia_window_seconds / (num_samples as f64);
+        // Use a tiny delta to find the instantaneous tangent (forward vector)
+        let delta_seconds = 0.01;
+        let next_time = SimulationTime::new(time.seconds + delta_seconds);
         
-        let mut avg_forward = DVec3::ZERO;
-        let mut valid_samples = 0;
-
-        for i in 0..=num_samples {
-            let sample_time = SimulationTime::new(time.seconds - (i as f64) * time_step);
-            let sample_time_next = SimulationTime::new(sample_time.seconds + 0.1);
-            
-            if let (Some(p0), Some(p1)) = (self.property.evaluate(sample_time), self.property.evaluate(sample_time_next)) {
-                let dir = p1 - p0;
-                if dir.length_squared() > 1e-10 {
-                    avg_forward += dir.normalize();
-                    valid_samples += 1;
-                }
+        let forward = if let Some(next_pos) = self.property.evaluate(next_time) {
+            let dir = next_pos - pos;
+            if dir.length_squared() > 1e-10 {
+                let d = dir.normalize();
+                Vec3::new(d.x as f32, d.y as f32, d.z as f32)
+            } else {
+                Vec3::new(0.0, 1.0, 0.0) // Fallback if no movement
             }
-        }
-
-        let pos_f32 = Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
-        let up = pos_f32.normalize_or_zero();
-
-        let forward = if valid_samples > 0 {
-            let avg = (avg_forward / (valid_samples as f64)).normalize_or_zero();
-            Vec3::new(avg.x as f32, avg.y as f32, avg.z as f32)
         } else {
-            // Fallback if no valid samples
-            let next_time = SimulationTime::new(time.seconds + 0.1);
-            if let Some(next_pos) = self.property.evaluate(next_time) {
-                let dir = next_pos - pos;
+            // Fallback for the very end of the flight path: look backward instead
+            let prev_time = SimulationTime::new(time.seconds - delta_seconds);
+            if let Some(prev_pos) = self.property.evaluate(prev_time) {
+                let dir = pos - prev_pos;
                 if dir.length_squared() > 1e-10 {
                     let d = dir.normalize();
                     Vec3::new(d.x as f32, d.y as f32, d.z as f32)
@@ -69,6 +55,10 @@ impl<'a> TrajectoryEvaluator<'a> {
             }
         };
 
+        let pos_f32 = Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
+        let up = pos_f32.normalize_or_zero();
+
+        // Construct orthonormal basis
         let right = forward.cross(up).normalize_or_zero();
         let adjusted_forward = up.cross(right).normalize_or_zero();
 
