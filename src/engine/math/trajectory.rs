@@ -76,9 +76,9 @@ impl<'a> TrajectoryEvaluator<'a> {
         let adjusted_forward = up.cross(right).normalize_or_zero();
 
         let rotation_mat = Mat4::from_cols(
-            right.extend(0.0),
-            adjusted_forward.extend(0.0),
-            up.extend(0.0),
+            right.extend(0.0),               // Local X -> Right
+            up.extend(0.0),                  // Local Y -> Up
+            (-adjusted_forward).extend(0.0), // Local Z -> Backward
             Vec3::ZERO.extend(1.0),
         );
 
