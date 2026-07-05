@@ -23,7 +23,7 @@ impl<'a> TestApp<'a> {
         };
 
         Self {
-            inner: App::new(crate::engine::globe::tiles::config::TileEngineConfig::default()),
+            inner: App::new(crate::engine::globe::tiles::config::TileEngineConfig::default(), None),
             config,
             simulator,
             frames_stable: 0,

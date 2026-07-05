@@ -7,6 +7,10 @@ edition = "2021"
 name = "cesium_rs"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "cesium_app"
+path = "src/main.rs"
+
 [dependencies]
 wgpu = "22.0"
 glam = "0.27"

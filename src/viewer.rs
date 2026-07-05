@@ -61,9 +61,9 @@ impl Viewer {
 
     /// Start the application event loop.
     /// In Rust, this takes over the main thread and does not return.
-    pub fn run(self) {
+    pub fn run(self, extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>) {
         let config = self.options.into_tile_engine_config();
-        let mut app = App::new(config);
+        let mut app = App::new(config, extension);
         self.event_loop.run_app(&mut app).unwrap();
     }
 }

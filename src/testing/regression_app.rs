@@ -7,12 +7,12 @@ use winit::window::WindowId;
 use sha2::{Sha256, Digest};
 
 #[derive(Clone, Debug)]
-struct TestState {
-    lat: f64,
-    lon: f64,
-    alt: f64,
-    pitch: f64,
-    yaw: f64,
+pub struct TestState {
+    pub lat: f64,
+    pub lon: f64,
+    pub alt: f64,
+    pub _pitch: f64,
+    pub _yaw: f64,
 }
 
 pub struct RegressionApp<'a> {
@@ -38,7 +38,7 @@ impl<'a> RegressionApp<'a> {
             for &lon in &longitudes {
                 for &alt in &altitudes {
                     for &(pitch, yaw) in &pitch_yaws {
-                        states.push(TestState { lat, lon, alt, pitch, yaw });
+                        states.push(TestState { lat, lon, alt, _pitch: pitch, _yaw: yaw });
                     }
                 }
             }
@@ -51,7 +51,7 @@ impl<'a> RegressionApp<'a> {
         app_config.enable_prefetch = false;
         
         Self {
-            inner: App::new(app_config),
+            inner: App::new(app_config, None),
             config,
             states,
             current_state_index: 0,

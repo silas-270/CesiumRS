@@ -19,10 +19,11 @@ pub struct App<'a> {
     pressed_keys: HashSet<KeyCode>,
     last_frame_time: Option<Instant>,
     config: crate::engine::globe::tiles::config::TileEngineConfig,
+    extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>,
 }
 
 impl<'a> App<'a> {
-    pub fn new(config: crate::engine::globe::tiles::config::TileEngineConfig) -> Self {
+    pub fn new(config: crate::engine::globe::tiles::config::TileEngineConfig, extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>) -> Self {
         Self {
             window: None,
             wgpu_state: None,
@@ -32,6 +33,7 @@ impl<'a> App<'a> {
             pressed_keys: HashSet::new(),
             last_frame_time: None,
             config,
+            extension,
         }
     }
 
@@ -154,7 +156,7 @@ impl<'a> ApplicationHandler for App<'a> {
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             self.window = Some(window.clone());
 
-            let state = pollster::block_on(WgpuState::new(window, self.config.clone()));
+            let mut state = pollster::block_on(WgpuState::new(window, self.config.clone(), self.extension.take()));
             self.wgpu_state = Some(state);
         }
     }
