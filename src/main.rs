@@ -74,6 +74,7 @@ fn main() {
         run(Some(cfg));
     } else {
         use cesium_rs::{Viewer, ViewerOptions, GlobeOptions};
+        use std::sync::{Arc, Mutex};
 
         let viewer = Viewer::new(ViewerOptions {
             globe: GlobeOptions {
@@ -84,7 +85,31 @@ fn main() {
             ..Default::default()
         });
         
-        let flight_app = Box::new(cesium_rs::flight::app::FlightTrackerApp::new());
+        let progress = Arc::new(Mutex::new(0.0));
+        let progress_clone = progress.clone();
+        
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            loop {
+                let elapsed = start.elapsed().as_secs_f64();
+                let p = (elapsed / 60.0).clamp(0.0, 1.0);
+                *progress_clone.lock().unwrap() = p;
+                if p >= 1.0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+        });
+
+        let mut flight_app = Box::new(cesium_rs::flight::app::FlightTrackerApp::new(progress));
+        
+        if let Ok(content) = std::fs::read_to_string("flight_FRA_JFK.json") {
+            flight_app.add_flight_path("flight_FRA_JFK.json", content, false);
+        }
+        if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
+            flight_app.add_flight_path("flight_FRA_STR.json", content, true);
+        }
+
         viewer.run(Some(flight_app));
     }
 }

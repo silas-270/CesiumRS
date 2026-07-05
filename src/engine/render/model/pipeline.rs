@@ -6,6 +6,7 @@ pub struct ModelVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    pub color: [f32; 4],
 }
 
 impl ModelVertex {
@@ -28,6 +29,11 @@ impl ModelVertex {
                     offset: mem::size_of::<[f32; 6]>() as wgpu::BufferAddress,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
             ],
         }
@@ -68,35 +74,91 @@ impl ModelRenderer {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        for mesh in document.meshes() {
-            for primitive in mesh.primitives() {
-                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-                
-                let positions = reader.read_positions().unwrap();
-                let normals = reader.read_normals().unwrap();
-                let mut tex_coords: Vec<[f32; 2]> = Vec::new();
-                
-                if let Some(read_tex_coords) = reader.read_tex_coords(0) {
-                    tex_coords = read_tex_coords.into_f32().collect();
-                }
+        fn process_node(
+            node: gltf::Node,
+            parent_transform: glam::Mat4,
+            buffers: &[gltf::buffer::Data],
+            vertices: &mut Vec<ModelVertex>,
+            indices: &mut Vec<u32>,
+        ) {
+            let local_transform = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+            let transform = parent_transform * local_transform;
 
-                let base_index = vertices.len() as u32;
+            if let Some(mesh) = node.mesh() {
+                for primitive in mesh.primitives() {
+                    let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+                    
+                    let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
+                    let normals: Vec<[f32; 3]> = reader.read_normals().unwrap().collect();
+                    let mut tex_coords: Vec<[f32; 2]> = Vec::new();
+                    if let Some(read_tex_coords) = reader.read_tex_coords(0) {
+                        tex_coords = read_tex_coords.into_f32().collect();
+                    }
 
-                for (i, (pos, norm)) in positions.zip(normals).enumerate() {
-                    let uv = if i < tex_coords.len() { tex_coords[i] } else { [0.0, 0.0] };
-                    vertices.push(ModelVertex {
-                        position: pos,
-                        normal: norm,
-                        uv,
-                    });
-                }
+                    let material = primitive.material();
+                    let base_color = material.pbr_metallic_roughness().base_color_factor();
 
-                if let Some(read_indices) = reader.read_indices() {
-                    for i in read_indices.into_u32() {
-                        indices.push(base_index + i);
+                    let mut vertex_colors: Vec<[f32; 4]> = Vec::new();
+                    if let Some(read_colors) = reader.read_colors(0) {
+                        vertex_colors = read_colors.into_rgba_f32().collect();
+                    }
+
+                    let base_index = vertices.len() as u32;
+
+                    for (i, (pos, norm)) in positions.into_iter().zip(normals.into_iter()).enumerate() {
+                        let uv = if i < tex_coords.len() { tex_coords[i] } else { [0.0, 0.0] };
+                        let color = if i < vertex_colors.len() { vertex_colors[i] } else { base_color };
+                        
+                        // Apply node transform
+                        let world_pos = transform * glam::Vec4::new(pos[0], pos[1], pos[2], 1.0);
+                        
+                        // Normal transform (inverse transpose). For uniform scales, we can just use the upper 3x3
+                        let normal_matrix = glam::Mat3::from_cols(
+                            transform.x_axis.truncate(),
+                            transform.y_axis.truncate(),
+                            transform.z_axis.truncate(),
+                        ).inverse().transpose();
+                        let world_norm = (normal_matrix * glam::Vec3::new(norm[0], norm[1], norm[2])).normalize();
+
+                        vertices.push(ModelVertex {
+                            position: [world_pos.x, world_pos.y, world_pos.z],
+                            normal: [world_norm.x, world_norm.y, world_norm.z],
+                            uv,
+                            color,
+                        });
+                    }
+
+                    if let Some(read_indices) = reader.read_indices() {
+                        for i in read_indices.into_u32() {
+                            indices.push(base_index + i);
+                        }
                     }
                 }
             }
+
+            for child in node.children() {
+                process_node(child, transform, buffers, vertices, indices);
+            }
+        }
+
+        for scene in document.scenes() {
+            for node in scene.nodes() {
+                process_node(node, glam::Mat4::IDENTITY, &buffers, &mut vertices, &mut indices);
+            }
+        }
+
+        // Normalize the entire assembled mesh so it has a radius of exactly 1.0
+        let mut max_extent: f32 = 0.0001;
+        for v in &vertices {
+            let len = (v.position[0]*v.position[0] + v.position[1]*v.position[1] + v.position[2]*v.position[2]).sqrt();
+            if len > max_extent {
+                max_extent = len;
+            }
+        }
+        for v in &mut vertices {
+            v.position[0] /= max_extent;
+            v.position[1] /= max_extent;
+            v.position[2] /= max_extent;
         }
 
         use wgpu::util::DeviceExt;
@@ -113,25 +175,52 @@ impl ModelRenderer {
         });
 
         // Setup Texture
-        let (texture_size, texture_data, format) = if let Some(image) = images.first() {
+        let (texture_size, padded_data, padded_bytes_per_row, format) = if let Some(image) = images.first() {
             let width = image.width;
             let height = image.height;
-            let data = match image.format {
+            let mut rgba = match image.format {
                 gltf::image::Format::R8G8B8 => {
                     // Convert RGB to RGBA
-                    let mut rgba = Vec::with_capacity(image.pixels.len() / 3 * 4);
+                    let mut data = Vec::with_capacity(image.pixels.len() / 3 * 4);
                     for chunk in image.pixels.chunks(3) {
-                        rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+                        data.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                     }
-                    rgba
+                    data
                 },
                 gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
                 _ => vec![255; (width * height * 4) as usize], // Fallback to white
             };
-            (wgpu::Extent3d { width, height, depth_or_array_layers: 1 }, data, wgpu::TextureFormat::Rgba8UnormSrgb)
+
+            let bytes_per_pixel = 4;
+            let unpadded_bytes_per_row = width as u32 * bytes_per_pixel;
+            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) & !(align - 1);
+
+            let mut padded_data = vec![0; (padded_bytes_per_row * height as u32) as usize];
+            for y in 0..height as u32 {
+                let src_offset = (y * unpadded_bytes_per_row) as usize;
+                let dst_offset = (y * padded_bytes_per_row) as usize;
+                padded_data[dst_offset..dst_offset + unpadded_bytes_per_row as usize]
+                    .copy_from_slice(&rgba[src_offset..src_offset + unpadded_bytes_per_row as usize]);
+            }
+
+            (
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 }, 
+                padded_data, 
+                padded_bytes_per_row,
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            )
         } else {
             // Fallback 1x1 white texture
-            (wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, vec![255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb)
+            let padded_bytes_per_row = 256; // Minimum alignment
+            let mut data = vec![0; 256];
+            data[0..4].copy_from_slice(&[255, 255, 255, 255]);
+            (
+                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, 
+                data, 
+                padded_bytes_per_row,
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            )
         };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -152,10 +241,10 @@ impl ModelRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &texture_data,
+            &padded_data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * texture_size.width),
+                bytes_per_row: Some(padded_bytes_per_row),
                 rows_per_image: Some(texture_size.height),
             },
             texture_size,
@@ -246,7 +335,7 @@ impl ModelRenderer {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
+                cull_mode: Some(wgpu::Face::Back), // Enable backface culling!
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
@@ -254,7 +343,7 @@ impl ModelRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: wgpu::CompareFunction::Less, // Fix depth testing!
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -267,6 +356,7 @@ impl ModelRenderer {
             cache: None,
         });
 
+        println!("A350 mesh has {} indices", indices.len());
         Ok(Self {
             pipeline,
             vertex_buffer,

@@ -528,6 +528,7 @@ impl<'a> WgpuState<'a> {
 
         // Draw wireframe overlay
         render_pass.set_pipeline(&self.wireframe_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         for (id, _, _) in visible_tiles {
             if let Some(buffers) = self.tile_cache.peek(id) {
                 let center_f64 = buffers.center_f64;
