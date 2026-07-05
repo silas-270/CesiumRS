@@ -25,3 +25,13 @@ pub fn load_flight_path<P: AsRef<Path>>(path: P) -> Result<SampledPositionProper
 
     Ok(property)
 }
+
+use crate::engine::render::polyline::bvh::PolylineBVH;
+use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig};
+
+pub struct FlightEntity {
+    pub id: String,
+    pub bvh: PolylineBVH,
+    pub renderer: PolylineRenderer,
+    pub config: PolylineConfig,
+}

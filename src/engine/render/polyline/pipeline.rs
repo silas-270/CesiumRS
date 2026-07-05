@@ -4,10 +4,38 @@ use crate::engine::render::polyline::builder::PolylineVertex;
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PolylinePushConstants {
-    pub camera_pos: [f32; 4],
-    pub viewport_size: [f32; 2],
+    pub camera_pos: [f32; 4],      // offset 0 (16 bytes)
+    pub color_start: [f32; 4],     // offset 16
+    pub color_end: [f32; 4],       // offset 32
+    pub viewport_size: [f32; 2],   // offset 48
+    pub thickness: f32,            // offset 56
+    pub split_progress: f32,       // offset 60
+    pub physical_half_width: f32,  // offset 64
+    pub physical_half_height: f32, // offset 68
+    pub _padding: [f32; 2],        // offset 72 -> 80 bytes total
+}
+
+#[derive(Debug, Clone)]
+pub struct PolylineConfig {
     pub thickness: f32,
-    pub split_progress: f32,
+    pub physical_half_width: f32,
+    pub physical_half_height: f32,
+    pub color_start: [f32; 4],
+    pub color_end: [f32; 4],
+    pub split_progress: f32, // -1.0 means disabled
+}
+
+impl Default for PolylineConfig {
+    fn default() -> Self {
+        Self {
+            thickness: 4.0,
+            physical_half_width: 0.0002,
+            physical_half_height: 0.000015,
+            color_start: [1.0, 0.4, 0.0, 1.0], // Orange
+            color_end: [1.0, 0.4, 0.0, 1.0],   // Orange
+            split_progress: -1.0,
+        }
+    }
 }
 
 pub struct PolylineRenderer {
@@ -32,7 +60,7 @@ impl PolylineRenderer {
             label: Some("Polyline Pipeline Layout"),
             bind_group_layouts: &[camera_bind_group_layout],
             push_constant_ranges: &[wgpu::PushConstantRange {
-                stages: wgpu::ShaderStages::VERTEX,
+                stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 range: 0..std::mem::size_of::<PolylinePushConstants>() as u32,
             }],
         });
@@ -112,22 +140,26 @@ impl PolylineRenderer {
         render_pass: &mut wgpu::RenderPass<'a>,
         camera_bind_group: &'a wgpu::BindGroup,
         viewport_size: [f32; 2],
-        thickness: f32,
         camera_pos_f64: [f64; 3],
-        split_progress: f32,
+        config: &PolylineConfig,
     ) {
         if let Some(vertex_buffer) = &self.vertex_buffer {
             let push = PolylinePushConstants {
                 camera_pos: [camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32, 0.0],
+                color_start: config.color_start,
+                color_end: config.color_end,
                 viewport_size,
-                thickness,
-                split_progress,
+                thickness: config.thickness,
+                split_progress: config.split_progress,
+                physical_half_width: config.physical_half_width,
+                physical_half_height: config.physical_half_height,
+                _padding: [0.0; 2],
             };
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, camera_bind_group, &[]);
             render_pass.set_push_constants(
-                wgpu::ShaderStages::VERTEX,
+                wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 0,
                 bytemuck::cast_slice(&[push]),
             );
