@@ -45,6 +45,8 @@ pub struct FlightTrackerApp {
     pub flights: Vec<FlightEntity>,
     pub airplane_renderer: Option<ModelRenderer>,
     pub last_update_time: std::time::Instant,
+    pub is_playing: bool,
+    pub play_speed: f64,
 }
 
 impl FlightTrackerApp {
@@ -55,6 +57,8 @@ impl FlightTrackerApp {
             flights: Vec::new(),
             airplane_renderer: None,
             last_update_time: std::time::Instant::now(),
+            is_playing: false,
+            play_speed: 0.1,
         }
     }
 
@@ -134,6 +138,23 @@ impl GlobeExtension for FlightTrackerApp {
         camera_pos_dvec3: DVec3,
         frustum: &[(DVec3, f64); 6],
     ) {
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_update_time).as_secs_f64();
+        self.last_update_time = now;
+
+        if self.is_playing {
+            let mut p = *self.progress.lock().unwrap();
+            p += self.play_speed * dt;
+            if p > 1.0 {
+                p = 1.0;
+                self.is_playing = false;
+            } else if p < 0.0 {
+                p = 0.0;
+                self.is_playing = false;
+            }
+            *self.progress.lock().unwrap() = p;
+        }
+
         for flight in &mut self.flights {
             let mut vertices = Vec::new();
             
@@ -148,9 +169,6 @@ impl GlobeExtension for FlightTrackerApp {
             }
             flight.renderer.update_geometry(device, queue, &vertices);
         }
-
-        let now = std::time::Instant::now();
-        self.last_update_time = now;
     }
 
     fn render<'a>(
@@ -223,6 +241,14 @@ impl GlobeExtension for FlightTrackerApp {
         let mut p = *self.progress.lock().unwrap() as f32;
         if ui.add(egui::Slider::new(&mut p, 0.0..=1.0).text("Flight Progress")).changed() {
             *self.progress.lock().unwrap() = p as f64;
+            self.is_playing = false; // Pause when manually dragged
         }
+        
+        ui.horizontal(|ui| {
+            if ui.button(if self.is_playing { "Pause" } else { "Play" }).clicked() {
+                self.is_playing = !self.is_playing;
+            }
+            ui.add(egui::Slider::new(&mut self.play_speed, -0.5..=0.5).text("Speed"));
+        });
     }
 }
