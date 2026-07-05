@@ -193,32 +193,55 @@ impl PolylineBVH {
 }
 
 pub fn generate_vertices(points: &[(DVec3, f32)]) -> Vec<PolylineVertex> {
-    let mut vertices = Vec::with_capacity(points.len() * 2);
-    for i in 0..points.len() {
-        let (curr, prog) = points[i];
-        
-        let prev = if i > 0 { points[i - 1].0 } else { curr + (curr - points[i + 1].0).normalize_or_zero() * 1.0 };
-        let next = if i < points.len() - 1 { points[i + 1].0 } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
+    let mut vertices = Vec::with_capacity(points.len() * 8 + 6);
+    
+    // Helper closure to emit a single face strip
+    let emit_strip = |verts: &mut Vec<PolylineVertex>, side_a: f32, v_side_a: f32, side_b: f32, v_side_b: f32, face: f32| {
+        for i in 0..points.len() {
+            let (curr, prog) = points[i];
+            let prev = if i > 0 { points[i - 1].0 } else { curr + (curr - points[i + 1].0).normalize_or_zero() * 1.0 };
+            let next = if i < points.len() - 1 { points[i + 1].0 } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
 
-        let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
-        let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];
-        let next_f32 = [next.x as f32, next.y as f32, next.z as f32];
+            let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
+            let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];
+            let next_f32 = [next.x as f32, next.y as f32, next.z as f32];
 
-        vertices.push(PolylineVertex {
-            position: curr_f32,
-            previous: prev_f32,
-            next: next_f32,
-            side: 1.0,
-            progress: prog,
-        });
+            verts.push(PolylineVertex {
+                position: curr_f32, previous: prev_f32, next: next_f32,
+                side: side_a, v_side: v_side_a, face, progress: prog,
+            });
 
-        vertices.push(PolylineVertex {
-            position: curr_f32,
-            previous: prev_f32,
-            next: next_f32,
-            side: -1.0,
-            progress: prog,
-        });
+            verts.push(PolylineVertex {
+                position: curr_f32, previous: prev_f32, next: next_f32,
+                side: side_b, v_side: v_side_b, face, progress: prog,
+            });
+        }
+    };
+
+    if points.is_empty() {
+        return vertices;
     }
+
+    // Top face (face 0.0): Left to Right
+    emit_strip(&mut vertices, -1.0, 1.0, 1.0, 1.0, 0.0);
+    vertices.push(*vertices.last().unwrap()); // degenerate break
+
+    // Bottom face (face 1.0): Right to Left
+    let v2 = vertices.len();
+    emit_strip(&mut vertices, 1.0, -1.0, -1.0, -1.0, 1.0);
+    vertices.insert(v2, vertices[v2]); // degenerate front break
+    vertices.push(*vertices.last().unwrap()); // degenerate back break
+
+    // Left face (face 2.0): Bottom to Top
+    let v3 = vertices.len();
+    emit_strip(&mut vertices, -1.0, -1.0, -1.0, 1.0, 2.0);
+    vertices.insert(v3, vertices[v3]); // degenerate front break
+    vertices.push(*vertices.last().unwrap()); // degenerate back break
+
+    // Right face (face 3.0): Top to Bottom
+    let v4 = vertices.len();
+    emit_strip(&mut vertices, 1.0, 1.0, 1.0, -1.0, 3.0);
+    vertices.insert(v4, vertices[v4]); // degenerate front break
+
     vertices
 }
