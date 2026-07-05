@@ -81,18 +81,18 @@ fn vs_main(
 
     let dist_to_cam = length(rel_curr);
     
-    // We want the width to be exactly 'thickness' pixels when viewed straight on.
-    // Approximate pixels per megameter at this distance
-    let pixels_per_mm = (1.0 / max(dist_to_cam, 0.000001)) * push_constants.viewport_size.y * 1.5;
+    // We want the ribbon to scale exactly like the airplane.
+    // The airplane is 67 meters long, and we scale it by 5% of the distance to the camera,
+    // clamped between 67m and 3000km.
+    let desired_scale_mm = dist_to_cam * 0.05;
+    let min_scale_mm = 67.0 / 1000000.0;
+    let max_scale_mm = 3000.0 * 1000.0 / 1000000.0;
+    let clamped_scale_mm = clamp(desired_scale_mm, min_scale_mm, max_scale_mm);
     
-    let width_pixels = (physical_half_width * 2.0) * pixels_per_mm;
+    // Calculate the scale multiplier relative to the base 67m length
+    let scale_multiplier = clamped_scale_mm / min_scale_mm;
     
-    let min_pixels = push_constants.thickness * 1.5;
-    var scale_multiplier = 1.0;
-    if width_pixels > 0.00001 {
-        scale_multiplier = max(1.0, min_pixels / width_pixels);
-    }
-    
+    // Scale the ribbon's physical width and height by the same multiplier
     let final_half_width = physical_half_width * scale_multiplier;
     
     // Height uses the exact same scaling logic so proportions stay perfectly identical
