@@ -8,9 +8,8 @@ use crate::engine::render::polyline::bvh::PolylineBVH;
 use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig};
 use crate::engine::core::extension::GlobeExtension;
 
-pub fn load_flight_path<P: AsRef<Path>>(path: P) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)?;
-    let waypoints: Vec<serde_json::Value> = serde_json::from_str(&content)?;
+pub fn load_flight_path_from_str(content: &str) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
+    let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
 
     let mut property = SampledPositionProperty::new()
         .with_algorithm(InterpolationAlgorithm::CatmullRom);
@@ -30,6 +29,11 @@ pub fn load_flight_path<P: AsRef<Path>>(path: P) -> Result<SampledPositionProper
     Ok(property)
 }
 
+pub fn load_flight_path<P: AsRef<Path>>(path: P) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    load_flight_path_from_str(&content)
+}
+
 pub struct FlightEntity {
     pub id: String,
     pub bvh: PolylineBVH,
@@ -39,12 +43,42 @@ pub struct FlightEntity {
 
 pub struct FlightTrackerApp {
     pub flights: Vec<FlightEntity>,
+    pub queued_flights: Vec<(String, String)>,
 }
 
 impl FlightTrackerApp {
     pub fn new() -> Self {
         Self {
             flights: Vec::new(),
+            queued_flights: Vec::new(),
+        }
+    }
+
+    pub fn load_flight_from_str(
+        &mut self,
+        id: &str,
+        content: &str,
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+    ) {
+        if let Ok(property) = load_flight_path_from_str(content) {
+            if let Some(bvh) = PolylineBVH::build(&property) {
+                let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
+                let mut poly_config = PolylineConfig::default();
+                
+                if id.contains("STR") {
+                    poly_config.split_progress = 0.5;
+                    poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
+                }
+
+                self.flights.push(FlightEntity {
+                    id: id.to_string(),
+                    bvh,
+                    renderer,
+                    config: poly_config,
+                });
+            }
         }
     }
 }
@@ -56,6 +90,12 @@ impl GlobeExtension for FlightTrackerApp {
         config: &wgpu::SurfaceConfiguration,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) {
+        // Load queued embedded flights
+        let queued = std::mem::take(&mut self.queued_flights);
+        for (id, content) in queued {
+            self.load_flight_from_str(&id, &content, device, config, camera_bind_group_layout);
+        }
+
         if let Ok(entries) = std::fs::read_dir(".") {
             for entry in entries {
                 if let Ok(entry) = entry {
