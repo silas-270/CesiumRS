@@ -599,7 +599,7 @@ impl<'a> WgpuState<'a> {
                 &mut render_pass, 
                 &self.camera_bind_group, 
                 [self.config.width as f32, self.config.height as f32], 
-                12.0, // Minimal pixel width (3 times the previous 4.0)
+                4.0, // Constant pixel width when zoomed out
                 camera_pos_f64,
                 split,
             );
