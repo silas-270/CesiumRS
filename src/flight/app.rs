@@ -192,10 +192,10 @@ impl GlobeExtension for FlightTrackerApp {
                 let scale_factor = 500000.0 / 6378137.0; 
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
-                // Apply a +90 degree yaw correction to align the A350.glb model with standard axes
+                // Apply a constant yaw correction to align the A350.glb model with standard axes
                 let model_correction = glam::Mat4::from_euler(
                     glam::EulerRot::YXZ, 
-                    std::f32::consts::PI / 2.0,  // Yaw
+                    std::f32::consts::PI,        // Yaw
                     0.0,                         // Pitch
                     0.0                          // Roll
                 );
