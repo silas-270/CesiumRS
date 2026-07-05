@@ -92,9 +92,6 @@ fn main() {
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);
         }
-        if let Ok(content) = std::fs::read_to_string("flight_FRA_JFK.json") {
-            flight_app.add_flight_path("flight_FRA_JFK.json", content, true);
-        }
 
         viewer.run(Some(flight_app));
     }

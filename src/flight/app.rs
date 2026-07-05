@@ -113,10 +113,10 @@ impl GlobeExtension for FlightTrackerApp {
                     println!("BVH loaded: {}", id);
                     let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
                     let mut poly_config = PolylineConfig::default();
+                    poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
                     
                     if is_secondary {
                         poly_config.split_progress = 0.5;
-                        poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
                     }
 
                     self.flights.push(FlightEntity {
@@ -178,11 +178,16 @@ impl GlobeExtension for FlightTrackerApp {
         viewport_size: [f32; 2],
         camera_pos_f64: [f64; 3],
     ) {
+        let current_progress = *self.progress.lock().unwrap();
+
         for flight in &self.flights {
             let mut config = flight.config.clone();
             // A350 fuselage width is ~5.96 meters. Base half-width is 2.98 meters.
             // This is scaled dynamically inside the polyline.wgsl shader.
             config.physical_half_width = 2.98 / 1_000_000.0;
+            
+            // Make the split exactly where the plane is
+            config.split_progress = current_progress as f32;
 
             flight.renderer.draw(
                 render_pass, 
@@ -195,7 +200,6 @@ impl GlobeExtension for FlightTrackerApp {
 
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
-            let current_progress = *self.progress.lock().unwrap();
             if let Some(state) = self.get_plane_state_at(current_progress) {
                 // Elevate 10m (0.00001 Megameters) to avoid clipping and align with ribbon elevation
                 let up_dir = state.position.normalize();

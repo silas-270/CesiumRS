@@ -23,9 +23,6 @@ impl<'a> TestApp<'a> {
         };
 
         let mut flight_app = Box::new(crate::flight::app::FlightTrackerApp::new(std::sync::Arc::new(std::sync::Mutex::new(0.0))));
-        if let Ok(content) = std::fs::read_to_string("flight_FRA_JFK.json") {
-            flight_app.add_flight_path("flight_FRA_JFK.json", content, false);
-        }
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, true);
         }
