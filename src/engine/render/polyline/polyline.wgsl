@@ -68,12 +68,32 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let physical_half_width = 0.0001; // 100 meters in Megameters
     let physical_half_height = 0.000001; // 1 meter (2m total height)
 
-    // Calculate how big it is on screen
-    let clip_center = camera.view_proj * vec4<f32>(rel_curr, 1.0);
+    // We want the width to be exactly 'thickness' pixels when viewed straight on.
+    // In perspective projection, screen_size_pixels = (physical_size / distance) * (viewport_height / (2.0 * tan(fov / 2.0)))
+    // Assuming standard 45 deg fov, the fov factor is roughly 2.4. We can use a tuning constant.
+    let dist_to_cam = length(rel_curr);
     
-    // TEMPORARY DEBUG: Hardcode massive size
-    let final_half_width = 0.001; // 1000 meters
-    let final_half_height = 0.001; // 1000 meters
+    // Approximate pixels per megameter at this distance
+    // 1.0 megameter at distance dist_to_cam will be: (1.0 / dist_to_cam) * viewport.y * 1.5 pixels
+    let pixels_per_mm = (1.0 / max(dist_to_cam, 0.000001)) * push_constants.viewport_size.y * 1.5;
+    
+    let width_pixels = (physical_half_width * 2.0) * pixels_per_mm;
+    
+    let min_pixels = push_constants.thickness;
+    var scale_multiplier = 1.0;
+    if width_pixels > 0.00001 {
+        scale_multiplier = max(1.0, min_pixels / width_pixels);
+    }
+    
+    let final_half_width = physical_half_width * scale_multiplier;
+    
+    let height_pixels = (physical_half_height * 2.0) * pixels_per_mm;
+    let min_height_pixels = 1.0;
+    var height_scale_multiplier = 1.0;
+    if height_pixels > 0.00001 {
+        height_scale_multiplier = max(1.0, min_height_pixels / height_pixels);
+    }
+    let final_half_height = physical_half_height * height_scale_multiplier;
     
     let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side;
     let extruded_3d = rel_curr + corner_offset_3d;
