@@ -89,8 +89,12 @@ fn vs_main(
     let max_scale_mm = 3000.0 * 1000.0 / 1000000.0;
     let clamped_scale_mm = clamp(desired_scale_mm, min_scale_mm, max_scale_mm);
     
-    // Calculate the scale multiplier relative to the base 67m length
-    let scale_multiplier = clamped_scale_mm / min_scale_mm;
+    // Calculate the scale multiplier relative to the base length
+    var scale_multiplier = clamped_scale_mm / min_scale_mm;
+    
+    // Cap the ribbon's maximum scale multiplier independently so it doesn't get as wide as a continent
+    // Base width is ~22.3m. A 4500x multiplier makes it ~100km wide at max zoom.
+    scale_multiplier = min(scale_multiplier, 4500.0);
     
     // Scale the ribbon's physical width and height by the same multiplier
     let final_half_width = physical_half_width * scale_multiplier;
