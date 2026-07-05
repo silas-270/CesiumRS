@@ -98,8 +98,8 @@ fn vs_main(
     // Height uses the exact same scaling logic so proportions stay perfectly identical
     let final_half_height = physical_half_height * scale_multiplier;
     
-    // Elevate 5m to avoid clipping
-    let elevation_offset = up_3d * 0.000005;
+    // Elevate 10m to avoid clipping
+    let elevation_offset = up_3d * 0.00001;
 
     let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side + tangent * final_half_width * model.forward;
     let extruded_3d = rel_curr + corner_offset_3d + elevation_offset;
