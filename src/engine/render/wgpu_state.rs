@@ -7,6 +7,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use lru::LruCache;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 pub struct TileBuffers {
     pub vertex_buffer: wgpu::Buffer,
@@ -22,7 +24,19 @@ pub struct TilePushConstants {
     pub uv_scale_offset: [f32; 4],
 }
 
-
+/// Stable per-tile texture assignment. Once set, this is only changed
+/// under controlled conditions (sibling-complete upgrade, or timeout).
+#[derive(Clone)]
+pub struct TileDisplayEntry {
+    /// Which texture tile is actually sampled (may be an ancestor for fallback).
+    pub texture_id: TileId,
+    /// UV scale/offset to sample the correct region of `texture_id`.
+    pub uv_scale_offset: [f32; 4],
+    /// When this tile first became visible (used for timeout-based sibling upgrade).
+    pub first_seen: Instant,
+    /// True if this tile is currently showing its own hi-res texture (not a fallback).
+    pub showing_own_texture: bool,
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -71,6 +85,10 @@ pub struct WgpuState<'a> {
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::engine::globe::tiles::system::TileSystem,
     pub extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>,
+    /// Stable display state: persists across frames, only updated under controlled rules.
+    display_state: HashMap<TileId, TileDisplayEntry>,
+    /// The set of tiles that were visible last frame (for eviction of stale entries).
+    last_visible_set: HashSet<TileId>,
 }
 
 fn create_depth_texture(
@@ -286,6 +304,8 @@ impl<'a> WgpuState<'a> {
             quadtree_manager: QuadtreeManager::new(),
             tile_system,
             extension,
+            display_state: HashMap::new(),
+            last_visible_set: HashSet::new(),
         }
     }
 
@@ -359,7 +379,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    fn update_logic(&mut self, aspect_ratio: f32, main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
+    fn update_logic(&mut self, aspect_ratio: f32, _main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
         
         // ALWAYS use main camera for logic and culling
@@ -382,46 +402,125 @@ impl<'a> WgpuState<'a> {
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
 
-        self.camera_uniform.update_matrix(
-            gpu_view_matrix,
-            proj_matrix,
-        );
+        self.camera_uniform.update_matrix(gpu_view_matrix, proj_matrix);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
 
-        let requested_tiles = self.quadtree_manager.get_visible_tiles();
+        // Get the geometrically-desired visible tile set from the quadtree.
+        let visible_tiles = self.quadtree_manager.get_visible_tiles();
 
-        let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| {
-            self.tile_cache.peek(id).is_some() && self.tile_system.get_render_data(*id).is_some()
-        });
-
-        let missing_count = requested_tiles.iter().filter(|(id, _, _)| self.tile_cache.peek(id).is_none()).count();
-        self.last_requested_tiles_count = requested_tiles.len();
+        let missing_count = visible_tiles.iter().filter(|(id, _, _)| self.tile_cache.peek(id).is_none()).count();
+        self.last_requested_tiles_count = visible_tiles.len();
         self.last_missing_tiles_count = missing_count;
 
-        let mut active_tiles = requested_tiles.clone();
-        for t in &renderable_tiles {
-            if !active_tiles.iter().any(|(id, _, _)| *id == t.0) {
-                active_tiles.push(*t);
-            }
-        }
-
+        // Kick off mesh and texture fetches for everything visible.
         let mut missing_meshes = Vec::new();
-        for (id, _, _) in &active_tiles {
+        for (id, _, _) in &visible_tiles {
             if self.tile_cache.peek(id).is_none() {
                 missing_meshes.push(*id);
             }
         }
+        self.tile_system.update(&self.device, &self.queue, camera_pos_f32, &visible_tiles, &missing_meshes);
+        self.update_tile_cache(&visible_tiles);
 
-        self.tile_system.update(&self.device, &self.queue, camera_pos_f32, &active_tiles, &missing_meshes);
+        // Update the stable display-state map. This is where texture assignment
+        // decisions are made with no-downgrade and sibling-gate rules.
+        self.update_display_state(&visible_tiles);
 
-        self.update_tile_cache(&active_tiles);
-
-        renderable_tiles
+        visible_tiles
     }
+
+    /// The core stable-texture logic. Called once per frame after the quadtree and
+    /// tile fetches have been updated.
+    ///
+    /// Rules:
+    /// 1. Tiles leaving the visible set are removed from display_state.
+    /// 2. New tiles enter at the best available fallback (parent/grandparent texture).
+    /// 3. A tile upgrades to its own hi-res texture only when ALL 3 siblings also
+    ///    have their own hi-res textures ready — OR when the tile has been waiting
+    ///    more than 2 seconds (timeout, prevents permanent fallback on 404).
+    /// 4. Once a tile is showing its own hi-res texture, it is NEVER downgraded back
+    ///    to a parent fallback (prevents jitter from transient LRU evictions).
+    fn update_display_state(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
+        const SIBLING_UPGRADE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+        let current_visible: HashSet<TileId> = visible_tiles.iter().map(|(id, _, _)| *id).collect();
+
+        // Evict tiles that are no longer in the visible set.
+        self.display_state.retain(|id, _| current_visible.contains(id));
+        self.last_visible_set = current_visible;
+
+        for (id, _center, _radius) in visible_tiles {
+            let id = *id;
+            let now = Instant::now();
+
+            // Check if own hi-res texture is available (non-mutating peek).
+            let own_ready = self.tile_system.peek_render_data(id)
+                .map(|(tex_id, _)| tex_id == id)
+                .unwrap_or(false);
+
+            if let Some(entry) = self.display_state.get_mut(&id) {
+                // --- Tile already has a display entry ---
+
+                if entry.showing_own_texture {
+                    // Already at hi-res: never downgrade, just continue.
+                    continue;
+                }
+
+                if own_ready {
+                    // Own texture is ready. Check upgrade conditions.
+                    let timeout_elapsed = entry.first_seen.elapsed() >= SIBLING_UPGRADE_TIMEOUT;
+
+                    let all_siblings_ready = if id.z == 0 {
+                        true // root tiles have no siblings
+                    } else {
+                        // Compute sibling IDs (same parent, all 4 children)
+                        let parent = id.parent().unwrap();
+                        let sibling_ids = [
+                            TileId { z: id.z, x: parent.x * 2,     y: parent.y * 2 },
+                            TileId { z: id.z, x: parent.x * 2 + 1, y: parent.y * 2 },
+                            TileId { z: id.z, x: parent.x * 2,     y: parent.y * 2 + 1 },
+                            TileId { z: id.z, x: parent.x * 2 + 1, y: parent.y * 2 + 1 },
+                        ];
+                        sibling_ids.iter().all(|sib| {
+                            self.tile_system.peek_render_data(*sib)
+                                .map(|(tex_id, _)| tex_id == *sib)
+                                .unwrap_or(false)
+                        })
+                    };
+
+                    if all_siblings_ready || timeout_elapsed {
+                        // Upgrade: switch to own hi-res texture, lock it in.
+                        entry.texture_id = id;
+                        entry.uv_scale_offset = [1.0, 1.0, 0.0, 0.0];
+                        entry.showing_own_texture = true;
+                    }
+                    // else: keep showing the existing parent fallback, no change.
+                }
+                // else: own texture still not ready, keep showing the existing fallback.
+
+            } else {
+                // --- Tile is new to the visible set ---
+                let first_seen = now;
+
+                if let Some((tex_id, uv)) = self.tile_system.peek_render_data(id) {
+                    let showing_own = tex_id == id;
+                    self.display_state.insert(id, TileDisplayEntry {
+                        texture_id: tex_id,
+                        uv_scale_offset: uv,
+                        first_seen,
+                        showing_own_texture: showing_own,
+                    });
+                }
+                // If no texture at all yet (no parent fallback either), the tile
+                // simply won't have a display_state entry and won't be drawn.
+            }
+        }
+    }
+
 
     fn compute_debug_vertices(&mut self, main_view_proj: Mat4, visible_tiles: &[(TileId, Vec3, f32)], camera_pos: Vec3) {
         let mut debug_vertices = Vec::new();
@@ -495,12 +594,21 @@ impl<'a> WgpuState<'a> {
             [pos_dvec.x, pos_dvec.y, pos_dvec.z]
         };
 
-        // Draw solid
+        // Draw solid — iterate display_state for stable per-tile texture assignments.
+        // display_state was built this frame by update_display_state() with no-downgrade rules.
         render_pass.set_pipeline(&self.solid_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        for (id, _, _) in visible_tiles {
-            if let Some(render_data) = self.tile_system.get_render_data(*id) {
-                if let Some(buffers) = self.tile_cache.peek(id) {
+
+        // Collect display_state entries to avoid borrow conflict with tile_system.
+        let draw_list: Vec<(TileId, TileId, [f32; 4])> = self.display_state
+            .iter()
+            .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.uv_scale_offset))
+            .collect();
+
+        for (mesh_id, texture_id, uv_scale_offset) in &draw_list {
+            // Get the GPU texture bind group for the assigned texture (LRU-promoting, correct at draw time).
+            if let Some(render_data) = self.tile_system.get_render_data(*texture_id) {
+                if let Some(buffers) = self.tile_cache.peek(mesh_id) {
                     let center_f64 = buffers.center_f64;
                     let push = TilePushConstants {
                         relative_center: [
@@ -509,7 +617,7 @@ impl<'a> WgpuState<'a> {
                             (center_f64[2] - camera_pos_f64[2]) as f32,
                             0.0,
                         ],
-                        uv_scale_offset: render_data.uv_scale_offset,
+                        uv_scale_offset: *uv_scale_offset,
                     };
 
                     render_pass.set_push_constants(
@@ -683,5 +791,7 @@ impl<'a> WgpuState<'a> {
         self.tile_system.texture_manager.clear();
         self.tile_system.mesh_worker.clear();
         self.quadtree_manager = crate::engine::globe::quadtree::QuadtreeManager::new();
+        self.display_state.clear();
+        self.last_visible_set.clear();
     }
 }
