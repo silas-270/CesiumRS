@@ -44,6 +44,8 @@ mod test_mesh_worker;
 mod tile_system_tests;
 #[cfg(test)]
 mod test_tile_system_stress;
+#[cfg(test)]
+pub mod test_tracking_camera;
 
 #[cfg(test)]
 mod test_terrain_parser;
