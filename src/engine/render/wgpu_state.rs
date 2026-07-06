@@ -362,8 +362,8 @@ impl<'a> WgpuState<'a> {
     fn update_logic(&mut self, aspect_ratio: f32, main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
         
-        // Use old frustum for extension
-        let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
+        // ALWAYS use main camera for logic and culling
+        let frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         
         if let Some(ext) = &mut self.extension {
             ext.update(&self.device, &self.queue, camera_pos_dvec3, &frustum, &mut self.camera, aspect_ratio);
@@ -377,7 +377,7 @@ impl<'a> WgpuState<'a> {
  
         let (camera_pos_dvec, _) = self.camera.global_transform_f64();
         let camera_pos_f32 = glam::Vec3::new(camera_pos_dvec.x as f32, camera_pos_dvec.y as f32, camera_pos_dvec.z as f32);
-        self.quadtree_manager.update(camera_pos_f32, proj_matrix * view_matrix);
+        self.quadtree_manager.update(camera_pos_f32, frustum);
 
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader

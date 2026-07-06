@@ -14,10 +14,13 @@ fn evaluate_direct_camera(file: &mut std::fs::File, z: f32) {
     let h = 1080;
 
     let mut quadtree = QuadtreeManager::new();
-    let view_proj = cam.get_projection_matrix(w as f32 / h as f32) * cam.get_view_matrix();
-    for _ in 0..30 {
-        quadtree.update(cam.global_transform().0, view_proj);
-    }
+        let aspect = w as f32 / h as f32;
+        let frustum_planes = cam.calculate_frustum_planes(aspect);
+        let (global_pos_dvec, _) = cam.global_transform_f64();
+        let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
+        for _ in 0..30 {
+            quadtree.update(global_pos_f32, frustum_planes);
+        }
     let visible_tiles_data = quadtree.get_visible_tiles();
     let visible_tiles: Vec<TileId> = visible_tiles_data.iter().map(|(id, _, _)| *id).collect();
     let rendered_tiles = visible_tiles.len();

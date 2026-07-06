@@ -51,8 +51,8 @@ impl<'a> App<'a> {
                     let yaw = forward.x.atan2(-forward.z);
                     state.debug_camera = crate::engine::camera::GodCamera::new(
                         global_pos,
-                        yaw.to_degrees(),
-                        pitch.to_degrees(),
+                        yaw,
+                        pitch,
                     );
                     state.debug_camera_initialized = true;
                 }

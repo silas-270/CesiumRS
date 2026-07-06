@@ -77,9 +77,17 @@ impl TileSystem {
             self.mesh_worker.request_mesh(*id, 16);
         }
 
-        // Request visible tiles with High priority
         for (id, _, _) in visible_tiles {
             self.texture_manager.request_tile(*id, TilePriority::High);
+
+            // Promote parent textures so they aren't evicted. This guarantees
+            // a smooth fallback when panning to newly exposed tiles whose
+            // textures are still downloading.
+            let mut curr = *id;
+            while let Some(p) = curr.parent() {
+                let _ = self.texture_manager.cache.get_state(&p);
+                curr = p;
+            }
         }
 
         self.texture_manager.update(device, queue);
