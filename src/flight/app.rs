@@ -63,9 +63,9 @@ impl FlightTrackerApp {
             last_update_time: std::time::Instant::now(),
             is_playing: false,
             play_speed: 0.1,
-            view_mode: CameraMode::Free,
-            last_view_mode: CameraMode::Free,
-            reset_viewport: false,
+            view_mode: crate::engine::camera::camera::CameraMode::Free,
+            last_view_mode: crate::engine::camera::camera::CameraMode::Free,
+            reset_viewport: true,
         }
     }
 
@@ -140,12 +140,13 @@ impl FlightTrackerApp {
                 let final_cam_pos = center_on_earth + n * distance;
                 
                 let forward = -n;
-                let right = up.cross(forward).normalize();
-                let actual_up = forward.cross(right).normalize();
+                let right = forward.cross(up).normalize();
+                let actual_up = right.cross(forward).normalize();
                 let rot_mat = glam::Mat3::from_cols(right, actual_up, -forward);
                 
+                let q = glam::Quat::from_mat3(&rot_mat);
                 camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
-                camera.set_local_transform(final_cam_pos, glam::Quat::from_mat3(&rot_mat));
+                camera.set_local_transform(final_cam_pos, q);
             }
         } else {
             // Default if no flights
