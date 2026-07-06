@@ -249,16 +249,15 @@ impl Camera {
         
         let (y, p, _r) = new_ori.to_euler(glam::EulerRot::YXZ);
         
-        let mut rel_y = y - std::f32::consts::PI;
+        let mut rel_y = y;
         while rel_y > std::f32::consts::PI { rel_y -= std::f32::consts::PI * 2.0; }
         while rel_y < -std::f32::consts::PI { rel_y += std::f32::consts::PI * 2.0; }
         
         let clamped_rel_y = rel_y.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4);
-        let final_y = std::f32::consts::PI + clamped_rel_y;
         
         let clamped_p = p.clamp(-0.35, 0.35); // roughly +/- 20 deg
         
-        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, final_y, clamped_p, 0.0).normalize();
+        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, clamped_rel_y, clamped_p, 0.0).normalize();
     }
 
     // --- MATRICES & PROJECTIONS ---
