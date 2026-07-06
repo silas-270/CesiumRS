@@ -38,6 +38,7 @@ pub struct FlightEntity {
     pub renderer: PolylineRenderer,
     pub config: PolylineConfig,
     pub property: SampledPositionProperty,
+    pub reference_point: glam::DVec3,
 }
 
 pub struct FlightTrackerApp {
@@ -146,12 +147,14 @@ impl GlobeExtension for FlightTrackerApp {
                         poly_config.split_progress = 0.5;
                     }
 
+                    let reference_point = bvh.root.center;
                     self.flights.push(FlightEntity {
                         id,
                         bvh,
                         renderer,
                         config: poly_config,
                         property,
+                        reference_point,
                     });
                 }
             }
@@ -189,7 +192,7 @@ impl GlobeExtension for FlightTrackerApp {
             
             let visible_strips = flight.bvh.collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
             for strip in visible_strips {
-                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip, camera_pos_dvec3);
+                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip, camera_pos_dvec3, flight.reference_point);
                 if !vertices.is_empty() && !strip_verts.is_empty() {
                     vertices.push(*vertices.last().unwrap());
                     vertices.push(*strip_verts.first().unwrap());
@@ -250,6 +253,7 @@ impl GlobeExtension for FlightTrackerApp {
                 camera_bind_group, 
                 viewport_size, 
                 camera_pos_f64,
+                [flight.reference_point.x, flight.reference_point.y, flight.reference_point.z],
                 &config,
             );
         }
@@ -260,9 +264,9 @@ impl GlobeExtension for FlightTrackerApp {
                 // Elevate 10m (0.00001 Megameters) to avoid clipping and align with ribbon elevation
                 let up_dir = state.position.normalize();
                 let elevated_position = state.position + up_dir * 0.00001;
-                let pos_f32 = glam::Vec3::new(elevated_position.x as f32, elevated_position.y as f32, elevated_position.z as f32);
-                let cam = glam::Vec3::new(camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32);
-                let relative_pos = pos_f32 - cam;
+                let camera_pos = glam::DVec3::from_slice(&camera_pos_f64);
+                let relative_pos_f64 = elevated_position - camera_pos;
+                let relative_pos = glam::Vec3::new(relative_pos_f64.x as f32, relative_pos_f64.y as f32, relative_pos_f64.z as f32);
                 let translation = glam::Mat4::from_translation(relative_pos);
 
                 let cur_rot = state.rotation;

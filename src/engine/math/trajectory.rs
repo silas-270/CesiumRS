@@ -27,8 +27,8 @@ impl<'a> TrajectoryEvaluator<'a> {
     pub fn evaluate(&self, time: SimulationTime) -> Option<TransformState> {
         let pos = self.property.evaluate(time)?;
         
-        // Use a tiny delta to find the instantaneous tangent (forward vector)
-        let delta_seconds = 0.01;
+        // Use a larger delta to find the instantaneous tangent (forward vector) and acceleration
+        let delta_seconds = 0.2;
         let next_time = SimulationTime::new(time.seconds + delta_seconds);
         
         let forward = if let Some(next_pos) = self.property.evaluate(next_time) {

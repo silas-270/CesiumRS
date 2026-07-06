@@ -24,6 +24,7 @@ struct VertexOutput {
 };
 
 struct PushConstants {
+    reference_point: vec4<f32>,
     camera_pos: vec4<f32>,
     color_start: vec4<f32>,
     color_end: vec4<f32>,
@@ -51,7 +52,8 @@ fn vs_main(
     let rel_next = next_3d - push_constants.camera_pos.xyz;
 
     // 2. Calculate up vector based on current spherical position
-    var up_3d = normalize(pos_3d);
+    let pos_3d_abs = pos_3d + push_constants.reference_point.xyz;
+    var up_3d = normalize(pos_3d_abs);
 
     // 3. Compute tangent in 3D
     let dir_prev = normalize(rel_curr - rel_prev);
