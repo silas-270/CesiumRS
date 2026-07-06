@@ -227,9 +227,9 @@ impl Camera {
                 
                 let forward = -self.local_pos.normalize_or_zero();
                 if forward.length_squared() > 0.1 {
-                    let actual_right = Vec3::Y.cross(forward).normalize_or_zero();
+                    let actual_right = forward.cross(Vec3::Y).normalize_or_zero();
                     if actual_right.length_squared() > 0.1 {
-                        let up = forward.cross(actual_right).normalize_or_zero();
+                        let up = actual_right.cross(forward).normalize_or_zero();
                         let rot_mat = glam::Mat3::from_cols(actual_right, up, -forward);
                         self.local_ori = Quat::from_mat3(&rot_mat);
                     }
@@ -247,12 +247,18 @@ impl Camera {
         
         let new_ori = self.local_ori * yaw_quat * pitch_quat;
         
-        // Extract euler angles and clamp to prevent looking backwards
         let (y, p, r) = new_ori.to_euler(glam::EulerRot::YXZ);
-        let clamped_y = y.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4); // +/- 45 deg
+        
+        let mut rel_y = y - std::f32::consts::PI;
+        while rel_y > std::f32::consts::PI { rel_y -= std::f32::consts::PI * 2.0; }
+        while rel_y < -std::f32::consts::PI { rel_y += std::f32::consts::PI * 2.0; }
+        
+        let clamped_rel_y = rel_y.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4);
+        let final_y = std::f32::consts::PI + clamped_rel_y;
+        
         let clamped_p = p.clamp(-0.35, 0.35); // roughly +/- 20 deg
         
-        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, clamped_y, clamped_p, r).normalize();
+        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, final_y, clamped_p, r).normalize();
     }
 
     // --- MATRICES & PROJECTIONS ---

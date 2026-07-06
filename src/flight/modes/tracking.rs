@@ -31,8 +31,8 @@ pub fn update_tracking_mode(
         let local_pos = glam::Vec3::new(x, y, z);
         
         let forward = -local_pos.normalize_or_zero();
-        let right = glam::Vec3::Y.cross(forward).normalize_or_zero();
-        let up = forward.cross(right).normalize_or_zero();
+        let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
+        let up = right.cross(forward).normalize_or_zero();
         let rot_mat = glam::Mat3::from_cols(right, up, -forward);
         
         camera.set_local_transform(local_pos, glam::Quat::from_mat3(&rot_mat));
