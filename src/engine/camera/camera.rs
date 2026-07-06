@@ -199,14 +199,30 @@ impl Camera {
         if right.length_squared() > 0.001 {
             let rot_yaw = Quat::from_axis_angle(Vec3::Y, yaw);
             let rot_pitch = Quat::from_axis_angle(right, pitch);
-            let rot = rot_yaw * rot_pitch;
             
-            let new_pos = rot * self.local_pos;
-            let dot_y = new_pos.normalize_or_zero().dot(Vec3::Y);
+            let new_pos_both = (rot_yaw * rot_pitch) * self.local_pos;
+            let new_pos_yaw = rot_yaw * self.local_pos;
             
-            // Prevent flipping over the poles
-            if dot_y.abs() < 0.99 {
-                self.local_pos = new_pos;
+            // Helper to check if a local_pos is above the ground
+            let is_above_ground = |pos: Vec3| -> bool {
+                let global_pos = self.anchor_pos + (self.anchor_ori * pos);
+                let dir = global_pos.normalize_or_zero();
+                let t = 1.0 / (dir.x * dir.x * INV_A2 + dir.y * dir.y * INV_B2 + dir.z * dir.z * INV_A2).sqrt();
+                global_pos.length() >= t + 0.000002
+            };
+
+            let dot_y_both = new_pos_both.normalize_or_zero().dot(Vec3::Y);
+            
+            let final_pos = if dot_y_both.abs() < 0.99 && is_above_ground(new_pos_both) {
+                Some(new_pos_both)
+            } else if new_pos_yaw.normalize_or_zero().dot(Vec3::Y).abs() < 0.99 && is_above_ground(new_pos_yaw) {
+                Some(new_pos_yaw)
+            } else {
+                None
+            };
+
+            if let Some(pos) = final_pos {
+                self.local_pos = pos;
                 self.enforce_bounds();
                 
                 let forward = -self.local_pos.normalize_or_zero();
