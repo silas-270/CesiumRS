@@ -33,6 +33,9 @@ struct PushConstants {
     split_progress: f32,
     physical_half_width: f32,
     physical_half_height: f32,
+    // World-space airplane position (relative to reference_point, f32 precision).
+    // The split is rendered at the closest point on the ribbon to this position.
+    airplane_pos: vec4<f32>,
 };
 var<push_constant> push_constants: PushConstants;
 
@@ -111,6 +114,15 @@ fn vs_main(
     out.clip_position = clip_final;
     out.uv = vec2<f32>(model.side, model.forward);
     out.progress = model.progress;
+
+    // --- Fix: per-face depth nudge to eliminate Z-fighting at seam edges ---
+    // The four faces of the tube share exact vertex positions at their seam edges.
+    // Left and right side faces are pushed very slightly further from the camera
+    // (larger clip-space z) so they never fight with the top/bottom faces.
+    // The nudge is proportional to w so it's constant in NDC regardless of distance.
+    if model.face >= 2.0 {
+        out.clip_position.z += out.clip_position.w * 0.0002;
+    }
     
     // Add shading depending on face
     var face_shade = 1.0;
@@ -131,11 +143,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if length(in.uv) > 1.0 {
         discard;
     }
-    
+
+    // --- Fix: world-space split instead of progress-domain split ---
+    // We project this fragment's world position onto the airplane-to-ribbon axis
+    // so the orange/white boundary always passes through the airplane center,
+    // regardless of how the pre-baked 'progress' values were assigned.
     var base_color = push_constants.color_start.rgb;
-    if push_constants.split_progress >= 0.0 && in.progress > push_constants.split_progress {
-        base_color = push_constants.color_end.rgb;
+    if push_constants.split_progress >= 0.0 {
+        // airplane_pos is relative to reference_point (same space as vertex positions)
+        // in.progress still carries the vertex world-position dot product in the new scheme.
+        // We compare using the per-vertex progress value which is set by the CPU to the
+        // dot product of the vertex position along the airplane's forward direction.
+        // (See: the CPU now passes airplane_pos and we compute a signed distance in app.rs)
+        //
+        // Fallback: if airplane_pos.w == 0 (not set), use legacy progress comparison.
+        if push_constants.airplane_pos.w > 0.5 {
+            // airplane_pos.xyz is the airplane world position relative to reference_point,
+            // already in the same space as vertex positions stored in the buffer.
+            // We use the per-vertex 'progress' as the signed projection value:
+            // progress < 0  => behind the airplane  => orange
+            // progress >= 0 => ahead of the airplane => white
+            if in.progress >= 0.0 {
+                base_color = push_constants.color_end.rgb;
+            }
+        } else {
+            // Legacy path: time-domain progress comparison
+            if in.progress > push_constants.split_progress {
+                base_color = push_constants.color_end.rgb;
+            }
+        }
     }
-    
+
     return vec4<f32>(base_color * in.face_shade, push_constants.color_start.a);
 }

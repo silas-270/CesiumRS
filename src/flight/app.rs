@@ -8,6 +8,7 @@ use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig
 use crate::engine::core::extension::GlobeExtension;
 use crate::engine::render::model::pipeline::ModelRenderer;
 use crate::engine::camera::camera::CameraMode;
+use crate::engine::property::Property;
 
 pub fn load_flight_data(content: &str) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
     let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
@@ -185,12 +186,25 @@ impl GlobeExtension for FlightTrackerApp {
             *self.progress.lock().unwrap() = p;
         }
 
+        // Get the airplane's current world position for world-space split encoding.
+        let current_progress_val = *self.progress.lock().unwrap();
+        let airplane_ecef: Option<glam::DVec3> = if let Some(flight_ref) = self.flights.first() {
+            let start_t = flight_ref.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
+            let stop_t = flight_ref.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+            let t = start_t + current_progress_val * (stop_t - start_t);
+            flight_ref.property.evaluate(crate::engine::time::SimulationTime::new(t))
+        } else {
+            None
+        };
+
         for flight in &mut self.flights {
             let mut vertices = Vec::new();
-            
+
             let visible_strips = flight.bvh.collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
             for strip in visible_strips {
-                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(&strip, camera_pos_dvec3, flight.reference_point);
+                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices_with_split(
+                    &strip, camera_pos_dvec3, flight.reference_point, airplane_ecef
+                );
                 if !vertices.is_empty() && !strip_verts.is_empty() {
                     vertices.push(*vertices.last().unwrap());
                     vertices.push(*strip_verts.first().unwrap());
@@ -239,20 +253,33 @@ impl GlobeExtension for FlightTrackerApp {
 
         for flight in &self.flights {
             let mut config = flight.config.clone();
-            // A350 fuselage width is ~5.96 meters. Base half-width is 2.98 meters.
-            // This is scaled dynamically inside the polyline.wgsl shader.
             config.physical_half_width = 2.98 / 1_000_000.0;
-            
-            // Make the split exactly where the plane is
             config.split_progress = current_progress as f32;
 
+            // Compute airplane position relative to reference_point for world-space split.
+            // This is used by the shader (airplane_pos.w == 1.0) to place the colour
+            // boundary exactly at the airplane rather than at a pre-baked progress value.
+            let airplane_ecef: Option<glam::DVec3> = {
+                let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
+                let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+                let t = start_t + current_progress * (stop_t - start_t);
+                flight.property.evaluate(crate::engine::time::SimulationTime::new(t))
+            };
+            let airplane_pos_rel = if let Some(ecef) = airplane_ecef {
+                let rel = ecef - flight.reference_point;
+                [rel.x as f32, rel.y as f32, rel.z as f32, 1.0_f32] // w=1 activates world-space split
+            } else {
+                [0.0, 0.0, 0.0, 0.0] // w=0 falls back to legacy progress comparison
+            };
+
             flight.renderer.draw(
-                render_pass, 
-                camera_bind_group, 
-                viewport_size, 
+                render_pass,
+                camera_bind_group,
+                viewport_size,
                 camera_pos_f64,
                 [flight.reference_point.x, flight.reference_point.y, flight.reference_point.z],
                 &config,
+                airplane_pos_rel,
             );
         }
 
