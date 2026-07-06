@@ -6,13 +6,8 @@ pub fn update_cockpit_mode(
     state: &TransformState,
     mode_switched_or_reset: bool,
 ) {
-    let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
-    
     // Cockpit is tied to the plane's exact rotation (banks and pitches with it).
-    let cur_rot = state.rotation;
-    let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
-    
-    camera.set_anchor(pos_f32, rot_f32);
+    camera.set_anchor(state.position, state.rotation);
     
     if mode_switched_or_reset {
         // Plane's local -Z points forward. Move 44m forward along -Z and 17m up along Y.

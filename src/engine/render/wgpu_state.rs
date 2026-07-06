@@ -360,23 +360,23 @@ impl<'a> WgpuState<'a> {
     }
 
     fn update_logic(&mut self, aspect_ratio: f32, main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
-        let (camera_pos_f32_before, _) = self.camera.global_transform();
-        let cam_pos_dvec3 = glam::DVec3::new(camera_pos_f32_before.x as f64, camera_pos_f32_before.y as f64, camera_pos_f32_before.z as f64);
+        let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
         
         // Use old frustum for extension
         let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
         
         if let Some(ext) = &mut self.extension {
-            ext.update(&self.device, &self.queue, cam_pos_dvec3, &frustum, &mut self.camera, aspect_ratio);
+            ext.update(&self.device, &self.queue, camera_pos_dvec3, &frustum, &mut self.camera, aspect_ratio);
         }
-
+ 
         let (view_matrix, proj_matrix) = if self.debug_mode {
             (self.debug_camera.get_view_matrix(), self.debug_camera.get_projection_matrix(aspect_ratio))
         } else {
             (self.camera.get_view_matrix(), self.camera.get_projection_matrix(aspect_ratio))
         };
-
-        let (camera_pos_f32, _) = self.camera.global_transform();
+ 
+        let (camera_pos_dvec, _) = self.camera.global_transform_f64();
+        let camera_pos_f32 = glam::Vec3::new(camera_pos_dvec.x as f32, camera_pos_dvec.y as f32, camera_pos_dvec.z as f32);
         self.quadtree_manager.update(camera_pos_f32, proj_matrix * view_matrix);
 
         let mut gpu_view_matrix = view_matrix;
@@ -484,16 +484,16 @@ impl<'a> WgpuState<'a> {
             timestamp_writes: None,
         });
 
-        let camera_pos = if self.debug_mode {
-            self.debug_camera.position
+        let camera_pos_f64 = if self.debug_mode {
+            [
+                self.debug_camera.position.x as f64,
+                self.debug_camera.position.y as f64,
+                self.debug_camera.position.z as f64,
+            ]
         } else {
-            self.camera.global_transform().0
+            let (pos_dvec, _) = self.camera.global_transform_f64();
+            [pos_dvec.x, pos_dvec.y, pos_dvec.z]
         };
-        let camera_pos_f64 = [
-            camera_pos.x as f64,
-            camera_pos.y as f64,
-            camera_pos.z as f64,
-        ];
 
         // Draw solid
         render_pass.set_pipeline(&self.solid_pipeline);
@@ -656,7 +656,8 @@ impl<'a> WgpuState<'a> {
         let camera_pos = if self.debug_mode {
             self.debug_camera.position
         } else {
-            self.camera.global_transform().0
+            let (pos_dvec, _) = self.camera.global_transform();
+            glam::Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32)
         };
         self.compute_debug_vertices(main_view_proj, &visible_tiles, camera_pos);
 

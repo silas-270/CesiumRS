@@ -68,7 +68,7 @@ impl<'a> TrajectoryEvaluator<'a> {
         // We look ahead much further than we look behind so the plane can anticipate curves.
         // For example, if inertia_window is 120s, lookahead=90s, lookbehind=30s.
         let lookbehind = self.inertia_window_seconds * 0.25;
-        let lookahead = self.inertia_window_seconds * 0.75;
+        let _lookahead = self.inertia_window_seconds * 0.75;
         
         for i in 0..=num_samples {
             let t_offset = -lookbehind + (i as f64 / num_samples as f64) * self.inertia_window_seconds;
