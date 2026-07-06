@@ -195,8 +195,31 @@ impl Camera {
         let yaw = -dx * self.pitch_sensitivity * 0.2;
         let pitch = -dy * self.pitch_sensitivity * 0.2;
 
-        let rot = Quat::from_axis_angle(Vec3::Y, yaw) * Quat::from_axis_angle(Vec3::X, pitch);
-        self.orbit_anchor(rot);
+        let right = Vec3::Y.cross(-self.local_pos).normalize_or_zero();
+        if right.length_squared() > 0.001 {
+            let rot_yaw = Quat::from_axis_angle(Vec3::Y, yaw);
+            let rot_pitch = Quat::from_axis_angle(right, pitch);
+            let rot = rot_yaw * rot_pitch;
+            
+            let new_pos = rot * self.local_pos;
+            let dot_y = new_pos.normalize_or_zero().dot(Vec3::Y);
+            
+            // Prevent flipping over the poles
+            if dot_y.abs() < 0.99 {
+                self.local_pos = new_pos;
+                self.enforce_bounds();
+                
+                let forward = -self.local_pos.normalize_or_zero();
+                if forward.length_squared() > 0.1 {
+                    let actual_right = Vec3::Y.cross(forward).normalize_or_zero();
+                    if actual_right.length_squared() > 0.1 {
+                        let up = forward.cross(actual_right).normalize_or_zero();
+                        let rot_mat = glam::Mat3::from_cols(actual_right, up, -forward);
+                        self.local_ori = Quat::from_mat3(&rot_mat);
+                    }
+                }
+            }
+        }
     }
 
     pub fn look_around(&mut self, dx: f32, dy: f32) {
