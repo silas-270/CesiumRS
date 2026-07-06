@@ -42,6 +42,19 @@ impl<T> TileCacheManager<T> {
         self.cache.get(id).map(|s| &*s)
     }
 
+    /// Like `get_state` but does NOT promote the entry in the LRU order.
+    /// Use this for readiness checks / traversal so that the act of checking
+    /// does not silently evict other entries.
+    pub fn peek_state(&self, id: &TileId) -> Option<&TileState<T>> {
+        let state = self.cache.peek(id)?;
+        if let TileState::Failed(timestamp) = state {
+            if timestamp.elapsed() >= self.negative_cache_duration {
+                return None; // expired — treat as absent (will be cleaned next get_state call)
+            }
+        }
+        Some(state)
+    }
+
     pub fn mark_fetching(&mut self, id: TileId) {
         self.cache.put(id, TileState::Fetching);
     }

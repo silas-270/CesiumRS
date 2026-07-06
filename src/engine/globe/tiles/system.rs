@@ -48,12 +48,8 @@ impl TileSystem {
                 for (id, center, _) in visible_tiles {
                     if id.z < 4 { continue; } // Prevent root-level prefetch flooding
 
-                    // Very naive prefetch: if a tile is "in front" of the movement, guess its neighbors.
-                    // A better approach is to translate the velocity into lon/lat delta and request those tiles.
-                    // For now, let's just use the radius and center to estimate if we are moving towards it.
                     let to_tile = (*center - camera_pos).normalize_or_zero();
                     if to_tile.dot(norm_vel) > 0.5 {
-                        // Prefetch neighbors in X and Y
                         let mut neighbors = Vec::new();
                         neighbors.push(TileId { z: id.z, x: id.x.saturating_add(1), y: id.y });
                         neighbors.push(TileId { z: id.z, x: id.x.saturating_sub(1), y: id.y });
@@ -80,8 +76,8 @@ impl TileSystem {
         for (id, _, _) in visible_tiles {
             self.texture_manager.request_tile(*id, TilePriority::High);
 
-            // actively request it as a low priority fetch so that it eventually loads and
-            // provides a fallback for the future.
+            // Proactively fetch missing parent textures at low priority so they
+            // are available as fallbacks before the own texture arrives.
             let mut curr = *id;
             while let Some(p) = curr.parent() {
                 if self.texture_manager.cache.get_state(&p).is_none() {
@@ -119,6 +115,28 @@ impl TileSystem {
         [scale_x, scale_y, offset_x, offset_y]
     }
 
+    /// Non-mutating version: checks what texture would be shown for `id` without
+    /// promoting anything in the LRU cache. Used by the display-state updater
+    /// so that readiness checks don't silently evict parent fallback textures.
+    pub fn peek_render_data(&self, id: TileId) -> Option<(TileId, [f32; 4])> {
+        if let Some(TileState::Ready(_)) = self.texture_manager.cache.peek_state(&id) {
+            return Some((id, [1.0, 1.0, 0.0, 0.0]));
+        }
+
+        let mut current_id = id;
+        while let Some(parent_id) = current_id.parent() {
+            if let Some(TileState::Ready(_)) = self.texture_manager.cache.peek_state(&parent_id) {
+                let uv = Self::compute_fallback_uv(id, parent_id);
+                return Some((parent_id, uv));
+            }
+            current_id = parent_id;
+        }
+
+        None
+    }
+
+    /// Mutable version used at draw time — promotes accessed textures in the LRU
+    /// so that currently-rendered tiles are never evicted mid-frame.
     pub fn get_render_data(&mut self, id: TileId) -> Option<RenderData<'_>> {
         if let Some(TileState::Ready(_)) = self.texture_manager.cache.get_state(&id) {
             let bg = match self.texture_manager.cache.get_state(&id).unwrap() {
