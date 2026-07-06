@@ -279,7 +279,17 @@ impl Camera {
 
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
         let alt = self.altitude().max(0.000002);
-        let znear = (alt * 0.1).clamp(0.0000001, 10.0);
+        let znear = match self.mode {
+            CameraMode::Free => (alt * 0.1).clamp(0.0000001, 10.0),
+            CameraMode::Tracking | CameraMode::Cockpit => {
+                // In tracking or cockpit mode, the camera is anchored to the aircraft.
+                // The aircraft and its immediate trajectory polyline are very close to the camera.
+                // We must use a small znear to prevent clipping the aircraft or nearby polyline.
+                // We scale znear with the local distance to the aircraft target, but keep it small.
+                let dist = self.local_pos.length();
+                (dist * 0.05).clamp(0.00000001, 0.000005)
+            }
+        };
         let (pos, _) = self.global_transform();
         let zfar = pos.length() + 10.0;
         
