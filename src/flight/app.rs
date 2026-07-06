@@ -236,11 +236,11 @@ impl GlobeExtension for FlightTrackerApp {
                 // Dynamic scaling based on camera distance
                 let distance = relative_pos.length(); // Distance in Megameters
                 
-                // Desired length of the airplane in Megameters (now ~1/3 smaller than 5%)
-                let desired_length_mm = distance * 0.0333;
+                // Desired length of the airplane in Megameters (now half as big as 0.0333)
+                let desired_length_mm = distance * 0.01665;
                 
                 let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
-                let max_length_mm = 2500.0 * 1000.0 / 1_000_000.0; // 2500 km (500km less than 3000)
+                let max_length_mm = 2000.0 * 1000.0 / 1_000_000.0; // 2000 km
                 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
                 
