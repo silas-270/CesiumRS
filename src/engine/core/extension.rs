@@ -10,13 +10,13 @@ pub trait GlobeExtension {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     );
 
-    /// Called every frame to update generic logic or regenerate geometry
     fn update(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         camera_pos_dvec3: DVec3,
         frustum: &[(DVec3, f64); 6],
+        camera: &mut crate::engine::camera::camera::Camera,
     );
 
     /// Called every frame after the globe and engine debug models are drawn

@@ -190,15 +190,19 @@ impl<'a> ApplicationHandler for App<'a> {
                     if !state.debug_mode {
                         if pressed {
                             if let Some((x, y)) = self.last_mouse_pos {
-                                state.camera.begin_drag(
-                                    x as f32,
-                                    y as f32,
-                                    state.size.width as f32,
-                                    state.size.height as f32,
-                                );
+                                if state.camera.mode == crate::engine::camera::camera::CameraMode::Free {
+                                    state.camera.begin_drag(
+                                        x as f32,
+                                        y as f32,
+                                        state.size.width as f32,
+                                        state.size.height as f32,
+                                    );
+                                }
                             }
                         } else {
-                            state.camera.end_drag();
+                            if state.camera.mode == crate::engine::camera::camera::CameraMode::Free {
+                                state.camera.end_drag();
+                            }
                         }
                     }
                 } else if button == MouseButton::Right {
@@ -224,12 +228,22 @@ impl<'a> ApplicationHandler for App<'a> {
                     }
                 } else {
                     if self.mouse_pressed {
-                        state.camera.drag(
-                            position.x as f32,
-                            position.y as f32,
-                            state.size.width as f32,
-                            state.size.height as f32,
-                        );
+                        match state.camera.mode {
+                            crate::engine::camera::camera::CameraMode::Free => {
+                                state.camera.drag(
+                                    position.x as f32,
+                                    position.y as f32,
+                                    state.size.width as f32,
+                                    state.size.height as f32,
+                                );
+                            }
+                            crate::engine::camera::camera::CameraMode::Tracking => {
+                                state.camera.orbit_mouse(dx as f32, dy as f32);
+                            }
+                            crate::engine::camera::camera::CameraMode::Cockpit => {
+                                state.camera.look_around(dx as f32, dy as f32);
+                            }
+                        }
                         window.request_redraw();
                     }
                 }

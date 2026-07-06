@@ -360,6 +360,16 @@ impl<'a> WgpuState<'a> {
     }
 
     fn update_logic(&mut self, aspect_ratio: f32, main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
+        let (camera_pos_f32_before, _) = self.camera.global_transform();
+        let cam_pos_dvec3 = glam::DVec3::new(camera_pos_f32_before.x as f64, camera_pos_f32_before.y as f64, camera_pos_f32_before.z as f64);
+        
+        // Use old frustum for extension
+        let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
+        
+        if let Some(ext) = &mut self.extension {
+            ext.update(&self.device, &self.queue, cam_pos_dvec3, &frustum, &mut self.camera);
+        }
+
         let (view_matrix, proj_matrix) = if self.debug_mode {
             (self.debug_camera.get_view_matrix(), self.debug_camera.get_projection_matrix(aspect_ratio))
         } else {
@@ -367,14 +377,7 @@ impl<'a> WgpuState<'a> {
         };
 
         let (camera_pos_f32, _) = self.camera.global_transform();
-        let cam_pos_dvec3 = glam::DVec3::new(camera_pos_f32.x as f64, camera_pos_f32.y as f64, camera_pos_f32.z as f64);
-        self.quadtree_manager.update(camera_pos_f32, main_view_proj);
-
-        let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
-        
-        if let Some(ext) = &mut self.extension {
-            ext.update(&self.device, &self.queue, cam_pos_dvec3, &frustum);
-        }
+        self.quadtree_manager.update(camera_pos_f32, proj_matrix * view_matrix);
 
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader

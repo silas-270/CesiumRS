@@ -9,6 +9,7 @@ use crate::engine::render::polyline::bvh::PolylineBVH;
 use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig};
 use crate::engine::core::extension::GlobeExtension;
 use crate::engine::render::model::pipeline::ModelRenderer;
+use crate::engine::camera::camera::CameraMode;
 
 pub fn load_flight_data(content: &str) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
     let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
@@ -47,6 +48,7 @@ pub struct FlightTrackerApp {
     pub last_update_time: std::time::Instant,
     pub is_playing: bool,
     pub play_speed: f64,
+    pub view_mode: CameraMode,
 }
 
 impl FlightTrackerApp {
@@ -59,6 +61,7 @@ impl FlightTrackerApp {
             last_update_time: std::time::Instant::now(),
             is_playing: false,
             play_speed: 0.1,
+            view_mode: CameraMode::Free,
         }
     }
 
@@ -157,6 +160,7 @@ impl GlobeExtension for FlightTrackerApp {
         queue: &wgpu::Queue,
         camera_pos_dvec3: DVec3,
         frustum: &[(DVec3, f64); 6],
+        camera: &mut crate::engine::camera::camera::Camera,
     ) {
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_update_time).as_secs_f64();
@@ -188,6 +192,53 @@ impl GlobeExtension for FlightTrackerApp {
                 vertices.append(&mut strip_verts);
             }
             flight.renderer.update_geometry(device, queue, &vertices);
+        }
+
+        // Camera Logic
+        camera.mode = self.view_mode;
+        
+        if let Some(state) = self.get_plane_state_at(*self.progress.lock().unwrap()) {
+            let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
+            
+            match self.view_mode {
+                CameraMode::Tracking => {
+                    // Orbit world-relative at the plane's position.
+                    // We use an ENU matrix at the plane's position so the camera stays upright relative to the earth.
+                    let enu = crate::engine::math::transform::enu_matrix_at_ecef(state.position);
+                    let enu_quat = glam::DQuat::from_mat3(&enu);
+                    let rot_f32 = glam::Quat::from_xyzw(enu_quat.x as f32, enu_quat.y as f32, enu_quat.z as f32, enu_quat.w as f32).normalize();
+                    camera.set_anchor(pos_f32, rot_f32);
+                }
+                CameraMode::Cockpit => {
+                    // Cockpit is tied to the plane's exact rotation (banks and pitches with it).
+                    let cur_rot = state.rotation;
+                    let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
+                    
+                    // Apply the model's 180 yaw correction
+                    let model_correction = glam::Quat::from_euler(
+                        glam::EulerRot::YXZ, 
+                        std::f32::consts::PI, 
+                        0.0, 
+                        0.0
+                    );
+                    let final_rot = rot_f32 * model_correction;
+                    
+                    camera.set_anchor(pos_f32, final_rot);
+                    
+                    // Force the local position to the cockpit (e.g. 30m forward, 2m up in the model's local space)
+                    // Given the model correction, +Z is forward in the plane's local space
+                    let cockpit_offset = glam::Vec3::new(0.0, 2.0 / 1_000_000.0, 30.0 / 1_000_000.0);
+                    camera.local_pos = cockpit_offset;
+                }
+                CameraMode::Free => {
+                    // If switching back to free mode, we reset anchor to ZERO
+                    if camera.anchor_pos != glam::Vec3::ZERO {
+                        let (global_pos, global_ori) = camera.global_transform();
+                        camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
+                        camera.set_local_transform(global_pos, global_ori);
+                    }
+                }
+            }
         }
     }
 
@@ -287,6 +338,14 @@ impl GlobeExtension for FlightTrackerApp {
                 self.is_playing = !self.is_playing;
             }
             ui.add(egui::Slider::new(&mut self.play_speed, -0.5..=0.5).text("Speed"));
+        });
+
+        ui.separator();
+        ui.label("Camera Mode");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.view_mode, CameraMode::Free, "Free");
+            ui.radio_value(&mut self.view_mode, CameraMode::Tracking, "Tracking");
+            ui.radio_value(&mut self.view_mode, CameraMode::Cockpit, "Cockpit");
         });
     }
 }
