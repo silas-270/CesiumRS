@@ -193,7 +193,7 @@ impl Camera {
 
     pub fn orbit_mouse(&mut self, dx: f32, dy: f32) {
         let yaw = -dx * self.pitch_sensitivity * 0.2;
-        let pitch = -dy * self.pitch_sensitivity * 0.2;
+        let pitch = dy * self.pitch_sensitivity * 0.2;
 
         let right = Vec3::Y.cross(-self.local_pos).normalize_or_zero();
         if right.length_squared() > 0.001 {
@@ -240,7 +240,7 @@ impl Camera {
 
     pub fn look_around(&mut self, dx: f32, dy: f32) {
         let yaw = -dx * self.pitch_sensitivity * 0.1;
-        let pitch = -dy * self.pitch_sensitivity * 0.1;
+        let pitch = dy * self.pitch_sensitivity * 0.1;
 
         let yaw_quat = Quat::from_axis_angle(Vec3::Y, yaw);
         let pitch_quat = Quat::from_axis_angle(Vec3::X, pitch);
