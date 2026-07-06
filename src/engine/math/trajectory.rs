@@ -22,9 +22,8 @@ impl<'a> TrajectoryEvaluator<'a> {
         }
     }
 
-    /// Evaluates the trajectory at the given simulation time, returning a stateless TransformState.
-    /// Rotation is derived from the instantaneous tangent to the trajectory.
-    pub fn evaluate(&self, time: SimulationTime) -> Option<TransformState> {
+    /// Evaluates the raw trajectory state at the given simulation time.
+    pub fn evaluate_raw(&self, time: SimulationTime) -> Option<TransformState> {
         let pos = self.property.evaluate(time)?;
         
         // Use a larger delta to find the instantaneous tangent (forward vector) and acceleration
@@ -61,7 +60,7 @@ impl<'a> TrajectoryEvaluator<'a> {
 
         // Calculate centripetal acceleration to simulate banking (roll)
         // To prevent abrupt changes and simulate massive inertia, we average the acceleration.
-        let num_samples = 40;
+        let num_samples = 30;
         let mut avg_a = Vec3::ZERO;
         let mut total_weight = 0.0;
         
@@ -131,6 +130,50 @@ impl<'a> TrajectoryEvaluator<'a> {
         Some(TransformState {
             position: pos,
             rotation,
+        })
+    }
+
+    /// Evaluates the trajectory at the given simulation time, returning a stateless, smoothed TransformState.
+    pub fn evaluate(&self, time: SimulationTime) -> Option<TransformState> {
+        let base_state = self.evaluate_raw(time)?;
+
+        // Apply a symmetric quaternion smoothing filter around `time` to eliminate high-frequency angular jerks.
+        let mut sum_q = glam::DQuat::IDENTITY;
+        let mut first_q: Option<glam::DQuat> = None;
+        let mut total_weight = 0.0;
+
+        let filter_window = 1.6; // 1.6 seconds window (symmetric: -0.8s to +0.8s)
+        let num_samples = 8;
+        for i in 0..=num_samples {
+            let frac = i as f64 / num_samples as f64;
+            let t_offset = -filter_window * 0.5 + frac * filter_window;
+            let sample_time = SimulationTime::new(time.seconds + t_offset);
+
+            if let Some(raw_state) = self.evaluate_raw(sample_time) {
+                let q = raw_state.rotation;
+                let weight = (frac * std::f64::consts::PI).sin();
+
+                if let Some(first) = first_q {
+                    let dot = q.dot(first);
+                    let aligned_q = if dot < 0.0 { -q } else { q };
+                    sum_q = sum_q + aligned_q * weight;
+                } else {
+                    first_q = Some(q);
+                    sum_q = q * weight;
+                }
+                total_weight += weight;
+            }
+        }
+
+        let smoothed_rotation = if total_weight > 0.0 {
+            sum_q.normalize()
+        } else {
+            base_state.rotation
+        };
+
+        Some(TransformState {
+            position: base_state.position,
+            rotation: smoothed_rotation,
         })
     }
 }
