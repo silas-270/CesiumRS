@@ -110,80 +110,6 @@ impl FlightTrackerApp {
         // In the future, this can be called via JNI to dynamically set the model
         // To be implemented: store bytes and create ModelRenderer in update()
     }
-
-    fn reset_free_mode_camera(&self, camera: &mut crate::engine::camera::camera::Camera, aspect_ratio: f32) {
-        if let Some(flight) = self.flights.first() {
-            let samples = flight.property.samples();
-            if samples.len() >= 2 {
-                let s = samples.first().unwrap().1;
-                let e = samples.last().unwrap().1;
-                
-                let s_f32 = glam::Vec3::new(s.x as f32, s.y as f32, s.z as f32);
-                let e_f32 = glam::Vec3::new(e.x as f32, e.y as f32, e.z as f32);
-                
-                let m = (s_f32 + e_f32) * 0.5;
-                let n = m.normalize();
-                
-                let v = e_f32 - s_f32;
-                let v_tangent = v - v.dot(n) * n;
-                let d_vec = v_tangent.normalize_or_zero();
-                
-                let p = 0.05;
-                let half_h = 0.5;
-                let half_w = 0.5 * aspect_ratio;
-                
-                let py = half_h - p;
-                let px = half_w - p;
-                
-                let theta = (py / px).atan();
-                
-                let right = glam::Quat::from_axis_angle(n, -theta) * d_vec;
-                let up = glam::Quat::from_axis_angle(n, std::f32::consts::PI / 2.0) * right;
-                
-                let m_surface = n * 6.378137;
-                let mut u_min = f32::MAX; let mut u_max = f32::MIN;
-                let mut v_min = f32::MAX; let mut v_max = f32::MIN;
-                for (_, pos) in samples {
-                    let pos_f32 = glam::Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
-                    let vec_from_m = pos_f32 - m_surface;
-                    let u = vec_from_m.dot(right);
-                    let v_val = vec_from_m.dot(up);
-                    if u < u_min { u_min = u; }
-                    if u > u_max { u_max = u; }
-                    if v_val < v_min { v_min = v_val; }
-                    if v_val > v_max { v_max = v_val; }
-                }
-                
-                let u_center = (u_min + u_max) * 0.5;
-                let v_center = (v_min + v_max) * 0.5;
-                let w_req = u_max - u_min;
-                let h_req = v_max - v_min;
-                
-                let new_m = m_surface + right * u_center + up * v_center;
-                let new_n = new_m.normalize();
-                
-                let fov_y = 2.0 * (12.0 / camera.focal_length).atan();
-                let d_h = h_req / (4.0 * py * (fov_y / 2.0).tan());
-                let d_w = w_req / (4.0 * px * (fov_y / 2.0).tan());
-                let distance = d_h.max(d_w).max(0.01);
-                
-                let final_cam_pos = new_n * 6.378137 + new_n * distance;
-                
-                let forward = -new_n;
-                let safe_right = forward.cross(up).normalize();
-                let safe_up = safe_right.cross(forward).normalize();
-                let rot_mat = glam::Mat3::from_cols(safe_right, safe_up, -forward);
-                
-                let q = glam::Quat::from_mat3(&rot_mat);
-                camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
-                camera.set_local_transform(final_cam_pos, q);
-            }
-        } else {
-            // Default if no flights
-            camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
-            camera.set_local_transform(glam::Vec3::new(0.0, 0.0, 20.0), glam::Quat::IDENTITY);
-        }
-    }
 }
 
 impl GlobeExtension for FlightTrackerApp {
@@ -284,43 +210,20 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         if let Some(state) = self.get_plane_state_at(*self.progress.lock().unwrap()) {
-            let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
-            
             match self.view_mode {
                 CameraMode::Tracking => {
-                    // Orbit around the plane, but without banking. 
-                    // We extract the forward vector and use velocity_to_orientation.
-                    let forward = state.rotation * glam::DVec3::new(0.0, 0.0, -1.0);
-                    let no_bank_quat = crate::engine::math::transform::velocity_to_orientation(state.position, forward);
-                    let rot_f32 = glam::Quat::from_xyzw(no_bank_quat.x as f32, no_bank_quat.y as f32, no_bank_quat.z as f32, no_bank_quat.w as f32).normalize();
-                    
-                    camera.set_anchor(pos_f32, rot_f32);
-                    
-                    if mode_switched_or_reset {
-                        // 50m behind, 15m up
-                        camera.local_pos = glam::Vec3::new(0.0, 15.0 / 1_000_000.0, 50.0 / 1_000_000.0);
-                        // Pitch down slightly to look at plane
-                        camera.local_ori = glam::Quat::from_euler(glam::EulerRot::YXZ, 0.0, -0.25, 0.0);
-                    }
+                    crate::flight::modes::tracking::update_tracking_mode(camera, &state, mode_switched_or_reset);
                 }
                 CameraMode::Cockpit => {
-                    // Cockpit is tied to the plane's exact rotation (banks and pitches with it).
-                    let cur_rot = state.rotation;
-                    let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
-                    
-                    camera.set_anchor(pos_f32, rot_f32);
-                    
-                    if mode_switched_or_reset {
-                        camera.local_pos = glam::Vec3::new(0.0, 2.0 / 1_000_000.0, -32.0 / 1_000_000.0);
-                        camera.local_ori = glam::Quat::IDENTITY;
-                    }
+                    crate::flight::modes::cockpit::update_cockpit_mode(camera, &state, mode_switched_or_reset);
                 }
                 CameraMode::Free => {
-                    if mode_switched_or_reset {
-                        self.reset_free_mode_camera(camera, aspect_ratio);
-                    }
+                    crate::flight::modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
                 }
             }
+        } else if self.view_mode == CameraMode::Free {
+            // Free mode does not require an active plane state
+            crate::flight::modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
         }
     }
 
