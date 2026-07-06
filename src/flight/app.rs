@@ -133,8 +133,8 @@ impl FlightTrackerApp {
                 
                 let l = v_tangent.length();
                 let fov_y = 2.0 * (12.0 / camera.focal_length).atan();
-                // 1.5 multiplier for padding
-                let distance = (l * 0.707 * 1.5) / (fov_y / 2.0).tan();
+                // 1.05 multiplier for slight padding
+                let distance = (l * 0.707 * 1.05) / (fov_y / 2.0).tan();
                 
                 let center_on_earth = n * 6.378137;
                 let final_cam_pos = center_on_earth + n * distance;
