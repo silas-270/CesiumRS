@@ -140,16 +140,36 @@ impl FlightTrackerApp {
                 let right = glam::Quat::from_axis_angle(n, -theta) * d_vec;
                 let up = glam::Quat::from_axis_angle(n, std::f32::consts::PI / 2.0) * right;
                 
-                let l = v_tangent.length();
+                let m_surface = n * 6.378137;
+                let mut u_min = f32::MAX; let mut u_max = f32::MIN;
+                let mut v_min = f32::MAX; let mut v_max = f32::MIN;
+                for (_, pos) in samples {
+                    let pos_f32 = glam::Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32);
+                    let vec_from_m = pos_f32 - m_surface;
+                    let u = vec_from_m.dot(right);
+                    let v_val = vec_from_m.dot(up);
+                    if u < u_min { u_min = u; }
+                    if u > u_max { u_max = u; }
+                    if v_val < v_min { v_min = v_val; }
+                    if v_val > v_max { v_max = v_val; }
+                }
+                
+                let u_center = (u_min + u_max) * 0.5;
+                let v_center = (v_min + v_max) * 0.5;
+                let w_req = u_max - u_min;
+                let h_req = v_max - v_min;
+                
+                let new_m = m_surface + right * u_center + up * v_center;
+                let new_n = new_m.normalize();
+                
                 let fov_y = 2.0 * (12.0 / camera.focal_length).atan();
+                let d_h = h_req / (4.0 * py * (fov_y / 2.0).tan());
+                let d_w = w_req / (4.0 * px * (fov_y / 2.0).tan());
+                let distance = d_h.max(d_w).max(0.01);
                 
-                let h_screen_physical = l * theta.sin() / (2.0 * py);
-                let distance = h_screen_physical / (2.0 * (fov_y / 2.0).tan());
+                let final_cam_pos = new_n * 6.378137 + new_n * distance;
                 
-                let center_on_earth = n * 6.378137;
-                let final_cam_pos = center_on_earth + n * distance;
-                
-                let forward = -n;
+                let forward = -new_n;
                 let safe_right = forward.cross(up).normalize();
                 let safe_up = safe_right.cross(forward).normalize();
                 let rot_mat = glam::Mat3::from_cols(safe_right, safe_up, -forward);
