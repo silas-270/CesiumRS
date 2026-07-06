@@ -49,6 +49,8 @@ pub struct FlightTrackerApp {
     pub is_playing: bool,
     pub play_speed: f64,
     pub view_mode: CameraMode,
+    pub last_view_mode: CameraMode,
+    pub reset_viewport: bool,
 }
 
 impl FlightTrackerApp {
@@ -62,6 +64,8 @@ impl FlightTrackerApp {
             is_playing: false,
             play_speed: 0.1,
             view_mode: CameraMode::Free,
+            last_view_mode: CameraMode::Free,
+            reset_viewport: false,
         }
     }
 
@@ -197,45 +201,52 @@ impl GlobeExtension for FlightTrackerApp {
         // Camera Logic
         camera.mode = self.view_mode;
         
+        let mut mode_switched_or_reset = false;
+        if self.view_mode != self.last_view_mode || self.reset_viewport {
+            mode_switched_or_reset = true;
+            self.last_view_mode = self.view_mode;
+            self.reset_viewport = false;
+        }
+
         if let Some(state) = self.get_plane_state_at(*self.progress.lock().unwrap()) {
             let pos_f32 = glam::Vec3::new(state.position.x as f32, state.position.y as f32, state.position.z as f32);
             
             match self.view_mode {
                 CameraMode::Tracking => {
-                    // Orbit world-relative at the plane's position.
-                    // We use an ENU matrix at the plane's position so the camera stays upright relative to the earth.
-                    let enu = crate::engine::math::transform::enu_matrix_at_ecef(state.position);
-                    let enu_quat = glam::DQuat::from_mat3(&enu);
-                    let rot_f32 = glam::Quat::from_xyzw(enu_quat.x as f32, enu_quat.y as f32, enu_quat.z as f32, enu_quat.w as f32).normalize();
+                    // Orbit around the plane, but without banking. 
+                    // We extract the forward vector and use velocity_to_orientation.
+                    let forward = state.rotation * glam::DVec3::new(0.0, 0.0, -1.0);
+                    let no_bank_quat = crate::engine::math::transform::velocity_to_orientation(state.position, forward);
+                    let rot_f32 = glam::Quat::from_xyzw(no_bank_quat.x as f32, no_bank_quat.y as f32, no_bank_quat.z as f32, no_bank_quat.w as f32).normalize();
+                    
                     camera.set_anchor(pos_f32, rot_f32);
+                    
+                    if mode_switched_or_reset {
+                        // 50m behind, 15m up
+                        camera.local_pos = glam::Vec3::new(0.0, 15.0 / 1_000_000.0, 50.0 / 1_000_000.0);
+                        // Pitch down slightly to look at plane
+                        camera.local_ori = glam::Quat::from_euler(glam::EulerRot::YXZ, 0.0, -0.25, 0.0);
+                    }
                 }
                 CameraMode::Cockpit => {
                     // Cockpit is tied to the plane's exact rotation (banks and pitches with it).
                     let cur_rot = state.rotation;
                     let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
                     
-                    // Apply the model's 180 yaw correction
-                    let model_correction = glam::Quat::from_euler(
-                        glam::EulerRot::YXZ, 
-                        std::f32::consts::PI, 
-                        0.0, 
-                        0.0
-                    );
-                    let final_rot = rot_f32 * model_correction;
+                    camera.set_anchor(pos_f32, rot_f32);
                     
-                    camera.set_anchor(pos_f32, final_rot);
-                    
-                    // Force the local position to the cockpit (e.g. 30m forward, 2m up in the model's local space)
-                    // Given the model correction, +Z is forward in the plane's local space
-                    let cockpit_offset = glam::Vec3::new(0.0, 2.0 / 1_000_000.0, 30.0 / 1_000_000.0);
-                    camera.local_pos = cockpit_offset;
+                    if mode_switched_or_reset {
+                        camera.local_pos = glam::Vec3::new(0.0, 2.0 / 1_000_000.0, -32.0 / 1_000_000.0);
+                        camera.local_ori = glam::Quat::IDENTITY;
+                    }
                 }
                 CameraMode::Free => {
-                    // If switching back to free mode, we reset anchor to ZERO
-                    if camera.anchor_pos != glam::Vec3::ZERO {
-                        let (global_pos, global_ori) = camera.global_transform();
-                        camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
-                        camera.set_local_transform(global_pos, global_ori);
+                    if mode_switched_or_reset {
+                        if camera.anchor_pos != glam::Vec3::ZERO {
+                            let (global_pos, global_ori) = camera.global_transform();
+                            camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
+                            camera.set_local_transform(global_pos, global_ori);
+                        }
                     }
                 }
             }
@@ -346,6 +357,12 @@ impl GlobeExtension for FlightTrackerApp {
             ui.radio_value(&mut self.view_mode, CameraMode::Free, "Free");
             ui.radio_value(&mut self.view_mode, CameraMode::Tracking, "Tracking");
             ui.radio_value(&mut self.view_mode, CameraMode::Cockpit, "Cockpit");
+            
+            if self.view_mode != CameraMode::Free {
+                if ui.button("Reset Viewport").clicked() {
+                    self.reset_viewport = true;
+                }
+            }
         });
     }
 }
