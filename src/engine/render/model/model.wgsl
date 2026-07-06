@@ -58,13 +58,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let size_pixels = max(physical_size_engine * pixels_per_engine_unit, 0.00001);
     let target_pixels = 200.0;
     
-    let needed_scale = target_pixels / size_pixels;
-    
-    // We want the plane to never be smaller than 1.0 (its true size)
-    // and never larger than some huge factor (e.g., to prevent it from covering the globe)
-    let max_scale = max(1.0, 4000000.0 / (6378137.0 * max(physical_size_engine, 0.000001)));
-    
-    let scale_multiplier = clamp(needed_scale, 1.0, max_scale);
+    let scale_multiplier = 1.0;
 
     // Apply scaling
     let scaled_pos = model.position * scale_multiplier;
