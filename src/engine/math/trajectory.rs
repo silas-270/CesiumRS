@@ -61,9 +61,9 @@ impl<'a> TrajectoryEvaluator<'a> {
 
         // Calculate centripetal acceleration to simulate banking (roll)
         // To prevent abrupt changes and simulate massive inertia, we average the acceleration.
-        let num_samples = 30;
+        let num_samples = 40;
         let mut avg_a = Vec3::ZERO;
-        let mut valid_samples = 0;
+        let mut total_weight = 0.0;
         
         // We look ahead much further than we look behind so the plane can anticipate curves.
         // For example, if inertia_window is 120s, lookahead=90s, lookbehind=30s.
@@ -71,6 +71,9 @@ impl<'a> TrajectoryEvaluator<'a> {
         let _lookahead = self.inertia_window_seconds * 0.75;
         
         for i in 0..=num_samples {
+            let fraction = i as f32 / num_samples as f32;
+            let weight = (fraction * std::f32::consts::PI).sin();
+
             let t_offset = -lookbehind + (i as f64 / num_samples as f64) * self.inertia_window_seconds;
             let sample_time = SimulationTime::new(time.seconds + t_offset);
             
@@ -85,13 +88,13 @@ impl<'a> TrajectoryEvaluator<'a> {
                 let v1 = (p - prev) / delta_seconds;
                 let v2 = (next - p) / delta_seconds;
                 let a = (v2 - v1) / delta_seconds;
-                avg_a += Vec3::new(a.x as f32, a.y as f32, a.z as f32);
-                valid_samples += 1;
+                avg_a += Vec3::new(a.x as f32, a.y as f32, a.z as f32) * weight;
+                total_weight += weight;
             }
         }
 
-        if valid_samples > 0 {
-            avg_a /= valid_samples as f32;
+        if total_weight > 0.0 {
+            avg_a /= total_weight;
             
             // Gravity is 9.81 m/s^2. In Megameters, that's 9.81e-6 Mm/s^2.
             let g_mm = 9.81e-6;
