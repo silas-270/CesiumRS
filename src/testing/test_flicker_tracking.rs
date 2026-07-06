@@ -1,6 +1,7 @@
 use crate::engine::core::app::App;
 use crate::testing::VerifyConfig;
 use crate::engine::camera::camera::CameraMode;
+use crate::engine::globe::quadtree::TileId;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -8,47 +9,72 @@ use winit::window::WindowId;
 use std::sync::{Arc, Mutex};
 use std::fs::File;
 use std::io::Write;
+use std::collections::HashMap;
+use std::time::Instant;
+
+/// Tracks the last known texture assignment for a tile and when it last changed.
+struct TileTextureHistory {
+    texture_id: TileId,
+    showing_own: bool,
+    last_change_frame: u32,
+    last_change_time: Instant,
+    flip_count: u32,
+}
 
 pub struct FlickerTrackingApp<'a> {
     pub inner: App<'a>,
     pub config: VerifyConfig,
     pub setup_done: bool,
     pub progress: Arc<Mutex<f64>>,
-    pub log_file: File,
+    /// Per-tile aggregate log: written at the end.
+    per_tile_log: File,
+    /// Per-frame aggregate log.
+    frame_log: File,
     pub frame_count: u32,
+    /// Tracks previous texture assignment for every tile we have seen.
+    texture_history: HashMap<TileId, TileTextureHistory>,
+    /// Events where a tile changed texture faster than 100ms — the flicker list.
+    flicker_events: Vec<String>,
 }
 
 impl<'a> FlickerTrackingApp<'a> {
     pub fn new(config: VerifyConfig) -> Self {
         let mut app_config = crate::engine::globe::tiles::config::TileEngineConfig::default();
-        app_config.offline_mode = false; // We need actual fetching to test network glitches
+        app_config.offline_mode = false;
         app_config.mesh_cache_size = std::num::NonZeroUsize::new(config.cache_size).unwrap();
         app_config.max_cache_size = std::num::NonZeroUsize::new(config.cache_size).unwrap();
         app_config.enable_prefetch = config.prefetch;
 
         let progress = Arc::new(Mutex::new(0.0));
         let mut flight_app = Box::new(crate::flight::app::FlightTrackerApp::new(progress.clone()));
-        
+
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);
         } else {
-            eprintln!("Warning: flight_FRA_STR.json not found. The test might not do anything useful.");
+            eprintln!("Warning: flight_FRA_STR.json not found.");
         }
-        
+
         flight_app.is_playing = true;
         flight_app.play_speed = 0.01;
         flight_app.view_mode = CameraMode::Tracking;
 
-        let mut log_file = File::create("flicker_metrics.csv").expect("Failed to create flicker_metrics.csv");
-        writeln!(log_file, "Frame,Progress,VisibleTiles,RenderableTiles,MissingCount").unwrap();
+        let mut frame_log = File::create("flicker_frame_log.csv")
+            .expect("Failed to create flicker_frame_log.csv");
+        writeln!(frame_log, "Frame,Progress,VisibleTiles,DisplayedTiles,TextureChanges,FastFlickers").unwrap();
+
+        let per_tile_log = File::create("flicker_per_tile_log.csv")
+            .expect("Failed to create flicker_per_tile_log.csv");
 
         Self {
             inner: App::new(app_config, Some(flight_app)),
             config,
             setup_done: false,
             progress,
-            log_file,
+            per_tile_log,
+            frame_log,
             frame_count: 0,
+            texture_history: HashMap::new(),
+            flicker_events: Vec::new(),
         }
     }
 }
@@ -64,43 +90,120 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
         if let WindowEvent::RedrawRequested = event {
             self.inner.window_event(event_loop, window_id, WindowEvent::RedrawRequested);
-            
+
             self.frame_count += 1;
+            let frame = self.frame_count;
             let current_progress = *self.progress.lock().unwrap();
-            
+            let now = Instant::now();
+
+            // Skip the first 60 frames — initial load noise
+            let past_warmup = frame > 60;
+
+            let mut texture_changes_this_frame: u32 = 0;
+            let mut fast_flickers_this_frame: u32 = 0;
+            let mut displayed_tiles: u32 = 0;
+            let visible_count;
+
             if let Some(state) = self.inner.wgpu_state_mut() {
-                // Get metrics
-                let requested_count = state.last_requested_tiles_count;
-                let missing_count = state.last_missing_tiles_count;
-                
-                // Removed unexposed cache metrics
-                let tile_system = &mut state.tile_system;
-                
-                // Let's count actually renderable tiles (has mesh AND texture)
                 let visible_tiles = state.quadtree_manager.get_visible_tiles();
-                let mut renderable_count = 0;
-                for (id, _, _) in &visible_tiles {
-                    if tile_system.get_render_data(*id).is_some() {
-                        renderable_count += 1;
+                visible_count = visible_tiles.len();
+
+                // Snapshot the current display_state (texture_id per mesh tile)
+                // display_state is pub on WgpuState
+                let current_assignments: Vec<(TileId, TileId, bool)> = state.display_state
+                    .iter()
+                    .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.showing_own_texture))
+                    .collect();
+
+                displayed_tiles = current_assignments.len() as u32;
+
+                if past_warmup {
+                    for (mesh_id, texture_id, showing_own) in &current_assignments {
+                        if let Some(hist) = self.texture_history.get_mut(mesh_id) {
+                            // Did the texture assignment change?
+                            if hist.texture_id != *texture_id || hist.showing_own != *showing_own {
+                                texture_changes_this_frame += 1;
+
+                                // How long since the last change?
+                                let ms_since_last = hist.last_change_time.elapsed().as_millis();
+                                if ms_since_last < 100 {
+                                    // This is a FLICKER: texture changed again in < 100ms
+                                    fast_flickers_this_frame += 1;
+                                    hist.flip_count += 1;
+
+                                    let msg = format!(
+                                        "FLICKER frame={} tile=({},{},{}) old_tex=({},{},{}) new_tex=({},{},{}) ms_since_last={} own={}->{}",
+                                        frame,
+                                        mesh_id.z, mesh_id.x, mesh_id.y,
+                                        hist.texture_id.z, hist.texture_id.x, hist.texture_id.y,
+                                        texture_id.z, texture_id.x, texture_id.y,
+                                        ms_since_last,
+                                        hist.showing_own, showing_own
+                                    );
+                                    self.flicker_events.push(msg);
+                                }
+
+                                hist.texture_id = *texture_id;
+                                hist.showing_own = *showing_own;
+                                hist.last_change_frame = frame;
+                                hist.last_change_time = now;
+                            }
+                        } else {
+                            // First time we see this tile
+                            self.texture_history.insert(*mesh_id, TileTextureHistory {
+                                texture_id: *texture_id,
+                                showing_own: *showing_own,
+                                last_change_frame: frame,
+                                last_change_time: now,
+                                flip_count: 0,
+                            });
+                        }
                     }
                 }
-                
-                writeln!(
-                    self.log_file, 
-                    "{},{:.5},{},{},{}", 
-                    self.frame_count, 
-                    current_progress, 
-                    requested_count, 
-                    renderable_count, 
-                    missing_count
-                ).unwrap();
-                
-                if self.frame_count % 60 == 0 {
-                    println!("Frame {}: Progress = {:.4}, Renderable = {}/{}", self.frame_count, current_progress, renderable_count, requested_count);
-                }
+            } else {
+                visible_count = 0;
             }
-            
+
+            writeln!(
+                self.frame_log,
+                "{},{:.5},{},{},{},{}",
+                frame, current_progress, visible_count, displayed_tiles,
+                texture_changes_this_frame, fast_flickers_this_frame
+            ).unwrap();
+
+            if frame % 60 == 0 {
+                println!(
+                    "Frame {:4}: progress={:.4}  visible={}  displayed={}  changes={}  fast_flickers={}  total_flicker_events={}",
+                    frame, current_progress, visible_count, displayed_tiles,
+                    texture_changes_this_frame, fast_flickers_this_frame,
+                    self.flicker_events.len()
+                );
+            }
+
             if current_progress >= 0.5 {
+                // Write final per-tile summary
+                writeln!(self.per_tile_log, "TileZ,TileX,TileY,FlipCount").unwrap();
+                for (id, hist) in &self.texture_history {
+                    if hist.flip_count > 0 {
+                        writeln!(self.per_tile_log, "{},{},{},{}", id.z, id.x, id.y, hist.flip_count).unwrap();
+                    }
+                }
+
+                // Print flicker event summary
+                println!("\n=== FLICKER SUMMARY ===");
+                if self.flicker_events.is_empty() {
+                    println!("NO flicker events detected. Fix verified!");
+                } else {
+                    println!("{} flicker events detected:", self.flicker_events.len());
+                    for ev in self.flicker_events.iter().take(30) {
+                        println!("  {}", ev);
+                    }
+                    if self.flicker_events.len() > 30 {
+                        println!("  ... and {} more", self.flicker_events.len() - 30);
+                    }
+                }
+                println!("======================\n");
+
                 println!("Progress reached 0.5. Ending flicker test.");
                 event_loop.exit();
             } else {
@@ -108,7 +211,6 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
                     window.request_redraw();
                 }
             }
-            
         } else {
             self.inner.window_event(event_loop, window_id, event);
         }

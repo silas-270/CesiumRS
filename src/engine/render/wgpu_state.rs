@@ -86,9 +86,9 @@ pub struct WgpuState<'a> {
     pub tile_system: crate::engine::globe::tiles::system::TileSystem,
     pub extension: Option<Box<dyn crate::engine::core::extension::GlobeExtension>>,
     /// Stable display state: persists across frames, only updated under controlled rules.
-    display_state: HashMap<TileId, TileDisplayEntry>,
+    pub display_state: HashMap<TileId, TileDisplayEntry>,
     /// The set of tiles that were visible last frame (for eviction of stale entries).
-    last_visible_set: HashSet<TileId>,
+    pub last_visible_set: HashSet<TileId>,
 }
 
 fn create_depth_texture(
