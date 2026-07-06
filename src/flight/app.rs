@@ -47,6 +47,7 @@ pub struct FlightTrackerApp {
     pub last_update_time: std::time::Instant,
     pub is_playing: bool,
     pub play_speed: f64,
+    pub last_valid_rotation: std::sync::Mutex<Option<glam::DQuat>>,
 }
 
 impl FlightTrackerApp {
@@ -59,6 +60,7 @@ impl FlightTrackerApp {
             last_update_time: std::time::Instant::now(),
             is_playing: false,
             play_speed: 0.1,
+            last_valid_rotation: std::sync::Mutex::new(None),
         }
     }
 
@@ -69,7 +71,23 @@ impl FlightTrackerApp {
             let time = crate::engine::time::SimulationTime::new(start_t + progress_val * (stop_t - start_t));
             
             let evaluator = crate::engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 30.0);
-            evaluator.evaluate(time)
+            let mut state = evaluator.evaluate(time);
+            
+            if let Some(ref mut s) = state {
+                // Fix the glitch when the plane arrives (progress near 1.0) by using the last known rotation.
+                if progress_val > 0.999 {
+                    if let Ok(guard) = self.last_valid_rotation.lock() {
+                        if let Some(rot) = *guard {
+                            s.rotation = rot;
+                        }
+                    }
+                } else {
+                    if let Ok(mut guard) = self.last_valid_rotation.lock() {
+                        *guard = Some(s.rotation);
+                    }
+                }
+            }
+            state
         } else {
             None
         }
@@ -216,11 +234,11 @@ impl GlobeExtension for FlightTrackerApp {
                 // Dynamic scaling based on camera distance
                 let distance = relative_pos.length(); // Distance in Megameters
                 
-                // Desired length of the airplane in Megameters (e.g. 5% of the distance)
-                let desired_length_mm = distance * 0.05;
+                // Desired length of the airplane in Megameters (now ~1/3 smaller than 5%)
+                let desired_length_mm = distance * 0.0333;
                 
                 let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
-                let max_length_mm = 3000.0 * 1000.0 / 1_000_000.0; // 3000 km
+                let max_length_mm = 2500.0 * 1000.0 / 1_000_000.0; // 2500 km (500km less than 3000)
                 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
                 
