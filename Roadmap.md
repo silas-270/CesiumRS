@@ -15,29 +15,29 @@ A highly performant, custom 3D flight tracker engine built in Rust. It ingests a
 
 ### Step 1: The Mathematic Foundation (Path & Interpolation)
 *The logical start. We need the data structure and the math before we can render anything new.*
-- [ ] Create a `flight` module to ingest the external JSON/Array of `[Latitude, Longitude, Altitude, Timestamp]`.
-- [ ] Implement a Spline Interpolation algorithm (e.g., Catmull-Rom) to generate smooth intermediate coordinates.
-- [ ] Calculate the derivatives: Find the forward vector (for Pitch/Yaw) and the change in direction (for Roll/Banking in curves).
+- [X] Create a `flight` module to ingest the external JSON/Array of `[Latitude, Longitude, Altitude, Timestamp]`.
+- [X] Implement a Spline Interpolation algorithm (e.g., Catmull-Rom) to generate smooth intermediate coordinates.
+- [X] Calculate the derivatives: Find the forward vector (for Pitch/Yaw) and the change in direction (for Roll/Banking in curves).
 
 ### Step 2: Drawing the Route (Visualizing the Math)
 *Seeing the math directly on the globe is highly rewarding and helps debugging.*
-- [ ] Create a new WebGPU render pipeline for lines.
-- [ ] Render the interpolated route as a 3D line (or tube) hovering slightly above the globe.
-- [ ] Ensure the line correctly follows the curvature of the WGS84 ellipsoid.
+- [X] Create a new WebGPU render pipeline for lines.
+- [X] Render the interpolated route as a 3D line (or tube) hovering slightly above the globe.
+- [X] Ensure the line correctly follows the curvature of the WGS84 ellipsoid.
 
 ### Step 3: Enter the Airplane (glTF & Transforms)
 *Bringing life to the application.*
-- [ ] Integrate a basic 3D model loader (e.g., using the `gltf` crate).
-- [ ] Create a mesh rendering pipeline to draw the static airplane model.
-- [ ] Apply the transformation matrix in each frame: Update the airplane's ECEF position and apply the quaternion rotations for Pitch, Yaw, and Roll based on the Step 1 data.
-- [ ] Connect this to the main `App` update loop (advancing simulation time).
+- [X] Integrate a basic 3D model loader (e.g., using the `gltf` crate).
+- [X] Create a mesh rendering pipeline to draw the static airplane model.
+- [X] Apply the transformation matrix in each frame: Update the airplane's ECEF position and apply the quaternion rotations for Pitch, Yaw, and Roll based on the Step 1 data.
+- [X] Connect this to the main `App` update loop (advancing simulation time).
 
 ### Step 4: The Camera Director (Modes)
 *Now that the plane is flying, we need to observe it correctly.*
-- [ ] Refactor the camera system to support a `CameraController` trait.
-- [ ] **Free Mode:** Refine the existing earth-centered god camera.
-- [ ] **Tracking Mode:** Set the camera pivot to the plane's ECEF position. User input controls orbit and zoom relative to the plane.
-- [ ] **Cockpit Mode:** Lock camera position and view direction strictly to the airplane's transform. Disable user interaction.
+- [X] Refactor the camera system to support a `CameraController` trait.
+- [X] **Free Mode:** Refine the existing earth-centered god camera.
+- [X] **Tracking Mode:** Set the camera pivot to the plane's ECEF position. User input controls orbit and zoom relative to the plane.
+- [X] **Cockpit Mode:** Lock camera position and view direction strictly to the airplane's transform. Disable user interaction.
 
 ### Step 5: The "Wow" Factor (Environment & Atmosphere)
 *The most fun part: Making it look premium with almost zero GPU cost.*
