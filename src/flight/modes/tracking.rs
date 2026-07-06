@@ -17,9 +17,24 @@ pub fn update_tracking_mode(
     camera.set_anchor(pos_f32, rot_f32);
     
     if mode_switched_or_reset {
-        // 50m behind, 15m up
-        camera.local_pos = glam::Vec3::new(0.0, 15.0 / 1_000_000.0, 50.0 / 1_000_000.0);
-        // Pitch down slightly to look at plane
-        camera.local_ori = glam::Quat::from_euler(glam::EulerRot::YXZ, 0.0, -0.25, 0.0);
+        let dist = 250.0 / 1_000_000.0;
+        let pitch = 22.0 * std::f32::consts::PI / 180.0;
+        let yaw = std::f32::consts::FRAC_PI_4; // 45 degrees
+        
+        let y = dist * pitch.sin();
+        let horizontal_dist = dist * pitch.cos();
+        
+        // Negative sin for left wing (-X axis), positive cos for back (+Z axis)
+        let x = horizontal_dist * -yaw.sin();
+        let z = horizontal_dist * yaw.cos();
+        
+        let local_pos = glam::Vec3::new(x, y, z);
+        
+        let forward = -local_pos.normalize_or_zero();
+        let right = glam::Vec3::Y.cross(forward).normalize_or_zero();
+        let up = forward.cross(right).normalize_or_zero();
+        let rot_mat = glam::Mat3::from_cols(right, up, -forward);
+        
+        camera.set_local_transform(local_pos, glam::Quat::from_mat3(&rot_mat));
     }
 }
