@@ -16,6 +16,9 @@ struct Cli {
     #[arg(long)]
     pub regression: bool,
 
+    #[arg(long)]
+    pub flicker: bool,
+
     #[arg(long, default_value_t = String::from("flight"))]
     pub stress_mode: String,
 
@@ -52,11 +55,12 @@ fn main() {
     }
 
     let cli = Cli::parse();
-    let config = if cli.verify || cli.stress || cli.regression {
+    let config = if cli.verify || cli.stress || cli.regression || cli.flicker {
         Some(VerifyConfig {
             enabled: cli.verify,
             stress: cli.stress,
             regression: cli.regression,
+            flicker: cli.flicker,
             stress_mode: cli.stress_mode,
             prefetch: cli.prefetch,
             cache_size: cli.cache_size,

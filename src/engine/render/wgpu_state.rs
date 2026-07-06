@@ -395,7 +395,7 @@ impl<'a> WgpuState<'a> {
         let requested_tiles = self.quadtree_manager.get_visible_tiles();
 
         let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| {
-            self.tile_cache.peek(id).is_some()
+            self.tile_cache.peek(id).is_some() && self.tile_system.get_render_data(*id).is_some()
         });
 
         let missing_count = requested_tiles.iter().filter(|(id, _, _)| self.tile_cache.peek(id).is_none()).count();
