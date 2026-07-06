@@ -142,11 +142,19 @@ impl<'a> TrajectoryEvaluator<'a> {
         let mut first_q: Option<glam::DQuat> = None;
         let mut total_weight = 0.0;
 
-        let filter_window = 1.6; // 1.6 seconds window (symmetric: -0.8s to +0.8s)
+        let start_t = self.property.start_time().map(|t| t.seconds).unwrap_or(time.seconds);
+        let stop_t = self.property.stop_time().map(|t| t.seconds).unwrap_or(time.seconds);
+
+        let d_start = time.seconds - start_t;
+        let d_end = stop_t - time.seconds;
+
+        let max_half_window = 0.8; // 1.6s total window / 2
+        let half_window = d_start.min(d_end).max(0.0).min(max_half_window);
+
         let num_samples = 8;
         for i in 0..=num_samples {
             let frac = i as f64 / num_samples as f64;
-            let t_offset = -filter_window * 0.5 + frac * filter_window;
+            let t_offset = -half_window + frac * (2.0 * half_window);
             let sample_time = SimulationTime::new(time.seconds + t_offset);
 
             if let Some(raw_state) = self.evaluate_raw(sample_time) {
