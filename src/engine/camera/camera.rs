@@ -46,6 +46,14 @@ const INV_B2: f32 = 1.0 / (EARTH_RADIUS_B * EARTH_RADIUS_B);
 
 const EARTH_RADIUS_A_F64: f64 = 6.378137;
 const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraMode {
+    Free,
+    Tracking,
+    Cockpit,
+}
+
 pub struct Camera {
     // 1. Anchor Transform (The focal point / tracking target)
     pub anchor_pos: Vec3,
@@ -67,6 +75,7 @@ pub struct Camera {
     drag_start_local_ori: Quat,
 
     pub focal_length: f32, // Camera Lens focal length in mm (assuming 24mm vertical sensor height)
+    pub mode: CameraMode,
 }
 
 impl Camera {
@@ -83,6 +92,7 @@ impl Camera {
             drag_start_local_pos: Vec3::ZERO,
             drag_start_local_ori: Quat::IDENTITY,
             focal_length: 28.0,
+            mode: CameraMode::Free,
         };
         cam.set_eye(position, target);
         cam
@@ -179,6 +189,31 @@ impl Camera {
 
         let forward = -Vec3::Z; // Translate local expects local offset.
         self.translate_local(forward * move_distance);
+    }
+
+    pub fn orbit_mouse(&mut self, dx: f32, dy: f32) {
+        let yaw = -dx * self.pitch_sensitivity * 0.2;
+        let pitch = -dy * self.pitch_sensitivity * 0.2;
+
+        let rot = Quat::from_axis_angle(Vec3::Y, yaw) * Quat::from_axis_angle(Vec3::X, pitch);
+        self.orbit_anchor(rot);
+    }
+
+    pub fn look_around(&mut self, dx: f32, dy: f32) {
+        let yaw = -dx * self.pitch_sensitivity * 0.1;
+        let pitch = -dy * self.pitch_sensitivity * 0.1;
+
+        let yaw_quat = Quat::from_axis_angle(Vec3::Y, yaw);
+        let pitch_quat = Quat::from_axis_angle(Vec3::X, pitch);
+        
+        let new_ori = self.local_ori * yaw_quat * pitch_quat;
+        
+        // Extract euler angles and clamp to prevent looking backwards
+        let (y, p, r) = new_ori.to_euler(glam::EulerRot::YXZ);
+        let clamped_y = y.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4); // +/- 45 deg
+        let clamped_p = p.clamp(-0.35, 0.35); // roughly +/- 20 deg
+        
+        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, clamped_y, clamped_p, r).normalize();
     }
 
     // --- MATRICES & PROJECTIONS ---
