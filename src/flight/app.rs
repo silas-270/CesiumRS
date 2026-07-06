@@ -1,8 +1,6 @@
-use std::path::Path;
-use glam::{DVec3, Vec3, Mat4};
+use glam::DVec3;
 
 use crate::engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
-use crate::engine::property::Property;
 use crate::engine::time::SimulationTime;
 use crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64;
 use crate::engine::render::polyline::bvh::PolylineBVH;

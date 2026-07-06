@@ -1,21 +1,21 @@
 #[cfg(test)]
 mod tests {
     use crate::engine::camera::camera::Camera;
-    use glam::{Vec3, Quat, Mat3};
+    use glam::{Vec3, Quat, Mat3, DVec3, DQuat, DMat3};
 
     #[test]
     fn test_tracking_camera_orbit_mouse() {
         // Setup anchor (airplane flying at equator, 0m high)
         let earth_radius = 6.378137;
         let alt = 0.0;
-        let anchor_pos = Vec3::new(earth_radius + alt, 0.0, 0.0);
+        let anchor_pos = DVec3::new(earth_radius + alt, 0.0, 0.0);
         
         // Plane is flying North. So forward is +Z. Up is +X.
         // Wait, +X is away from earth center.
-        let anchor_ori = Quat::from_mat3(&Mat3::from_cols(
-            Vec3::new(0.0, 1.0, 0.0), // Right: Y
-            Vec3::new(1.0, 0.0, 0.0), // Up: X
-            Vec3::new(0.0, 0.0, 1.0), // Forward: Z
+        let anchor_ori = DQuat::from_mat3(&DMat3::from_cols(
+            DVec3::new(0.0, 1.0, 0.0), // Right: Y
+            DVec3::new(1.0, 0.0, 0.0), // Up: X
+            DVec3::new(0.0, 0.0, 1.0), // Forward: Z
         ));
 
         let mut camera = Camera::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));

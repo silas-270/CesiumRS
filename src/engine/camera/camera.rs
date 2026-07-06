@@ -56,8 +56,8 @@ pub enum CameraMode {
 
 pub struct Camera {
     // 1. Anchor Transform (The focal point / tracking target)
-    pub anchor_pos: Vec3,
-    pub anchor_ori: Quat,
+    pub anchor_pos: glam::DVec3,
+    pub anchor_ori: glam::DQuat,
 
     // 2. Local Transform (Offset & rotation relative to the anchor)
     pub local_pos: Vec3,
@@ -81,8 +81,8 @@ pub struct Camera {
 impl Camera {
     pub fn new(position: Vec3, target: Vec3) -> Self {
         let mut cam = Self {
-            anchor_pos: Vec3::ZERO,
-            anchor_ori: Quat::IDENTITY,
+            anchor_pos: glam::DVec3::ZERO,
+            anchor_ori: glam::DQuat::IDENTITY,
             local_pos: position,
             local_ori: Quat::IDENTITY,
             min_distance: 6.378137 + 0.000002,
@@ -107,16 +107,27 @@ impl Camera {
         }
     }
 
-    /// Computes the absolute global state of the camera.
-    pub fn global_transform(&self) -> (Vec3, Quat) {
-        let global_pos = self.anchor_pos + (self.anchor_ori * self.local_pos);
-        let global_ori = self.anchor_ori * self.local_ori;
+    /// Computes the absolute global state of the camera in double precision.
+    pub fn global_transform_f64(&self) -> (glam::DVec3, glam::DQuat) {
+        let local_pos_dvec = glam::DVec3::new(self.local_pos.x as f64, self.local_pos.y as f64, self.local_pos.z as f64);
+        let local_ori_dquat = glam::DQuat::from_xyzw(self.local_ori.x as f64, self.local_ori.y as f64, self.local_ori.z as f64, self.local_ori.w as f64);
+        let global_pos = self.anchor_pos + (self.anchor_ori * local_pos_dvec);
+        let global_ori = self.anchor_ori * local_ori_dquat;
         (global_pos, global_ori)
+    }
+
+    /// Computes the absolute global state of the camera in single precision.
+    pub fn global_transform(&self) -> (Vec3, Quat) {
+        let (pos_dvec, ori_dquat) = self.global_transform_f64();
+        (
+            Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32),
+            Quat::from_xyzw(ori_dquat.x as f32, ori_dquat.y as f32, ori_dquat.z as f32, ori_dquat.w as f32).normalize(),
+        )
     }
 
     // --- CLEAN API: Hierarchical Control ---
 
-    pub fn set_anchor(&mut self, pos: Vec3, ori: Quat) {
+    pub fn set_anchor(&mut self, pos: glam::DVec3, ori: glam::DQuat) {
         self.anchor_pos = pos;
         self.anchor_ori = ori;
     }
@@ -148,7 +159,8 @@ impl Camera {
     }
 
     fn enforce_bounds(&mut self) {
-        let (global_pos, _) = self.global_transform();
+        let (global_pos_dvec, _) = self.global_transform();
+        let global_pos = Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
         let dist = global_pos.length();
 
         let dir = global_pos.normalize_or_zero();
@@ -158,10 +170,14 @@ impl Camera {
 
         if dist < dynamic_min_distance {
             let new_global_pos = global_pos.normalize_or_zero() * dynamic_min_distance;
-            self.local_pos = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
+            let new_global_pos_dvec = glam::DVec3::new(new_global_pos.x as f64, new_global_pos.y as f64, new_global_pos.z as f64);
+            let local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
+            self.local_pos = Vec3::new(local_pos_dvec.x as f32, local_pos_dvec.y as f32, local_pos_dvec.z as f32);
         } else if dist > self.max_distance {
             let new_global_pos = global_pos.normalize_or_zero() * self.max_distance;
-            self.local_pos = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
+            let new_global_pos_dvec = glam::DVec3::new(new_global_pos.x as f64, new_global_pos.y as f64, new_global_pos.z as f64);
+            let local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
+            self.local_pos = Vec3::new(local_pos_dvec.x as f32, local_pos_dvec.y as f32, local_pos_dvec.z as f32);
         }
     }
 
@@ -205,10 +221,12 @@ impl Camera {
             
             // Helper to check if a local_pos is above the ground
             let is_above_ground = |pos: Vec3| -> bool {
-                let global_pos = self.anchor_pos + (self.anchor_ori * pos);
+                let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
+                let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
                 let dir = global_pos.normalize_or_zero();
-                let t = 1.0 / (dir.x * dir.x * INV_A2 + dir.y * dir.y * INV_B2 + dir.z * dir.z * INV_A2).sqrt();
-                global_pos.length() >= t + 0.000002
+                let dir_f32 = glam::Vec3::new(dir.x as f32, dir.y as f32, dir.z as f32);
+                let t = 1.0 / (dir_f32.x * dir_f32.x * INV_A2 + dir_f32.y * dir_f32.y * INV_B2 + dir_f32.z * dir_f32.z * INV_A2).sqrt();
+                global_pos.length() >= t as f64 + 0.000002
             };
 
             let dot_y_both = new_pos_both.normalize_or_zero().dot(Vec3::Y);
@@ -263,12 +281,15 @@ impl Camera {
     // --- MATRICES & PROJECTIONS ---
 
     pub fn get_view_matrix(&self) -> Mat4 {
-        let (pos, ori) = self.global_transform();
+        let (pos_dvec, ori_dquat) = self.global_transform();
+        let pos = glam::Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32);
+        let ori = glam::Quat::from_xyzw(ori_dquat.x as f32, ori_dquat.y as f32, ori_dquat.z as f32, ori_dquat.w as f32).normalize();
         Mat4::from_rotation_translation(ori, pos).inverse()
     }
 
     pub fn altitude(&self) -> f32 {
-        let (pos, _) = self.global_transform();
+        let (pos_dvec, _) = self.global_transform();
+        let pos = glam::Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32);
 
         let dir = pos.normalize_or_zero();
         let t =
@@ -290,8 +311,8 @@ impl Camera {
                 (dist * 0.05).clamp(0.00000001, 0.000005)
             }
         };
-        let (pos, _) = self.global_transform();
-        let zfar = pos.length() + 10.0;
+        let (pos_dvec, _) = self.global_transform();
+        let zfar = (pos_dvec.length() + 10.0) as f32;
         
         let sensor_height = 24.0;
         let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length)).atan();
@@ -422,22 +443,25 @@ impl Camera {
                 let dot = start_f64.dot(current_f64);
                 let cross = start_f64.cross(current_f64);
                 let q = glam::DQuat::from_xyzw(cross.x, cross.y, cross.z, 1.0 + dot).normalize();
-                let rot_delta = Quat::from_xyzw(q.x as f32, q.y as f32, q.z as f32, q.w as f32);
-
-                let inv_rot = rot_delta.inverse();
+                let inv_rot = q.inverse();
 
                 // Get the starting global transform
-                let start_global_pos =
-                    self.anchor_pos + (self.anchor_ori * self.drag_start_local_pos);
-                let start_global_ori = self.anchor_ori * self.drag_start_local_ori;
+                let start_local_pos_dvec = glam::DVec3::new(self.drag_start_local_pos.x as f64, self.drag_start_local_pos.y as f64, self.drag_start_local_pos.z as f64);
+                let start_global_pos = self.anchor_pos + (self.anchor_ori * start_local_pos_dvec);
+                
+                let start_local_ori_dquat = glam::DQuat::from_xyzw(self.drag_start_local_ori.x as f64, self.drag_start_local_ori.y as f64, self.drag_start_local_ori.z as f64, self.drag_start_local_ori.w as f64);
+                let start_global_ori = self.anchor_ori * start_local_ori_dquat;
 
                 // Orbit the camera around the earth (origin)
                 let new_global_pos = inv_rot * start_global_pos;
                 let new_global_ori = inv_rot * start_global_ori;
 
                 // Project back into anchor-local space
-                self.local_pos = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
-                self.local_ori = (self.anchor_ori.inverse() * new_global_ori).normalize();
+                let new_local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
+                self.local_pos = Vec3::new(new_local_pos_dvec.x as f32, new_local_pos_dvec.y as f32, new_local_pos_dvec.z as f32);
+                
+                let new_local_ori_dquat = (self.anchor_ori.inverse() * new_global_ori).normalize();
+                self.local_ori = Quat::from_xyzw(new_local_ori_dquat.x as f32, new_local_ori_dquat.y as f32, new_local_ori_dquat.z as f32, new_local_ori_dquat.w as f32).normalize();
             } else {
                 // If ray doesn't intersect anymore, retain the current position
                 self.local_pos = current_pos;

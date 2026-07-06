@@ -50,7 +50,7 @@ fn test_drag_zoom() {
         let mut cam = Camera::new(start_pos, Vec3::ZERO);
         // Look straight down at the surface
         cam.local_ori = glam::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-        cam.anchor_ori = glam::Quat::IDENTITY;
+        cam.anchor_ori = glam::DQuat::IDENTITY;
         
         // Simulating the user dragging from center (Stuttgart) to the right edge
         let paths = vec![

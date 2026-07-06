@@ -74,12 +74,12 @@ pub fn update_free_mode(
             let rot_mat = glam::Mat3::from_cols(safe_right, safe_up, -forward);
             
             let q = glam::Quat::from_mat3(&rot_mat);
-            camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
+            camera.set_anchor(glam::DVec3::ZERO, glam::DQuat::IDENTITY);
             camera.set_local_transform(final_cam_pos, q);
         }
     } else {
         // Default if no flights
-        camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
+        camera.set_anchor(glam::DVec3::ZERO, glam::DQuat::IDENTITY);
         camera.set_local_transform(glam::Vec3::new(0.0, 0.0, 20.0), glam::Quat::IDENTITY);
     }
 }
