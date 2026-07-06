@@ -47,7 +47,6 @@ pub struct FlightTrackerApp {
     pub last_update_time: std::time::Instant,
     pub is_playing: bool,
     pub play_speed: f64,
-    pub last_valid_rotation: std::sync::Mutex<Option<glam::DQuat>>,
 }
 
 impl FlightTrackerApp {
@@ -60,37 +59,40 @@ impl FlightTrackerApp {
             last_update_time: std::time::Instant::now(),
             is_playing: false,
             play_speed: 0.1,
-            last_valid_rotation: std::sync::Mutex::new(None),
         }
     }
 
-    pub fn get_plane_state_at(&self, progress_val: f64) -> Option<crate::engine::math::trajectory::TransformState> {
+    pub fn get_plane_state_at_time_delta(&self, progress_val: f64, delta_seconds: f64) -> Option<crate::engine::math::trajectory::TransformState> {
         if let Some(flight) = self.flights.first() {
             let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
             let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
-            let time = crate::engine::time::SimulationTime::new(start_t + progress_val * (stop_t - start_t));
+            let current_time_seconds = start_t + progress_val * (stop_t - start_t);
+            let time = crate::engine::time::SimulationTime::new(current_time_seconds + delta_seconds);
             
             let evaluator = crate::engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 30.0);
-            let mut state = evaluator.evaluate(time);
-            
-            if let Some(ref mut s) = state {
-                // Fix the glitch when the plane arrives (progress near 1.0) by using the last known rotation.
-                if progress_val > 0.999 {
-                    if let Ok(guard) = self.last_valid_rotation.lock() {
-                        if let Some(rot) = *guard {
-                            s.rotation = rot;
-                        }
-                    }
-                } else {
-                    if let Ok(mut guard) = self.last_valid_rotation.lock() {
-                        *guard = Some(s.rotation);
-                    }
-                }
-            }
-            state
+            evaluator.evaluate(time)
         } else {
             None
         }
+    }
+
+    pub fn get_plane_state_at_progress_delta(&self, progress_val: f64, delta_progress: f64) -> Option<crate::engine::math::trajectory::TransformState> {
+        self.get_plane_state_at_time_delta(progress_val + delta_progress, 0.0)
+    }
+
+    pub fn get_plane_state_at(&self, progress_val: f64) -> Option<crate::engine::math::trajectory::TransformState> {
+        let mut state = self.get_plane_state_at_time_delta(progress_val, 0.0);
+        
+        if let Some(ref mut s) = state {
+            if progress_val > 0.999 {
+                // Plane has arrived. Derive rotation robustly by looking exactly 1 second in the past.
+                if let Some(prev_state) = self.get_plane_state_at_time_delta(progress_val, -1.0) {
+                    s.rotation = prev_state.rotation;
+                }
+            }
+        }
+        
+        state
     }
 
     pub fn add_flight_path(&mut self, id: &str, json_content: String, is_secondary: bool) {
