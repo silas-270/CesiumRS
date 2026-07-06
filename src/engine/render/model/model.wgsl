@@ -73,6 +73,8 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let final_world_pos = model_matrix * vec4<f32>(scaled_pos, 1.0);
 
     out.clip_position = camera.view_proj * vec4<f32>(final_world_pos.xyz, 1.0);
+    // Apply a slight depth bias to prevent the airplane from clipping into the earth's surface
+    out.clip_position.z = out.clip_position.z - 0.005 * out.clip_position.w;
 
     // Transform normal to world space (ignoring non-uniform scaling for now)
     let normal_matrix = mat3x3<f32>(
