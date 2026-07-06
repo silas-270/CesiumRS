@@ -367,7 +367,7 @@ impl<'a> WgpuState<'a> {
         let frustum = self.camera.calculate_frustum_planes(self.config.width as f32 / self.config.height as f32);
         
         if let Some(ext) = &mut self.extension {
-            ext.update(&self.device, &self.queue, cam_pos_dvec3, &frustum, &mut self.camera);
+            ext.update(&self.device, &self.queue, cam_pos_dvec3, &frustum, &mut self.camera, aspect_ratio);
         }
 
         let (view_matrix, proj_matrix) = if self.debug_mode {
