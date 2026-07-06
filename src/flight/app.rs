@@ -111,7 +111,7 @@ impl FlightTrackerApp {
         // To be implemented: store bytes and create ModelRenderer in update()
     }
 
-    fn reset_free_mode_camera(&self, camera: &mut crate::engine::camera::camera::Camera) {
+    fn reset_free_mode_camera(&self, camera: &mut crate::engine::camera::camera::Camera, aspect_ratio: f32) {
         if let Some(flight) = self.flights.first() {
             let samples = flight.property.samples();
             if samples.len() >= 2 {
@@ -128,21 +128,31 @@ impl FlightTrackerApp {
                 let v_tangent = v - v.dot(n) * n;
                 let d_vec = v_tangent.normalize_or_zero();
                 
-                // Rotate left by 45 degrees to find "Up" such that the flight path points top-right
-                let up = glam::Quat::from_axis_angle(n, std::f32::consts::PI / 4.0) * d_vec;
+                let p = 0.05;
+                let half_h = 0.5;
+                let half_w = 0.5 * aspect_ratio;
+                
+                let py = half_h - p;
+                let px = half_w - p;
+                
+                let theta = (py / px).atan();
+                
+                let right = glam::Quat::from_axis_angle(n, -theta) * d_vec;
+                let up = glam::Quat::from_axis_angle(n, std::f32::consts::PI / 2.0) * right;
                 
                 let l = v_tangent.length();
                 let fov_y = 2.0 * (12.0 / camera.focal_length).atan();
-                // 1.05 multiplier for slight padding
-                let distance = (l * 0.707 * 1.05) / (fov_y / 2.0).tan();
+                
+                let h_screen_physical = l * theta.sin() / (2.0 * py);
+                let distance = h_screen_physical / (2.0 * (fov_y / 2.0).tan());
                 
                 let center_on_earth = n * 6.378137;
                 let final_cam_pos = center_on_earth + n * distance;
                 
                 let forward = -n;
-                let right = forward.cross(up).normalize();
-                let actual_up = right.cross(forward).normalize();
-                let rot_mat = glam::Mat3::from_cols(right, actual_up, -forward);
+                let safe_right = forward.cross(up).normalize();
+                let safe_up = safe_right.cross(forward).normalize();
+                let rot_mat = glam::Mat3::from_cols(safe_right, safe_up, -forward);
                 
                 let q = glam::Quat::from_mat3(&rot_mat);
                 camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
@@ -209,6 +219,7 @@ impl GlobeExtension for FlightTrackerApp {
         camera_pos_dvec3: DVec3,
         frustum: &[(DVec3, f64); 6],
         camera: &mut crate::engine::camera::camera::Camera,
+        aspect_ratio: f32,
     ) {
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_update_time).as_secs_f64();
@@ -286,7 +297,7 @@ impl GlobeExtension for FlightTrackerApp {
                 }
                 CameraMode::Free => {
                     if mode_switched_or_reset {
-                        self.reset_free_mode_camera(camera);
+                        self.reset_free_mode_camera(camera, aspect_ratio);
                     }
                 }
             }

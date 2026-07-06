@@ -17,6 +17,7 @@ pub trait GlobeExtension {
         camera_pos_dvec3: DVec3,
         frustum: &[(DVec3, f64); 6],
         camera: &mut crate::engine::camera::camera::Camera,
+        aspect_ratio: f32,
     );
 
     /// Called every frame after the globe and engine debug models are drawn
