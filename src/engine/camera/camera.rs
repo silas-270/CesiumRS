@@ -239,7 +239,7 @@ impl Camera {
     }
 
     pub fn look_around(&mut self, dx: f32, dy: f32) {
-        let yaw = -dx * self.pitch_sensitivity * 0.1;
+        let yaw = dx * self.pitch_sensitivity * 0.1;
         let pitch = dy * self.pitch_sensitivity * 0.1;
 
         let yaw_quat = Quat::from_axis_angle(Vec3::Y, yaw);
@@ -247,7 +247,7 @@ impl Camera {
         
         let new_ori = self.local_ori * yaw_quat * pitch_quat;
         
-        let (y, p, r) = new_ori.to_euler(glam::EulerRot::YXZ);
+        let (y, p, _r) = new_ori.to_euler(glam::EulerRot::YXZ);
         
         let mut rel_y = y - std::f32::consts::PI;
         while rel_y > std::f32::consts::PI { rel_y -= std::f32::consts::PI * 2.0; }
@@ -258,7 +258,7 @@ impl Camera {
         
         let clamped_p = p.clamp(-0.35, 0.35); // roughly +/- 20 deg
         
-        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, final_y, clamped_p, r).normalize();
+        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, final_y, clamped_p, 0.0).normalize();
     }
 
     // --- MATRICES & PROJECTIONS ---

@@ -15,8 +15,8 @@ pub fn update_cockpit_mode(
     camera.set_anchor(pos_f32, rot_f32);
     
     if mode_switched_or_reset {
-        // Plane's local +Z points forward. Move 30m forward along Z and 2m up along Y.
-        camera.local_pos = glam::Vec3::new(0.0, 2.0 / 1_000_000.0, 31.0 / 1_000_000.0);
+        // Plane's local +Z points forward. Move 34m forward along Z and 2m up along Y.
+        camera.local_pos = glam::Vec3::new(0.0, 2.0 / 1_000_000.0, 34.0 / 1_000_000.0);
         // Rotate 180 degrees so camera's -Z (look direction) points along plane's +Z
         camera.local_ori = glam::Quat::from_rotation_y(std::f32::consts::PI);
     }
