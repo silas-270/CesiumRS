@@ -2,12 +2,14 @@ pub mod simulator;
 pub mod test_app;
 pub mod stress_app;
 pub mod regression_app;
+pub mod test_flicker_tracking;
 
 #[derive(Clone, Debug, Default)]
 pub struct VerifyConfig {
     pub enabled: bool,
     pub stress: bool,
     pub regression: bool,
+    pub flicker: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,
