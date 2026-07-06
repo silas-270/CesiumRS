@@ -110,6 +110,49 @@ impl FlightTrackerApp {
         // In the future, this can be called via JNI to dynamically set the model
         // To be implemented: store bytes and create ModelRenderer in update()
     }
+
+    fn reset_free_mode_camera(&self, camera: &mut crate::engine::camera::camera::Camera) {
+        if let Some(flight) = self.flights.first() {
+            let samples = flight.property.samples();
+            if samples.len() >= 2 {
+                let s = samples.first().unwrap().1;
+                let e = samples.last().unwrap().1;
+                
+                let s_f32 = glam::Vec3::new(s.x as f32, s.y as f32, s.z as f32);
+                let e_f32 = glam::Vec3::new(e.x as f32, e.y as f32, e.z as f32);
+                
+                let m = (s_f32 + e_f32) * 0.5;
+                let n = m.normalize();
+                
+                let v = e_f32 - s_f32;
+                let v_tangent = v - v.dot(n) * n;
+                let d_vec = v_tangent.normalize_or_zero();
+                
+                // Rotate left by 45 degrees to find "Up" such that the flight path points top-right
+                let up = glam::Quat::from_axis_angle(n, std::f32::consts::PI / 4.0) * d_vec;
+                
+                let l = v_tangent.length();
+                let fov_y = 2.0 * (12.0 / camera.focal_length).atan();
+                // 1.5 multiplier for padding
+                let distance = (l * 0.707 * 1.5) / (fov_y / 2.0).tan();
+                
+                let center_on_earth = n * 6.378137;
+                let final_cam_pos = center_on_earth + n * distance;
+                
+                let forward = -n;
+                let right = up.cross(forward).normalize();
+                let actual_up = forward.cross(right).normalize();
+                let rot_mat = glam::Mat3::from_cols(right, actual_up, -forward);
+                
+                camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
+                camera.set_local_transform(final_cam_pos, glam::Quat::from_mat3(&rot_mat));
+            }
+        } else {
+            // Default if no flights
+            camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
+            camera.set_local_transform(glam::Vec3::new(0.0, 0.0, 20.0), glam::Quat::IDENTITY);
+        }
+    }
 }
 
 impl GlobeExtension for FlightTrackerApp {
@@ -242,11 +285,7 @@ impl GlobeExtension for FlightTrackerApp {
                 }
                 CameraMode::Free => {
                     if mode_switched_or_reset {
-                        if camera.anchor_pos != glam::Vec3::ZERO {
-                            let (global_pos, global_ori) = camera.global_transform();
-                            camera.set_anchor(glam::Vec3::ZERO, glam::Quat::IDENTITY);
-                            camera.set_local_transform(global_pos, global_ori);
-                        }
+                        self.reset_free_mode_camera(camera);
                     }
                 }
             }
@@ -358,10 +397,8 @@ impl GlobeExtension for FlightTrackerApp {
             ui.radio_value(&mut self.view_mode, CameraMode::Tracking, "Tracking");
             ui.radio_value(&mut self.view_mode, CameraMode::Cockpit, "Cockpit");
             
-            if self.view_mode != CameraMode::Free {
-                if ui.button("Reset Viewport").clicked() {
-                    self.reset_viewport = true;
-                }
+            if ui.button("Reset Viewport").clicked() {
+                self.reset_viewport = true;
             }
         });
     }
