@@ -9,11 +9,12 @@ fn test_20_tiles() {
 
     // Screenshot aspect ratio: 1920 / 1000 = 1.92
     let aspect_ratio = 1.92;
-    let view_proj = cam.get_projection_matrix(aspect_ratio) * cam.get_view_matrix();
-    let camera_pos = cam.global_transform().0;
-
+    let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
+    let (global_pos_dvec, _) = cam.global_transform_f64();
+    let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
+    
     let mut quadtree = QuadtreeManager::new();
-    quadtree.update(camera_pos, view_proj);
+    quadtree.update(global_pos_f32, frustum_planes);
     let tiles = quadtree.get_visible_tiles();
 
     println!("Total tiles: {}", tiles.len());

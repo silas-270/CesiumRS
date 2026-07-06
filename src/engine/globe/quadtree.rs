@@ -50,51 +50,27 @@ pub struct OrientedBoundingBox {
 
 pub struct Frustum {
     pub planes: [(Vec3, f32); 6],
-    pub view_proj: Mat4,
 }
 
 impl Frustum {
-    pub fn from_matrix(m: Mat4) -> Self {
-        let row0 = m.row(0);
-        let row1 = m.row(1);
-        let row2 = m.row(2);
-        let row3 = m.row(3);
-
-        let extract = |row: Vec4| -> (Vec3, f32) {
-            let n = row.truncate();
-            let len = n.length();
-            if len > 0.000001 {
-                (n / len, row.w / len)
-            } else {
-                (Vec3::ZERO, 0.0)
-            }
-        };
-
-        Self {
-            planes: [
-                extract(row3 + row0), // Left
-                extract(row3 - row0), // Right
-                extract(row3 + row1), // Bottom
-                extract(row3 - row1), // Top
-                extract(row3 + row2), // Near (wgpu Z is 0 to 1)
-                extract(row3 - row2), // Far
-            ],
-            view_proj: m,
+    pub fn from_planes(planes: [(glam::DVec3, f64); 6]) -> Self {
+        let mut f32_planes = [(Vec3::ZERO, 0.0); 6];
+        for i in 0..6 {
+            f32_planes[i] = (
+                Vec3::new(planes[i].0.x as f32, planes[i].0.y as f32, planes[i].0.z as f32),
+                planes[i].1 as f32,
+            );
         }
+        Self { planes: f32_planes }
     }
 
     pub fn contains_point(&self, p: Vec3) -> bool {
-        let p_clip = self.view_proj * p.extend(1.0);
-        let w = p_clip.w;
-        if w <= 0.0 {
-            return false;
+        for (normal, distance) in &self.planes {
+            if normal.dot(p) + *distance < 0.0 {
+                return false;
+            }
         }
-        p_clip.x >= -w
-            && p_clip.x <= w
-            && p_clip.y >= -w
-            && p_clip.y <= w
-            && p_clip.z >= 0.0
-            && p_clip.z <= w
+        true
     }
 
     pub fn intersects_surface_points(&self, points: &[Vec3; 9]) -> bool {
@@ -403,7 +379,7 @@ impl QuadtreeNode {
         };
 
         let mut tight_obbs = None;
-        if id.z <= 4 {
+        if id.z <= 16 {
             let mut obbs = Vec::new();
             let subdivisions = 8;
             for u_idx in 0..subdivisions {
@@ -469,8 +445,9 @@ impl QuadtreeNode {
             let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
             let vh_mag_sq = cv.length_squared() - 1.0;
 
-            // Only cull if the camera is strictly outside the ellipsoid
-            if vh_mag_sq > 0.0 {
+            // Allow culling even if the camera is slightly below the ellipsoid surface (up to ~300km)
+            // This ensures horizon culling works when the camera is exactly at altitude 0.
+            if vh_mag_sq > -0.1 {
                 let vt = hcp - cv;
                 let vt_dot_vc = -vt.dot(cv);
 
@@ -512,74 +489,6 @@ impl QuadtreeNode {
                 self.visible = false;
                 self.children = None;
                 return;
-            }
-        }
-
-        // Surface-point frustum test: check if any of the tile's surface
-        // actually projects inside the camera's clip-space volume.
-        // Skip this test when the camera is close to the tile — at close range
-        // the frustum is too narrow for grid-based sampling to reliably hit it,
-        // but the tile is obviously visible since the camera is on top of it.
-        {
-            let cam_to_tile = (self.center - camera_pos).length();
-            if cam_to_tile > self.radius * 1.5 {
-                let a2 = 6.378137_f32 * 6.378137_f32;
-                let b2 = 6.3567523142_f32 * 6.3567523142_f32;
-
-                let mut any_visible = false;
-                for p in &self.surface_points {
-                    if frustum.contains_point(*p) {
-                        let normal = Vec3::new(p.x / a2, p.y / b2, p.z / a2).normalize();
-                        if normal.dot(camera_pos - *p) > 0.0 {
-                            any_visible = true;
-                            break;
-                        }
-                    }
-                }
-
-                if !any_visible {
-                    // Dense fallback: generate a denser grid from the tile's geographic bounds
-                    let z_pow = (1_u32 << self.id.z) as f32;
-                    let lon_min = -180.0 + (self.id.x as f32) * 360.0 / z_pow;
-                    let lon_max = -180.0 + ((self.id.x + 1) as f32) * 360.0 / z_pow;
-                    let mut lat_max = web_mercator_y_to_lat(self.id.y as f32, self.id.z);
-                    let mut lat_min = web_mercator_y_to_lat((self.id.y + 1) as f32, self.id.z);
-                    if self.id.y == 0 {
-                        lat_max = 90.0;
-                    }
-                    if self.id.y == (1_u32 << self.id.z) - 1 {
-                        lat_min = -90.0;
-                    }
-
-                    let mut found = false;
-                    let steps = 3;
-                    for i in 0..=steps {
-                        if found {
-                            break;
-                        }
-                        let u = i as f32 / steps as f32;
-                        let lon = lon_min + u * (lon_max - lon_min);
-                        for j in 0..=steps {
-                            let v = j as f32 / steps as f32;
-                            let lat = lat_min + v * (lat_max - lat_min);
-                            let p = get_tile_corner(lon, lat, 0.0);
-                            if frustum.contains_point(p) {
-                                let normal = Vec3::new(p.x / a2, p.y / b2, p.z / a2).normalize();
-                                if normal.dot(camera_pos - p) > 0.0 {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if !found {
-                        // We cannot safely cull here. A narrow frustum can intersect the surface 
-                        // between our sample points, especially for large tiles and high zoom or narrow aspect ratios.
-                        // self.visible = false;
-                        // self.children = None;
-                        // return;
-                    }
-                }
             }
         }
 
@@ -674,8 +583,8 @@ impl QuadtreeManager {
         }
     }
 
-    pub fn update(&mut self, camera_global_pos: Vec3, view_proj: Mat4) {
-        let frustum = Frustum::from_matrix(view_proj);
+    pub fn update(&mut self, camera_global_pos: Vec3, frustum_planes: [(glam::DVec3, f64); 6]) {
+        let frustum = Frustum::from_planes(frustum_planes);
         for root in self.roots.iter_mut() {
             root.update(camera_global_pos, self.lod_factor, &frustum);
         }

@@ -319,8 +319,30 @@ impl Camera {
         Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar)
     }
 
+    pub fn get_projection_matrix_f64(&self, aspect_ratio: f64) -> glam::DMat4 {
+        let alt = self.altitude().max(0.000002) as f64;
+        let znear = match self.mode {
+            CameraMode::Free => (alt * 0.1).clamp(0.0000001, 10.0),
+            CameraMode::Tracking | CameraMode::Cockpit => {
+                let dist = self.local_pos.length() as f64;
+                (dist * 0.05).clamp(0.00000001, 0.000005)
+            }
+        };
+        let (pos_dvec, _) = self.global_transform_f64();
+        let zfar = pos_dvec.length() + 10.0;
+        
+        let sensor_height = 24.0;
+        let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan();
+        glam::DMat4::perspective_rh(fovy, aspect_ratio, znear, zfar)
+    }
+
+    pub fn get_view_matrix_f64(&self) -> glam::DMat4 {
+        let (pos_dvec, ori_dquat) = self.global_transform_f64();
+        glam::DMat4::from_rotation_translation(ori_dquat, pos_dvec).inverse()
+    }
+
     pub fn calculate_frustum_planes(&self, aspect_ratio: f32) -> [(glam::DVec3, f64); 6] {
-        let vp = self.get_projection_matrix(aspect_ratio) * self.get_view_matrix();
+        let vp = self.get_projection_matrix_f64(aspect_ratio as f64) * self.get_view_matrix_f64();
         let r0 = vp.row(0);
         let r1 = vp.row(1);
         let r2 = vp.row(2);
@@ -337,11 +359,11 @@ impl Camera {
 
         let mut result = [(glam::DVec3::ZERO, 0.0); 6];
         for i in 0..6 {
-            let n = glam::Vec3::new(planes[i].x, planes[i].y, planes[i].z);
+            let n = glam::DVec3::new(planes[i].x, planes[i].y, planes[i].z);
             let len = n.length();
-            if len > 0.0001 {
+            if len > 0.000001 {
                 let norm = n / len;
-                result[i] = (glam::DVec3::new(norm.x as f64, norm.y as f64, norm.z as f64), (planes[i].w / len) as f64);
+                result[i] = (norm, planes[i].w / len);
             }
         }
         result
@@ -563,6 +585,52 @@ impl GodCamera {
 
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
         Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect_ratio, 0.01, 1000.0)
+    }
+
+    pub fn global_transform_f64(&self) -> (glam::DVec3, glam::DQuat) {
+        let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
+        let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
+
+        let forward = glam::DVec3::new(
+            (pitch_cos * yaw_sin) as f64,
+            pitch_sin as f64,
+            -(pitch_cos * yaw_cos) as f64,
+        ).normalize_or_zero();
+
+        let rot = glam::DQuat::from_rotation_arc(glam::DVec3::Z, -forward);
+
+        (
+            glam::DVec3::new(self.position.x as f64, self.position.y as f64, self.position.z as f64),
+            rot
+        )
+    }
+
+    pub fn calculate_frustum_planes(&self, aspect_ratio: f32) -> [(glam::DVec3, f64); 6] {
+        let vp = self.get_projection_matrix(aspect_ratio) * self.get_view_matrix();
+        let r0 = vp.row(0);
+        let r1 = vp.row(1);
+        let r2 = vp.row(2);
+        let r3 = vp.row(3);
+
+        let planes = [
+            r3 + r0, // Left
+            r3 - r0, // Right
+            r3 + r1, // Bottom
+            r3 - r1, // Top
+            r3 + r2, // Near
+            r3 - r2, // Far
+        ];
+
+        let mut result = [(glam::DVec3::ZERO, 0.0); 6];
+        for i in 0..6 {
+            let n = glam::DVec3::new(planes[i].x as f64, planes[i].y as f64, planes[i].z as f64);
+            let len = n.length();
+            if len > 0.000001 {
+                let norm = n / len;
+                result[i] = (norm, (planes[i].w as f64) / len);
+            }
+        }
+        result
     }
 }
 

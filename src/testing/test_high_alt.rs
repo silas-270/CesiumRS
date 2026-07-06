@@ -9,11 +9,12 @@ fn test_high_alt() {
     cam.set_local_transform(Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY);
 
     let aspect_ratio = 16.0 / 9.0;
-    let view_proj = cam.get_projection_matrix(aspect_ratio) * cam.get_view_matrix();
-    let camera_pos = cam.global_transform().0;
-
+    let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
+    let (global_pos_dvec, _) = cam.global_transform_f64();
+    let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
+    
     let mut quadtree = QuadtreeManager::new();
-    quadtree.update(camera_pos, view_proj);
+    quadtree.update(global_pos_f32, frustum_planes);
     let tiles = quadtree.get_visible_tiles();
 
     println!("Total tiles at Altitude 20: {}", tiles.len());
@@ -21,7 +22,7 @@ fn test_high_alt() {
 
     for (id, _, _) in tiles.iter() {
 
-        let frustum = crate::engine::globe::quadtree::Frustum::from_matrix(view_proj);
+        let frustum = crate::engine::globe::quadtree::Frustum::from_planes(frustum_planes);
         let a2 = 6.378137_f32 * 6.378137_f32;
         let b2 = 6.3567524_f32 * 6.3567524_f32;
 
@@ -57,7 +58,7 @@ fn test_high_alt() {
 
                 if frustum.contains_point(p) {
                     let normal = Vec3::new(p.x / a2, p.y / b2, p.z / a2).normalize();
-                    if normal.dot(camera_pos - p) > 0.0 {
+                    if normal.dot(global_pos_f32 - p) > 0.0 {
                         any_visible = true;
                     }
                 }

@@ -97,9 +97,11 @@ impl<'a> ApplicationHandler for RegressionApp<'a> {
                 if let Some(state) = self.inner.wgpu_state_mut() {
                     let aspect_ratio = 800.0 / 600.0;
                     let main_view_proj = state.camera.get_projection_matrix(aspect_ratio) * state.camera.get_view_matrix();
+                    let frustum_planes = state.camera.calculate_frustum_planes(aspect_ratio);
                     
-                    state.quadtree_manager = crate::engine::globe::quadtree::QuadtreeManager::new();
-                    state.quadtree_manager.update(state.camera.global_transform().0, main_view_proj);
+                    let (global_pos_dvec, _) = state.camera.global_transform_f64();
+                    let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
+                    state.quadtree_manager.update(global_pos_f32, frustum_planes);
                     
                     let visible_tiles = state.quadtree_manager.get_visible_tiles();
                     

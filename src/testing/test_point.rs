@@ -7,8 +7,8 @@ fn test_point() {
     cam.set_local_transform(Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY);
     let camera_pos = cam.global_transform().0;
     let aspect_ratio = 16.0 / 9.0;
-    let view_proj = cam.get_projection_matrix(aspect_ratio) * cam.get_view_matrix();
-    let frustum = crate::engine::globe::quadtree::Frustum::from_matrix(view_proj);
+    let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
+    let frustum = crate::engine::globe::quadtree::Frustum::from_planes(frustum_planes);
 
     let node =
         crate::engine::globe::quadtree::QuadtreeNode::new(crate::engine::globe::quadtree::TileId {
