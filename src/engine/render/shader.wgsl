@@ -79,7 +79,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let altitude = max(r_cam - earth_radius, 0.0);
     
     let day_horizon_color = vec3<f32>(0.65, 0.75, 0.85); 
-    let night_horizon_color = vec3<f32>(0.1, 0.1, 0.15);
+    let night_horizon_color = vec3<f32>(0.02, 0.02, 0.03);
     let horizon_color = mix(night_horizon_color, day_horizon_color, sun_intensity);
     
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
