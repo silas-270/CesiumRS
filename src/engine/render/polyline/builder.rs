@@ -82,10 +82,7 @@ impl AdaptiveSubdivisionBuilder {
         }
     }
 
-    pub fn with_force_all_samples(mut self, force: bool) -> Self {
-        self.force_all_samples = force;
-        self
-    }
+
 
     pub fn build(&self, property: &SampledPositionProperty) -> Vec<PolylineVertex> {
         if self.force_all_samples {

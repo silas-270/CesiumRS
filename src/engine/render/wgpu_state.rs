@@ -864,13 +864,5 @@ impl<'a> WgpuState<'a> {
         Ok(captured_pixels)
     }
 
-    pub fn clear_caches(&mut self) {
-        self.tile_cache.clear();
-        self.tile_system.texture_manager.clear();
-        self.tile_system.mesh_worker.clear();
-        self.quadtree_manager = crate::engine::globe::quadtree::QuadtreeManager::new();
-        self.display_state.clear();
-        self.last_visible_set.clear();
-        self.tiles_with_own_texture.clear();
-    }
+
 }

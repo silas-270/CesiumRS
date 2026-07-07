@@ -178,7 +178,7 @@ impl ModelRenderer {
         let (texture_size, padded_data, padded_bytes_per_row, format) = if let Some(image) = images.first() {
             let width = image.width;
             let height = image.height;
-            let mut rgba = match image.format {
+            let rgba = match image.format {
                 gltf::image::Format::R8G8B8 => {
                     // Convert RGB to RGBA
                     let mut data = Vec::with_capacity(image.pixels.len() / 3 * 4);

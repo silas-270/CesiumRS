@@ -1,12 +1,10 @@
-use glam::{DVec3, DQuat};
+use glam::DVec3;
 
 pub fn linear_dvec3(p0: DVec3, p1: DVec3, t: f64) -> DVec3 {
     p0.lerp(p1, t)
 }
 
-pub fn slerp_dquat(q0: DQuat, q1: DQuat, t: f64) -> DQuat {
-    q0.slerp(q1, t)
-}
+
 
 pub fn hermite_dvec3(p0: DVec3, m0: DVec3, p1: DVec3, m1: DVec3, t: f64) -> DVec3 {
     let t2 = t * t;
