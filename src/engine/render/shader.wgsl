@@ -51,9 +51,10 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let sun_pos_rad = radians(camera.sun_params.y);
     let light_dir = normalize(vec3<f32>(cos(sun_pos_rad), 0.0, sin(sun_pos_rad)));
     
-    // Ambient drops heavily at night, diffuse is calculated based on sun direction
-    let ambient = mix(0.1, 0.8, sun_intensity); 
-    let diffuse = max(dot(in.normal, light_dir), 0.0) * mix(0.0, 0.4, sun_intensity);
+    // When sun_intensity is 0.0 (Night Mode with Dark Map): Ambient is 1.0 (show the dark map naturally), Diffuse is 0.0.
+    // When sun_intensity is 1.0 (Day Mode with Light Map): Ambient is 0.3 (dark side of the earth is shaded), Diffuse is 0.9 (sun side is 1.2x bright).
+    let ambient = mix(1.0, 0.3, sun_intensity); 
+    let diffuse = max(dot(in.normal, light_dir), 0.0) * mix(0.0, 0.9, sun_intensity);
     
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
     let shaded_color = tex_color.rgb * (ambient + diffuse);
