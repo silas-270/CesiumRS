@@ -33,37 +33,51 @@ fn vs_sky(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
     return out;
 }
 
+fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
+    let b = 2.0 * dot(rd, r0);
+    let c = dot(r0, r0) - radius * radius;
+    let d = b * b - 4.0 * c;
+    if (d < 0.0) {
+        return vec2<f32>(-1.0, -1.0);
+    }
+    let d_sqrt = sqrt(d);
+    return vec2<f32>((-b - d_sqrt) / 2.0, (-b + d_sqrt) / 2.0);
+}
+
 @fragment
 fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
-    // Normalize per-pixel to ensure perfect linear perspective
     let view_dir = normalize(in.view_dir);
-    let zenith = normalize(camera.camera_pos.xyz);
-    let cos_angle = dot(view_dir, zenith);
+    let origin = camera.camera_pos.xyz;
     
-    // The engine coordinate system uses 1.0 = 1,000,000 meters (1 Megameter)
     let earth_radius = 6.378137;
-    let r = max(length(camera.camera_pos.xyz), earth_radius);
+    let atmosphere_thickness = 0.15; // 150km for a softer fade
+    let atmosphere_radius = earth_radius + atmosphere_thickness;
     
-    // True mathematical horizon dips below perfectly horizontal due to earth curvature
-    let true_horizon_cos = -sqrt(max(1.0 - (earth_radius * earth_radius) / (r * r), 0.0));
+    let t_atm = ray_sphere_intersect(origin, view_dir, atmosphere_radius);
+    let t_earth = ray_sphere_intersect(origin, view_dir, earth_radius);
+    
+    var dist_in_atm = 0.0;
+    if (t_atm.y > 0.0) {
+        let t_start = max(0.0, t_atm.x);
+        var t_stop = t_atm.y;
+        if (t_earth.y > 0.0 && t_earth.x > 0.0) {
+            t_stop = min(t_stop, t_earth.x);
+        }
+        dist_in_atm = max(0.0, t_stop - t_start);
+    }
+    
+    let max_dist = sqrt(atmosphere_radius * atmosphere_radius - earth_radius * earth_radius);
+    let depth = dist_in_atm / max_dist;
     
     let horizon_color = vec3<f32>(0.65, 0.75, 0.85); // Hazy horizon
     let zenith_color = vec3<f32>(0.15, 0.35, 0.75);  // Deep blue
     let space_color = vec3<f32>(0.02, 0.02, 0.04);   // Dark space
     
-    // Calculate elevation relative to the true horizon
-    let elevation = max(cos_angle - true_horizon_cos, 0.0);
-    
-    // smoothstep creates a beautiful S-curve. 
-    let gradient_factor = smoothstep(0.0, 0.4, elevation);
-    var base_color = mix(horizon_color, zenith_color, gradient_factor);
-    
-    // Fade to space as altitude increases
-    let altitude = max(r - earth_radius, 0.0);
-    
-    // Start fading at 50km (0.05 units), fully dark by 500km (0.5 units)
-    let space_fade = clamp((altitude - 0.05) / 0.45, 0.0, 1.0); 
-    base_color = mix(base_color, space_color, space_fade);
+    var base_color = space_color;
+    if (depth > 0.0) {
+        let atmosphere_color = mix(zenith_color, horizon_color, smoothstep(0.05, 1.0, depth));
+        base_color = mix(space_color, atmosphere_color, smoothstep(0.0, 0.15, depth));
+    }
     
     return vec4<f32>(base_color, 1.0);
 }
