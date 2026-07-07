@@ -192,18 +192,10 @@ impl PolylineBVH {
     }
 }
 
-pub fn generate_vertices(points: &[(DVec3, f32)], camera_pos: DVec3, reference_point: DVec3) -> Vec<PolylineVertex> {
-    generate_vertices_with_split(points, camera_pos, reference_point, None)
-}
-
-/// Like `generate_vertices` but encodes the world-space signed projection relative to
-/// `airplane_pos` into every vertex's `progress` field. The shader reads `progress >= 0`
-/// as "ahead of the airplane" and colours it with `color_end`.
-pub fn generate_vertices_with_split(
+pub fn generate_vertices(
     points: &[(DVec3, f32)],
     camera_pos: DVec3,
     reference_point: DVec3,
-    airplane_pos: Option<DVec3>,
 ) -> Vec<PolylineVertex> {
     if points.is_empty() {
         return Vec::new();
@@ -220,24 +212,6 @@ pub fn generate_vertices_with_split(
         Vec::with_capacity(points.len() * 2)
     };
 
-    // Compute the ribbon's overall direction vector (used for signed projection).
-    // We use the first→last point vector as the "forward" axis of the whole strip.
-    let strip_dir: DVec3 = if points.len() >= 2 {
-        (points.last().unwrap().0 - points[0].0).normalize_or_zero()
-    } else {
-        DVec3::X
-    };
-
-    // Pre-compute per-point signed projection value.
-    // For each point p: proj = dot(p - airplane_pos, strip_dir)
-    // Negative = behind airplane, positive = ahead.
-    let compute_proj = |pos: DVec3| -> f32 {
-        match airplane_pos {
-            Some(ap) => (pos - ap).dot(strip_dir) as f32,
-            None => 0.0, // unused when w=0 in shader
-        }
-    };
-
     // Helper closure to emit a single face strip
     let emit_strip = |verts: &mut Vec<PolylineVertex>, side_a: f32, v_side_a: f32, side_b: f32, v_side_b: f32, face: f32| {
         // Start cap (if this is the absolute start of the flight path)
@@ -252,15 +226,14 @@ pub fn generate_vertices_with_split(
             let curr_f32 = [curr_rel.x as f32, curr_rel.y as f32, curr_rel.z as f32];
             let prev_f32 = [prev_rel.x as f32, prev_rel.y as f32, prev_rel.z as f32];
             let next_f32 = [next_rel.x as f32, next_rel.y as f32, next_rel.z as f32];
-            let proj = compute_proj(curr);
 
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: proj, forward: -1.0,
+                side: side_a, v_side: v_side_a, face, progress: points[0].1, forward: -1.0,
             });
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: proj, forward: -1.0,
+                side: side_b, v_side: v_side_b, face, progress: points[0].1, forward: -1.0,
             });
         }
 
@@ -275,15 +248,14 @@ pub fn generate_vertices_with_split(
             let curr_f32 = [curr_rel.x as f32, curr_rel.y as f32, curr_rel.z as f32];
             let prev_f32 = [prev_rel.x as f32, prev_rel.y as f32, prev_rel.z as f32];
             let next_f32 = [next_rel.x as f32, next_rel.y as f32, next_rel.z as f32];
-            let proj = compute_proj(curr);
 
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: proj, forward: 0.0,
+                side: side_a, v_side: v_side_a, face, progress: points[i].1, forward: 0.0,
             });
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: proj, forward: 0.0,
+                side: side_b, v_side: v_side_b, face, progress: points[i].1, forward: 0.0,
             });
         }
 
@@ -299,15 +271,14 @@ pub fn generate_vertices_with_split(
             let curr_f32 = [curr_rel.x as f32, curr_rel.y as f32, curr_rel.z as f32];
             let prev_f32 = [prev_rel.x as f32, prev_rel.y as f32, prev_rel.z as f32];
             let next_f32 = [next_rel.x as f32, next_rel.y as f32, next_rel.z as f32];
-            let proj = compute_proj(curr);
 
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: proj, forward: 1.0,
+                side: side_a, v_side: v_side_a, face, progress: points.last().unwrap().1, forward: 1.0,
             });
             verts.push(PolylineVertex {
                 position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: proj, forward: 1.0,
+                side: side_b, v_side: v_side_b, face, progress: points.last().unwrap().1, forward: 1.0,
             });
         }
     };

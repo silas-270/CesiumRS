@@ -12,8 +12,8 @@ pub struct PolylinePushConstants {
     pub split_progress: f32,       // offset 76 (4 bytes)
     pub physical_half_width: f32,  // offset 80 (4 bytes)
     pub physical_half_height: f32, // offset 84 (4 bytes)
-    /// Airplane world position relative to reference_point. w=1.0 activates world-space split.
     pub airplane_pos: [f32; 4],    // offset 88 (16 bytes)
+    pub airplane_forward: [f32; 4], // offset 104 (16 bytes)
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +24,8 @@ pub struct PolylineConfig {
     pub color_start: [f32; 4],
     pub color_end: [f32; 4],
     pub split_progress: f32, // -1.0 means disabled
+    pub airplane_pos: [f32; 4],
+    pub airplane_forward: [f32; 4],
 }
 
 impl Default for PolylineConfig {
@@ -35,6 +37,8 @@ impl Default for PolylineConfig {
             color_start: [1.0, 0.4, 0.0, 1.0], // Orange
             color_end: [1.0, 0.4, 0.0, 1.0],   // Orange
             split_progress: -1.0,
+            airplane_pos: [0.0, 0.0, 0.0, 0.0],
+            airplane_forward: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -144,9 +148,6 @@ impl PolylineRenderer {
         camera_pos_f64: [f64; 3],
         reference_point: [f64; 3],
         config: &PolylineConfig,
-        // Airplane position in the same world space as vertex positions (relative to reference_point).
-        // Pass [0,0,0,0] to use the legacy time-domain split.
-        airplane_pos_rel: [f32; 4],
     ) {
         if let Some(vertex_buffer) = &self.vertex_buffer {
             let rel_cam = [
@@ -165,7 +166,8 @@ impl PolylineRenderer {
                 physical_half_width: config.physical_half_width,
                 physical_half_height: config.physical_half_height,
                 reference_point: [reference_point[0] as f32, reference_point[1] as f32, reference_point[2] as f32, 0.0],
-                airplane_pos: airplane_pos_rel,
+                airplane_pos: config.airplane_pos,
+                airplane_forward: config.airplane_forward,
             };
 
             render_pass.set_pipeline(&self.pipeline);
