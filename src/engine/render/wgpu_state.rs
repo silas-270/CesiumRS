@@ -68,6 +68,7 @@ pub struct WgpuState<'a> {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub window: Arc<Window>,
     solid_pipeline: wgpu::RenderPipeline,
+    #[allow(dead_code)]
     wireframe_pipeline: wgpu::RenderPipeline,
     depth_texture_view: wgpu::TextureView,
     tile_cache: LruCache<TileId, TileBuffers>,
@@ -594,7 +595,7 @@ impl<'a> WgpuState<'a> {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        visible_tiles: &[(TileId, Vec3, f32)],
+        _visible_tiles: &[(TileId, Vec3, f32)],
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
@@ -677,35 +678,7 @@ impl<'a> WgpuState<'a> {
             }
         }
 
-        // Draw wireframe overlay
-        render_pass.set_pipeline(&self.wireframe_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        for (id, _, _) in visible_tiles {
-            if let Some(buffers) = self.tile_cache.peek(id) {
-                let center_f64 = buffers.center_f64;
-                let push = TilePushConstants {
-                    relative_center: [
-                        (center_f64[0] - camera_pos_f64[0]) as f32,
-                        (center_f64[1] - camera_pos_f64[1]) as f32,
-                        (center_f64[2] - camera_pos_f64[2]) as f32,
-                        0.0,
-                    ],
-                    uv_scale_offset: [1.0, 1.0, 0.0, 0.0],
-                };
-                render_pass.set_push_constants(
-                    wgpu::ShaderStages::VERTEX,
-                    0,
-                    bytemuck::cast_slice(&[push]),
-                );
-
-                render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    buffers.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint16,
-                );
-                render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
-            }
-        }
+        // Wireframe overlay rendering removed as per user request
 
         if self.debug_mode && self.num_debug_vertices > 0 {
             render_pass.set_pipeline(&self.debug_pipeline);
