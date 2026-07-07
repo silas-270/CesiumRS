@@ -20,8 +20,8 @@ fn vs_sky(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
     let x = f32(i32(vertex_index) == 1) * 4.0 - 1.0;
     let y = f32(i32(vertex_index) == 2) * 4.0 - 1.0;
     
-    // Set z to 1.0 to push it to the far clipping plane
-    out.clip_position = vec4<f32>(x, y, 1.0, 1.0);
+    // Set z to 0.0 to push it to the far clipping plane (Reverse-Z)
+    out.clip_position = vec4<f32>(x, y, 0.0, 1.0);
     out.clip_pos_xy = vec2<f32>(x, y);
     
     return out;
