@@ -24,6 +24,9 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         } else if cfg.flicker {
             let mut app = testing::test_flicker_tracking::FlickerTrackingApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
+        } else if cfg.monitor {
+            let mut app = testing::test_tile_monitor::TileMonitorApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
         } else {
             let mut app = testing::test_app::TestApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
