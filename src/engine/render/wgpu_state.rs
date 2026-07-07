@@ -565,30 +565,23 @@ impl<'a> WgpuState<'a> {
 
             } else {
                 // --- Tile is genuinely new to the visible set ---
-                if let Some((tex_id, uv)) = self.tile_system.peek_render_data(id) {
-                    let showing_own = tex_id == id;
-                    // Fix 3: if the tile is immediately showing its own texture
-                    // (e.g. the texture was pre-fetched), record it now.
-                    if showing_own {
-                        self.tiles_with_own_texture.put(id, ());
-                    }
-                    self.display_state.insert(id, TileDisplayEntry {
-                        texture_id: tex_id,
-                        uv_scale_offset: uv,
-                        first_seen: now,
-                        showing_own_texture: showing_own,
-                        absent_since: None,
-                    });
-                } else {
-                    // If no texture at all yet (no parent fallback either), use the flat base color fallback.
-                    self.display_state.insert(id, TileDisplayEntry {
-                        texture_id: id,
-                        uv_scale_offset: [1.0, 1.0, 0.0, 0.0],
-                        first_seen: now,
-                        showing_own_texture: false,
-                        absent_since: None,
-                    });
+                let peek = self.tile_system.peek_render_data(id);
+                let (tex_id, uv) = peek.unwrap_or((id, [1.0, 1.0, 0.0, 0.0]));
+                let showing_own = peek.map_or(false, |(tid, _)| tid == id);
+                
+                // Fix 3: if the tile is immediately showing its own texture
+                // (e.g. the texture was pre-fetched), record it now.
+                if showing_own {
+                    self.tiles_with_own_texture.put(id, ());
                 }
+                
+                self.display_state.insert(id, TileDisplayEntry {
+                    texture_id: tex_id,
+                    uv_scale_offset: uv,
+                    first_seen: now,
+                    showing_own_texture: showing_own,
+                    absent_since: None,
+                });
             }
         }
     }
