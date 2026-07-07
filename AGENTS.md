@@ -16,6 +16,7 @@
 > [!IMPORTANT]
 > **No Testing Code in Main Directory**  
 > All testing code, test files, and test helpers must be placed inside the `src/testing/` directory to keep the main application clean and free from test clutter. No test files or binaries should exist in `src/` or `src/bin/`.
+> NEVER execute `cargo test` unless you explicitly want to execute ALL tests. Otherwise only do specific testing in the areas you are working in
 
 ---
 
