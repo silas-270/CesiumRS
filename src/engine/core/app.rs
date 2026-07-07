@@ -44,7 +44,6 @@ impl<'a> App<'a> {
             ui.horizontal(|ui| {
                 ui.label("Sun:");
                 ui.add(egui::Slider::new(&mut state.camera.sun_intensity, 0.0..=1.0).text("Intensity"));
-                ui.add(egui::Slider::new(&mut state.camera.sun_pos_deg, 0.0..=360.0).text("Pos (deg)"));
             });
 
             let mut is_debug = state.debug_mode;
