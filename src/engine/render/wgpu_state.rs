@@ -36,6 +36,10 @@ pub struct TileDisplayEntry {
     pub first_seen: Instant,
     /// True if this tile is currently showing its own hi-res texture (not a fallback).
     pub showing_own_texture: bool,
+    /// Fix 2: set to Some(now) on the first frame the tile leaves the visible set.
+    /// The entry is only evicted from display_state once this has been Some for ≥200 ms,
+    /// giving transient LOD oscillations time to resolve without a texture blink.
+    pub absent_since: Option<Instant>,
 }
 
 #[repr(C)]
@@ -89,6 +93,10 @@ pub struct WgpuState<'a> {
     pub display_state: HashMap<TileId, TileDisplayEntry>,
     /// The set of tiles that were visible last frame (for eviction of stale entries).
     pub last_visible_set: HashSet<TileId>,
+    /// Fix 3: bounded LRU of tiles that have *ever* successfully shown their own
+    /// hi-res texture. Used by Fix 4 to skip the sibling-gate on re-entry.
+    /// Capacity 4096 to handle long Europe→US flights without unbounded growth.
+    tiles_with_own_texture: LruCache<TileId, ()>,
 }
 
 fn create_depth_texture(
@@ -306,6 +314,7 @@ impl<'a> WgpuState<'a> {
             extension,
             display_state: HashMap::new(),
             last_visible_set: HashSet::new(),
+            tiles_with_own_texture: LruCache::new(std::num::NonZeroUsize::new(4096).unwrap()),
         }
     }
 
@@ -437,25 +446,45 @@ impl<'a> WgpuState<'a> {
     /// tile fetches have been updated.
     ///
     /// Rules:
-    /// 1. Tiles leaving the visible set are removed from display_state.
+    /// 1. Tiles leaving the visible set are held in display_state for a 200 ms grace
+    ///    period before eviction (Fix 2). This prevents texture blinks from transient
+    ///    LOD oscillations: the tile keeps its texture assignment during brief absences.
     /// 2. New tiles enter at the best available fallback (parent/grandparent texture).
     /// 3. A tile upgrades to its own hi-res texture only when ALL 3 siblings also
     ///    have their own hi-res textures ready — OR when the tile has been waiting
-    ///    more than 2 seconds (timeout, prevents permanent fallback on 404).
+    ///    more than 2 seconds (timeout, prevents permanent fallback on 404) — OR
+    ///    when the tile was previously upgraded and its texture is still cached (Fix 4).
     /// 4. Once a tile is showing its own hi-res texture, it is NEVER downgraded back
     ///    to a parent fallback (prevents jitter from transient LRU evictions).
+    /// 5. Tiles that have ever earned their own texture are recorded in
+    ///    `tiles_with_own_texture` (Fix 3) so Fix 4 can fast-path the sibling-gate.
     fn update_display_state(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
         const SIBLING_UPGRADE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        /// Fix 2: how long a tile can be absent from the visible set before its
+        /// display_state entry is evicted. 200 ms comfortably covers the worst-case
+        /// LOD oscillation period (~10 frames at 60 fps ≈ 167 ms).
+        const DISPLAY_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(200);
 
+        let now = Instant::now();
         let current_visible: HashSet<TileId> = visible_tiles.iter().map(|(id, _, _)| *id).collect();
 
-        // Evict tiles that are no longer in the visible set.
-        self.display_state.retain(|id, _| current_visible.contains(id));
+        // Fix 2: grace-period eviction.
+        // Update absent_since for every entry, then evict only those that have been
+        // absent for longer than the grace period.
+        for (id, entry) in self.display_state.iter_mut() {
+            if current_visible.contains(id) {
+                entry.absent_since = None; // tile is visible again — reset the timer
+            } else if entry.absent_since.is_none() {
+                entry.absent_since = Some(now); // first frame of absence — start the clock
+            }
+        }
+        self.display_state.retain(|_, entry| {
+            entry.absent_since.map_or(true, |t| t.elapsed() < DISPLAY_GRACE_PERIOD)
+        });
         self.last_visible_set = current_visible;
 
         for (id, _center, _radius) in visible_tiles {
             let id = *id;
-            let now = Instant::now();
 
             // Check if own hi-res texture is available (non-mutating peek).
             let own_ready = self.tile_system.peek_render_data(id)
@@ -463,7 +492,7 @@ impl<'a> WgpuState<'a> {
                 .unwrap_or(false);
 
             if let Some(entry) = self.display_state.get_mut(&id) {
-                // --- Tile already has a display entry ---
+                // --- Tile already has a display entry (visible or returning from grace) ---
 
                 if entry.showing_own_texture {
                     // Already at hi-res: never downgrade, just continue.
@@ -474,7 +503,12 @@ impl<'a> WgpuState<'a> {
                     // Own texture is ready. Check upgrade conditions.
                     let timeout_elapsed = entry.first_seen.elapsed() >= SIBLING_UPGRADE_TIMEOUT;
 
-                    let all_siblings_ready = if id.z == 0 {
+                    // Fix 4: skip the sibling-gate if this tile has previously earned
+                    // its own texture and that texture is still cached (own_ready == true).
+                    // Re-upgrades after transient evictions don't need sibling coordination.
+                    let previously_upgraded = self.tiles_with_own_texture.peek(&id).is_some();
+
+                    let all_siblings_ready = previously_upgraded || if id.z == 0 {
                         true // root tiles have no siblings
                     } else {
                         // Compute sibling IDs (same parent, all 4 children)
@@ -497,22 +531,28 @@ impl<'a> WgpuState<'a> {
                         entry.texture_id = id;
                         entry.uv_scale_offset = [1.0, 1.0, 0.0, 0.0];
                         entry.showing_own_texture = true;
+                        // Fix 3: record this tile in the bounded upgrade history.
+                        self.tiles_with_own_texture.put(id, ());
                     }
                     // else: keep showing the existing parent fallback, no change.
                 }
                 // else: own texture still not ready, keep showing the existing fallback.
 
             } else {
-                // --- Tile is new to the visible set ---
-                let first_seen = now;
-
+                // --- Tile is genuinely new to the visible set ---
                 if let Some((tex_id, uv)) = self.tile_system.peek_render_data(id) {
                     let showing_own = tex_id == id;
+                    // Fix 3: if the tile is immediately showing its own texture
+                    // (e.g. the texture was pre-fetched), record it now.
+                    if showing_own {
+                        self.tiles_with_own_texture.put(id, ());
+                    }
                     self.display_state.insert(id, TileDisplayEntry {
                         texture_id: tex_id,
                         uv_scale_offset: uv,
-                        first_seen,
+                        first_seen: now,
                         showing_own_texture: showing_own,
+                        absent_since: None,
                     });
                 }
                 // If no texture at all yet (no parent fallback either), the tile
@@ -793,5 +833,6 @@ impl<'a> WgpuState<'a> {
         self.quadtree_manager = crate::engine::globe::quadtree::QuadtreeManager::new();
         self.display_state.clear();
         self.last_visible_set.clear();
+        self.tiles_with_own_texture.clear();
     }
 }

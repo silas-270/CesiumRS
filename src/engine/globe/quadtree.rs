@@ -496,10 +496,13 @@ impl QuadtreeNode {
 
         let dist = (self.center - camera_pos).length();
 
-        // Hysteresis logic: Subdivide at 1.0x, but don't collapse until 1.05x
+        // Hysteresis logic: Subdivide at 1.0x, but don't collapse until 1.2x.
+        // A 20% band prevents LOD oscillation when the camera straddles the
+        // subdivision threshold. The old 1.05× band (≈50 m at z=19) was too
+        // narrow and caused rapid APPEAR/DISAPPEAR flicker on high-detail tiles.
         let is_subdivided = self.children.is_some();
         let subdivide_dist = self.lod_radius * lod_factor;
-        let collapse_dist = subdivide_dist * 1.05;
+        let collapse_dist = subdivide_dist * 1.20;
 
         let should_be_subdivided = if is_subdivided {
             dist < collapse_dist
