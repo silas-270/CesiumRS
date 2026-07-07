@@ -159,6 +159,17 @@ impl Camera {
     }
 
     fn enforce_bounds(&mut self) {
+        if self.mode == CameraMode::Tracking {
+            let dist_to_plane = self.local_pos.length();
+            if dist_to_plane < 0.00002 {
+                if dist_to_plane > 1e-8 {
+                    self.local_pos = (self.local_pos / dist_to_plane) * 0.00002;
+                } else {
+                    self.local_pos = Vec3::new(0.0, 0.0, 0.00002);
+                }
+            }
+        }
+
         let (global_pos_dvec, _) = self.global_transform();
         let global_pos = Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
         let dist = global_pos.length();
