@@ -158,10 +158,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if push_constants.split_progress >= 0.0 {
         if push_constants.airplane_pos.w > 0.5 {
             let to_frag = in.world_pos - push_constants.airplane_pos.xyz;
-            let local_up = normalize(in.world_pos + push_constants.reference_point.xyz);
-            let to_frag_horiz = to_frag - local_up * dot(to_frag, local_up);
-            let fwd_horiz = push_constants.airplane_forward.xyz - local_up * dot(push_constants.airplane_forward.xyz, local_up);
-            let proj = dot(to_frag_horiz, fwd_horiz);
+            let airplane_abs = push_constants.airplane_pos.xyz + push_constants.reference_point.xyz;
+            let up_plane = normalize(airplane_abs);
+            let fwd_plane_horiz = push_constants.airplane_forward.xyz - up_plane * dot(push_constants.airplane_forward.xyz, up_plane);
+            let proj = dot(to_frag, fwd_plane_horiz);
             
             if proj >= 0.0 {
                 base_color = push_constants.color_end.rgb;
