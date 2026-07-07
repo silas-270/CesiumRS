@@ -89,6 +89,7 @@ fn main() {
                 tile_cache_size: 2048,
                 enable_prefetch: true,
                 maximum_screen_space_error: 2.0,
+                ..Default::default()
             },
             ..Default::default()
         });

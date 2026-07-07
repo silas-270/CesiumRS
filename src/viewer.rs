@@ -12,6 +12,12 @@ pub struct GlobeOptions {
     pub maximum_screen_space_error: f32,
     /// Whether the engine should try to fetch tiles before they are strictly needed
     pub enable_prefetch: bool,
+    /// Image adjustment: -1.0 (grayscale) to 1.0 (oversaturated). Default 0.0.
+    pub map_saturation: f32,
+    /// Image adjustment: -1.0 (washed out) to 1.0 (high contrast). Default 0.0.
+    pub map_contrast: f32,
+    /// Image adjustment: -1.0 (pitch black) to 1.0 (bright white). Default 0.0.
+    pub map_brightness: f32,
 }
 
 impl Default for GlobeOptions {
@@ -20,6 +26,9 @@ impl Default for GlobeOptions {
             tile_cache_size: 2048,
             maximum_screen_space_error: 2.0,
             enable_prefetch: true,
+            map_saturation: 0.0,
+            map_contrast: 0.0,
+            map_brightness: 0.0,
         }
     }
 }
@@ -37,6 +46,9 @@ impl ViewerOptions {
         config.mesh_cache_size = NonZeroUsize::new(self.globe.tile_cache_size).unwrap_or(NonZeroUsize::new(1).unwrap());
         config.lod_factor = self.globe.maximum_screen_space_error;
         config.enable_prefetch = self.globe.enable_prefetch;
+        config.map_saturation = self.globe.map_saturation;
+        config.map_contrast = self.globe.map_contrast;
+        config.map_brightness = self.globe.map_brightness;
         config
     }
 }

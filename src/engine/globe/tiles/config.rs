@@ -12,6 +12,9 @@ pub struct TileEngineConfig {
     pub base_imagery_url: String,
     pub base_color: [u8; 4],
     pub offline_mode: bool,
+    pub map_saturation: f32,
+    pub map_contrast: f32,
+    pub map_brightness: f32,
 }
 
 impl Default for TileEngineConfig {
@@ -26,6 +29,9 @@ impl Default for TileEngineConfig {
             base_imagery_url: "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png".to_string(),
             base_color: [20, 20, 20, 255],
             offline_mode: false,
+            map_saturation: 0.0,
+            map_contrast: 0.0,
+            map_brightness: 0.0,
         }
     }
 }
