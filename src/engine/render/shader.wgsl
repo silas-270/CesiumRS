@@ -55,7 +55,8 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let shaded_color = tex_color.rgb * (ambient + diffuse);
     
     // --- HORIZON FOG ---
-    let pixel_dist = length(in.world_pos - camera.camera_pos.xyz);
+    // in.world_pos is already relative to the camera due to RTE rendering!
+    let pixel_dist = length(in.world_pos);
     let earth_radius = 6.378137;
     let r = max(length(camera.camera_pos.xyz), earth_radius);
     
