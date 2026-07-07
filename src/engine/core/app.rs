@@ -99,6 +99,12 @@ impl<'a> App<'a> {
                     ui.add(egui::Slider::new(&mut state.camera.focal_length, 12.0..=200.0).text("Focal Length (mm)"));
                 });
 
+                ui.horizontal(|ui| {
+                    ui.label("Sun:");
+                    ui.add(egui::Slider::new(&mut state.camera.sun_intensity, 0.0..=1.0).text("Intensity"));
+                    ui.add(egui::Slider::new(&mut state.camera.sun_pos_deg, 0.0..=360.0).text("Pos (deg)"));
+                });
+
                 if pitch_deg != pitch.to_degrees()
                     || yaw_deg != yaw.to_degrees()
                     || roll_deg != roll.to_degrees()

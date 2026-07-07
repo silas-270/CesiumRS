@@ -2,6 +2,7 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
+    sun_params: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -40,27 +41,19 @@ fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> 
 
 @fragment
 fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
-    // Correctly reconstruct world-space view direction PER FRAGMENT.
-    // Doing this in the vertex shader and interpolating linearly causes severe warping/wobbling 
-    // when the camera rotates because perspective divide is non-linear!
     let clip_pos = vec4<f32>(in.clip_pos_xy, 1.0, 1.0);
     let world_pos = camera.inv_view_proj * clip_pos;
     let world_pos_xyz = world_pos.xyz / world_pos.w;
-    // The inv_view_proj matrix has its translation stripped (camera is at 0,0,0 in this space).
-    // Therefore, world_pos_xyz is already a vector relative to the camera! 
     let view_dir = normalize(world_pos_xyz);
     
     let origin = camera.camera_pos.xyz;
+    let sun_intensity = camera.sun_params.x;
     
     let earth_radius = 6.378137;
     let atmosphere_thickness = 0.15; // 150km boundary for the ray marcher
     let atmosphere_radius = earth_radius + atmosphere_thickness;
     
     let t_atm = ray_sphere_intersect(origin, view_dir, atmosphere_radius);
-    
-    // We intentionally do NOT use t_earth to cut off the atmosphere depth.
-    // The ray marcher will naturally handle rays that hit the earth by accumulating density.
-    // The earth mesh renders over this, perfectly hiding the hidden parts and filling any gaps!
     
     var dist_in_atm = 0.0;
     if (t_atm.y > 0.0) {
@@ -69,32 +62,25 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         dist_in_atm = max(0.0, t_stop - t_start);
     }
     
-    // --- ANALYTICAL OPTICAL DEPTH (ZERO LOOPS) ---
-    // For mobile GPU performance, we use a loopless analytical approximation of the atmospheric 
-    // scattering integral (Chapman function approximation). This is virtually free to compute!
-    
-    // 1. Find the closest point of the ray to the center of the earth
     let t_closest = -dot(origin, view_dir);
     let t_min = max(0.0, t_closest);
     let p_closest = origin + view_dir * t_min;
     let d = length(p_closest);
     
-    // 2. Compute exponential density at that closest point
     let h_normalized = clamp((d - earth_radius) / atmosphere_thickness, 0.0, 1.0);
-    // 10 scale heights (e^-10) falloff to space
     let density_at_d = exp(-h_normalized * 10.0);
-    
-    // 3. Soften the harsh geometric boundary
-    // The dist_in_atm calculation has an infinite slope at the exact outer edge, which causes 
-    // the "sharp ribbon" visual artifact. We perfectly crush this slope using a smoothstep.
     let boundary_softener = smoothstep(1.0, 0.8, h_normalized);
-    
-    // 4. Combine for final optical depth
     let optical_depth = density_at_d * dist_in_atm * boundary_softener * 2.0;
     
-    let horizon_color = vec3<f32>(0.7, 0.8, 0.9); // Hazy white
-    let zenith_color = vec3<f32>(0.15, 0.35, 0.75);  // Deep blue
-    let space_color = vec3<f32>(0.02, 0.02, 0.04);   // Dark space
+    let space_color = vec3<f32>(0.02, 0.02, 0.04);
+    let day_horizon_color = vec3<f32>(0.7, 0.8, 0.9);
+    let day_zenith_color = vec3<f32>(0.15, 0.35, 0.75);
+    
+    let night_horizon_color = vec3<f32>(0.1, 0.1, 0.15);
+    let night_zenith_color = vec3<f32>(0.0, 0.0, 0.0);
+    
+    let horizon_color = mix(night_horizon_color, day_horizon_color, sun_intensity);
+    let zenith_color = mix(night_zenith_color, day_zenith_color, sun_intensity);
     
     var base_color = space_color;
     if (optical_depth > 0.0) {
