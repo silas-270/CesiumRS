@@ -8,7 +8,7 @@ use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig
 use crate::engine::core::extension::GlobeExtension;
 use crate::engine::render::model::pipeline::ModelRenderer;
 use crate::engine::camera::camera::CameraMode;
-use crate::engine::property::Property;
+
 
 pub fn load_flight_data(content: &str) -> Result<(SampledPositionProperty, crate::engine::property::sampled::SampledScalarProperty), Box<dyn std::error::Error>> {
     let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
@@ -90,9 +90,7 @@ impl FlightTrackerApp {
         }
     }
 
-    pub fn get_plane_state_at_progress_delta(&self, progress_val: f64, delta_progress: f64) -> Option<crate::engine::math::trajectory::TransformState> {
-        self.get_plane_state_at_time_delta(progress_val + delta_progress, 0.0)
-    }
+
 
     pub fn get_plane_state_at(&self, progress_val: f64) -> Option<crate::engine::math::trajectory::TransformState> {
         let mut state = self.get_plane_state_at_time_delta(progress_val, 0.0);
@@ -127,10 +125,7 @@ impl FlightTrackerApp {
         self.pending_flights.push((id.to_string(), json_content, is_secondary));
     }
 
-    pub fn set_airplane_model(&mut self, _glb_bytes: Vec<u8>) {
-        // In the future, this can be called via JNI to dynamically set the model
-        // To be implemented: store bytes and create ModelRenderer in update()
-    }
+
 }
 
 impl GlobeExtension for FlightTrackerApp {

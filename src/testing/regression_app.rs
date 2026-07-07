@@ -96,7 +96,7 @@ impl<'a> ApplicationHandler for RegressionApp<'a> {
                 
                 if let Some(state) = self.inner.wgpu_state_mut() {
                     let aspect_ratio = 800.0 / 600.0;
-                    let main_view_proj = state.camera.get_projection_matrix(aspect_ratio) * state.camera.get_view_matrix();
+                    let _main_view_proj = state.camera.get_projection_matrix(aspect_ratio) * state.camera.get_view_matrix();
                     let frustum_planes = state.camera.calculate_frustum_planes(aspect_ratio);
                     
                     let (global_pos_dvec, _) = state.camera.global_transform_f64();

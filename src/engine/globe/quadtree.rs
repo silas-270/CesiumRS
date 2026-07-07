@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec3, Vec4};
+use glam::Vec3;
 
 pub fn web_mercator_y_to_lat(y: f32, z: u8) -> f32 {
     let n = (1_u32 << z) as f32;
@@ -73,31 +73,7 @@ impl Frustum {
         true
     }
 
-    pub fn intersects_surface_points(&self, points: &[Vec3; 9]) -> bool {
-        let epsilon = 0.0001_f32; // Small 100-meter safety margin for floating-point stability
-        for (n, d) in &self.planes {
-            let mut all_outside = true;
-            for p in points {
-                if n.dot(*p) + d >= -epsilon {
-                    all_outside = false;
-                    break;
-                }
-            }
-            if all_outside {
-                return false;
-            }
-        }
-        true
-    }
 
-    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool {
-        for (n, d) in &self.planes {
-            if n.dot(center) + d < -radius {
-                return false;
-            }
-        }
-        true
-    }
 
     pub fn intersects_obb(&self, obb: &OrientedBoundingBox) -> bool {
         for (n, d) in &self.planes {

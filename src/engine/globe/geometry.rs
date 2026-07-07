@@ -1,5 +1,4 @@
 use crate::engine::globe::quadtree::TileId;
-use glam::Vec3;
 
 pub const EARTH_RADIUS_A_F32: f32 = 6.378137;
 pub const EARTH_RADIUS_B_F32: f32 = 6.3567523142;
@@ -48,16 +47,7 @@ impl Vertex {
     }
 }
 
-pub fn lon_lat_to_ecef(lon_deg: f32, lat_deg: f32) -> Vec3 {
-    let phi = lat_deg.to_radians();
-    let theta = lon_deg.to_radians();
 
-    let x = EARTH_RADIUS_A_F32 * phi.cos() * theta.cos();
-    let y = EARTH_RADIUS_B_F32 * phi.sin();
-    let z = -EARTH_RADIUS_A_F32 * phi.cos() * theta.sin(); // -Z to match Right-Handed +Y Up coords
-
-    Vec3::new(x, y, z)
-}
 
 pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
     let phi = lat_deg.to_radians();
