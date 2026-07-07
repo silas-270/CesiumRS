@@ -47,14 +47,6 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // True mathematical horizon dips below perfectly horizontal due to earth curvature
     let true_horizon_cos = -sqrt(max(1.0 - (earth_radius * earth_radius) / (r * r), 0.0));
     
-    // --- DEBUG LINES ---
-    if (abs(cos_angle) < 0.0015) {
-        return vec4<f32>(1.0, 0.0, 0.0, 1.0); // Red: perfectly horizontal
-    }
-    if (abs(cos_angle - true_horizon_cos) < 0.0015) {
-        return vec4<f32>(0.0, 1.0, 0.0, 1.0); // Green: true earth curvature horizon
-    }
-    
     let horizon_color = vec3<f32>(0.65, 0.75, 0.85); // Hazy horizon
     let zenith_color = vec3<f32>(0.15, 0.35, 0.75);  // Deep blue
     let space_color = vec3<f32>(0.02, 0.02, 0.04);   // Dark space
@@ -69,8 +61,8 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // Fade to space as altitude increases
     let altitude = max(r - earth_radius, 0.0);
     
-    // Start fading at 20km (0.02 units), fully dark by 100km (0.1 units)
-    let space_fade = clamp((altitude - 0.02) / 0.08, 0.0, 1.0); 
+    // Start fading at 50km (0.05 units), fully dark by 500km (0.5 units)
+    let space_fade = clamp((altitude - 0.05) / 0.45, 0.0, 1.0); 
     base_color = mix(base_color, space_color, space_fade);
     
     return vec4<f32>(base_color, 1.0);
