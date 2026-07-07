@@ -90,18 +90,17 @@ mod tests {
         // With Quat::IDENTITY, local_pos.z becomes 0.00025 - 0.0000375 = 0.0002125
         assert!((camera.local_pos.z - 0.0002125).abs() < 1e-7, "Expected camera to move to 0.0002125, got {:?}", camera.local_pos.z);
 
-        // Now move camera extremely close (e.g. 5m behind the plane)
+        // Now try to move camera extremely close (e.g. 5m behind the plane)
         // 5m is 0.000005 megameters.
-        // This is below the 20m threshold (0.00002).
+        // set_local_transform enforces bounds immediately, so it should be clamped to 20m (0.00002).
         camera.set_local_transform(Vec3::new(0.0, 0.0, 0.000005), Quat::IDENTITY);
+        assert!((camera.local_pos.z - 0.00002).abs() < 1e-7, "Expected camera to be clamped to 0.00002, got {:?}", camera.local_pos.z);
 
-        // Zoom in again
+        // Zoom in again. This attempts to move closer, but enforce_bounds will reject the closer position
+        // and push it back to the minimum threshold.
         camera.zoom(1.0);
 
-        // Under the new logic:
-        // dist_to_plane = 0.000005, maxed with threshold 0.00002 => speed = 0.00002
-        // move_distance = 0.00002 * 0.15 * 1.0 = 0.000003
-        // So local_pos.z becomes 0.000005 - 0.000003 = 0.000002
-        assert!((camera.local_pos.z - 0.000002).abs() < 1e-7, "Expected camera to move to 0.000002, got {:?}", camera.local_pos.z);
+        // The camera should remain clamped at 0.00002.
+        assert!((camera.local_pos.z - 0.00002).abs() < 1e-7, "Expected camera to remain clamped at 0.00002, got {:?}", camera.local_pos.z);
     }
 }
