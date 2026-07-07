@@ -2,6 +2,7 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
+    sun_params: vec4<f32>,
 };
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
@@ -34,7 +35,6 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.normal = model.normal;
     out.color = model.color;
-    // model.uv * scale + offset
     out.uv = model.uv * push_constants.uv_scale_offset.xy + push_constants.uv_scale_offset.zw;
     out.world_pos = world_pos;
     return out;
@@ -47,55 +47,41 @@ var s_diffuse: sampler;
 
 @fragment
 fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
-    let light_dir = normalize(vec3<f32>(1.0, 1.0, 1.0));
-    let ambient = 0.8; // Much brighter base
-    let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.4; // Softer shadows
+    let sun_intensity = camera.sun_params.x;
+    let sun_pos_rad = radians(camera.sun_params.y);
+    let light_dir = normalize(vec3<f32>(cos(sun_pos_rad), 0.0, sin(sun_pos_rad)));
+    
+    // Ambient drops heavily at night, diffuse is calculated based on sun direction
+    let ambient = mix(0.1, 0.8, sun_intensity); 
+    let diffuse = max(dot(in.normal, light_dir), 0.0) * mix(0.0, 0.4, sun_intensity);
     
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
     let shaded_color = tex_color.rgb * (ambient + diffuse);
-    
-    // --- HORIZON BLUR RIBBON (SCREEN-SPACE GRADIENT) ---
-    // The fundamental issue on the ground is that `camera_pos` loses precision in f32 when altitude is low.
-    // This corrupts all altitude-based horizon math, making the ribbon vanish.
-    // SOLUTION: Use raw screen-space derivatives of distance. At any silhouette or horizon edge, 
-    // the distance changes infinitely fast between adjacent pixels, regardless of zoom or altitude.
     
     let pixel_dist = length(in.world_pos);
     let dist_dx = dpdx(pixel_dist);
     let dist_dy = dpdy(pixel_dist);
     let dist_grad = sqrt(dist_dx * dist_dx + dist_dy * dist_dy);
     
-    let pos_dx = dpdx(in.world_pos);
-    let pos_dy = dpdy(in.world_pos);
-    let pos_grad = sqrt(dot(pos_dx, pos_dx) + dot(pos_dy, pos_dy));
-    
-    // slope is the ratio of vertical radius change to physical distance change.
-    // For flat terrain, slope is ~0. For vertical skirts at the horizon, slope is 1.0.
-    // By using the slope, the blur thickness remains a constant 1-2 pixels at the silhouette
-    // regardless of zoom level, because it relies on the skirt geometry itself.
-    // Let's normalize the screen-space depth gradient by the square root of the distance
-    // from the camera. Mathematically, the ratio of (depth_gradient / sqrt(depth)) at the horizon
-    // is a zoom-independent invariant (~0.094 for a 45-degree FOV at 1080p).
-    // This creates a beautiful, thin horizon blur that maintains a constant pixel width (1-2 pixels)
-    // and never bleeds into normal terrain at any zoom level.
     let horizon_metric = dist_grad / sqrt(max(pixel_dist, 0.0001));
     
-    // Configurable parameter to control the width of the horizon blur ribbon.
-    // Higher values = wider, softer blur. 1.0 is the baseline (approx 7 pixels close up).
     let HORIZON_BLUR_WIDTH = 2.0; 
     let lower_thresh = 0.015 / HORIZON_BLUR_WIDTH;
     let upper_thresh = 0.06 / HORIZON_BLUR_WIDTH;
     
     var blur_factor = smoothstep(lower_thresh, upper_thresh, horizon_metric);
     
-    // Prevent blurring geometry closer than 100 meters (e.g. walls right in front of camera)
     let dist_fade = smoothstep(0.0, 0.0001, pixel_dist);
     blur_factor = blur_factor * dist_fade;
     
     let earth_radius = 6.378137;
     let r_cam = max(length(camera.camera_pos.xyz), earth_radius);
     let altitude = max(r_cam - earth_radius, 0.0);
-    let horizon_color = vec3<f32>(0.65, 0.75, 0.85); 
+    
+    let day_horizon_color = vec3<f32>(0.65, 0.75, 0.85); 
+    let night_horizon_color = vec3<f32>(0.1, 0.1, 0.15);
+    let horizon_color = mix(night_horizon_color, day_horizon_color, sun_intensity);
+    
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
     let space_fade = clamp((altitude - 0.05) / 0.45, 0.0, 1.0);
     let current_fog_color = mix(horizon_color, space_color, space_fade);

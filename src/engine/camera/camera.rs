@@ -65,7 +65,9 @@ pub struct Camera {
     pub min_distance: f32,
     pub max_distance: f32,
 
-    pitch_sensitivity: f32,
+    pub pitch_sensitivity: f32,
+    pub sun_intensity: f32,
+    pub sun_pos_deg: f32,
 
     // Sticky Drag State
     drag_start_point: Option<glam::DVec3>,
@@ -90,6 +92,8 @@ impl Camera {
             drag_start_local_pos: Vec3::ZERO,
             drag_start_local_ori: Quat::IDENTITY,
             focal_length: 28.0,
+            sun_intensity: 1.0,
+            sun_pos_deg: 0.0,
             mode: CameraMode::Free,
         };
         cam.set_eye(position, target);
