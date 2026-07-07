@@ -22,7 +22,7 @@ impl Default for TileEngineConfig {
             prefetch_radius: 1, // Number of tiles to prefetch in velocity direction
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),
-            base_imagery_url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png".to_string(),
+            base_imagery_url: "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png".to_string(),
             offline_mode: false,
         }
     }
