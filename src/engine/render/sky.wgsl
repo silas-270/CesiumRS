@@ -9,7 +9,7 @@ var<uniform> camera: CameraUniform;
 
 struct SkyOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) view_dir: vec3<f32>,
+    @location(0) clip_pos_xy: vec2<f32>,
 };
 
 @vertex
@@ -22,13 +22,7 @@ fn vs_sky(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
     
     // Set z to 1.0 to push it to the far clipping plane
     out.clip_position = vec4<f32>(x, y, 1.0, 1.0);
-    
-    // Reconstruct world-space view direction.
-    let clip_pos = vec4<f32>(x, y, 1.0, 1.0);
-    let world_pos = camera.inv_view_proj * clip_pos;
-    
-    // DO NOT NORMALIZE HERE! Linear interpolation of normalized vectors causes spherical skew!
-    out.view_dir = world_pos.xyz / world_pos.w;
+    out.clip_pos_xy = vec2<f32>(x, y);
     
     return out;
 }
@@ -46,7 +40,16 @@ fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> 
 
 @fragment
 fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
-    let view_dir = normalize(in.view_dir);
+    // Correctly reconstruct world-space view direction PER FRAGMENT.
+    // Doing this in the vertex shader and interpolating linearly causes severe warping/wobbling 
+    // when the camera rotates because perspective divide is non-linear!
+    let clip_pos = vec4<f32>(in.clip_pos_xy, 1.0, 1.0);
+    let world_pos = camera.inv_view_proj * clip_pos;
+    let world_pos_xyz = world_pos.xyz / world_pos.w;
+    // The inv_view_proj matrix has its translation stripped (camera is at 0,0,0 in this space).
+    // Therefore, world_pos_xyz is already a vector relative to the camera! 
+    let view_dir = normalize(world_pos_xyz);
+    
     let origin = camera.camera_pos.xyz;
     
     let earth_radius = 6.378137;
@@ -104,6 +107,25 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         let opacity = 1.0 - exp(-optical_depth * 10.0); 
         
         base_color = mix(space_color, atmosphere_color, opacity);
+    }
+    
+    // --- DEBUG LINES ---
+    // The actual mathematical horizon of the earth
+    let zenith = normalize(origin);
+    let cos_angle = dot(view_dir, zenith);
+    let r = max(length(origin), earth_radius);
+    let true_horizon_cos = -sqrt(max(1.0 - (earth_radius * earth_radius) / (r * r), 0.0));
+    
+    if (abs(cos_angle - true_horizon_cos) < 0.0005) {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0); // Red line for true mathematical horizon
+    }
+    
+    // The calculated ray-sphere discriminant horizon
+    let b = 2.0 * dot(view_dir, origin);
+    let c = dot(origin, origin) - earth_radius * earth_radius;
+    let discriminant = b * b - 4.0 * c;
+    if (abs(discriminant) < 0.05 && cos_angle < 0.0) {
+        return vec4<f32>(0.0, 1.0, 0.0, 1.0); // Green line for ray-sphere calculation horizon
     }
     
     return vec4<f32>(base_color, 1.0);
