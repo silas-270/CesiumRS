@@ -39,10 +39,8 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-const EARTH_RADIUS_A: f32 = 6.378137;
-const EARTH_RADIUS_B: f32 = 6.3567523142;
-const INV_A2: f32 = 1.0 / (EARTH_RADIUS_A * EARTH_RADIUS_A);
-const INV_B2: f32 = 1.0 / (EARTH_RADIUS_B * EARTH_RADIUS_B);
+const INV_A2_F64: f64 = 1.0 / (crate::engine::globe::geometry::EARTH_RADIUS_A_F64 * crate::engine::globe::geometry::EARTH_RADIUS_A_F64);
+const INV_B2_F64: f64 = 1.0 / (crate::engine::globe::geometry::EARTH_RADIUS_B_F64 * crate::engine::globe::geometry::EARTH_RADIUS_B_F64);
 
 const EARTH_RADIUS_A_F64: f64 = 6.378137;
 const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
@@ -170,23 +168,20 @@ impl Camera {
             }
         }
 
-        let (global_pos_dvec, _) = self.global_transform();
-        let global_pos = Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
-        let dist = global_pos.length();
+        let (global_pos_dvec, _) = self.global_transform_f64();
+        let dist = global_pos_dvec.length();
 
-        let dir = global_pos.normalize_or_zero();
+        let dir = global_pos_dvec.normalize_or_zero();
         let t =
-            1.0 / (dir.x * dir.x * INV_A2 + dir.y * dir.y * INV_B2 + dir.z * dir.z * INV_A2).sqrt();
+            1.0 / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64).sqrt();
         let dynamic_min_distance = t + 0.000002;
 
         if dist < dynamic_min_distance {
-            let new_global_pos = global_pos.normalize_or_zero() * dynamic_min_distance;
-            let new_global_pos_dvec = glam::DVec3::new(new_global_pos.x as f64, new_global_pos.y as f64, new_global_pos.z as f64);
+            let new_global_pos_dvec = dir * dynamic_min_distance;
             let local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
             self.local_pos = Vec3::new(local_pos_dvec.x as f32, local_pos_dvec.y as f32, local_pos_dvec.z as f32);
-        } else if dist > self.max_distance {
-            let new_global_pos = global_pos.normalize_or_zero() * self.max_distance;
-            let new_global_pos_dvec = glam::DVec3::new(new_global_pos.x as f64, new_global_pos.y as f64, new_global_pos.z as f64);
+        } else if dist > self.max_distance as f64 {
+            let new_global_pos_dvec = dir * (self.max_distance as f64);
             let local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
             self.local_pos = Vec3::new(local_pos_dvec.x as f32, local_pos_dvec.y as f32, local_pos_dvec.z as f32);
         }
@@ -243,9 +238,8 @@ impl Camera {
                 let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
                 let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
                 let dir = global_pos.normalize_or_zero();
-                let dir_f32 = glam::Vec3::new(dir.x as f32, dir.y as f32, dir.z as f32);
-                let t = 1.0 / (dir_f32.x * dir_f32.x * INV_A2 + dir_f32.y * dir_f32.y * INV_B2 + dir_f32.z * dir_f32.z * INV_A2).sqrt();
-                global_pos.length() >= t as f64 + 0.000002
+                let t = 1.0 / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64).sqrt();
+                global_pos.length() >= t + 0.000002
             };
 
             let dot_y_both = new_pos_both.normalize_or_zero().dot(Vec3::Y);
@@ -307,14 +301,13 @@ impl Camera {
     }
 
     pub fn altitude(&self) -> f32 {
-        let (pos_dvec, _) = self.global_transform();
-        let pos = glam::Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32);
+        let (pos_dvec, _) = self.global_transform_f64();
 
-        let dir = pos.normalize_or_zero();
+        let dir = pos_dvec.normalize_or_zero();
         let t =
-            1.0 / (dir.x * dir.x * INV_A2 + dir.y * dir.y * INV_B2 + dir.z * dir.z * INV_A2).sqrt();
+            1.0 / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64).sqrt();
 
-        pos.length() - t
+        (pos_dvec.length() - t) as f32
     }
 
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
