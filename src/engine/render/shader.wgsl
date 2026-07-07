@@ -79,7 +79,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // This creates a beautiful, thin horizon blur that maintains a constant pixel width (1-2 pixels)
     // and never bleeds into normal terrain at any zoom level.
     let horizon_metric = dist_grad / sqrt(max(pixel_dist, 0.0001));
-    var blur_factor = smoothstep(0.03, 0.08, horizon_metric);
+    var blur_factor = smoothstep(0.015, 0.06, horizon_metric);
     
     // Prevent blurring geometry closer than 100 meters (e.g. walls right in front of camera)
     let dist_fade = smoothstep(0.0, 0.0001, pixel_dist);
