@@ -186,24 +186,13 @@ impl GlobeExtension for FlightTrackerApp {
             *self.progress.lock().unwrap() = p;
         }
 
-        // Get the airplane's current world position for world-space split encoding.
-        let current_progress_val = *self.progress.lock().unwrap();
-        let airplane_ecef: Option<glam::DVec3> = if let Some(flight_ref) = self.flights.first() {
-            let start_t = flight_ref.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
-            let stop_t = flight_ref.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
-            let t = start_t + current_progress_val * (stop_t - start_t);
-            flight_ref.property.evaluate(crate::engine::time::SimulationTime::new(t))
-        } else {
-            None
-        };
-
         for flight in &mut self.flights {
             let mut vertices = Vec::new();
 
             let visible_strips = flight.bvh.collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
             for strip in visible_strips {
-                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices_with_split(
-                    &strip, camera_pos_dvec3, flight.reference_point, airplane_ecef
+                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(
+                    &strip, camera_pos_dvec3, flight.reference_point
                 );
                 if !vertices.is_empty() && !strip_verts.is_empty() {
                     vertices.push(*vertices.last().unwrap());
@@ -250,6 +239,7 @@ impl GlobeExtension for FlightTrackerApp {
         camera_pos_f64: [f64; 3],
     ) {
         let current_progress = *self.progress.lock().unwrap();
+        let airplane_state = self.get_plane_state_at(current_progress);
 
         for flight in &self.flights {
             let mut config = flight.config.clone();
@@ -257,19 +247,22 @@ impl GlobeExtension for FlightTrackerApp {
             config.split_progress = current_progress as f32;
 
             // Compute airplane position relative to reference_point for world-space split.
-            // This is used by the shader (airplane_pos.w == 1.0) to place the colour
-            // boundary exactly at the airplane rather than at a pre-baked progress value.
-            let airplane_ecef: Option<glam::DVec3> = {
-                let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
-                let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
-                let t = start_t + current_progress * (stop_t - start_t);
-                flight.property.evaluate(crate::engine::time::SimulationTime::new(t))
-            };
-            let airplane_pos_rel = if let Some(ecef) = airplane_ecef {
+            // We use the smoothed plane state to guarantee perfect alignment with the rendered model.
+            let airplane_ecef: Option<glam::DVec3> = airplane_state.map(|s| s.position);
+            config.airplane_pos = if let Some(ecef) = airplane_ecef {
                 let rel = ecef - flight.reference_point;
                 [rel.x as f32, rel.y as f32, rel.z as f32, 1.0_f32] // w=1 activates world-space split
             } else {
                 [0.0, 0.0, 0.0, 0.0] // w=0 falls back to legacy progress comparison
+            };
+
+            config.airplane_forward = if let Some(state) = airplane_state {
+                let cur_rot = state.rotation;
+                let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
+                let forward = rot_f32 * glam::Vec3::new(0.0, 0.0, -1.0);
+                [forward.x, forward.y, forward.z, 0.0]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
             };
 
             flight.renderer.draw(
@@ -279,13 +272,12 @@ impl GlobeExtension for FlightTrackerApp {
                 camera_pos_f64,
                 [flight.reference_point.x, flight.reference_point.y, flight.reference_point.z],
                 &config,
-                airplane_pos_rel,
             );
         }
 
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
-            if let Some(state) = self.get_plane_state_at(current_progress) {
+            if let Some(state) = airplane_state {
                 // Elevate 10m (0.00001 Megameters) to avoid clipping and align with ribbon elevation
                 let up_dir = state.position.normalize();
                 let elevated_position = state.position + up_dir * 0.00001;
