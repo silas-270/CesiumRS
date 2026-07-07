@@ -98,3 +98,78 @@ impl Property<DVec3> for SampledPositionProperty {
         }
     }
 }
+
+pub struct SampledScalarProperty {
+    samples: Vec<(SimulationTime, f64)>,
+    pub algorithm: InterpolationAlgorithm,
+}
+
+impl SampledScalarProperty {
+    pub fn new() -> Self {
+        Self {
+            samples: Vec::new(),
+            algorithm: InterpolationAlgorithm::Linear,
+        }
+    }
+
+    pub fn with_algorithm(mut self, algorithm: InterpolationAlgorithm) -> Self {
+        self.algorithm = algorithm;
+        self
+    }
+
+    pub fn add_sample(&mut self, time: SimulationTime, value: f64) {
+        let idx = self.samples.binary_search_by(|(t, _)| t.partial_cmp(&time).unwrap());
+        match idx {
+            Ok(i) => self.samples[i] = (time, value),
+            Err(i) => self.samples.insert(i, (time, value)),
+        }
+    }
+}
+
+impl Property<f64> for SampledScalarProperty {
+    fn evaluate(&self, time: SimulationTime) -> Option<f64> {
+        if self.samples.is_empty() {
+            return None;
+        }
+
+        if self.samples.len() == 1 {
+            return Some(self.samples[0].1);
+        }
+
+        let first = self.samples.first().unwrap();
+        let last = self.samples.last().unwrap();
+
+        if time.seconds <= first.0.seconds {
+            return Some(first.1);
+        }
+        if time.seconds >= last.0.seconds {
+            return Some(last.1);
+        }
+
+        let idx = self.samples.binary_search_by(|(t, _)| t.partial_cmp(&time).unwrap());
+        match idx {
+            Ok(i) => Some(self.samples[i].1),
+            Err(i) => {
+                let idx1 = i - 1;
+                let idx2 = i;
+
+                let (t1, p1) = self.samples[idx1];
+                let (t2, p2) = self.samples[idx2];
+                let dt = t2.seconds - t1.seconds;
+                let t = (time.seconds - t1.seconds) / dt;
+
+                match self.algorithm {
+                    InterpolationAlgorithm::Linear => {
+                        Some(interpolation::linear_f64(p1, p2, t))
+                    }
+                    InterpolationAlgorithm::CatmullRom => {
+                        let p0 = if idx1 > 0 { self.samples[idx1 - 1].1 } else { p1 };
+                        let p3 = if idx2 + 1 < self.samples.len() { self.samples[idx2 + 1].1 } else { p2 };
+                        
+                        Some(interpolation::catmull_rom_f64(p0, p1, p2, p3, t))
+                    }
+                }
+            }
+        }
+    }
+}

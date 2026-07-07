@@ -10,10 +10,13 @@ use crate::engine::render::model::pipeline::ModelRenderer;
 use crate::engine::camera::camera::CameraMode;
 use crate::engine::property::Property;
 
-pub fn load_flight_data(content: &str) -> Result<SampledPositionProperty, Box<dyn std::error::Error>> {
+pub fn load_flight_data(content: &str) -> Result<(SampledPositionProperty, crate::engine::property::sampled::SampledScalarProperty), Box<dyn std::error::Error>> {
     let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
 
     let mut property = SampledPositionProperty::new()
+        .with_algorithm(InterpolationAlgorithm::CatmullRom);
+        
+    let mut sun_intensity_property = crate::engine::property::sampled::SampledScalarProperty::new()
         .with_algorithm(InterpolationAlgorithm::CatmullRom);
 
     for wp in waypoints {
@@ -21,14 +24,17 @@ pub fn load_flight_data(content: &str) -> Result<SampledPositionProperty, Box<dy
         let longitude = wp["longitude"].as_f64().unwrap_or(0.0);
         let latitude = wp["latitude"].as_f64().unwrap_or(0.0);
         let altitude = wp["altitude"].as_f64().unwrap_or(0.0);
+        
+        let sun_intensity = wp["sunIntensity"].as_f64().unwrap_or(1.0);
 
         let ecef_array = lon_lat_alt_to_ecef_f64(longitude, latitude, altitude);
         let position = DVec3::from_array(ecef_array);
         let time = SimulationTime::new(time_offset_ms as f64 / 1000.0);
         property.add_sample(time, position);
+        sun_intensity_property.add_sample(time, sun_intensity);
     }
 
-    Ok(property)
+    Ok((property, sun_intensity_property))
 }
 
 pub struct FlightEntity {
@@ -37,6 +43,7 @@ pub struct FlightEntity {
     pub renderer: PolylineRenderer,
     pub config: PolylineConfig,
     pub property: SampledPositionProperty,
+    pub sun_intensity_property: crate::engine::property::sampled::SampledScalarProperty,
     pub reference_point: glam::DVec3,
 }
 
@@ -102,6 +109,20 @@ impl FlightTrackerApp {
         state
     }
 
+    pub fn get_sun_intensity_at(&self, progress_val: f64) -> Option<f64> {
+        if let Some(flight) = self.flights.first() {
+            let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
+            let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+            let current_time_seconds = start_t + progress_val * (stop_t - start_t);
+            let time = crate::engine::time::SimulationTime::new(current_time_seconds);
+            
+            use crate::engine::property::Property;
+            flight.sun_intensity_property.evaluate(time)
+        } else {
+            None
+        }
+    }
+
     pub fn add_flight_path(&mut self, id: &str, json_content: String, is_secondary: bool) {
         self.pending_flights.push((id.to_string(), json_content, is_secondary));
     }
@@ -135,7 +156,7 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         for (id, content, is_secondary) in self.pending_flights.drain(..) {
-            if let Ok(property) = load_flight_data(&content) {
+            if let Ok((property, sun_intensity_property)) = load_flight_data(&content) {
                 if let Some(bvh) = PolylineBVH::build(&property) {
                     println!("BVH loaded: {}", id);
                     let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
@@ -153,6 +174,7 @@ impl GlobeExtension for FlightTrackerApp {
                         renderer,
                         config: poly_config,
                         property,
+                        sun_intensity_property,
                         reference_point,
                     });
                 }
@@ -203,8 +225,14 @@ impl GlobeExtension for FlightTrackerApp {
             flight.renderer.update_geometry(device, queue, &vertices);
         }
 
+        let current_progress = *self.progress.lock().unwrap();
+
         // Camera Logic
         camera.mode = self.view_mode;
+        
+        if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
+            camera.sun_intensity = intensity as f32;
+        }
         
         let mut mode_switched_or_reset = false;
         if self.view_mode != self.last_view_mode || self.reset_viewport {
@@ -213,7 +241,7 @@ impl GlobeExtension for FlightTrackerApp {
             self.reset_viewport = false;
         }
 
-        if let Some(state) = self.get_plane_state_at(*self.progress.lock().unwrap()) {
+        if let Some(state) = self.get_plane_state_at(current_progress) {
             match self.view_mode {
                 CameraMode::Tracking => {
                     crate::flight::modes::tracking::update_tracking_mode(camera, &state, mode_switched_or_reset);
