@@ -41,9 +41,9 @@ impl<'a> App<'a> {
         egui::Window::new("Flight Tracker Debug").resizable(false).show(ctx, |ui| {
             ui.label(format!("Altitude: {:.4}", state.camera.altitude()));
 
+            // Sun intensity is now controlled by the flight JSON interpolation
             ui.horizontal(|ui| {
-                ui.label("Sun:");
-                ui.add(egui::Slider::new(&mut state.camera.sun_intensity, 0.0..=1.0).text("Intensity"));
+                ui.label(format!("Sun Intensity: {:.2}", state.camera.sun_intensity));
             });
 
             let mut is_debug = state.debug_mode;

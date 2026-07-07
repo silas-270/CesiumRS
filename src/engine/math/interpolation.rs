@@ -25,3 +25,25 @@ pub fn catmull_rom_dvec3(p0: DVec3, p1: DVec3, p2: DVec3, p3: DVec3, t: f64) -> 
     let m2 = (p3 - p1) * 0.5;
     hermite_dvec3(p1, m1, p2, m2, t)
 }
+
+pub fn linear_f64(p0: f64, p1: f64, t: f64) -> f64 {
+    p0 + (p1 - p0) * t
+}
+
+pub fn hermite_f64(p0: f64, m0: f64, p1: f64, m1: f64, t: f64) -> f64 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+
+    p0 * h00 + m0 * h10 + p1 * h01 + m1 * h11
+}
+
+pub fn catmull_rom_f64(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    let m1 = (p2 - p0) * 0.5;
+    let m2 = (p3 - p1) * 0.5;
+    hermite_f64(p1, m1, p2, m2, t)
+}
