@@ -35,6 +35,7 @@ struct PushConstants {
     split_progress: f32,
     physical_half_width: f32,
     physical_half_height: f32,
+    _padding: vec2<f32>, // offset 88 (8 bytes) - align next field to 16 bytes
     // World-space airplane position (relative to reference_point, f32 precision).
     // The split is rendered at the closest point on the ribbon to this position.
     airplane_pos: vec4<f32>,
