@@ -199,9 +199,17 @@ impl Camera {
             return;
         }
 
-        let altitude = self.altitude();
-        let speed_alt = altitude.max(0.000002);
-        let move_distance = speed_alt * 0.15 * delta;
+        let speed = match self.mode {
+            CameraMode::Tracking => {
+                let dist_to_plane = self.local_pos.length();
+                dist_to_plane.max(0.00002) // 20 meters threshold
+            }
+            _ => {
+                let altitude = self.altitude();
+                altitude.max(0.000002) // 2 meters threshold
+            }
+        };
+        let move_distance = speed * 0.15 * delta;
 
         let forward = -Vec3::Z; // Translate local expects local offset.
         self.translate_local(forward * move_distance);
