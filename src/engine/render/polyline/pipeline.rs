@@ -12,8 +12,9 @@ pub struct PolylinePushConstants {
     pub split_progress: f32,       // offset 76 (4 bytes)
     pub physical_half_width: f32,  // offset 80 (4 bytes)
     pub physical_half_height: f32, // offset 84 (4 bytes)
-    pub airplane_pos: [f32; 4],    // offset 88 (16 bytes)
-    pub airplane_forward: [f32; 4], // offset 104 (16 bytes)
+    pub _padding: [f32; 2],        // offset 88 (8 bytes) - align next field to 16 bytes
+    pub airplane_pos: [f32; 4],    // offset 96 (16 bytes)
+    pub airplane_forward: [f32; 4], // offset 112 (16 bytes)
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +166,7 @@ impl PolylineRenderer {
                 split_progress: config.split_progress,
                 physical_half_width: config.physical_half_width,
                 physical_half_height: config.physical_half_height,
+                _padding: [0.0; 2],
                 reference_point: [reference_point[0] as f32, reference_point[1] as f32, reference_point[2] as f32, 0.0],
                 airplane_pos: config.airplane_pos,
                 airplane_forward: config.airplane_forward,
