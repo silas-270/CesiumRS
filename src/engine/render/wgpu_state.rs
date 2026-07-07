@@ -422,6 +422,9 @@ impl<'a> WgpuState<'a> {
         // Get the geometrically-desired visible tile set from the quadtree.
         let visible_tiles = self.quadtree_manager.get_visible_tiles();
 
+        // Get the actually renderable set of tiles (falling back to parent meshes if children aren't ready).
+        let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| self.tile_cache.peek(id).is_some());
+
         let missing_count = visible_tiles.iter().filter(|(id, _, _)| self.tile_cache.peek(id).is_none()).count();
         self.last_requested_tiles_count = visible_tiles.len();
         self.last_missing_tiles_count = missing_count;
@@ -434,13 +437,19 @@ impl<'a> WgpuState<'a> {
             }
         }
         self.tile_system.update(&self.device, &self.queue, camera_pos_f32, &visible_tiles, &missing_meshes);
+        
+        // Promote both mathematically visible tiles and actively rendered fallback parents in the cache.
         self.update_tile_cache(&visible_tiles);
+        for (id, _, _) in &renderable_tiles {
+            self.tile_cache.get(id); // Keep fallback meshes alive!
+        }
 
         // Update the stable display-state map. This is where texture assignment
         // decisions are made with no-downgrade and sibling-gate rules.
-        self.update_display_state(&visible_tiles);
+        // We feed it renderable_tiles so that parent fallback meshes get their textures and get drawn.
+        self.update_display_state(&renderable_tiles);
 
-        visible_tiles
+        renderable_tiles
     }
 
     /// The core stable-texture logic. Called once per frame after the quadtree and
