@@ -251,7 +251,7 @@ impl<'a> WgpuState<'a> {
         });
 
         let config_engine = engine_config;
-        let tile_system = crate::engine::globe::tiles::system::TileSystem::new(&device, config_engine);
+        let tile_system = crate::engine::globe::tiles::system::TileSystem::new(&device, &queue, config_engine);
 
         let (solid_pipeline, wireframe_pipeline, debug_pipeline) = crate::engine::render::pipelines::create_pipelines(
             &device,
@@ -536,8 +536,16 @@ impl<'a> WgpuState<'a> {
                         self.tiles_with_own_texture.put(id, ());
                     }
                     // else: keep showing the existing parent fallback, no change.
+                } else {
+                    // Own texture still not ready. If we are showing the fallback color (texture_id == id),
+                    // check if a parent fallback texture has become ready.
+                    if let Some((parent_id, uv)) = self.tile_system.peek_render_data(id) {
+                        if parent_id != id && entry.texture_id != parent_id {
+                            entry.texture_id = parent_id;
+                            entry.uv_scale_offset = uv;
+                        }
+                    }
                 }
-                // else: own texture still not ready, keep showing the existing fallback.
 
             } else {
                 // --- Tile is genuinely new to the visible set ---
@@ -555,9 +563,16 @@ impl<'a> WgpuState<'a> {
                         showing_own_texture: showing_own,
                         absent_since: None,
                     });
+                } else {
+                    // If no texture at all yet (no parent fallback either), use the flat base color fallback.
+                    self.display_state.insert(id, TileDisplayEntry {
+                        texture_id: id,
+                        uv_scale_offset: [1.0, 1.0, 0.0, 0.0],
+                        first_seen: now,
+                        showing_own_texture: false,
+                        absent_since: None,
+                    });
                 }
-                // If no texture at all yet (no parent fallback either), the tile
-                // simply won't have a display_state entry and won't be drawn.
             }
         }
     }

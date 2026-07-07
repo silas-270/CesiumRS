@@ -10,10 +10,11 @@ pub struct TileTextureManager {
     pub fetcher: TileFetcher,
     pub bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    pub fallback_bind_group: wgpu::BindGroup,
 }
 
 impl TileTextureManager {
-    pub fn new(device: &wgpu::Device, config: &TileEngineConfig) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: &TileEngineConfig) -> Self {
         let (tx, rx) = mpsc::channel();
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -49,6 +50,53 @@ impl TileTextureManager {
             ..Default::default()
         });
 
+        // Create fallback 1x1 texture using config.base_color
+        let fallback_size = wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        };
+        let fallback_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Fallback Tile Texture"),
+            size: fallback_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &fallback_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &config.base_color,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            fallback_size,
+        );
+        let fallback_view = fallback_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let fallback_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&fallback_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("Fallback Tile Bind Group"),
+        });
+
         let fetcher = TileFetcher::new(tx, config.base_imagery_url.clone(), config.offline_mode);
         let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
 
@@ -58,6 +106,7 @@ impl TileTextureManager {
             fetcher,
             bind_group_layout,
             sampler,
+            fallback_bind_group,
         }
     }
 

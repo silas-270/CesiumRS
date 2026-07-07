@@ -21,9 +21,9 @@ pub struct TileSystem {
 }
 
 impl TileSystem {
-    pub fn new(device: &wgpu::Device, config: TileEngineConfig) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: TileEngineConfig) -> Self {
         Self {
-            texture_manager: TileTextureManager::new(device, &config),
+            texture_manager: TileTextureManager::new(device, queue, &config),
             mesh_worker: MeshWorkerPool::new(),
             config,
             last_camera_pos: None,
@@ -175,7 +175,13 @@ impl TileSystem {
             });
         }
 
-        None
+        // Return the static fallback color bind group as a last-resort fallback
+        Some(RenderData {
+            mesh_id: id,
+            texture_id: id,
+            bind_group: &self.texture_manager.fallback_bind_group,
+            uv_scale_offset: [1.0, 1.0, 0.0, 0.0],
+        })
     }
 
     pub fn is_loading_complete(&self) -> bool {
