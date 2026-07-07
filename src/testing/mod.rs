@@ -3,6 +3,7 @@ pub mod test_app;
 pub mod stress_app;
 pub mod regression_app;
 pub mod test_flicker_tracking;
+pub mod test_tile_monitor;
 
 #[derive(Clone, Debug, Default)]
 pub struct VerifyConfig {
@@ -10,6 +11,7 @@ pub struct VerifyConfig {
     pub stress: bool,
     pub regression: bool,
     pub flicker: bool,
+    pub monitor: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,
