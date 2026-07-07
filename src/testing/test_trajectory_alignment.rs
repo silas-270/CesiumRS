@@ -55,14 +55,12 @@ fn test_split_delta() {
     prop.add_sample(SimulationTime::new(10000.0), DVec3::from_array(end_pos));
 
     let eval = TrajectoryEvaluator::new(&prop, 2.0);
-    let bvh = PolylineBVH::build(&prop).unwrap();
+    let _bvh = PolylineBVH::build(&prop).unwrap();
 
     let check_at_time = |t: f64| {
         let time = SimulationTime::new(t);
         let state = eval.evaluate(time).unwrap();
         let airplane_pos = state.position;
-        let rot_f32 = glam::Quat::from_xyzw(state.rotation.x as f32, state.rotation.y as f32, state.rotation.z as f32, state.rotation.w as f32).normalize();
-        let airplane_forward = rot_f32 * glam::Vec3::new(0.0, 0.0, -1.0);
 
         // Find the visible segment that contains airplane_pos
         // For simplicity in test, just get the whole curve points
@@ -105,12 +103,33 @@ fn test_split_delta() {
             let to_frag1 = wp1 - airplane_pos;
             let to_frag2 = wp2 - airplane_pos;
             
-            let up_plane = airplane_pos.normalize();
-            let airplane_fwd_dvec = DVec3::new(airplane_forward.x as f64, airplane_forward.y as f64, airplane_forward.z as f64);
-            let fwd_plane_horiz = airplane_fwd_dvec - up_plane * airplane_fwd_dvec.dot(up_plane);
+            let pos_curr1 = DVec3::new(v1.position[0] as f64, v1.position[1] as f64, v1.position[2] as f64);
+            let pos_prev1 = DVec3::new(v1.previous[0] as f64, v1.previous[1] as f64, v1.previous[2] as f64);
+            let pos_next1 = DVec3::new(v1.next[0] as f64, v1.next[1] as f64, v1.next[2] as f64);
+            let dir_prev1 = (pos_curr1 - pos_prev1).normalize_or_zero();
+            let dir_next1 = (pos_next1 - pos_curr1).normalize_or_zero();
+            let tangent1 = if dir_next1.length_squared() < 1e-6 {
+                dir_prev1
+            } else if dir_prev1.length_squared() > 1e-6 {
+                (dir_prev1 + dir_next1).normalize()
+            } else {
+                dir_next1
+            };
+            let proj1 = to_frag1.dot(tangent1);
             
-            let proj1 = to_frag1.dot(fwd_plane_horiz);
-            let proj2 = to_frag2.dot(fwd_plane_horiz);
+            let pos_curr2 = DVec3::new(v2.position[0] as f64, v2.position[1] as f64, v2.position[2] as f64);
+            let pos_prev2 = DVec3::new(v2.previous[0] as f64, v2.previous[1] as f64, v2.previous[2] as f64);
+            let pos_next2 = DVec3::new(v2.next[0] as f64, v2.next[1] as f64, v2.next[2] as f64);
+            let dir_prev2 = (pos_curr2 - pos_prev2).normalize_or_zero();
+            let dir_next2 = (pos_next2 - pos_curr2).normalize_or_zero();
+            let tangent2 = if dir_next2.length_squared() < 1e-6 {
+                dir_prev2
+            } else if dir_prev2.length_squared() > 1e-6 {
+                (dir_prev2 + dir_next2).normalize()
+            } else {
+                dir_next2
+            };
+            let proj2 = to_frag2.dot(tangent2);
             
             if proj1 * proj2 <= 0.0 && (proj1 - proj2).abs() > 1e-10 {
                 // Crossing found
