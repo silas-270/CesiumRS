@@ -121,15 +121,6 @@ fn vs_main(
     out.world_pos = model.position + corner_offset_3d + elevation_offset;
     out.tangent = tangent;
 
-    // --- Fix: per-face depth nudge to eliminate Z-fighting at seam edges ---
-    // The four faces of the tube share exact vertex positions at their seam edges.
-    // Left and right side faces are pushed very slightly further from the camera
-    // (larger clip-space z) so they never fight with the top/bottom faces.
-    // The nudge is proportional to w so it's constant in NDC regardless of distance.
-    if model.face >= 2.0 {
-        out.clip_position.z -= out.clip_position.w * 0.0002;
-    }
-    
     // Add shading depending on face
     var face_shade = 1.0;
     if model.face == 0.0 { // Top
