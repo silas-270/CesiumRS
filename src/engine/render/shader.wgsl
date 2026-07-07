@@ -54,45 +54,41 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
     let shaded_color = tex_color.rgb * (ambient + diffuse);
     
-    // --- RENEWED EXPONENTIAL HEIGHT FOG ---
+    // --- HORIZON BLUR RIBBON (SCREEN-SPACE GRADIENT) ---
+    // The fundamental issue on the ground is that `camera_pos` loses precision in f32 when altitude is low.
+    // This corrupts all altitude-based horizon math, making the ribbon vanish.
+    // SOLUTION: Use raw screen-space derivatives of distance. At any silhouette or horizon edge, 
+    // the distance changes infinitely fast between adjacent pixels, regardless of zoom or altitude.
+    
     let pixel_dist = length(in.world_pos);
+    let dist_dx = dpdx(pixel_dist);
+    let dist_dy = dpdy(pixel_dist);
+    let dist_grad = sqrt(dist_dx * dist_dx + dist_dy * dist_dy);
+    
+    let pos_dx = dpdx(in.world_pos);
+    let pos_dy = dpdy(in.world_pos);
+    let pos_grad = sqrt(dot(pos_dx, pos_dx) + dot(pos_dy, pos_dy));
+    
+    // slope is the ratio of vertical radius change to physical distance change.
+    // For flat terrain, slope is ~0. For vertical skirts at the horizon, slope is 1.0.
+    // By using the slope, the blur thickness remains a constant 1-2 pixels at the silhouette
+    // regardless of zoom level, because it relies on the skirt geometry itself.
+    let slope = dist_grad / max(pos_grad, 0.000001);
+    var blur_factor = smoothstep(0.8, 0.98, slope);
+    
+    // Prevent blurring geometry closer than 100 meters (e.g. walls right in front of camera)
+    let dist_fade = smoothstep(0.0, 0.0001, pixel_dist);
+    blur_factor = blur_factor * dist_fade;
+    
     let earth_radius = 6.378137;
-    let r_cam = length(camera.camera_pos.xyz);
-    
-    // 1. Calculate camera and fragment altitudes above the ellipsoid
-    let h_cam = max(r_cam - earth_radius, 0.0);
-    
-    // For fragment position, world_pos = in.world_pos + camera_pos
-    // (since in.world_pos is relative to camera)
-    let frag_world_pos = in.world_pos + camera.camera_pos.xyz;
-    let h_frag = max(length(frag_world_pos) - earth_radius, 0.0);
-    
-    // 2. Average height along the view ray
-    let h_avg = (h_cam + h_frag) * 0.5;
-    
-    // 3. Physical constants (in Megameter units)
-    let scale_height = 0.008; // 8 km atmosphere scale height
-    let base_density = 35.0;  // Adjusts base visibility at sea level
-    
-    // 4. Calculate optical depth along the ray
-    let density = base_density * exp(-h_avg / scale_height);
-    let optical_depth = pixel_dist * density;
-    
-    // 5. Compute exponential fog factor
-    var fog_factor = 1.0 - exp(-optical_depth);
-    
-    // 6. Smoothly fade fog out completely when looking from deep space
-    // Start fading at 100km, fully gone at 250km
-    let view_fade = clamp((0.25 - h_cam) / 0.15, 0.0, 1.0);
-    fog_factor = fog_factor * view_fade;
-    
-    // 7. Match color and space-fade transition of sky.wgsl
+    let r_cam = max(length(camera.camera_pos.xyz), earth_radius);
+    let altitude = max(r_cam - earth_radius, 0.0);
     let horizon_color = vec3<f32>(0.65, 0.75, 0.85); 
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
-    let space_fade = clamp((h_cam - 0.05) / 0.45, 0.0, 1.0);
+    let space_fade = clamp((altitude - 0.05) / 0.45, 0.0, 1.0);
     let current_fog_color = mix(horizon_color, space_color, space_fade);
     
-    let final_color = mix(shaded_color, current_fog_color, fog_factor);
+    let final_color = mix(shaded_color, current_fog_color, blur_factor);
     
     return vec4<f32>(final_color, tex_color.a);
 }
