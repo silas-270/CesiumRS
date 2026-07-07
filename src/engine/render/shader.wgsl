@@ -18,6 +18,7 @@ struct VertexOutput {
     @location(0) normal: vec3<f32>,
     @location(1) color: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) world_pos: vec3<f32>,
 };
 
 struct PushConstants {
@@ -35,6 +36,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.color = model.color;
     // model.uv * scale + offset
     out.uv = model.uv * push_constants.uv_scale_offset.xy + push_constants.uv_scale_offset.zw;
+    out.world_pos = world_pos;
     return out;
 }
 
@@ -50,7 +52,26 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.4; // Softer shadows
     
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
-    let final_color = tex_color.rgb * (ambient + diffuse);
+    let shaded_color = tex_color.rgb * (ambient + diffuse);
+    
+    // --- HORIZON FOG ---
+    let pixel_dist = length(in.world_pos - camera.camera_pos.xyz);
+    let earth_radius = 6.378137;
+    let r = max(length(camera.camera_pos.xyz), earth_radius);
+    
+    // Minimum 1km horizon distance to prevent divide by zero
+    let horizon_dist = sqrt(max(r * r - earth_radius * earth_radius, 0.000001)); 
+    let fog_ratio = pixel_dist / horizon_dist;
+    
+    let altitude = max(r - earth_radius, 0.0);
+    // Smoothly push fog_start closer to the horizon as you climb to space
+    let fog_start = mix(0.5, 0.95, clamp(altitude / 0.02, 0.0, 1.0));
+    
+    // Smoothstep creates the beautiful blur effect
+    let fog_factor = smoothstep(fog_start, 1.0, fog_ratio);
+    let horizon_color = vec3<f32>(0.65, 0.75, 0.85); // Must perfectly match sky.wgsl
+    
+    let final_color = mix(shaded_color, horizon_color, fog_factor);
     
     return vec4<f32>(final_color, tex_color.a);
 }
