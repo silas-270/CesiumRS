@@ -10,6 +10,7 @@ pub struct TileEngineConfig {
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
     pub base_imagery_url: String,
+    pub base_color: [u8; 4],
     pub offline_mode: bool,
 }
 
@@ -23,6 +24,7 @@ impl Default for TileEngineConfig {
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),
             base_imagery_url: "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png".to_string(),
+            base_color: [20, 20, 20, 255],
             offline_mode: false,
         }
     }
