@@ -89,15 +89,15 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // 4. Combine for final optical depth
     let optical_depth = density_at_d * dist_in_atm * boundary_softener * 2.0;
     
-    let horizon_color = vec3<f32>(0.45, 0.65, 0.95); // Light blue horizon (instead of pale white)
+    let horizon_color = vec3<f32>(0.7, 0.8, 0.9); // Hazy white
     let zenith_color = vec3<f32>(0.15, 0.35, 0.75);  // Deep blue
     let space_color = vec3<f32>(0.02, 0.02, 0.04);   // Dark space
     
     var base_color = space_color;
     if (optical_depth > 0.0) {
-        // Color transition from zenith to horizon based on accumulated optical depth
-        // We stretch this to 3.0 so even at grazing angles the sky retains a nice blue tint
-        let color_mix = smoothstep(0.05, 3.0, optical_depth);
+        // We push the white haze down towards the horizon by requiring a much higher optical depth
+        // before mixing in the horizon color. This keeps the upper sky saturated deep blue.
+        let color_mix = smoothstep(1.0, 2.5, optical_depth);
         let atmosphere_color = mix(zenith_color, horizon_color, color_mix);
         
         // True optical absorption/scattering (Beer-Lambert law approximation)
