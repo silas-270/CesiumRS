@@ -54,15 +54,16 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let atmosphere_radius = earth_radius + atmosphere_thickness;
     
     let t_atm = ray_sphere_intersect(origin, view_dir, atmosphere_radius);
-    let t_earth = ray_sphere_intersect(origin, view_dir, earth_radius);
+    
+    // We intentionally do NOT use t_earth to cut off the atmosphere depth anymore!
+    // If the earth geometry is slightly below the mathematical sphere due to tessellation, 
+    // it created a dark gap. By letting the sky shader render atmosphere behind the earth, 
+    // the gap is filled seamlessly by the horizon color.
     
     var dist_in_atm = 0.0;
     if (t_atm.y > 0.0) {
         let t_start = max(0.0, t_atm.x);
-        var t_stop = t_atm.y;
-        if (t_earth.y > 0.0 && t_earth.x > 0.0) {
-            t_stop = min(t_stop, t_earth.x);
-        }
+        let t_stop = t_atm.y; 
         dist_in_atm = max(0.0, t_stop - t_start);
     }
     
@@ -76,7 +77,27 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     var base_color = space_color;
     if (depth > 0.0) {
         let atmosphere_color = mix(zenith_color, horizon_color, smoothstep(0.05, 1.0, depth));
-        base_color = mix(space_color, atmosphere_color, smoothstep(0.0, 0.15, depth));
+        // Soften the space fade to remove the sharp border at the top
+        base_color = mix(space_color, atmosphere_color, smoothstep(0.0, 0.5, depth));
+    }
+    
+    // --- DEBUG LINES ---
+    // The actual mathematical horizon of the earth
+    let zenith = normalize(origin);
+    let cos_angle = dot(view_dir, zenith);
+    let r = max(length(origin), earth_radius);
+    let true_horizon_cos = -sqrt(max(1.0 - (earth_radius * earth_radius) / (r * r), 0.0));
+    
+    if (abs(cos_angle - true_horizon_cos) < 0.0005) {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0); // Red line for true mathematical horizon
+    }
+    
+    // The calculated ray-sphere discriminant horizon
+    let b = 2.0 * dot(view_dir, origin);
+    let c = dot(origin, origin) - earth_radius * earth_radius;
+    let d = b * b - 4.0 * c;
+    if (abs(d) < 0.05 && cos_angle < 0.0) {
+        return vec4<f32>(0.0, 1.0, 0.0, 1.0); // Green line for ray-sphere calculation horizon
     }
     
     return vec4<f32>(base_color, 1.0);
