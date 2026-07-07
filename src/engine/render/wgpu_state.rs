@@ -61,12 +61,12 @@ impl CameraUniform {
         }
     }
 
-    fn update_matrix(&mut self, view: Mat4, proj: Mat4, camera_pos_dvec: glam::DVec3, sun_intensity: f32) {
+    fn update_matrix(&mut self, view: Mat4, proj: Mat4, camera_pos_dvec: glam::DVec3, sun_intensity: f32, color_grading: [f32; 3]) {
         let view_proj = proj * view;
         self.view_proj = view_proj.to_cols_array_2d();
         self.inv_view_proj = view_proj.inverse().to_cols_array_2d();
         self.camera_pos = [camera_pos_dvec.x as f32, camera_pos_dvec.y as f32, camera_pos_dvec.z as f32, 1.0];
-        self.sun_params = [sun_intensity, 0.0, 0.0, 0.0];
+        self.sun_params = [sun_intensity, color_grading[0], color_grading[1], color_grading[2]];
     }
 }
 
@@ -226,6 +226,7 @@ impl<'a> WgpuState<'a> {
             camera.get_projection_matrix(size.width as f32 / size.height as f32),
             camera.global_transform_f64().0,
             camera.sun_intensity,
+            [engine_config.map_saturation, engine_config.map_contrast, engine_config.map_brightness],
         );
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -364,6 +365,7 @@ impl<'a> WgpuState<'a> {
                     .get_projection_matrix(new_size.width as f32 / new_size.height as f32),
                 self.camera.global_transform_f64().0,
                 self.camera.sun_intensity,
+                [self.tile_system.config.map_saturation, self.tile_system.config.map_contrast, self.tile_system.config.map_brightness],
             );
             self.queue.write_buffer(
                 &self.camera_buffer,
@@ -442,7 +444,7 @@ impl<'a> WgpuState<'a> {
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
 
-        self.camera_uniform.update_matrix(gpu_view_matrix, proj_matrix, camera_pos_dvec, self.camera.sun_intensity);
+        self.camera_uniform.update_matrix(gpu_view_matrix, proj_matrix, camera_pos_dvec, self.camera.sun_intensity, [self.tile_system.config.map_saturation, self.tile_system.config.map_contrast, self.tile_system.config.map_brightness]);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,

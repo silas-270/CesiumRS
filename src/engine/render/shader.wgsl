@@ -55,8 +55,42 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = mix(1.0, 0.8, sun_intensity); 
     let diffuse = max(dot(in.normal, light_dir), 0.0) * mix(0.0, 0.4, sun_intensity);
     
-    let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
-    let shaded_color = tex_color.rgb * (ambient + diffuse);
+    let tex_color_raw = textureSample(t_diffuse, s_diffuse, in.uv);
+    
+    // Extract map color grading parameters from the uniform (-1.0 to 1.0)
+    let saturation_adj = camera.sun_params.y;
+    let contrast_adj = camera.sun_params.z;
+    let brightness_adj = camera.sun_params.w;
+    
+    var tex_color_rgb = tex_color_raw.rgb;
+    
+    // Performance optimization: skip color grading entirely if all adjustments are 0.0
+    if (saturation_adj != 0.0 || contrast_adj != 0.0 || brightness_adj != 0.0) {
+        
+        // 1. Brightness (-1 to 1) -> simply add
+        if (brightness_adj != 0.0) {
+            tex_color_rgb = tex_color_rgb + vec3<f32>(brightness_adj);
+        }
+        
+        // 2. Contrast (-1 to 1) 
+        // We map -1 to 1 into a multiplier: >0 scales up (e.g., 1.0 -> factor 2.0), <0 scales down.
+        if (contrast_adj != 0.0) {
+            let contrast_factor = max(1.0 + contrast_adj, 0.0);
+            tex_color_rgb = (tex_color_rgb - 0.5) * contrast_factor + 0.5;
+        }
+        
+        // 3. Saturation (-1 to 1)
+        // Convert to grayscale using luminance weights, then interpolate based on saturation factor.
+        if (saturation_adj != 0.0) {
+            let luminance = dot(tex_color_rgb, vec3<f32>(0.299, 0.587, 0.114));
+            let saturation_factor = max(1.0 + saturation_adj, 0.0);
+            tex_color_rgb = mix(vec3<f32>(luminance), tex_color_rgb, saturation_factor);
+        }
+        
+        tex_color_rgb = clamp(tex_color_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    
+    let shaded_color = tex_color_rgb * (ambient + diffuse);
     
     let pixel_dist = length(in.world_pos);
     let dist_dx = dpdx(pixel_dist);
@@ -88,7 +122,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     
     let final_color = mix(shaded_color, current_fog_color, blur_factor);
     
-    return vec4<f32>(final_color, tex_color.a);
+    return vec4<f32>(final_color, tex_color_raw.a);
 }
 
 @fragment
