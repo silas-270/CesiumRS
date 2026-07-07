@@ -46,8 +46,11 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let zenith_color = vec3<f32>(0.15, 0.35, 0.75);  // Deep blue
     let space_color = vec3<f32>(0.02, 0.02, 0.04);   // Dark space
     
-    // Non-linear power curve for a tighter horizon gradient
-    let gradient_factor = clamp(pow(max(cos_angle, 0.0), 0.5), 0.0, 1.0);
+    let elevation = max(cos_angle, 0.0);
+    
+    // smoothstep creates a beautiful S-curve. 
+    // Reaching 1.0 at elevation 0.4 means the dark blue fully kicks in around 23 degrees above the horizon!
+    let gradient_factor = smoothstep(0.0, 0.4, elevation);
     var base_color = mix(horizon_color, zenith_color, gradient_factor);
     
     // Fade to space as altitude increases

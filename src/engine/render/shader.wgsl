@@ -46,8 +46,8 @@ var s_diffuse: sampler;
 @fragment
 fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_dir = normalize(vec3<f32>(1.0, 1.0, 1.0));
-    let ambient = 0.4;
-    let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.6;
+    let ambient = 0.8; // Much brighter base
+    let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.4; // Softer shadows
     
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
     let final_color = tex_color.rgb * (ambient + diffuse);
