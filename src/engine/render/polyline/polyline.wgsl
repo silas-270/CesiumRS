@@ -158,10 +158,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if push_constants.split_progress >= 0.0 {
         if push_constants.airplane_pos.w > 0.5 {
             let to_frag = in.world_pos - push_constants.airplane_pos.xyz;
-            let tangent = normalize(in.tangent);
-            let proj = dot(to_frag, tangent);
+            let dist = length(to_frag);
             
-            if proj >= 0.0 {
+            var is_ahead = false;
+            if dist > 0.001 {
+                is_ahead = in.progress >= push_constants.split_progress;
+            } else {
+                let tangent = normalize(in.tangent);
+                is_ahead = dot(to_frag, tangent) >= 0.0;
+            }
+            
+            if is_ahead {
                 base_color = push_constants.color_end.rgb;
             }
         } else {
