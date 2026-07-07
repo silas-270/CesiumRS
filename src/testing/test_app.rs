@@ -26,6 +26,7 @@ impl<'a> TestApp<'a> {
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, true);
         }
+        flight_app.reset_viewport = false;
 
         Self {
             inner: App::new(
@@ -45,14 +46,36 @@ impl<'a> ApplicationHandler for TestApp<'a> {
         self.inner.resumed(event_loop);
         if !self.setup_done {
             if let Some(state) = self.inner.wgpu_state_mut() {
-                state.camera.set_eye(
-                    glam::Vec3::new(
-                        self.config.cam_x as f32,
-                        self.config.cam_y as f32,
-                        self.config.cam_z as f32,
-                    ),
-                    glam::Vec3::ZERO,
+                let eye = glam::Vec3::new(
+                    self.config.cam_x as f32,
+                    self.config.cam_y as f32,
+                    self.config.cam_z as f32,
                 );
+                
+                let d = eye.length();
+                let r = 6.378137f32; // Earth radius in Megameters
+                let target = if d > r {
+                    let normal = eye / d; // Pointing outward from center
+                    // Find a tangent vector perpendicular to normal
+                    let tangent = if normal.y.abs() < 0.9 {
+                        normal.cross(glam::Vec3::Y).normalize()
+                    } else {
+                        normal.cross(glam::Vec3::X).normalize()
+                    };
+                    
+                    // The triangle formed by Center, Horizon, Eye is right-angled at Horizon.
+                    // sin(alpha) = r / d.
+                    // cos(alpha) = sqrt(1.0 - sin(alpha)^2).
+                    // Look direction from eye is -normal * cos(alpha) + tangent * sin(alpha).
+                    let sin_alpha = r / d;
+                    let cos_alpha = (1.0 - sin_alpha * sin_alpha).sqrt();
+                    let look_dir = normal * (-cos_alpha) + tangent * sin_alpha;
+                    eye + look_dir
+                } else {
+                    glam::Vec3::ZERO
+                };
+
+                state.camera.set_eye(eye, target);
             }
             self.setup_done = true;
         }

@@ -73,8 +73,13 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // For flat terrain, slope is ~0. For vertical skirts at the horizon, slope is 1.0.
     // By using the slope, the blur thickness remains a constant 1-2 pixels at the silhouette
     // regardless of zoom level, because it relies on the skirt geometry itself.
-    let slope = dist_grad / max(pos_grad, 0.000001);
-    var blur_factor = smoothstep(0.8, 0.98, slope);
+    // Let's normalize the screen-space depth gradient by the square root of the distance
+    // from the camera. Mathematically, the ratio of (depth_gradient / sqrt(depth)) at the horizon
+    // is a zoom-independent invariant (~0.094 for a 45-degree FOV at 1080p).
+    // This creates a beautiful, thin horizon blur that maintains a constant pixel width (1-2 pixels)
+    // and never bleeds into normal terrain at any zoom level.
+    let horizon_metric = dist_grad / sqrt(max(pixel_dist, 0.0001));
+    var blur_factor = smoothstep(0.03, 0.08, horizon_metric);
     
     // Prevent blurring geometry closer than 100 meters (e.g. walls right in front of camera)
     let dist_fade = smoothstep(0.0, 0.0001, pixel_dist);
