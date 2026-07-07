@@ -127,7 +127,7 @@ fn vs_main(
     // (larger clip-space z) so they never fight with the top/bottom faces.
     // The nudge is proportional to w so it's constant in NDC regardless of distance.
     if model.face >= 2.0 {
-        out.clip_position.z += out.clip_position.w * 0.0002;
+        out.clip_position.z -= out.clip_position.w * 0.0002;
     }
     
     // Add shading depending on face
