@@ -105,16 +105,12 @@ fn test_split_delta() {
             let to_frag1 = wp1 - airplane_pos;
             let to_frag2 = wp2 - airplane_pos;
             
-            let local_up1 = wp1.normalize();
-            let to_frag_horiz1 = to_frag1 - local_up1 * to_frag1.dot(local_up1);
+            let up_plane = airplane_pos.normalize();
             let airplane_fwd_dvec = DVec3::new(airplane_forward.x as f64, airplane_forward.y as f64, airplane_forward.z as f64);
-            let fwd_horiz1 = airplane_fwd_dvec - local_up1 * airplane_fwd_dvec.dot(local_up1);
-            let proj1 = to_frag_horiz1.dot(fwd_horiz1);
+            let fwd_plane_horiz = airplane_fwd_dvec - up_plane * airplane_fwd_dvec.dot(up_plane);
             
-            let local_up2 = wp2.normalize();
-            let to_frag_horiz2 = to_frag2 - local_up2 * to_frag2.dot(local_up2);
-            let fwd_horiz2 = airplane_fwd_dvec - local_up2 * airplane_fwd_dvec.dot(local_up2);
-            let proj2 = to_frag_horiz2.dot(fwd_horiz2);
+            let proj1 = to_frag1.dot(fwd_plane_horiz);
+            let proj2 = to_frag2.dot(fwd_plane_horiz);
             
             if proj1 * proj2 <= 0.0 && (proj1 - proj2).abs() > 1e-10 {
                 // Crossing found
