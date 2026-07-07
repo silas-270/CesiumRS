@@ -40,7 +40,7 @@ pub fn create_pipelines(
     let solid_depth_stencil = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth32Float,
         depth_write_enabled: true,
-        depth_compare: wgpu::CompareFunction::Less,
+        depth_compare: wgpu::CompareFunction::Greater,
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     });
@@ -82,7 +82,7 @@ pub fn create_pipelines(
     let wireframe_depth_stencil = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth32Float,
         depth_write_enabled: false,
-        depth_compare: wgpu::CompareFunction::LessEqual,
+        depth_compare: wgpu::CompareFunction::GreaterEqual,
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState {
             constant: -2,
@@ -178,7 +178,7 @@ pub fn create_sky_pipeline(
     let depth_stencil = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth32Float,
         depth_write_enabled: false,
-        depth_compare: wgpu::CompareFunction::LessEqual,
+        depth_compare: wgpu::CompareFunction::GreaterEqual,
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     });

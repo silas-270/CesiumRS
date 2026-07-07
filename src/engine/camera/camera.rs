@@ -335,7 +335,16 @@ impl Camera {
         
         let sensor_height = 24.0;
         let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length)).atan();
-        Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar)
+        let proj = Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
+        
+        // Convert to Reverse-Z: map [0, 1] to [1, 0]
+        let reverse_z = Mat4::from_cols_array(&[
+            1.0, 0.0,  0.0, 0.0,
+            0.0, 1.0,  0.0, 0.0,
+            0.0, 0.0, -1.0, 0.0,
+            0.0, 0.0,  1.0, 1.0,
+        ]);
+        reverse_z * proj
     }
 
     pub fn get_projection_matrix_f64(&self, aspect_ratio: f64) -> glam::DMat4 {
@@ -352,7 +361,16 @@ impl Camera {
         
         let sensor_height = 24.0;
         let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan();
-        glam::DMat4::perspective_rh(fovy, aspect_ratio, znear, zfar)
+        let proj = glam::DMat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
+        
+        // Convert to Reverse-Z: map [0, 1] to [1, 0]
+        let reverse_z = glam::DMat4::from_cols_array(&[
+            1.0, 0.0,  0.0, 0.0,
+            0.0, 1.0,  0.0, 0.0,
+            0.0, 0.0, -1.0, 0.0,
+            0.0, 0.0,  1.0, 1.0,
+        ]);
+        reverse_z * proj
     }
 
     pub fn get_view_matrix_f64(&self) -> glam::DMat4 {
