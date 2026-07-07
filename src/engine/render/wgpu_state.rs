@@ -393,10 +393,12 @@ impl<'a> WgpuState<'a> {
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
         
         // ALWAYS use main camera for logic and culling
-        let frustum = self.camera.calculate_frustum_planes(aspect_ratio);
+        let mut frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         
         if let Some(ext) = &mut self.extension {
             ext.update(&self.device, &self.queue, camera_pos_dvec3, &frustum, &mut self.camera, aspect_ratio);
+            // Recalculate frustum since the extension may have moved the camera!
+            frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         }
  
         let (view_matrix, proj_matrix) = if self.debug_mode {
