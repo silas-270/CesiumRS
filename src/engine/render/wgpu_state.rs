@@ -46,17 +46,24 @@ pub struct TileDisplayEntry {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    inv_view_proj: [[f32; 4]; 4],
+    camera_pos: [f32; 4],
 }
 
 impl CameraUniform {
     fn new() -> Self {
         Self {
             view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            inv_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            camera_pos: [0.0; 4],
         }
     }
 
-    fn update_matrix(&mut self, view: Mat4, proj: Mat4) {
-        self.view_proj = (proj * view).to_cols_array_2d();
+    fn update_matrix(&mut self, view: Mat4, proj: Mat4, camera_pos_dvec: glam::DVec3) {
+        let view_proj = proj * view;
+        self.view_proj = view_proj.to_cols_array_2d();
+        self.inv_view_proj = view_proj.inverse().to_cols_array_2d();
+        self.camera_pos = [camera_pos_dvec.x as f32, camera_pos_dvec.y as f32, camera_pos_dvec.z as f32, 1.0];
     }
 }
 
@@ -68,6 +75,7 @@ pub struct WgpuState<'a> {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub window: Arc<Window>,
     solid_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
     #[allow(dead_code)]
     wireframe_pipeline: wgpu::RenderPipeline,
     depth_texture_view: wgpu::TextureView,
@@ -213,6 +221,7 @@ impl<'a> WgpuState<'a> {
         camera_uniform.update_matrix(
             init_view_matrix,
             camera.get_projection_matrix(size.width as f32 / size.height as f32),
+            camera.global_transform_f64().0,
         );
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -225,7 +234,7 @@ impl<'a> WgpuState<'a> {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -249,6 +258,11 @@ impl<'a> WgpuState<'a> {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
+        
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Sky Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+        });
 
         let config_engine = engine_config;
         let tile_system = crate::engine::globe::tiles::system::TileSystem::new(&device, &queue, config_engine);
@@ -259,6 +273,13 @@ impl<'a> WgpuState<'a> {
             &shader,
             &camera_bind_group_layout,
             &tile_system.texture_manager.bind_group_layout,
+        );
+        
+        let sky_pipeline = crate::engine::render::pipelines::create_sky_pipeline(
+            &device,
+            &config,
+            &sky_shader,
+            &camera_bind_group_layout,
         );
 
         let debug_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -292,6 +313,7 @@ impl<'a> WgpuState<'a> {
             size,
             window,
             solid_pipeline,
+            sky_pipeline,
             wireframe_pipeline,
             depth_texture_view,
             tile_cache,
@@ -336,6 +358,7 @@ impl<'a> WgpuState<'a> {
                 gpu_view_matrix,
                 self.camera
                     .get_projection_matrix(new_size.width as f32 / new_size.height as f32),
+                self.camera.global_transform_f64().0,
             );
             self.queue.write_buffer(
                 &self.camera_buffer,
@@ -414,7 +437,7 @@ impl<'a> WgpuState<'a> {
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
 
-        self.camera_uniform.update_matrix(gpu_view_matrix, proj_matrix);
+        self.camera_uniform.update_matrix(gpu_view_matrix, proj_matrix, camera_pos_dvec);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -708,9 +731,18 @@ impl<'a> WgpuState<'a> {
 
         if self.debug_mode && self.num_debug_vertices > 0 {
             render_pass.set_pipeline(&self.debug_pipeline);
-            render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(..));
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(0..(self.num_debug_vertices as u64 * 32)));
             render_pass.draw(0..self.num_debug_vertices, 0..1);
         }
+
+        // --- SKY RENDERING ---
+        // Draw the procedural sky perfectly isolated in the background!
+        // Uses depth Equal 1.0, so it's perfectly rejected by any terrain already drawn.
+        render_pass.set_pipeline(&self.sky_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        // Full-screen triangle is drawn with exactly 3 virtual vertices
+        render_pass.draw(0..3, 0..1);
 
         if let Some(ext) = &self.extension {
             ext.render(
