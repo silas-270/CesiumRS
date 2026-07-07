@@ -436,6 +436,13 @@ impl<'a> WgpuState<'a> {
                 missing_meshes.push(*id);
             }
         }
+        
+        // Also kick off fetches for any fallback parent meshes we are trying to render!
+        for (id, _, _) in &renderable_tiles {
+            if self.tile_cache.peek(id).is_none() && !missing_meshes.contains(id) {
+                missing_meshes.push(*id);
+            }
+        }
         self.tile_system.update(&self.device, &self.queue, camera_pos_f32, &visible_tiles, &missing_meshes);
         
         // Promote both mathematically visible tiles and actively rendered fallback parents in the cache.
