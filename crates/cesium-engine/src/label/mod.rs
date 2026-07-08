@@ -68,11 +68,12 @@ impl LabelDatabase {
     }
 
     /// Resolves the name of the label from the string table
-    pub fn get_name(&self, label: &PackedLabel) -> &str {
+    pub fn get_name(&self, label: &PackedLabel) -> &'static str {
         let start = label.name_offset as usize;
         let end = start + label.name_len as usize;
         if end <= self.string_table.len() {
-            std::str::from_utf8(&self.string_table[start..end]).unwrap_or("")
+            let slice: &'static [u8] = &self.string_table[start..end];
+            std::str::from_utf8(slice).unwrap_or("")
         } else {
             ""
         }
@@ -80,7 +81,7 @@ impl LabelDatabase {
 }
 
 pub struct VisibleLabel {
-    pub name: String,
+    pub name: &'static str,
     pub ecef_pos: Vec3,
     pub scale_rank: u8,
     pub label_rank: u8,
@@ -107,6 +108,12 @@ impl LabelManager {
     pub fn update(&mut self, camera_pos: Vec3, current_zoom: usize, frustum: &Frustum) {
         self.visible_labels.clear();
         
+        // Precompute camera unit-sphere scaling factors
+        let a = 6.378137_f32;
+        let b = 6.356_752_4_f32;
+        let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
+        let vh_mag_sq = cv.length_squared() - 1.0;
+        
         // Step 1: O(1) LOD selection based on zoom
         let candidate_labels = self.db.get_labels_for_zoom(current_zoom);
         
@@ -115,7 +122,7 @@ impl LabelManager {
             let label_pos = Vec3::new(label.ecef_pos[0], label.ecef_pos[1], label.ecef_pos[2]);
             
             // Check horizon culling
-            if culling::is_behind_horizon(camera_pos, label_pos) {
+            if culling::is_behind_horizon(cv, vh_mag_sq, label_pos) {
                 continue;
             }
             
@@ -125,7 +132,7 @@ impl LabelManager {
             }
             
             // If it passes both, resolve name and store it
-            let name = self.db.get_name(label).to_string();
+            let name = self.db.get_name(label);
             self.visible_labels.push(VisibleLabel {
                 name,
                 ecef_pos: label_pos,
@@ -133,9 +140,5 @@ impl LabelManager {
                 label_rank: label.label_rank,
             });
         }
-        
-        // Step 3: Sort visible labels by label_rank/importance (low number first) so the caller
-        // can easily draw the most important labels first, or limit the number to draw.
-        self.visible_labels.sort_by_key(|lbl| lbl.label_rank);
     }
 }
