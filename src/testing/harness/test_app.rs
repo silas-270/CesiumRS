@@ -1,4 +1,4 @@
-use crate::engine::core::app::App;
+use cesium_engine::core::app::App;
 use crate::testing::harness::simulator::Simulator;
 use crate::testing::VerifyConfig;
 use winit::application::ApplicationHandler;
@@ -22,7 +22,7 @@ impl<'a> TestApp<'a> {
             Simulator { actions: vec![] }
         };
 
-        let mut flight_app = Box::new(crate::flight::tracker::FlightTrackerApp::new(std::sync::Arc::new(std::sync::Mutex::new(0.0))));
+        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(std::sync::Arc::new(std::sync::Mutex::new(0.0))));
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, true);
         }
@@ -30,7 +30,7 @@ impl<'a> TestApp<'a> {
 
         Self {
             inner: App::new(
-                crate::engine::globe::tiles::config::TileEngineConfig::default(), 
+                cesium_engine::globe::tiles::config::TileEngineConfig::default(), 
                 Some(flight_app)
             ),
             config,

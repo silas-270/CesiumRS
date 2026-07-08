@@ -1,4 +1,4 @@
-use crate::engine::core::app::App;
+use cesium_engine::core::app::App;
 use crate::testing::VerifyConfig;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -44,7 +44,7 @@ impl<'a> RegressionApp<'a> {
             }
         }
 
-        let mut app_config = crate::engine::globe::tiles::config::TileEngineConfig::default();
+        let mut app_config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
         app_config.offline_mode = true;
         app_config.mesh_cache_size = std::num::NonZeroUsize::new(10000).unwrap();
         app_config.max_cache_size = std::num::NonZeroUsize::new(10000).unwrap();

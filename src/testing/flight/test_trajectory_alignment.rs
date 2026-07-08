@@ -1,17 +1,17 @@
 use glam::{DVec3, DQuat};
-use crate::engine::time::SimulationTime;
-use crate::engine::property::Property;
-use crate::engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
-use crate::engine::math::trajectory::TrajectoryEvaluator;
+use cesium_engine::time::SimulationTime;
+use cesium_engine::property::Property;
+use cesium_engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
+use cesium_engine::math::trajectory::TrajectoryEvaluator;
 
 #[test]
 fn test_plane_tangent_alignment() {
     let mut prop = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
     
     // Add points that simulate a curved, climbing flight path to ensure pitch is non-zero
-    let start_pos = crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(-74.0, 40.0, 0.0);
-    let mid_pos = crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(-50.0, 45.0, 10000.0);
-    let end_pos = crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(-10.0, 50.0, 10000.0);
+    let start_pos = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(-74.0, 40.0, 0.0);
+    let mid_pos = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(-50.0, 45.0, 10000.0);
+    let end_pos = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(-10.0, 50.0, 10000.0);
 
     prop.add_sample(SimulationTime::new(0.0), DVec3::from_array(start_pos));
     prop.add_sample(SimulationTime::new(5000.0), DVec3::from_array(mid_pos));
@@ -40,15 +40,15 @@ fn test_plane_tangent_alignment() {
 }
 
 
-use crate::engine::render::polyline_pipeline::bvh::{generate_vertices, PolylineBVH};
+use cesium_engine::render::polyline_pipeline::bvh::{generate_vertices, PolylineBVH};
 
 #[test]
 fn test_split_delta() {
     let mut prop = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
     
-    let start_pos = crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(-74.0, 40.0, 0.0);
-    let mid_pos = crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(-50.0, 45.0, 10000.0);
-    let end_pos = crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(-10.0, 50.0, 10000.0);
+    let start_pos = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(-74.0, 40.0, 0.0);
+    let mid_pos = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(-50.0, 45.0, 10000.0);
+    let end_pos = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(-10.0, 50.0, 10000.0);
 
     prop.add_sample(SimulationTime::new(0.0), DVec3::from_array(start_pos));
     prop.add_sample(SimulationTime::new(5000.0), DVec3::from_array(mid_pos));

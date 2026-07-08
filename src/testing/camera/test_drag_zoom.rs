@@ -1,4 +1,4 @@
-use crate::engine::camera::camera::Camera;
+use cesium_engine::camera::camera::Camera;
 use glam::{DVec3, Vec3};
 
 // Helper for the test to check where the ray ACTUALLY hits the WGS84 Ellipsoid

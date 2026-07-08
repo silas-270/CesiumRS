@@ -10,10 +10,10 @@
 /// Stops when progress reaches 0.5.
 /// Writes detailed CSV logs and prints a concise analysis at the end.
 
-use crate::engine::core::app::App;
+use cesium_engine::core::app::App;
 use crate::testing::VerifyConfig;
-use crate::engine::camera::camera::CameraMode;
-use crate::engine::globe::quadtree::TileId;
+use cesium_engine::camera::camera::CameraMode;
+use cesium_engine::globe::quadtree::TileId;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -84,7 +84,7 @@ pub struct TileMonitorApp<'a> {
 impl<'a> TileMonitorApp<'a> {
     pub fn new(config: VerifyConfig) -> Self {
         let mut app_config =
-            crate::engine::globe::tiles::config::TileEngineConfig::default();
+            cesium_engine::globe::tiles::config::TileEngineConfig::default();
         app_config.offline_mode    = false;
         app_config.mesh_cache_size = std::num::NonZeroUsize::new(512).unwrap();
         app_config.max_cache_size  = std::num::NonZeroUsize::new(512).unwrap();
@@ -92,7 +92,7 @@ impl<'a> TileMonitorApp<'a> {
 
         let progress = Arc::new(Mutex::new(0.0_f64));
         let mut flight_app =
-            Box::new(crate::flight::tracker::FlightTrackerApp::new(progress.clone()));
+            Box::new(cesium_flight::tracker::FlightTrackerApp::new(progress.clone()));
 
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);

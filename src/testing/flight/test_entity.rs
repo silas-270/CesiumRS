@@ -1,9 +1,9 @@
 use glam::DVec3;
-use crate::engine::time::{Clock, SimulationTime};
-use crate::engine::property::Property;
-use crate::engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
-use crate::engine::math::interpolation;
-use crate::engine::math::transform;
+use cesium_engine::time::{Clock, SimulationTime};
+use cesium_engine::property::Property;
+use cesium_engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
+use cesium_engine::math::interpolation;
+use cesium_engine::math::transform;
 
 #[test]
 fn test_clock_tick() {
@@ -51,7 +51,7 @@ fn test_sampled_position_property() {
 #[test]
 fn test_enu_and_velocity() {
     // Top of the earth (North Pole)
-    let ecef = crate::engine::globe::geometry::lon_lat_to_ecef_f64(0.0, 90.0);
+    let ecef = cesium_engine::globe::geometry::lon_lat_to_ecef_f64(0.0, 90.0);
     let up = transform::surface_normal_ecef(DVec3::from_array(ecef));
     
     // Normal should point mostly along +Y (WGS84 orientation in this engine)
@@ -74,12 +74,12 @@ fn test_adaptive_subdivision_stress() {
     let sin_lon = 103.8198;
     let sin_lat = 1.3521;
 
-    prop.add_sample(SimulationTime::new(0.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(ny_lon, ny_lat, 10000.0)));
+    prop.add_sample(SimulationTime::new(0.0), DVec3::from_array(cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(ny_lon, ny_lat, 10000.0)));
     // Add midpoint to help the spline (flying over north pole roughly)
-    prop.add_sample(SimulationTime::new(3600.0 * 8.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(14.0, 85.0, 10000.0)));
-    prop.add_sample(SimulationTime::new(3600.0 * 16.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(sin_lon, sin_lat, 10000.0)));
+    prop.add_sample(SimulationTime::new(3600.0 * 8.0), DVec3::from_array(cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(14.0, 85.0, 10000.0)));
+    prop.add_sample(SimulationTime::new(3600.0 * 16.0), DVec3::from_array(cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(sin_lon, sin_lat, 10000.0)));
 
-    let builder = crate::engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder::new(5.0);
+    let builder = cesium_engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder::new(5.0);
     
     let start_time = Instant::now();
     let vertices = builder.build(&prop);

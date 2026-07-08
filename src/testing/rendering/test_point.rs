@@ -1,4 +1,4 @@
-use crate::engine::camera::camera::Camera;
+use cesium_engine::camera::camera::Camera;
 use glam::{Quat, Vec3};
 
 #[test]
@@ -8,10 +8,10 @@ fn test_point() {
     let camera_pos = cam.global_transform().0;
     let aspect_ratio = 16.0 / 9.0;
     let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
-    let frustum = crate::engine::globe::quadtree::Frustum::from_planes(frustum_planes);
+    let frustum = cesium_engine::globe::quadtree::Frustum::from_planes(frustum_planes);
 
     let node =
-        crate::engine::globe::quadtree::QuadtreeNode::new(crate::engine::globe::quadtree::TileId {
+        cesium_engine::globe::quadtree::QuadtreeNode::new(cesium_engine::globe::quadtree::TileId {
             z: 3,
             x: 3,
             y: 7,
