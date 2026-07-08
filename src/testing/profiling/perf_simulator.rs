@@ -65,9 +65,9 @@ impl<'a> ApplicationHandler for PerfSimulatorApp<'a> {
         if self.start_time.is_none() {
             self.start_time = Some(Instant::now());
             
-            // Set initial position (Frankfurt, Europe)
+            // Set initial position (Frankfurt, Europe) at 20 Megameters altitude (20,000,000 meters)
             if let Some(handle) = &self.viewer_handle {
-                handle.camera_set_position(8.68, 50.11, 20.0);
+                handle.camera_set_position(8.68, 50.11, 20_000_000.0);
                 handle.camera_set_mode(CameraMode::Free);
             }
         }
