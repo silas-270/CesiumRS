@@ -88,3 +88,41 @@ fn test_touch_interpreter_two_finger_tilt() {
 
     assert!(redrew, "Two-finger vertical swipe should trigger redraw");
 }
+
+#[test]
+fn test_camera_inertia_decay() {
+    let mut camera = Camera::new(glam::Vec3::new(0.0, 0.0, 20.0), glam::Vec3::ZERO);
+    let mut interpreter = TouchInterpreter::new();
+    let screen_w = 800.0;
+    let screen_h = 600.0;
+
+    // Simulate drag start
+    let touch_down = make_touch(1, TouchPhase::Started, 400.0, 300.0);
+    interpreter.handle_touch_event(&touch_down, &mut camera, screen_w, screen_h);
+
+    // Simulate fast drag updates
+    let touch_move1 = make_touch(1, TouchPhase::Moved, 450.0, 300.0);
+    interpreter.handle_touch_event(&touch_move1, &mut camera, screen_w, screen_h);
+
+    std::thread::sleep(std::time::Duration::from_millis(16));
+
+    let touch_move2 = make_touch(1, TouchPhase::Moved, 500.0, 300.0);
+    interpreter.handle_touch_event(&touch_move2, &mut camera, screen_w, screen_h);
+
+    // End drag (lift finger) - should activate inertia
+    let touch_up = make_touch(1, TouchPhase::Ended, 500.0, 300.0);
+    interpreter.handle_touch_event(&touch_up, &mut camera, screen_w, screen_h);
+
+    assert!(camera.inertia_active, "Inertia should be active after fast release");
+    assert!(camera.inertia_velocity > 0.0, "Inertia velocity should be positive");
+
+    let prev_pos = camera.local_pos;
+
+    // Update inertia (simulate 1 frame of 16ms decay)
+    let active = camera.update_inertia(0.016);
+    assert!(active, "Inertia should still be active");
+    
+    let new_pos = camera.local_pos;
+    assert_ne!(prev_pos, new_pos, "Camera position should have moved due to inertia");
+}
+

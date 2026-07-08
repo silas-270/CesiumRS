@@ -553,6 +553,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 if zoom_delta != 0.0 {
                     state.camera.zoom(zoom_delta * 4.0 * dt);
                 }
+                state.camera.update_inertia(dt);
             }
 
             if state.debug_mode {
