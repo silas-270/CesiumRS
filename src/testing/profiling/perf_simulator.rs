@@ -36,8 +36,8 @@ impl<'a> PerfSimulatorApp<'a> {
         flight_handle.set_speed(0.01);
 
         // Set up the simulator script for Free Mode (1200 frames):
-        // Wait 50, Zoom in 150, Wait 50, Drag 300, Wait 50, Zoom out 150, Wait 50, Drag 300, Wait 100.
-        let simulator = Simulator::parse("wait:50;scroll:1.0:150;wait:50;drag:400,300->300,300:300;wait:50;scroll:-1.0:150;wait:50;drag:300,300->400,300:300;wait:100");
+        // Just wait 1200 frames so the user can perform manual camera movements
+        let simulator = Simulator::parse("wait:1200");
 
         let app_config = TileEngineConfig {
             enable_prefetch: true,
