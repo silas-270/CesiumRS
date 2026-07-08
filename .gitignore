@@ -4,3 +4,34 @@
 /.idea
 /temp_labels
 /test_labels.png
+
+# Profiling data (can be huge)
+perf.data
+perf.data.old
+*.perf
+
+# Large analysis/debug artifacts
+clippy.json
+dead_code.json
+errors.txt
+flamegraph.svg
+flamegraph.svg.bak
+parse_flamegraph.py
+
+# Screenshot/test render outputs (use a /screenshots folder if needed)
+test.png
+test*.png
+test_*.png
+verification*.png
+verify_*.png
+route_test*.png
+experiment_results.png
+stress_plot.png
+plane_test.png
+
+# CSV/log outputs from benchmarks and stress tests
+fuzz_results.csv
+flicker_*.csv
+z_sweep_results*.csv
+stress_results*.csv
+sweep.log
