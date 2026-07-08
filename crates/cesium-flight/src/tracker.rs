@@ -6,7 +6,7 @@ use cesium_engine::core::extension::GlobeExtension;
 use cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64;
 use cesium_engine::property::sampled::{InterpolationAlgorithm, SampledPositionProperty};
 use cesium_engine::render::model_pipeline::pipeline::ModelRenderer;
-use cesium_engine::render::polyline_pipeline::bvh::PolylineBVH;
+use cesium_engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder;
 use cesium_engine::render::polyline_pipeline::pipeline::{DrawParams, PolylineConfig, PolylineRenderer};
 use cesium_engine::time::SimulationTime;
 
@@ -49,16 +49,11 @@ pub fn load_flight_data(
 
 pub struct FlightEntity {
     pub id: String,
-    pub bvh: PolylineBVH,
     pub renderer: PolylineRenderer,
     pub config: PolylineConfig,
     pub property: SampledPositionProperty,
     pub sun_intensity_property: cesium_engine::property::sampled::SampledScalarProperty,
     pub reference_point: glam::DVec3,
-    /// Last camera position used for BVH traversal (for dirty detection).
-    last_camera_pos: glam::DVec3,
-    /// Last flight progress used for BVH traversal (for dirty detection).
-    last_progress: f64,
 }
 
 pub struct FlightTrackerApp {
@@ -240,9 +235,18 @@ impl GlobeExtension for FlightTrackerApp {
 
         for (id, content, is_secondary) in self.pending_flights.drain(..) {
             if let Ok((property, sun_intensity_property)) = load_flight_data(&content) {
-                if let Some(bvh) = PolylineBVH::build(&property) {
-                    println!("BVH loaded: {}", id);
-                    let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
+                use cesium_engine::property::Property;
+                if let Some(start_time) = property.start_time() {
+                    let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
+                    let builder = AdaptiveSubdivisionBuilder::new(1e-7); // High precision tolerance
+                    let control_points = builder.build(&property, reference_point);
+                    
+                    println!("Flight path loaded: {} ({} control points)", id, control_points.len());
+                    
+                    let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
+                    // Upload geometry statically once
+                    renderer.update_geometry(device, queue, &control_points);
+                    
                     let mut poly_config = PolylineConfig {
                         color_end: [0.9, 0.9, 0.9, 1.0],
                         ..PolylineConfig::default()
@@ -252,17 +256,13 @@ impl GlobeExtension for FlightTrackerApp {
                         poly_config.split_progress = 0.5;
                     }
 
-                    let reference_point = bvh.root.center;
                     self.flights.push(FlightEntity {
                         id,
-                        bvh,
                         renderer,
                         config: poly_config,
                         property,
                         sun_intensity_property,
                         reference_point,
-                        last_camera_pos: glam::DVec3::ZERO,
-                        last_progress: -1.0, // force first-frame upload
                     });
                 }
             }
@@ -271,10 +271,10 @@ impl GlobeExtension for FlightTrackerApp {
 
     fn update(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        camera_pos_dvec3: DVec3,
-        frustum: &[(DVec3, f64); 6],
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _camera_pos_dvec3: DVec3,
+        _frustum: &[(DVec3, f64); 6],
         camera: &mut cesium_engine::camera::camera::Camera,
         aspect_ratio: f32,
     ) {
@@ -341,28 +341,7 @@ impl GlobeExtension for FlightTrackerApp {
             self.reset_viewport = false;
         }
 
-        for flight in &mut self.flights {
-            // Only re-traverse the BVH if the camera has moved,
-            // or a mode switch / viewport reset occurred.
-            let current_progress_for_dirty = *self.progress.lock().unwrap();
-            let camera_moved = flight
-                .last_camera_pos
-                .distance(camera_pos_dvec3)
-                > 0.00001; // 10 m threshold in Mm
 
-            if camera_moved || mode_switched_or_reset {
-                let control_points = flight.bvh.collect_visible_segments(
-                    camera_pos_dvec3,
-                    frustum,
-                    5e-8,
-                    flight.reference_point,
-                );
-                flight.renderer.update_geometry(device, queue, &control_points);
-                flight.last_camera_pos = camera_pos_dvec3;
-            }
-            // Always update last_progress just in case, though we don't invalidate on it anymore
-            flight.last_progress = current_progress_for_dirty;
-        }
 
         if let Some(state) = self.get_plane_state_at(current_progress) {
             match self.view_mode {
@@ -440,7 +419,7 @@ impl GlobeExtension for FlightTrackerApp {
                 [0.0, 0.0, 0.0, 0.0]
             };
 
-            let cam_pos_dvec3 = glam::DVec3::from_slice(&camera_pos_f64);
+            let _cam_pos_dvec3 = glam::DVec3::from_slice(&camera_pos_f64);
 
             flight.renderer.draw(DrawParams {
                 render_pass,
