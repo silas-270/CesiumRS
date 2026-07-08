@@ -145,6 +145,7 @@ impl<'a> App<'a> {
             });
     }
 
+
     fn render_label_indicators(ctx: &egui::Context, state: &WgpuState) {
         let screen_rect = ctx.screen_rect();
         let width = screen_rect.width();
@@ -155,8 +156,17 @@ impl<'a> App<'a> {
         let proj_matrix = state.camera.get_projection_matrix(aspect_ratio);
         let view_proj = proj_matrix * view_matrix;
 
-        // Paint on the background layer so indicators sit behind egui widgets
-        let painter = ctx.layer_painter(egui::LayerId::background());
+        let altitude = state.camera.altitude().max(0.0001);
+        // Max distance at which a rank-0 label is visible (Megameters)
+        let max_render_dist = (altitude * 1.5 + 0.15).max(0.15);
+
+        // Paint above the globe scene but below egui windows
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("label_layer"),
+        ));
+
+
 
         for label in &state.label_manager.visible_labels {
             let ecef = label.ecef_pos;
@@ -178,11 +188,67 @@ impl<'a> App<'a> {
             let screen_x = (ndc_x + 1.0) * 0.5 * width;
             let screen_y = (1.0 - ndc_y) * 0.5 * height;
 
-            let center = egui::pos2(screen_x, screen_y);
+            // Compute a proximity factor [0.0 = at max range, 1.0 = very close]
+            // Use clip_pos.w as a reliable depth proxy (larger = further away)
+            let depth = clip_pos.w.max(0.001);
+            // depth is in the same units as the scene; normalize against max_render_dist
+            let proximity = 1.0 - (depth / (max_render_dist + depth)).clamp(0.0, 1.0);
 
-            // Draw a dark border first, then a bright red filled circle on top
-            painter.circle_filled(center, 5.0, egui::Color32::from_black_alpha(200));
-            painter.circle_filled(center, 3.5, egui::Color32::from_rgb(255, 40, 40));
+            // Rank-based font size boost: capitals and major cities are larger
+            let rank_scale = if label.label_rank <= 2 {
+                1.3_f32
+            } else if label.label_rank <= 5 {
+                1.0_f32
+            } else {
+                0.82_f32
+            };
+
+            // Dynamic font size: ranges from 9px (distant) to 14px (near), scaled by rank
+            let font_size = (9.0 + proximity * 5.0) * rank_scale;
+
+            // Dynamic opacity for text and backdrop
+            let text_alpha = ((160.0 + proximity * 95.0) as u8).max(100);
+            let bg_alpha   = ((90.0  + proximity * 90.0) as u8).max(60);
+            let dot_radius = 1.5 + proximity * 1.5;
+
+            let text_color = egui::Color32::from_white_alpha(text_alpha);
+            let bg_color   = egui::Color32::from_rgba_unmultiplied(8, 12, 18, bg_alpha);
+
+            let anchor_pos = egui::pos2(screen_x, screen_y);
+
+            // --- Draw label text with backdrop ---
+            let font_id = egui::FontId::proportional(font_size);
+            let galley = ctx.fonts(|f| {
+                f.layout_no_wrap(label.name.to_string(), font_id, text_color)
+            });
+
+            // Position text pill centered horizontally above the anchor dot
+            let text_size = galley.size();
+            let pad_x = 4.0;
+            let pad_y = 2.5;
+            let pill_w = text_size.x + pad_x * 2.0;
+            let pill_h = text_size.y + pad_y * 2.0;
+            let pill_x = screen_x - pill_w * 0.5;
+            let pill_y = screen_y - dot_radius - 3.0 - pill_h;
+
+            let bg_rect = egui::Rect::from_min_size(
+                egui::pos2(pill_x, pill_y),
+                egui::vec2(pill_w, pill_h),
+            );
+
+            // Backdrop pill
+            painter.rect_filled(bg_rect, egui::Rounding::same(3.0), bg_color);
+
+            // Text
+            painter.galley(
+                egui::pos2(pill_x + pad_x, pill_y + pad_y),
+                galley,
+                text_color,
+            );
+
+            // Anchor dot
+            painter.circle_filled(anchor_pos, dot_radius + 0.5, egui::Color32::from_black_alpha(120));
+            painter.circle_filled(anchor_pos, dot_radius, egui::Color32::from_white_alpha(text_alpha));
         }
     }
 }
