@@ -81,25 +81,23 @@ fn main() {
     if let Some(cfg) = config {
         run(Some(cfg));
     } else {
-        use cesium_rs::{Viewer, ViewerOptions, GlobeOptions};
-        use std::sync::{Arc, Mutex};
+        let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
 
-        let viewer = Viewer::new(ViewerOptions {
-            globe: GlobeOptions {
-                tile_cache_size: 2048,
-                enable_prefetch: true,
-                maximum_screen_space_error: 2.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        
-        let progress = Arc::new(Mutex::new(0.0));
-        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(progress));
+        // Load a flight path before starting if the file is present
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
-            flight_app.add_flight_path("flight_FRA_STR.json", content, false);
+            flight_handle.load_flight("flight_FRA_STR", content);
         }
 
-        viewer.run(Some(flight_app));
+        let viewer = cesium_rs::CesiumViewer::builder()
+            .tile_cache_size(2048)
+            .enable_prefetch(true)
+            .max_screen_space_error(2.0)
+            .with_extension(Box::new(flight_app))
+            .build();
+
+        // Obtain a handle before run() takes ownership
+        let _cam = viewer.handle();
+
+        viewer.run(); // Blocks — takes over the main thread
     }
 }
