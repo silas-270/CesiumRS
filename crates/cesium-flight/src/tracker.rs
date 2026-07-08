@@ -342,17 +342,15 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         for flight in &mut self.flights {
-            // Only re-traverse the BVH if the camera has moved, progress changed,
+            // Only re-traverse the BVH if the camera has moved,
             // or a mode switch / viewport reset occurred.
             let current_progress_for_dirty = *self.progress.lock().unwrap();
             let camera_moved = flight
                 .last_camera_pos
                 .distance(camera_pos_dvec3)
                 > 0.00001; // 10 m threshold in Mm
-            let progress_changed =
-                (flight.last_progress - current_progress_for_dirty).abs() > 1e-6;
 
-            if camera_moved || progress_changed || mode_switched_or_reset {
+            if camera_moved || mode_switched_or_reset {
                 let control_points = flight.bvh.collect_visible_segments(
                     camera_pos_dvec3,
                     frustum,
@@ -361,8 +359,9 @@ impl GlobeExtension for FlightTrackerApp {
                 );
                 flight.renderer.update_geometry(device, queue, &control_points);
                 flight.last_camera_pos = camera_pos_dvec3;
-                flight.last_progress = current_progress_for_dirty;
             }
+            // Always update last_progress just in case, though we don't invalidate on it anymore
+            flight.last_progress = current_progress_for_dirty;
         }
 
         if let Some(state) = self.get_plane_state_at(current_progress) {
