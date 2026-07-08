@@ -23,3 +23,13 @@ pub fn is_behind_horizon(cv: Vec3, vh_mag_sq: f32, label_pos: Vec3) -> bool {
 pub fn is_in_frustum(frustum: &Frustum, label_pos: Vec3) -> bool {
     frustum.contains_point(label_pos)
 }
+
+/// Returns true if the sphere intersects the frustum.
+pub fn intersects_sphere(frustum: &Frustum, center: Vec3, radius: f32) -> bool {
+    for (normal, distance) in &frustum.planes {
+        if normal.dot(center) + *distance < -radius {
+            return false;
+        }
+    }
+    true
+}
