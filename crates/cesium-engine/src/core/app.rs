@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use std::collections::HashSet;
+use std::sync::mpsc;
 use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -9,6 +10,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::render::wgpu_state::WgpuState;
+use crate::core::command::{ViewerCommand, CameraCommandMode};
 
 pub struct App<'a> {
     window: Option<Arc<Window>>,
@@ -20,10 +22,15 @@ pub struct App<'a> {
     last_frame_time: Option<Instant>,
     config: crate::globe::tiles::config::TileEngineConfig,
     extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
+    command_rx: Option<mpsc::Receiver<ViewerCommand>>,
 }
 
 impl<'a> App<'a> {
-    pub fn new(config: crate::globe::tiles::config::TileEngineConfig, extension: Option<Box<dyn crate::core::extension::GlobeExtension>>) -> Self {
+    pub fn new(
+        config: crate::globe::tiles::config::TileEngineConfig,
+        extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
+        command_rx: Option<mpsc::Receiver<ViewerCommand>>,
+    ) -> Self {
         Self {
             window: None,
             wgpu_state: None,
@@ -34,6 +41,7 @@ impl<'a> App<'a> {
             last_frame_time: None,
             config,
             extension,
+            command_rx,
         }
     }
 
@@ -318,6 +326,38 @@ impl<'a> ApplicationHandler for App<'a> {
         self.last_frame_time = Some(Instant::now());
 
         if let Some(state) = &mut self.wgpu_state {
+            // Drain any commands submitted via ViewerHandle
+            if let Some(rx) = &self.command_rx {
+                while let Ok(cmd) = rx.try_recv() {
+                    match cmd {
+                        ViewerCommand::CameraSetPosition { lon, lat, alt } => {
+                            let ecef = crate::globe::geometry::lon_lat_alt_to_ecef_f64(lon, lat, alt);
+                            let pos = glam::Vec3::new(ecef[0] as f32, ecef[1] as f32, ecef[2] as f32);
+                            state.camera.set_eye(pos, glam::Vec3::ZERO);
+                        }
+                        ViewerCommand::CameraSetMode(mode) => {
+                            state.camera.mode = match mode {
+                                CameraCommandMode::Free     => crate::camera::camera::CameraMode::Free,
+                                CameraCommandMode::Tracking => crate::camera::camera::CameraMode::Tracking,
+                                CameraCommandMode::Cockpit  => crate::camera::camera::CameraMode::Cockpit,
+                            };
+                        }
+                        ViewerCommand::CameraSetAnchor { position, orientation } => {
+                            let pos = glam::DVec3::from_array(position);
+                            let ori = glam::DQuat::from_xyzw(
+                                orientation[0], orientation[1], orientation[2], orientation[3],
+                            );
+                            state.camera.set_anchor(pos, ori);
+                        }
+                        ViewerCommand::CameraZoom(delta)  => state.camera.zoom(delta),
+                        ViewerCommand::CameraPitch(delta) => state.camera.pitch(delta),
+                        ViewerCommand::MapSetSaturation(v) => state.tile_system.config.map_saturation = v,
+                        ViewerCommand::MapSetContrast(v)   => state.tile_system.config.map_contrast = v,
+                        ViewerCommand::MapSetBrightness(v) => state.tile_system.config.map_brightness = v,
+                    }
+                }
+            }
+
             if state.debug_mode {
                 let mut movement = Vec3::ZERO;
                 if self.pressed_keys.contains(&KeyCode::KeyW) {
@@ -334,7 +374,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 }
 
                 let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft) || self.pressed_keys.contains(&KeyCode::ShiftRight);
-                
+
                 if self.pressed_keys.contains(&KeyCode::Space) {
                     let ctrl = self.pressed_keys.contains(&KeyCode::ControlLeft) || self.pressed_keys.contains(&KeyCode::ControlRight);
                     if ctrl {

@@ -32,13 +32,13 @@ impl<'a> RegressionApp<'a> {
         let latitudes = [-80.0, -40.0, 0.0, 40.0, 80.0];
         let longitudes = [-180.0, -90.0, 0.0, 90.0, 180.0];
         let altitudes = [0.1, 1.0, 10.0];
-        let pitch_yaws = [(0.0, 0.0), (-0.5, 0.5), (-1.5, 3.14)];
+        let pitch_yaws = [(0.0, 0.0), (-0.5, 0.5), (-1.5, std::f32::consts::PI)];
 
         for &lat in &latitudes {
             for &lon in &longitudes {
                 for &alt in &altitudes {
                     for &(pitch, yaw) in &pitch_yaws {
-                        states.push(TestState { lat, lon, alt, _pitch: pitch, _yaw: yaw });
+                        states.push(TestState { lat, lon, alt, _pitch: pitch, _yaw: yaw as f64 });
                     }
                 }
             }
@@ -51,7 +51,7 @@ impl<'a> RegressionApp<'a> {
         app_config.enable_prefetch = false;
         
         Self {
-            inner: App::new(app_config, None),
+            inner: App::new(app_config, None, None),
             config,
             states,
             current_state_index: 0,

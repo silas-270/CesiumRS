@@ -66,7 +66,7 @@ impl<'a> FlickerTrackingApp<'a> {
             .expect("Failed to create flicker_per_tile_log.csv");
 
         Self {
-            inner: App::new(app_config, Some(flight_app)),
+            inner: App::new(app_config, Some(flight_app), None),
             config,
             setup_done: false,
             progress,

@@ -1,4 +1,5 @@
 use glam::DVec3;
+use std::sync::mpsc;
 
 use cesium_engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
 use cesium_engine::time::SimulationTime;
@@ -8,6 +9,8 @@ use cesium_engine::render::polyline_pipeline::pipeline::{PolylineRenderer, Polyl
 use cesium_engine::core::extension::GlobeExtension;
 use cesium_engine::render::model_pipeline::pipeline::ModelRenderer;
 use cesium_engine::camera::camera::CameraMode;
+
+use crate::flight_handle::{FlightHandle, FlightCommand};
 
 
 pub fn load_flight_data(content: &str) -> Result<(SampledPositionProperty, cesium_engine::property::sampled::SampledScalarProperty), Box<dyn std::error::Error>> {
@@ -58,9 +61,31 @@ pub struct FlightTrackerApp {
     pub view_mode: CameraMode,
     pub last_view_mode: CameraMode,
     pub reset_viewport: bool,
+    command_rx: Option<mpsc::Receiver<FlightCommand>>,
 }
 
 impl FlightTrackerApp {
+    /// Constructs the app and a handle for sending commands to it from other threads.
+    pub fn with_handle() -> (Self, FlightHandle) {
+        let (tx, rx) = mpsc::sync_channel(64);
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(0.0_f64));
+        let app = Self {
+            progress,
+            pending_flights: Vec::new(),
+            flights: Vec::new(),
+            airplane_renderer: None,
+            last_update_time: std::time::Instant::now(),
+            is_playing: false,
+            play_speed: 0.1,
+            view_mode: cesium_engine::camera::camera::CameraMode::Free,
+            last_view_mode: cesium_engine::camera::camera::CameraMode::Free,
+            reset_viewport: true,
+            command_rx: Some(rx),
+        };
+        (app, FlightHandle::new(tx))
+    }
+
+    /// Legacy constructor kept for backwards compat with the test harness.
     pub fn new(progress: std::sync::Arc<std::sync::Mutex<f64>>) -> Self {
         Self {
             progress,
@@ -73,6 +98,7 @@ impl FlightTrackerApp {
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
             last_view_mode: cesium_engine::camera::camera::CameraMode::Free,
             reset_viewport: true,
+            command_rx: None,
         }
     }
 
@@ -186,6 +212,25 @@ impl GlobeExtension for FlightTrackerApp {
         camera: &mut cesium_engine::camera::camera::Camera,
         aspect_ratio: f32,
     ) {
+        // Drain commands submitted via FlightHandle
+        if let Some(rx) = &self.command_rx {
+            while let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    FlightCommand::LoadFlight { id, json, is_secondary } => {
+                        self.pending_flights.push((id, json, is_secondary));
+                    }
+                    FlightCommand::SetProgress(p) => {
+                        *self.progress.lock().unwrap() = p.clamp(0.0, 1.0);
+                    }
+                    FlightCommand::SetSpeed(s) => {
+                        self.play_speed = s;
+                    }
+                    FlightCommand::Play  => self.is_playing = true,
+                    FlightCommand::Pause => self.is_playing = false,
+                }
+            }
+        }
+
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_update_time).as_secs_f64();
         self.last_update_time = now;

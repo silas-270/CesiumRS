@@ -75,7 +75,7 @@ impl Viewer {
     /// In Rust, this takes over the main thread and does not return.
     pub fn run(self, extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>) {
         let config = self.options.into_tile_engine_config();
-        let mut app = App::new(config, extension);
+        let mut app = App::new(config, extension, None);
         self.event_loop.run_app(&mut app).unwrap();
     }
 }

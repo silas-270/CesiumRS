@@ -31,7 +31,8 @@ impl<'a> TestApp<'a> {
         Self {
             inner: App::new(
                 cesium_engine::globe::tiles::config::TileEngineConfig::default(), 
-                Some(flight_app)
+                Some(flight_app),
+                None,
             ),
             config,
             simulator,

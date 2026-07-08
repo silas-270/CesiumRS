@@ -118,7 +118,7 @@ impl<'a> TileMonitorApp<'a> {
         ).unwrap();
 
         Self {
-            inner: App::new(app_config, Some(flight_app)),
+            inner: App::new(app_config, Some(flight_app), None),
             config,
             setup_done: false,
             progress,
