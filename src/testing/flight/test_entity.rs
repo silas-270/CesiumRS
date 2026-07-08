@@ -79,7 +79,7 @@ fn test_adaptive_subdivision_stress() {
     prop.add_sample(SimulationTime::new(3600.0 * 8.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(14.0, 85.0, 10000.0)));
     prop.add_sample(SimulationTime::new(3600.0 * 16.0), DVec3::from_array(crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64(sin_lon, sin_lat, 10000.0)));
 
-    let builder = crate::engine::render::polyline::builder::AdaptiveSubdivisionBuilder::new(5.0);
+    let builder = crate::engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder::new(5.0);
     
     let start_time = Instant::now();
     let vertices = builder.build(&prop);

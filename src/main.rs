@@ -96,7 +96,7 @@ fn main() {
         
         let progress = Arc::new(Mutex::new(0.0));
 
-        let mut flight_app = Box::new(cesium_rs::flight::app::FlightTrackerApp::new(progress));
+        let mut flight_app = Box::new(cesium_rs::flight::tracker::FlightTrackerApp::new(progress));
         
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);

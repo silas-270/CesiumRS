@@ -1,5 +1,5 @@
 use crate::engine::camera::camera::Camera;
-use crate::flight::app::FlightEntity;
+use crate::flight::tracker::FlightEntity;
 
 pub fn update_free_mode(
     camera: &mut Camera,

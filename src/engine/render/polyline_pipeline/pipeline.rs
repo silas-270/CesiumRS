@@ -1,4 +1,4 @@
-use crate::engine::render::polyline::builder::PolylineVertex;
+use crate::engine::render::polyline_pipeline::builder::PolylineVertex;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]

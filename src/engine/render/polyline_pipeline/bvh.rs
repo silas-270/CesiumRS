@@ -2,7 +2,7 @@ use glam::DVec3;
 use crate::engine::property::sampled::SampledPositionProperty;
 use crate::engine::time::SimulationTime;
 use crate::engine::property::Property;
-use crate::engine::render::polyline::builder::PolylineVertex;
+use crate::engine::render::polyline_pipeline::builder::PolylineVertex;
 
 #[derive(Clone, Debug)]
 pub struct PolylineNode {
