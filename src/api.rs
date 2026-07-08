@@ -209,7 +209,7 @@ impl CesiumViewer {
 /// the beginning of the next frame.
 #[derive(Clone)]
 pub struct ViewerHandle {
-    tx: mpsc::SyncSender<ViewerCommand>,
+    pub(crate) tx: mpsc::SyncSender<ViewerCommand>,
 }
 
 impl ViewerHandle {

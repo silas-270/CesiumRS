@@ -45,6 +45,9 @@ struct Cli {
 
     #[arg(long)]
     pub actions: Option<String>,
+
+    #[arg(long)]
+    pub profile: bool,
 }
 
 fn main() {
@@ -58,13 +61,14 @@ fn main() {
     }
 
     let cli = Cli::parse();
-    let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor {
+    let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile {
         Some(VerifyConfig {
             enabled: cli.verify,
             stress: cli.stress,
             regression: cli.regression,
             flicker: cli.flicker,
             monitor: cli.monitor,
+            profile: cli.profile,
             stress_mode: cli.stress_mode,
             prefetch: cli.prefetch,
             cache_size: cli.cache_size,
