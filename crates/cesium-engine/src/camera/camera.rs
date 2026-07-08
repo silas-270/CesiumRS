@@ -77,6 +77,12 @@ pub struct Camera {
 
     pub focal_length: f32, // Camera Lens focal length in mm (assuming 24mm vertical sensor height)
     pub mode: CameraMode,
+
+    // Inertia & Kinetic Pan State
+    pub inertia_active: bool,
+    pub inertia_axis: glam::Vec3,
+    pub inertia_velocity: f32,
+    pub last_drag_time: std::time::Instant,
 }
 
 impl Camera {
@@ -95,6 +101,10 @@ impl Camera {
             focal_length: 28.0,
             sun_intensity: 1.0,
             mode: CameraMode::Free,
+            inertia_active: false,
+            inertia_axis: glam::Vec3::Y,
+            inertia_velocity: 0.0,
+            last_drag_time: std::time::Instant::now(),
         };
         cam.set_eye(position, target);
         cam
@@ -510,6 +520,10 @@ impl Camera {
         screen_width: f32,
         screen_height: f32,
     ) {
+        self.inertia_active = false;
+        self.inertia_velocity = 0.0;
+        self.last_drag_time = std::time::Instant::now();
+
         let (ray_origin, ray_dir) =
             self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
 
@@ -608,6 +622,30 @@ impl Camera {
                     new_local_ori_dquat.w as f32,
                 )
                 .normalize();
+
+                // Track the velocity for inertia
+                let now = std::time::Instant::now();
+                let dt = (now - self.last_drag_time).as_secs_f32();
+                self.last_drag_time = now;
+
+                if dt > 0.0001 {
+                    let v_prev = current_pos.normalize_or_zero();
+                    let v_curr = self.local_pos.normalize_or_zero();
+                    let q_step = glam::Quat::from_rotation_arc(v_prev, v_curr);
+                    let (axis, angle) = q_step.to_axis_angle();
+
+                    if angle > 0.00001 && axis.is_finite() {
+                        let inst_velocity = angle / dt;
+                        if self.inertia_velocity > 0.0 {
+                            self.inertia_velocity = self.inertia_velocity * 0.4 + inst_velocity * 0.6;
+                        } else {
+                            self.inertia_velocity = inst_velocity;
+                        }
+                        self.inertia_axis = axis;
+                    } else {
+                        self.inertia_velocity *= 0.2;
+                    }
+                }
             } else {
                 // If ray doesn't intersect anymore, retain the current position
                 self.local_pos = current_pos;
@@ -617,6 +655,35 @@ impl Camera {
     }
 
     pub fn end_drag(&mut self) {
+        let elapsed = (std::time::Instant::now() - self.last_drag_time).as_secs_f32();
+        if elapsed < 0.1 && self.inertia_velocity > 0.05 {
+            self.inertia_active = true;
+        } else {
+            self.inertia_active = false;
+            self.inertia_velocity = 0.0;
+        }
         self.drag_start_point = None;
+    }
+
+    pub fn update_inertia(&mut self, dt: f32) -> bool {
+        if !self.inertia_active {
+            return false;
+        }
+
+        // Apply friction decay (0.92 per 1/60th of a second)
+        let decay = 0.92_f32.powf(dt * 60.0);
+        self.inertia_velocity *= decay;
+
+        if self.inertia_velocity < 0.05 {
+            self.inertia_active = false;
+            self.inertia_velocity = 0.0;
+            return false;
+        }
+
+        // Rotate the camera around the Earth's center (orbit anchor)
+        let step_angle = self.inertia_velocity * dt;
+        let rot = glam::Quat::from_axis_angle(self.inertia_axis, step_angle);
+        self.orbit_anchor(rot);
+        true
     }
 }
