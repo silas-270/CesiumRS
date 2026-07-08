@@ -199,8 +199,8 @@ impl LabelManager {
         }
     }
 
-    /// Updates the visible label cache based on camera position, orientation, and frustum planes.
-    pub fn update(&mut self, camera_pos: Vec3, camera_ori: Quat, current_zoom: usize, frustum: &Frustum) {
+    /// Updates the visible label cache based on camera position, orientation, altitude, and frustum planes.
+    pub fn update(&mut self, camera_pos: Vec3, camera_ori: Quat, altitude: f32, current_zoom: usize, frustum: &Frustum) {
         self.frame_accum += 1;
         
         let pos_dist = (camera_pos - self.last_update_pos).length_squared();
@@ -222,6 +222,10 @@ impl LabelManager {
         let b = 6.356_752_4_f32;
         let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
         let vh_mag_sq = cv.length_squared() - 1.0;
+
+        // Dynamic local range threshold based on camera altitude (in Megameters)
+        let max_local_dist = altitude * 1.5 + 0.15;
+        let max_local_dist_sq = max_local_dist * max_local_dist;
         
         // Step 1: Query only the grid cells that overlap the frustum
         for cell in &self.grid {
@@ -238,6 +242,12 @@ impl LabelManager {
             for label in candidate_labels {
                 let label_pos = Vec3::new(label.ecef_pos[0], label.ecef_pos[1], label.ecef_pos[2]);
                 
+                // Check distance-based rank culling to prevent horizon clustering
+                let dist_sq = (label_pos - camera_pos).length_squared();
+                if dist_sq > max_local_dist_sq && label.label_rank > 2 {
+                    continue;
+                }
+
                 // Check horizon culling first (Branchless math, rejects quickly)
                 if culling::is_behind_horizon(cv, vh_mag_sq, label_pos) {
                     continue;

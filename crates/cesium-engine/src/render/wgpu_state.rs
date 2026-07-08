@@ -429,7 +429,7 @@ impl<'a> WgpuState<'a> {
         let altitude = self.camera.altitude();
         let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
         let frustum_obj = crate::globe::quadtree::Frustum::from_planes(frustum);
-        self.label_manager.update(camera_pos_f32, camera_ori_f32, zoom, &frustum_obj);
+        self.label_manager.update(camera_pos_f32, camera_ori_f32, altitude, zoom, &frustum_obj);
         
 
 
