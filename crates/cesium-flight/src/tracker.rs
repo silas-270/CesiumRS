@@ -7,7 +7,7 @@ use cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64;
 use cesium_engine::property::sampled::{InterpolationAlgorithm, SampledPositionProperty};
 use cesium_engine::render::model_pipeline::pipeline::ModelRenderer;
 use cesium_engine::render::polyline_pipeline::bvh::PolylineBVH;
-use cesium_engine::render::polyline_pipeline::pipeline::{PolylineConfig, PolylineRenderer};
+use cesium_engine::render::polyline_pipeline::pipeline::{DrawParams, PolylineConfig, PolylineRenderer};
 use cesium_engine::time::SimulationTime;
 
 use crate::flight_handle::{FlightCommand, FlightHandle};
@@ -55,6 +55,10 @@ pub struct FlightEntity {
     pub property: SampledPositionProperty,
     pub sun_intensity_property: cesium_engine::property::sampled::SampledScalarProperty,
     pub reference_point: glam::DVec3,
+    /// Last camera position used for BVH traversal (for dirty detection).
+    last_camera_pos: glam::DVec3,
+    /// Last flight progress used for BVH traversal (for dirty detection).
+    last_progress: f64,
 }
 
 pub struct FlightTrackerApp {
@@ -257,6 +261,8 @@ impl GlobeExtension for FlightTrackerApp {
                         property,
                         sun_intensity_property,
                         reference_point,
+                        last_camera_pos: glam::DVec3::ZERO,
+                        last_progress: -1.0, // force first-frame upload
                     });
                 }
             }
@@ -312,53 +318,51 @@ impl GlobeExtension for FlightTrackerApp {
             *self.progress.lock().unwrap() = p;
         }
 
-        for flight in &mut self.flights {
-            let mut vertices = Vec::new();
-
-            let visible_strips =
-                flight
-                    .bvh
-                    .collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
-            for strip in visible_strips {
-                let mut strip_verts =
-                    cesium_engine::render::polyline_pipeline::bvh::generate_vertices(
-                        &strip,
-                        camera_pos_dvec3,
-                        flight.reference_point,
-                    );
-                if !vertices.is_empty() && !strip_verts.is_empty() {
-                    vertices.push(*vertices.last().unwrap());
-                    vertices.push(*strip_verts.first().unwrap());
-                }
-                vertices.append(&mut strip_verts);
-            }
-            flight.renderer.update_geometry(device, queue, &vertices);
-        }
-
         let current_progress = *self.progress.lock().unwrap();
 
         if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
             camera.sun_intensity = intensity as f32;
         }
 
+        // Camera Mode two-way sync — must happen before the flight loop so that
+        // mode_switched_or_reset is correct for the dirty-flag check.
         let mut mode_switched_or_reset = false;
-
-        // Camera Mode Two-way sync:
         if self.view_mode != self.last_view_mode {
-            // UI changed it
             camera.mode = self.view_mode;
             self.last_view_mode = self.view_mode;
             self.reset_viewport = true;
         } else if camera.mode != self.view_mode {
-            // External API changed it
             self.view_mode = camera.mode;
             self.last_view_mode = camera.mode;
             self.reset_viewport = true;
         }
-
         if self.reset_viewport {
             mode_switched_or_reset = true;
             self.reset_viewport = false;
+        }
+
+        for flight in &mut self.flights {
+            // Only re-traverse the BVH if the camera has moved, progress changed,
+            // or a mode switch / viewport reset occurred.
+            let current_progress_for_dirty = *self.progress.lock().unwrap();
+            let camera_moved = flight
+                .last_camera_pos
+                .distance(camera_pos_dvec3)
+                > 0.00001; // 10 m threshold in Mm
+            let progress_changed =
+                (flight.last_progress - current_progress_for_dirty).abs() > 1e-6;
+
+            if camera_moved || progress_changed || mode_switched_or_reset {
+                let control_points = flight.bvh.collect_visible_segments(
+                    camera_pos_dvec3,
+                    frustum,
+                    5e-8,
+                    flight.reference_point,
+                );
+                flight.renderer.update_geometry(device, queue, &control_points);
+                flight.last_camera_pos = camera_pos_dvec3;
+                flight.last_progress = current_progress_for_dirty;
+            }
         }
 
         if let Some(state) = self.get_plane_state_at(current_progress) {
@@ -397,10 +401,10 @@ impl GlobeExtension for FlightTrackerApp {
         }
     }
 
-    fn render<'a>(
-        &'a self,
-        render_pass: &mut wgpu::RenderPass<'a>,
-        camera_bind_group: &'a wgpu::BindGroup,
+    fn render<'res>(
+        &'res self,
+        render_pass: &mut wgpu::RenderPass<'res>,
+        camera_bind_group: &'res wgpu::BindGroup,
         viewport_size: [f32; 2],
         camera_pos_f64: [f64; 3],
     ) {
@@ -437,18 +441,20 @@ impl GlobeExtension for FlightTrackerApp {
                 [0.0, 0.0, 0.0, 0.0]
             };
 
-            flight.renderer.draw(
+            let cam_pos_dvec3 = glam::DVec3::from_slice(&camera_pos_f64);
+
+            flight.renderer.draw(DrawParams {
                 render_pass,
                 camera_bind_group,
                 viewport_size,
                 camera_pos_f64,
-                [
+                reference_point: [
                     flight.reference_point.x,
                     flight.reference_point.y,
                     flight.reference_point.z,
                 ],
-                &config,
-            );
+                config: &config,
+            });
         }
 
         // Draw airplane

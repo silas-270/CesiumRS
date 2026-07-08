@@ -1,177 +1,181 @@
+// ── Uniforms & push constants ─────────────────────────────────────────────────
+
 struct CameraUniform {
-    view_proj: mat4x4<f32>,
+    view_proj:     mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
-    camera_pos: vec4<f32>,
-    sun_params: vec4<f32>,
+    camera_pos:    vec4<f32>,
+    sun_params:    vec4<f32>,
 };
 
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) previous: vec3<f32>,
-    @location(2) next: vec3<f32>,
-    @location(3) side: f32,
-    @location(4) v_side: f32,
-    @location(5) face: f32,
-    @location(6) progress: f32,
-    @location(7) forward: f32,
+struct PushConstants {
+    reference_point:    vec4<f32>,  // offset   0
+    camera_pos:         vec4<f32>,  // offset  16
+    color_start:        vec4<f32>,  // offset  32
+    color_end:          vec4<f32>,  // offset  48
+    viewport_size:      vec2<f32>,  // offset  64
+    thickness:          f32,        // offset  72
+    split_progress:     f32,        // offset  76
+    physical_half_width:  f32,      // offset  80
+    physical_half_height: f32,      // offset  84
+    _padding:           vec2<f32>,  // offset  88
+    airplane_pos:       vec4<f32>,  // offset  96
+    airplane_forward:   vec4<f32>,  // offset 112
+    // Total: 128 bytes
 };
+var<push_constant> pc: PushConstants;
+
+// ── GPU-resident control points ───────────────────────────────────────────────
+
+struct ControlPoint {
+    position: vec3<f32>, // relative to reference_point
+    progress:  f32,
+};
+
+@group(1) @binding(0)
+var<storage, read> control_points: array<ControlPoint>;
+
+// ── Vertex shader output ──────────────────────────────────────────────────────
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) face_shade: f32,
-    @location(1) uv: vec2<f32>,
-    @location(2) progress: f32,
-    @location(3) world_pos: vec3<f32>,
-    @location(4) tangent: vec3<f32>,
+    @location(1) uv:         vec2<f32>,
+    @location(2) progress:   f32,
+    @location(3) world_pos:  vec3<f32>,
+    @location(4) tangent:    vec3<f32>,
 };
 
-struct PushConstants {
-    reference_point: vec4<f32>,
-    camera_pos: vec4<f32>,
-    color_start: vec4<f32>,
-    color_end: vec4<f32>,
-    viewport_size: vec2<f32>,
-    thickness: f32,
-    split_progress: f32,
-    physical_half_width: f32,
-    physical_half_height: f32,
-    _padding: vec2<f32>, // offset 88 (8 bytes) - align next field to 16 bytes
-    // World-space airplane position (relative to reference_point, f32 precision).
-    // The split is rendered at the closest point on the ribbon to this position.
-    airplane_pos: vec4<f32>,
-    airplane_forward: vec4<f32>,
-};
-var<push_constant> push_constants: PushConstants;
+// ── Vertex shader ─────────────────────────────────────────────────────────────
+//
+// Layout (2 verts per control point — 2-D ribbon):
+//
+//   vertex_index  →  cp_idx = vid / 2,  corner = vid % 2
+//   corner 0 = left  (side = -1)
+//   corner 1 = right (side = +1)
+//
+// This produces a triangle-strip ribbon where every pair of verts straddles
+// one control point.  Degenerate segments (zero-length) are used between
+// disconnected strips and produce zero-area triangles discarded by the GPU.
 
 @vertex
-fn vs_main(
-    model: VertexInput,
-) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
     var out: VertexOutput;
 
-    // 1. Transform positions relative to camera using DVec3 precision
-    let pos_3d = model.position;
-    let prev_3d = model.previous;
-    let next_3d = model.next;
+    let total = arrayLength(&control_points);
+    let cp_idx = vid / 2u;
+    let corner = vid % 2u;   // 0 = left, 1 = right
 
-    let rel_curr = pos_3d - push_constants.camera_pos.xyz;
-    let rel_prev = prev_3d - push_constants.camera_pos.xyz;
-    let rel_next = next_3d - push_constants.camera_pos.xyz;
+    // Guard against out-of-range (should not happen in normal use)
+    if cp_idx >= total {
+        out.clip_position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
 
-    // 2. Calculate up vector based on current spherical position
-    let pos_3d_abs = pos_3d + push_constants.reference_point.xyz;
-    var up_3d = normalize(pos_3d_abs);
+    let cp      = control_points[cp_idx];
+    let cp_prev = control_points[select(cp_idx - 1u, 0u, cp_idx == 0u)];
+    let cp_next = control_points[select(cp_idx + 1u, total - 1u, cp_idx + 1u >= total)];
 
-    // 3. Compute tangent in 3D
+    let pos  = cp.position;
+    let prev = cp_prev.position;
+    let next = cp_next.position;
+
+    // Camera-relative positions (subtract camera so we work near the origin)
+    let cam      = pc.camera_pos.xyz;
+    let rel_curr = pos  - cam;
+    let rel_prev = prev - cam;
+    let rel_next = next - cam;
+
+    // Up vector: outward normal from the sphere at this point
+    let pos_abs = pos + pc.reference_point.xyz;
+    let up_3d   = normalize(pos_abs);
+
+    // Tangent: average of incoming and outgoing directions
     let dir_prev = normalize(rel_curr - rel_prev);
     let dir_next = normalize(rel_next - rel_curr);
-    
+
     var tangent = dir_next;
     if length(dir_next) < 0.001 {
         tangent = dir_prev;
     } else if length(dir_prev) > 0.001 {
         tangent = normalize(dir_prev + dir_next);
     }
-    
     if length(tangent) < 0.001 {
         tangent = vec3<f32>(1.0, 0.0, 0.0);
     }
 
-    // Horizontal extrusion vector (cross product)
+    // Horizontal extrusion vector
     var normal_3d = cross(up_3d, tangent);
     if length(normal_3d) < 0.001 {
         normal_3d = vec3<f32>(0.0, 1.0, 0.0);
     }
     normal_3d = normalize(normal_3d);
 
-    // 4. Robust Edge-of-Screen Extrusion
-    let physical_half_width = push_constants.physical_half_width;
-    let physical_half_height = push_constants.physical_half_height;
+    // Distance-based physical scale (matches airplane model scale)
+    let dist_to_cam     = length(rel_curr);
+    let desired_scale   = dist_to_cam * 0.05;
+    let min_scale       = 67.0 / 1000000.0;   // 67 m in Mm
+    let max_scale       = 3000.0 * 1000.0 / 1000000.0;
+    let clamped_scale   = clamp(desired_scale, min_scale, max_scale);
+    let scale_mult      = clamped_scale / min_scale;
 
-    let dist_to_cam = length(rel_curr);
-    
-    // We want the ribbon to scale exactly like the airplane.
-    // The airplane is 67 meters long, and we scale it by 5% of the distance to the camera,
-    // clamped between 67m and 3000km.
-    let desired_scale_mm = dist_to_cam * 0.05;
-    let min_scale_mm = 67.0 / 1000000.0;
-    let max_scale_mm = 3000.0 * 1000.0 / 1000000.0;
-    let clamped_scale_mm = clamp(desired_scale_mm, min_scale_mm, max_scale_mm);
-    
-    // Calculate the scale multiplier relative to the base length
-    var scale_multiplier = clamped_scale_mm / min_scale_mm;
-    
-    // Scale the ribbon's physical width and height by the same multiplier
-    let final_half_width = physical_half_width * scale_multiplier;
-    
-    // Cap the height scaling so the ribbon volume doesn't become too thick vertically at high zooms
-    let height_scale_multiplier = min(scale_multiplier, 4500.0);
-    let final_half_height = physical_half_height * height_scale_multiplier;
-    
-    // Elevate 5m to avoid clipping
-    let elevation_offset = up_3d * 0.000005;
+    let final_half_width  = pc.physical_half_width  * scale_mult;
+    let height_scale_mult = min(scale_mult, 4500.0);
+    let final_half_height = pc.physical_half_height * height_scale_mult;
 
-    let corner_offset_3d = normal_3d * final_half_width * model.side + up_3d * final_half_height * model.v_side + tangent * final_half_width * model.forward;
-    let extruded_3d = rel_curr + corner_offset_3d + elevation_offset;
-    let clip_final = camera.view_proj * vec4<f32>(extruded_3d, 1.0);
+    // Slight elevation to avoid z-fighting with the globe surface
+    let elevation = up_3d * 0.000005;
 
-    out.clip_position = clip_final;
-    out.uv = vec2<f32>(model.side, model.forward);
-    out.progress = model.progress;
-    out.world_pos = model.position + corner_offset_3d + elevation_offset;
-    out.tangent = tangent;
+    // Side sign: corner 0 → -1 (left), corner 1 → +1 (right)
+    let side = select(-1.0, 1.0, corner == 1u);
+    let corner_offset = normal_3d * final_half_width * side + elevation;
+    let extruded = rel_curr + corner_offset;
 
-    // Add shading depending on face
-    var face_shade = 1.0;
-    if model.face == 0.0 { // Top
-        face_shade = 1.0;
-    } else if model.face == 1.0 { // Bottom
-        face_shade = 0.4;
-    } else { // Sides (Left 2.0, Right 3.0)
-        face_shade = 0.7;
-    }
-    
-    out.face_shade = face_shade;
+    out.clip_position = camera.view_proj * vec4<f32>(extruded, 1.0);
+    out.uv         = vec2<f32>(side, 0.0);
+    out.progress   = cp.progress;
+    out.world_pos  = pos + corner_offset;
+    out.tangent    = tangent;
+    out.face_shade = 1.0; // ribbon is always top-face
+
     return out;
 }
 
+// ── Fragment shader ───────────────────────────────────────────────────────────
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    if length(in.uv) > 1.0 {
+    // Soft round-cap discard at the ribbon tips (|uv.x| > 1 is outside the ribbon)
+    if abs(in.uv.x) > 1.0 {
         discard;
     }
 
-    // --- Fix: world-space split instead of progress-domain split ---
-    // We project this fragment's world position onto the airplane-to-ribbon axis
-    // so the orange/white boundary always passes through the airplane center,
-    // regardless of how the pre-baked 'progress' values were assigned.
-    var base_color = push_constants.color_start.rgb;
-    if push_constants.split_progress >= 0.0 {
-        if push_constants.airplane_pos.w > 0.5 {
-            let to_frag = in.world_pos - push_constants.airplane_pos.xyz;
-            let dist = length(to_frag);
-            
+    // Color split: orange (behind plane) / white-ish (ahead of plane)
+    var base_color = pc.color_start.rgb;
+    if pc.split_progress >= 0.0 {
+        if pc.airplane_pos.w > 0.5 {
+            // World-space proximity split
+            let to_frag = in.world_pos - pc.airplane_pos.xyz;
+            let dist    = length(to_frag);
             var is_ahead = false;
             if dist > 0.001 {
-                is_ahead = in.progress >= push_constants.split_progress;
+                is_ahead = in.progress >= pc.split_progress;
             } else {
-                let tangent = normalize(in.tangent);
-                is_ahead = dot(to_frag, tangent) >= 0.0;
+                let tgt = normalize(in.tangent);
+                is_ahead = dot(to_frag, tgt) >= 0.0;
             }
-            
             if is_ahead {
-                base_color = push_constants.color_end.rgb;
+                base_color = pc.color_end.rgb;
             }
         } else {
-            // Legacy path: time-domain progress comparison
-            if in.progress > push_constants.split_progress {
-                base_color = push_constants.color_end.rgb;
+            // Legacy progress-domain split
+            if in.progress > pc.split_progress {
+                base_color = pc.color_end.rgb;
             }
         }
     }
 
-    return vec4<f32>(base_color * in.face_shade, push_constants.color_start.a);
+    return vec4<f32>(base_color * in.face_shade, pc.color_start.a);
 }

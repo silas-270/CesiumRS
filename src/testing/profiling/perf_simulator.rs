@@ -39,8 +39,10 @@ impl<'a> PerfSimulatorApp<'a> {
         // Wait 50, Zoom in 150, Wait 50, Drag 300, Wait 50, Zoom out 150, Wait 50, Drag 300, Wait 100.
         let simulator = Simulator::parse("wait:50;scroll:1.0:150;wait:50;drag:400,300->300,300:300;wait:50;scroll:-1.0:150;wait:50;drag:300,300->400,300:300;wait:100");
 
-        let mut app_config = TileEngineConfig::default();
-        app_config.enable_prefetch = true; // Make sure prefetch is on for a realistic test
+        let app_config = TileEngineConfig {
+            enable_prefetch: true,
+            ..TileEngineConfig::default()
+        };
         
         // We initialize the App with the FlightTracker extension.
         // We will manually inject a ViewerHandle's receiver so we can send commands.
