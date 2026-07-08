@@ -1,7 +1,7 @@
 pub mod culling;
 
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
+use glam::{Vec3, Quat};
 use crate::globe::quadtree::Frustum;
 
 #[repr(C, align(4))]
@@ -90,6 +90,9 @@ pub struct VisibleLabel {
 pub struct LabelManager {
     db: LabelDatabase,
     pub visible_labels: Vec<VisibleLabel>,
+    last_update_pos: Vec3,
+    last_update_ori: Quat,
+    frame_accum: usize,
 }
 
 impl LabelManager {
@@ -101,11 +104,28 @@ impl LabelManager {
         Self {
             db,
             visible_labels: Vec::new(),
+            last_update_pos: Vec3::ZERO,
+            last_update_ori: Quat::IDENTITY,
+            frame_accum: 9999, // Force immediate update on first frame
         }
     }
 
-    /// Updates the visible label cache based on camera position and frustum planes.
-    pub fn update(&mut self, camera_pos: Vec3, current_zoom: usize, frustum: &Frustum) {
+    /// Updates the visible label cache based on camera position, orientation, and frustum planes.
+    pub fn update(&mut self, camera_pos: Vec3, camera_ori: Quat, current_zoom: usize, frustum: &Frustum) {
+        self.frame_accum += 1;
+        
+        let pos_dist = (camera_pos - self.last_update_pos).length_squared();
+        let ori_diff = 1.0 - self.last_update_ori.dot(camera_ori).abs();
+        
+        // Skip updates if camera has not moved much and we are under the frame threshold (e.g. 6 frames = ~10Hz)
+        if self.frame_accum < 6 && pos_dist < 0.0001 && ori_diff < 0.001 {
+            return;
+        }
+        
+        self.frame_accum = 0;
+        self.last_update_pos = camera_pos;
+        self.last_update_ori = camera_ori;
+        
         self.visible_labels.clear();
         
         // Precompute camera unit-sphere scaling factors
