@@ -34,12 +34,9 @@ impl<'a> PerfSimulatorApp<'a> {
         flight_handle.play();
         flight_handle.set_speed(0.1); // Ensure it's flying at a visible pace
 
-        // Set up the simulator script:
-        // 1. Wait 100 frames to let the map load
-        // 2. Drag to simulate moving the earth (Free mode)
-        // 3. Wait 100 frames
-        // (Camera modes will be switched dynamically in the about_to_wait loop below)
-        let simulator = Simulator::parse("wait:100;drag:400,300->300,300:120;wait:100");
+        // Set up the simulator script for Free Mode (1200 frames):
+        // Wait 50, Zoom in 150, Wait 50, Drag 300, Wait 50, Zoom out 150, Wait 50, Drag 300, Wait 100.
+        let simulator = Simulator::parse("wait:50;scroll:1.0:150;wait:50;drag:400,300->300,300:300;wait:50;scroll:-1.0:150;wait:50;drag:300,300->400,300:300;wait:100");
 
         let mut app_config = TileEngineConfig::default();
         app_config.enable_prefetch = true; // Make sure prefetch is on for a realistic test
@@ -83,11 +80,11 @@ impl<'a> ApplicationHandler for PerfSimulatorApp<'a> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Automatically exit after 1000 frames so `cargo flamegraph` stops and generates the SVG
-        if self.frame_count >= 1000 {
+        // Automatically exit after 3600 frames (approx 1 minute at 60 FPS)
+        if self.frame_count >= 3600 {
             let elapsed = self.start_time.unwrap().elapsed().as_secs_f64();
             let avg_fps = self.frame_count as f64 / elapsed;
-            println!("Profiling completed 1000 frames in {:.2}s (Avg: {:.1} FPS)", elapsed, avg_fps);
+            println!("Profiling completed 3600 frames in {:.2}s (Avg: {:.1} FPS)", elapsed, avg_fps);
             event_loop.exit();
             return;
         }
@@ -106,11 +103,11 @@ impl<'a> ApplicationHandler for PerfSimulatorApp<'a> {
         // --- Simulate Camera Mode Switches ---
         if let Some(handle) = &self.viewer_handle {
             match self.frame_count {
-                350 => {
+                1200 => {
                     println!("[Frame {}] Switching to Cockpit mode", self.frame_count);
                     handle.camera_set_mode(CameraMode::Cockpit);
                 }
-                650 => {
+                2400 => {
                     println!("[Frame {}] Switching to Tracking mode", self.frame_count);
                     handle.camera_set_mode(CameraMode::Tracking);
                 }

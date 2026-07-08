@@ -191,6 +191,29 @@ impl GlobeExtension for FlightTrackerApp {
         config: &wgpu::SurfaceConfiguration,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) {
+        // Drain any commands that were sent before init
+        if let Some(rx) = &self.command_rx {
+            while let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    FlightCommand::LoadFlight {
+                        id,
+                        json,
+                        is_secondary,
+                    } => {
+                        self.pending_flights.push((id, json, is_secondary));
+                    }
+                    FlightCommand::SetProgress(p) => {
+                        *self.progress.lock().unwrap() = p.clamp(0.0, 1.0);
+                    }
+                    FlightCommand::SetSpeed(s) => {
+                        self.play_speed = s;
+                    }
+                    FlightCommand::Play => self.is_playing = true,
+                    FlightCommand::Pause => self.is_playing = false,
+                }
+            }
+        }
+
         // Try loading the A350.glb model from the root directory
         match std::fs::read("A350.glb") {
             Ok(glb_bytes) => {
@@ -314,17 +337,27 @@ impl GlobeExtension for FlightTrackerApp {
 
         let current_progress = *self.progress.lock().unwrap();
 
-        // Camera Logic
-        camera.mode = self.view_mode;
-
         if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
             camera.sun_intensity = intensity as f32;
         }
 
         let mut mode_switched_or_reset = false;
-        if self.view_mode != self.last_view_mode || self.reset_viewport {
-            mode_switched_or_reset = true;
+
+        // Camera Mode Two-way sync:
+        if self.view_mode != self.last_view_mode {
+            // UI changed it
+            camera.mode = self.view_mode;
             self.last_view_mode = self.view_mode;
+            self.reset_viewport = true;
+        } else if camera.mode != self.view_mode {
+            // External API changed it
+            self.view_mode = camera.mode;
+            self.last_view_mode = camera.mode;
+            self.reset_viewport = true;
+        }
+
+        if self.reset_viewport {
+            mode_switched_or_reset = true;
             self.reset_viewport = false;
         }
 

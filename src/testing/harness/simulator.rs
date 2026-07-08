@@ -15,6 +15,11 @@ pub enum SimulatedAction {
         frames: u32,
         current_frame: u32,
     },
+    Scroll {
+        delta_y: f64,
+        frames: u32,
+        current_frame: u32,
+    },
 }
 
 pub struct Simulator {
@@ -56,6 +61,13 @@ impl Simulator {
                     frames,
                     current_frame: 0,
                 });
+            } else if let Some(params) = part.strip_prefix("scroll:") {
+                let segments: Vec<&str> = params.split(':').collect();
+                if segments.len() == 2 {
+                    let frames: u32 = segments[1].parse().unwrap_or(1);
+                    let delta_y: f64 = segments[0].parse().unwrap_or(0.0);
+                    actions.push(SimulatedAction::Scroll { delta_y, frames, current_frame: 0 });
+                }
             }
         }
         Self { actions }
@@ -112,6 +124,18 @@ impl Simulator {
                 } => {
                     *current_frame += 1;
                 }
+                SimulatedAction::Scroll {
+                    delta_y,
+                    frames: _,
+                    current_frame,
+                } => {
+                    events.push(WindowEvent::MouseWheel {
+                        device_id,
+                        delta: winit::event::MouseScrollDelta::LineDelta(0.0, *delta_y as f32),
+                        phase: winit::event::TouchPhase::Moved,
+                    });
+                    *current_frame += 1;
+                }
             }
         }
 
@@ -123,6 +147,11 @@ impl Simulator {
                 ..
             } => current_frame < frames,
             SimulatedAction::Wait {
+                frames,
+                current_frame,
+                ..
+            } => current_frame < frames,
+            SimulatedAction::Scroll {
                 frames,
                 current_frame,
                 ..
