@@ -1,16 +1,16 @@
 use crate::camera::camera::Camera;
 use crate::globe::quadtree::{QuadtreeManager, TileId};
-use crate::render::tile_display::{TileBuffers, TilePushConstants, TileDisplayEntry};
 use crate::render::camera_uniform::CameraUniform;
+use crate::render::tile_display::{TileBuffers, TileDisplayEntry, TilePushConstants};
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
 use glam::{Mat4, Vec3};
-use std::sync::Arc;
-use wgpu::util::DeviceExt;
-use winit::window::Window;
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
+use wgpu::util::DeviceExt;
+use winit::window::Window;
 
 pub struct WgpuState<'a> {
     pub surface: wgpu::Surface<'a>,
@@ -102,9 +102,9 @@ fn execute_egui<'rp>(
 
 impl<'a> WgpuState<'a> {
     pub async fn new(
-        window: Arc<Window>, 
+        window: Arc<Window>,
         engine_config: crate::globe::tiles::config::TileEngineConfig,
-        mut extension: Option<Box<dyn crate::core::extension::GlobeExtension>>
+        mut extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
     ) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -127,7 +127,8 @@ impl<'a> WgpuState<'a> {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    required_features: wgpu::Features::POLYGON_MODE_LINE | wgpu::Features::PUSH_CONSTANTS,
+                    required_features: wgpu::Features::POLYGON_MODE_LINE
+                        | wgpu::Features::PUSH_CONSTANTS,
                     required_limits: wgpu::Limits {
                         max_push_constant_size: 128,
                         ..Default::default()
@@ -168,7 +169,11 @@ impl<'a> WgpuState<'a> {
             camera.get_projection_matrix(size.width as f32 / size.height as f32),
             camera.global_transform_f64().0,
             camera.sun_intensity,
-            [engine_config.map_saturation, engine_config.map_contrast, engine_config.map_brightness],
+            [
+                engine_config.map_saturation,
+                engine_config.map_contrast,
+                engine_config.map_brightness,
+            ],
         );
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -205,23 +210,25 @@ impl<'a> WgpuState<'a> {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("globe_pipeline/shader.wgsl").into()),
         });
-        
+
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sky Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky_pipeline/sky.wgsl").into()),
         });
 
         let config_engine = engine_config;
-        let tile_system = crate::globe::tiles::system::TileSystem::new(&device, &queue, config_engine);
+        let tile_system =
+            crate::globe::tiles::system::TileSystem::new(&device, &queue, config_engine);
 
-        let (solid_pipeline, wireframe_pipeline, debug_pipeline) = crate::render::globe_pipeline::pipeline::create_pipelines(
-            &device,
-            &config,
-            &shader,
-            &camera_bind_group_layout,
-            &tile_system.texture_manager.bind_group_layout,
-        );
-        
+        let (solid_pipeline, wireframe_pipeline, debug_pipeline) =
+            crate::render::globe_pipeline::pipeline::create_pipelines(
+                &device,
+                &config,
+                &shader,
+                &camera_bind_group_layout,
+                &tile_system.texture_manager.bind_group_layout,
+            );
+
         let sky_pipeline = crate::render::globe_pipeline::pipeline::create_sky_pipeline(
             &device,
             &config,
@@ -307,7 +314,11 @@ impl<'a> WgpuState<'a> {
                     .get_projection_matrix(new_size.width as f32 / new_size.height as f32),
                 self.camera.global_transform_f64().0,
                 self.camera.sun_intensity,
-                [self.tile_system.config.map_saturation, self.tile_system.config.map_contrast, self.tile_system.config.map_brightness],
+                [
+                    self.tile_system.config.map_saturation,
+                    self.tile_system.config.map_contrast,
+                    self.tile_system.config.map_brightness,
+                ],
             );
             self.queue.write_buffer(
                 &self.camera_buffer,
@@ -318,7 +329,10 @@ impl<'a> WgpuState<'a> {
     }
 
     pub fn get_fetch_stats(&self) -> (usize, usize) {
-        (self.last_requested_tiles_count, self.last_missing_tiles_count)
+        (
+            self.last_requested_tiles_count,
+            self.last_missing_tiles_count,
+        )
     }
 
     pub fn resize_tile_cache(&mut self, size: std::num::NonZeroUsize) {
@@ -333,21 +347,21 @@ impl<'a> WgpuState<'a> {
 
         // Process completed meshes
         for (id, mesh) in self.tile_system.mesh_worker.process_results() {
-            let vertex_buffer =
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("Tile Vertex Buffer {:?}", id)),
-                        contents: bytemuck::cast_slice(&mesh.vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+            let vertex_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Tile Vertex Buffer {:?}", id)),
+                    contents: bytemuck::cast_slice(&mesh.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
-            let index_buffer =
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some(&format!("Tile Index Buffer {:?}", id)),
-                        contents: bytemuck::cast_slice(&mesh.indices),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
+            let index_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Tile Index Buffer {:?}", id)),
+                    contents: bytemuck::cast_slice(&mesh.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
 
             self.tile_cache.put(
                 id,
@@ -361,32 +375,63 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    fn update_logic(&mut self, aspect_ratio: f32, _main_view_proj: Mat4) -> Vec<(TileId, Vec3, f32)> {
+    fn update_logic(
+        &mut self,
+        aspect_ratio: f32,
+        _main_view_proj: Mat4,
+    ) -> Vec<(TileId, Vec3, f32)> {
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
-        
+
         // ALWAYS use main camera for logic and culling
         let mut frustum = self.camera.calculate_frustum_planes(aspect_ratio);
-        
+
         if let Some(ext) = &mut self.extension {
-            ext.update(&self.device, &self.queue, camera_pos_dvec3, &frustum, &mut self.camera, aspect_ratio);
+            ext.update(
+                &self.device,
+                &self.queue,
+                camera_pos_dvec3,
+                &frustum,
+                &mut self.camera,
+                aspect_ratio,
+            );
             // Recalculate frustum since the extension may have moved the camera!
             frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         }
- 
+
         let (view_matrix, proj_matrix) = if self.debug_mode {
-            (self.debug_camera.get_view_matrix(), self.debug_camera.get_projection_matrix(aspect_ratio))
+            (
+                self.debug_camera.get_view_matrix(),
+                self.debug_camera.get_projection_matrix(aspect_ratio),
+            )
         } else {
-            (self.camera.get_view_matrix(), self.camera.get_projection_matrix(aspect_ratio))
+            (
+                self.camera.get_view_matrix(),
+                self.camera.get_projection_matrix(aspect_ratio),
+            )
         };
- 
+
         let (camera_pos_dvec, _) = self.camera.global_transform_f64();
-        let camera_pos_f32 = glam::Vec3::new(camera_pos_dvec.x as f32, camera_pos_dvec.y as f32, camera_pos_dvec.z as f32);
+        let camera_pos_f32 = glam::Vec3::new(
+            camera_pos_dvec.x as f32,
+            camera_pos_dvec.y as f32,
+            camera_pos_dvec.z as f32,
+        );
         self.quadtree_manager.update(camera_pos_f32, frustum);
 
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
 
-        self.camera_uniform.update_matrix(gpu_view_matrix, proj_matrix, camera_pos_dvec, self.camera.sun_intensity, [self.tile_system.config.map_saturation, self.tile_system.config.map_contrast, self.tile_system.config.map_brightness]);
+        self.camera_uniform.update_matrix(
+            gpu_view_matrix,
+            proj_matrix,
+            camera_pos_dvec,
+            self.camera.sun_intensity,
+            [
+                self.tile_system.config.map_saturation,
+                self.tile_system.config.map_contrast,
+                self.tile_system.config.map_brightness,
+            ],
+        );
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -397,9 +442,14 @@ impl<'a> WgpuState<'a> {
         let visible_tiles = self.quadtree_manager.get_visible_tiles();
 
         // Get the actually renderable set of tiles (falling back to parent meshes if children aren't ready).
-        let renderable_tiles = self.quadtree_manager.get_renderable_tiles(|id| self.tile_cache.peek(id).is_some());
+        let renderable_tiles = self
+            .quadtree_manager
+            .get_renderable_tiles(|id| self.tile_cache.peek(id).is_some());
 
-        let missing_count = visible_tiles.iter().filter(|(id, _, _)| self.tile_cache.peek(id).is_none()).count();
+        let missing_count = visible_tiles
+            .iter()
+            .filter(|(id, _, _)| self.tile_cache.peek(id).is_none())
+            .count();
         self.last_requested_tiles_count = visible_tiles.len();
         self.last_missing_tiles_count = missing_count;
 
@@ -410,15 +460,21 @@ impl<'a> WgpuState<'a> {
                 missing_meshes.push(*id);
             }
         }
-        
+
         // Also kick off fetches for any fallback parent meshes we are trying to render!
         for (id, _, _) in &renderable_tiles {
             if self.tile_cache.peek(id).is_none() && !missing_meshes.contains(id) {
                 missing_meshes.push(*id);
             }
         }
-        self.tile_system.update(&self.device, &self.queue, camera_pos_f32, &visible_tiles, &missing_meshes);
-        
+        self.tile_system.update(
+            &self.device,
+            &self.queue,
+            camera_pos_f32,
+            &visible_tiles,
+            &missing_meshes,
+        );
+
         // Promote both mathematically visible tiles and actively rendered fallback parents in the cache.
         self.update_tile_cache(&visible_tiles);
         for (id, _, _) in &renderable_tiles {
@@ -470,7 +526,9 @@ impl<'a> WgpuState<'a> {
             }
         }
         self.display_state.retain(|_, entry| {
-            entry.absent_since.map_or(true, |t| t.elapsed() < DISPLAY_GRACE_PERIOD)
+            entry
+                .absent_since
+                .is_none_or(|t| t.elapsed() < DISPLAY_GRACE_PERIOD)
         });
         self.last_visible_set = current_visible;
 
@@ -478,7 +536,9 @@ impl<'a> WgpuState<'a> {
             let id = *id;
 
             // Check if own hi-res texture is available (non-mutating peek).
-            let own_ready = self.tile_system.peek_render_data(id)
+            let own_ready = self
+                .tile_system
+                .peek_render_data(id)
                 .map(|(tex_id, _)| tex_id == id)
                 .unwrap_or(false);
 
@@ -499,23 +559,41 @@ impl<'a> WgpuState<'a> {
                     // Re-upgrades after transient evictions don't need sibling coordination.
                     let previously_upgraded = self.tiles_with_own_texture.peek(&id).is_some();
 
-                    let all_siblings_ready = previously_upgraded || if id.z == 0 {
-                        true // root tiles have no siblings
-                    } else {
-                        // Compute sibling IDs (same parent, all 4 children)
-                        let parent = id.parent().unwrap();
-                        let sibling_ids = [
-                            TileId { z: id.z, x: parent.x * 2,     y: parent.y * 2 },
-                            TileId { z: id.z, x: parent.x * 2 + 1, y: parent.y * 2 },
-                            TileId { z: id.z, x: parent.x * 2,     y: parent.y * 2 + 1 },
-                            TileId { z: id.z, x: parent.x * 2 + 1, y: parent.y * 2 + 1 },
-                        ];
-                        sibling_ids.iter().all(|sib| {
-                            self.tile_system.peek_render_data(*sib)
-                                .map(|(tex_id, _)| tex_id == *sib)
-                                .unwrap_or(false)
-                        })
-                    };
+                    let all_siblings_ready = previously_upgraded
+                        || if id.z == 0 {
+                            true // root tiles have no siblings
+                        } else {
+                            // Compute sibling IDs (same parent, all 4 children)
+                            let parent = id.parent().unwrap();
+                            let sibling_ids = [
+                                TileId {
+                                    z: id.z,
+                                    x: parent.x * 2,
+                                    y: parent.y * 2,
+                                },
+                                TileId {
+                                    z: id.z,
+                                    x: parent.x * 2 + 1,
+                                    y: parent.y * 2,
+                                },
+                                TileId {
+                                    z: id.z,
+                                    x: parent.x * 2,
+                                    y: parent.y * 2 + 1,
+                                },
+                                TileId {
+                                    z: id.z,
+                                    x: parent.x * 2 + 1,
+                                    y: parent.y * 2 + 1,
+                                },
+                            ];
+                            sibling_ids.iter().all(|sib| {
+                                self.tile_system
+                                    .peek_render_data(*sib)
+                                    .map(|(tex_id, _)| tex_id == *sib)
+                                    .unwrap_or(false)
+                            })
+                        };
 
                     if all_siblings_ready || timeout_elapsed {
                         // Upgrade: switch to own hi-res texture, lock it in.
@@ -536,42 +614,57 @@ impl<'a> WgpuState<'a> {
                         }
                     }
                 }
-
             } else {
                 // --- Tile is genuinely new to the visible set ---
                 let peek = self.tile_system.peek_render_data(id);
                 let (tex_id, uv) = peek.unwrap_or((id, [1.0, 1.0, 0.0, 0.0]));
-                let showing_own = peek.map_or(false, |(tid, _)| tid == id);
-                
+                let showing_own = peek.is_some_and(|(tid, _)| tid == id);
+
                 // Fix 3: if the tile is immediately showing its own texture
                 // (e.g. the texture was pre-fetched), record it now.
                 if showing_own {
                     self.tiles_with_own_texture.put(id, ());
                 }
-                
-                self.display_state.insert(id, TileDisplayEntry {
-                    texture_id: tex_id,
-                    uv_scale_offset: uv,
-                    first_seen: now,
-                    showing_own_texture: showing_own,
-                    absent_since: None,
-                });
+
+                self.display_state.insert(
+                    id,
+                    TileDisplayEntry {
+                        texture_id: tex_id,
+                        uv_scale_offset: uv,
+                        first_seen: now,
+                        showing_own_texture: showing_own,
+                        absent_since: None,
+                    },
+                );
             }
         }
     }
 
-
-    fn compute_debug_vertices(&mut self, main_view_proj: Mat4, visible_tiles: &[(TileId, Vec3, f32)], camera_pos: Vec3) {
+    fn compute_debug_vertices(
+        &mut self,
+        main_view_proj: Mat4,
+        visible_tiles: &[(TileId, Vec3, f32)],
+        camera_pos: Vec3,
+    ) {
         let mut debug_vertices = Vec::new();
         if self.debug_mode {
             let inv_view_proj = main_view_proj.inverse();
             let frustum_corners = crate::render::debug_geometry::get_frustum_corners(inv_view_proj);
-            crate::render::debug_geometry::append_frustum_lines(&mut debug_vertices, &frustum_corners, [1.0, 1.0, 0.0, 1.0]);
+            crate::render::debug_geometry::append_frustum_lines(
+                &mut debug_vertices,
+                &frustum_corners,
+                [1.0, 1.0, 0.0, 1.0],
+            );
 
             for (_tile_id, center, radius) in visible_tiles {
-                crate::render::debug_geometry::append_crosshair_lines(&mut debug_vertices, *center, *radius, [0.0, 1.0, 0.0, 1.0]);
+                crate::render::debug_geometry::append_crosshair_lines(
+                    &mut debug_vertices,
+                    *center,
+                    *radius,
+                    [0.0, 1.0, 0.0, 1.0],
+                );
             }
-            
+
             // Apply camera-relative translation to correctly position these when push constants are not available
             for vertex in &mut debug_vertices {
                 vertex.position[0] -= camera_pos.x;
@@ -639,7 +732,8 @@ impl<'a> WgpuState<'a> {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
         // Collect display_state entries to avoid borrow conflict with tile_system.
-        let draw_list: Vec<(TileId, TileId, [f32; 4])> = self.display_state
+        let draw_list: Vec<(TileId, TileId, [f32; 4])> = self
+            .display_state
             .iter()
             .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.uv_scale_offset))
             .collect();
@@ -681,7 +775,11 @@ impl<'a> WgpuState<'a> {
         if self.debug_mode && self.num_debug_vertices > 0 {
             render_pass.set_pipeline(&self.debug_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.debug_vertex_buffer.slice(0..(self.num_debug_vertices as u64 * 32)));
+            render_pass.set_vertex_buffer(
+                0,
+                self.debug_vertex_buffer
+                    .slice(0..(self.num_debug_vertices as u64 * 32)),
+            );
             render_pass.draw(0..self.num_debug_vertices, 0..1);
         }
 
@@ -751,16 +849,27 @@ impl<'a> WgpuState<'a> {
     }
 
     pub fn capture_pixels(&self, output_texture: &wgpu::Texture) -> Vec<u8> {
-        crate::render::capture::capture_pixels(&self.device, &self.queue, output_texture, &self.config)
+        crate::render::capture::capture_pixels(
+            &self.device,
+            &self.queue,
+            output_texture,
+            &self.config,
+        )
     }
 
     fn capture_screenshot(&self, output_texture: &wgpu::Texture, out_path: &str) {
-        crate::render::capture::capture_screenshot(&self.device, &self.queue, output_texture, &self.config, out_path)
+        crate::render::capture::capture_screenshot(
+            &self.device,
+            &self.queue,
+            output_texture,
+            &self.config,
+            out_path,
+        )
     }
 
     pub fn render<F: FnMut(&egui::Context, &mut Self)>(
-        &mut self, 
-        screenshot_out: Option<&str>, 
+        &mut self,
+        screenshot_out: Option<&str>,
         capture_memory: bool,
         ui_closure: F,
     ) -> Result<Option<Vec<u8>>, wgpu::SurfaceError> {
@@ -785,7 +894,7 @@ impl<'a> WgpuState<'a> {
             self.debug_camera.position
         } else {
             let (pos_dvec, _) = self.camera.global_transform();
-            glam::Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32)
+            glam::Vec3::new(pos_dvec.x, pos_dvec.y, pos_dvec.z)
         };
         self.compute_debug_vertices(main_view_proj, &visible_tiles, camera_pos);
 
@@ -805,6 +914,4 @@ impl<'a> WgpuState<'a> {
 
         Ok(captured_pixels)
     }
-
-
 }

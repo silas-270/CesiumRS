@@ -10,6 +10,12 @@ pub struct MeshWorkerPool {
     requested: HashSet<TileId>,
 }
 
+impl Default for MeshWorkerPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeshWorkerPool {
     pub fn new() -> Self {
         // Use a bounded sync channel. If the channel fills up, spawn_blocking will block
@@ -52,6 +58,6 @@ impl MeshWorkerPool {
 
     pub fn clear(&mut self) {
         self.requested.clear();
-        while let Ok(_) = self.receiver.try_recv() {}
+        while self.receiver.try_recv().is_ok() {}
     }
 }

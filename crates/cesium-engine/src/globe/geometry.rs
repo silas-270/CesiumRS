@@ -1,7 +1,7 @@
 use crate::globe::quadtree::TileId;
 
 pub const EARTH_RADIUS_A_F32: f32 = 6.378137;
-pub const EARTH_RADIUS_B_F32: f32 = 6.3567523142;
+pub const EARTH_RADIUS_B_F32: f32 = 6.356_752_4;
 pub const EARTH_RADIUS_A_F64: f64 = 6.378137;
 pub const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
 const INV_A2_F64: f64 = 1.0 / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64);
@@ -47,8 +47,6 @@ impl Vertex {
     }
 }
 
-
-
 pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
     let phi = lat_deg.to_radians();
     let theta = lon_deg.to_radians();
@@ -62,19 +60,19 @@ pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
 
 pub fn lon_lat_alt_to_ecef_f64(lon_deg: f64, lat_deg: f64, alt_meters: f64) -> [f64; 3] {
     let surface_pos = lon_lat_to_ecef_f64(lon_deg, lat_deg);
-    
+
     if alt_meters == 0.0 {
         return surface_pos;
     }
-    
+
     let nx = surface_pos[0] * INV_A2_F64;
     let ny = surface_pos[1] * INV_B2_F64;
     let nz = surface_pos[2] * INV_A2_F64;
     let len = (nx * nx + ny * ny + nz * nz).sqrt();
-    
+
     let normal = [nx / len, ny / len, nz / len];
     let alt_megameters = alt_meters / 1_000_000.0;
-    
+
     [
         surface_pos[0] + normal[0] * alt_megameters,
         surface_pos[1] + normal[1] * alt_megameters,
@@ -83,7 +81,6 @@ pub fn lon_lat_alt_to_ecef_f64(lon_deg: f64, lat_deg: f64, alt_meters: f64) -> [
 }
 
 pub struct TileMesh {
-
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
     pub center_f64: [f64; 3],
@@ -99,8 +96,10 @@ impl TileMesh {
         let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
         let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
 
-        let mut center_lat_max = crate::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z) as f64;
-        let mut center_lat_min = crate::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z) as f64;
+        let mut center_lat_max =
+            crate::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z) as f64;
+        let mut center_lat_min =
+            crate::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z) as f64;
         if id.y == 0 {
             center_lat_max = 90.0;
         }
@@ -160,7 +159,7 @@ impl TileMesh {
                 let z = -EARTH_RADIUS_A_F64 * cos_phi * sin_theta;
 
                 let surface_pos_f64 = [x, y, z];
-                
+
                 // Normal based on WGS84 ellipsoid
                 let normal_f64 = {
                     let nx = x * INV_A2_F64;
@@ -187,7 +186,11 @@ impl TileMesh {
                     (pos_f64[2] - center_f64[2]) as f32,
                 ];
 
-                let normal = [normal_f64[0] as f32, normal_f64[1] as f32, normal_f64[2] as f32];
+                let normal = [
+                    normal_f64[0] as f32,
+                    normal_f64[1] as f32,
+                    normal_f64[2] as f32,
+                ];
 
                 vertices.push(Vertex {
                     position: relative_pos,
@@ -213,6 +216,10 @@ impl TileMesh {
             }
         }
 
-        Self { vertices, indices, center_f64 }
+        Self {
+            vertices,
+            indices,
+            center_f64,
+        }
     }
 }

@@ -1,5 +1,5 @@
-use winit::event::{WindowEvent, MouseButton, ElementState, DeviceId};
 use winit::dpi::PhysicalPosition;
+use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
 #[derive(Clone, Debug)]
 pub enum SimulatedAction {
@@ -52,7 +52,10 @@ impl Simulator {
                 }
             } else if let Some(frames_str) = part.strip_prefix("wait:") {
                 let frames = frames_str.parse().unwrap_or(1);
-                actions.push(SimulatedAction::Wait { frames, current_frame: 0 });
+                actions.push(SimulatedAction::Wait {
+                    frames,
+                    current_frame: 0,
+                });
             }
         }
         Self { actions }
@@ -64,7 +67,14 @@ impl Simulator {
 
         if let Some(action) = self.actions.first_mut() {
             match action {
-                SimulatedAction::Drag { start_x, start_y, end_x, end_y, frames, current_frame } => {
+                SimulatedAction::Drag {
+                    start_x,
+                    start_y,
+                    end_x,
+                    end_y,
+                    frames,
+                    current_frame,
+                } => {
                     if *current_frame == 0 {
                         events.push(WindowEvent::CursorMoved {
                             device_id,
@@ -96,7 +106,10 @@ impl Simulator {
                         });
                     }
                 }
-                SimulatedAction::Wait { frames: _, current_frame } => {
+                SimulatedAction::Wait {
+                    frames: _,
+                    current_frame,
+                } => {
                     *current_frame += 1;
                 }
             }
@@ -104,8 +117,16 @@ impl Simulator {
 
         // Remove finished actions
         self.actions.retain(|a| match a {
-            SimulatedAction::Drag { frames, current_frame, .. } => current_frame < frames,
-            SimulatedAction::Wait { frames, current_frame, .. } => current_frame < frames,
+            SimulatedAction::Drag {
+                frames,
+                current_frame,
+                ..
+            } => current_frame < frames,
+            SimulatedAction::Wait {
+                frames,
+                current_frame,
+                ..
+            } => current_frame < frames,
         });
 
         events

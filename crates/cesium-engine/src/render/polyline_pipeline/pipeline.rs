@@ -3,17 +3,17 @@ use crate::render::polyline_pipeline::builder::PolylineVertex;
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PolylinePushConstants {
-    pub reference_point: [f32; 4], // offset 0  (16 bytes)
-    pub camera_pos: [f32; 4],      // offset 16 (16 bytes)
-    pub color_start: [f32; 4],     // offset 32 (16 bytes)
-    pub color_end: [f32; 4],       // offset 48 (16 bytes)
-    pub viewport_size: [f32; 2],   // offset 64 (8 bytes)
-    pub thickness: f32,            // offset 72 (4 bytes)
-    pub split_progress: f32,       // offset 76 (4 bytes)
-    pub physical_half_width: f32,  // offset 80 (4 bytes)
-    pub physical_half_height: f32, // offset 84 (4 bytes)
-    pub _padding: [f32; 2],        // offset 88 (8 bytes) - align next field to 16 bytes
-    pub airplane_pos: [f32; 4],    // offset 96 (16 bytes)
+    pub reference_point: [f32; 4],  // offset 0  (16 bytes)
+    pub camera_pos: [f32; 4],       // offset 16 (16 bytes)
+    pub color_start: [f32; 4],      // offset 32 (16 bytes)
+    pub color_end: [f32; 4],        // offset 48 (16 bytes)
+    pub viewport_size: [f32; 2],    // offset 64 (8 bytes)
+    pub thickness: f32,             // offset 72 (4 bytes)
+    pub split_progress: f32,        // offset 76 (4 bytes)
+    pub physical_half_width: f32,   // offset 80 (4 bytes)
+    pub physical_half_height: f32,  // offset 84 (4 bytes)
+    pub _padding: [f32; 2],         // offset 88 (8 bytes) - align next field to 16 bytes
+    pub airplane_pos: [f32; 4],     // offset 96 (16 bytes)
     pub airplane_forward: [f32; 4], // offset 112 (16 bytes)
 }
 
@@ -33,10 +33,10 @@ impl Default for PolylineConfig {
     fn default() -> Self {
         Self {
             thickness: 4.0,
-            physical_half_width: 0.00001116,  // 11.16 meters (full width 22.3m, ~1/3 of airplane)
+            physical_half_width: 0.00001116, // 11.16 meters (full width 22.3m, ~1/3 of airplane)
             physical_half_height: 0.00000166, // 1.66 meters
             color_start: [1.0, 0.4, 0.0, 1.0], // Orange
-            color_end: [1.0, 0.4, 0.0, 1.0],   // Orange
+            color_end: [1.0, 0.4, 0.0, 1.0], // Orange
             split_progress: -1.0,
             airplane_pos: [0.0, 0.0, 0.0, 0.0],
             airplane_forward: [0.0, 0.0, 0.0, 0.0],
@@ -123,14 +123,20 @@ impl PolylineRenderer {
         }
     }
 
-    pub fn update_geometry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[PolylineVertex]) {
+    pub fn update_geometry(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[PolylineVertex],
+    ) {
         self.num_vertices = vertices.len() as u32;
         if self.num_vertices > 0 {
             if self.num_vertices > self.vertex_capacity {
                 self.vertex_capacity = self.num_vertices.max(1024); // grow with some extra padding
                 self.vertex_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("Polyline Vertex Buffer"),
-                    size: (self.vertex_capacity as usize * std::mem::size_of::<PolylineVertex>()) as wgpu::BufferAddress,
+                    size: (self.vertex_capacity as usize * std::mem::size_of::<PolylineVertex>())
+                        as wgpu::BufferAddress,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }));
@@ -167,7 +173,12 @@ impl PolylineRenderer {
                 physical_half_width: config.physical_half_width,
                 physical_half_height: config.physical_half_height,
                 _padding: [0.0; 2],
-                reference_point: [reference_point[0] as f32, reference_point[1] as f32, reference_point[2] as f32, 0.0],
+                reference_point: [
+                    reference_point[0] as f32,
+                    reference_point[1] as f32,
+                    reference_point[2] as f32,
+                    0.0,
+                ],
                 airplane_pos: config.airplane_pos,
                 airplane_forward: config.airplane_forward,
             };

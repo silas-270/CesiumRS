@@ -4,8 +4,6 @@ pub fn linear_dvec3(p0: DVec3, p1: DVec3, t: f64) -> DVec3 {
     p0.lerp(p1, t)
 }
 
-
-
 pub fn hermite_dvec3(p0: DVec3, m0: DVec3, p1: DVec3, m1: DVec3, t: f64) -> DVec3 {
     let t2 = t * t;
     let t3 = t2 * t;

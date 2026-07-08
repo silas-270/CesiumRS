@@ -1,11 +1,11 @@
-pub mod harness;
 pub mod camera;
 pub mod culling;
-pub mod tiles;
-pub mod terrain;
 pub mod flight;
-pub mod rendering;
+pub mod harness;
 pub mod misc;
+pub mod rendering;
+pub mod terrain;
+pub mod tiles;
 
 #[derive(Clone, Debug, Default)]
 pub struct VerifyConfig {

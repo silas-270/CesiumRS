@@ -1,5 +1,3 @@
-
-
 pub fn capture_pixels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -9,7 +7,7 @@ pub fn capture_pixels(
     let u32_size = std::mem::size_of::<u32>() as u32;
     let unpadded_bytes_per_row = config.width * u32_size;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
 
     let buffer_size = (padded_bytes_per_row * config.height) as wgpu::BufferAddress;
 
@@ -85,7 +83,7 @@ pub fn capture_pixels(
     }
     drop(data);
     staging_buffer.unmap();
-    
+
     rgba_data
 }
 
@@ -97,5 +95,11 @@ pub fn capture_screenshot(
     out_path: &str,
 ) {
     let rgba_data = capture_pixels(device, queue, output_texture, config);
-    let _ = image::save_buffer(out_path, &rgba_data, config.width, config.height, image::ColorType::Rgba8);
+    let _ = image::save_buffer(
+        out_path,
+        &rgba_data,
+        config.width,
+        config.height,
+        image::ColorType::Rgba8,
+    );
 }

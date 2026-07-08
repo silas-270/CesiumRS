@@ -16,12 +16,16 @@ fn test_all_altitudes() {
         let aspect = 1920.0 / 1080.0;
         let frustum_planes = cam.calculate_frustum_planes(aspect);
         let (global_pos_dvec, _) = cam.global_transform_f64();
-        let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
+        let global_pos_f32 = glam::Vec3::new(
+            global_pos_dvec.x as f32,
+            global_pos_dvec.y as f32,
+            global_pos_dvec.z as f32,
+        );
         let mut quadtree = QuadtreeManager::new();
         for _ in 0..30 {
             quadtree.update(global_pos_f32, frustum_planes);
         }
-        
+
         let tiles = quadtree.get_visible_tiles();
 
         let mut ghost_count = 0;
@@ -37,7 +41,8 @@ fn test_all_altitudes() {
             let z_pow = (1_u32 << id.z) as f32;
             let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
             let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
-            let mut lat_max = cesium_engine::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z);
+            let mut lat_max =
+                cesium_engine::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z);
             let mut lat_min =
                 cesium_engine::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z);
             if id.y == 0 {

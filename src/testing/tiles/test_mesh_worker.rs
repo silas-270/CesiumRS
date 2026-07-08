@@ -1,6 +1,6 @@
-use std::time::Duration;
 use cesium_engine::globe::quadtree::TileId;
 use cesium_engine::globe::tiles::mesh_worker::MeshWorkerPool;
+use std::time::Duration;
 
 #[test]
 fn test_mesh_worker_spawns_and_returns() {

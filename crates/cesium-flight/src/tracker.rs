@@ -1,24 +1,31 @@
 use glam::DVec3;
 use std::sync::mpsc;
 
-use cesium_engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
-use cesium_engine::time::SimulationTime;
-use cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64;
-use cesium_engine::render::polyline_pipeline::bvh::PolylineBVH;
-use cesium_engine::render::polyline_pipeline::pipeline::{PolylineRenderer, PolylineConfig};
-use cesium_engine::core::extension::GlobeExtension;
-use cesium_engine::render::model_pipeline::pipeline::ModelRenderer;
 use cesium_engine::camera::camera::CameraMode;
+use cesium_engine::core::extension::GlobeExtension;
+use cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64;
+use cesium_engine::property::sampled::{InterpolationAlgorithm, SampledPositionProperty};
+use cesium_engine::render::model_pipeline::pipeline::ModelRenderer;
+use cesium_engine::render::polyline_pipeline::bvh::PolylineBVH;
+use cesium_engine::render::polyline_pipeline::pipeline::{PolylineConfig, PolylineRenderer};
+use cesium_engine::time::SimulationTime;
 
-use crate::flight_handle::{FlightHandle, FlightCommand};
+use crate::flight_handle::{FlightCommand, FlightHandle};
 
-
-pub fn load_flight_data(content: &str) -> Result<(SampledPositionProperty, cesium_engine::property::sampled::SampledScalarProperty), Box<dyn std::error::Error>> {
+pub fn load_flight_data(
+    content: &str,
+) -> Result<
+    (
+        SampledPositionProperty,
+        cesium_engine::property::sampled::SampledScalarProperty,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
 
-    let mut property = SampledPositionProperty::new()
-        .with_algorithm(InterpolationAlgorithm::CatmullRom);
-        
+    let mut property =
+        SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+
     let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new()
         .with_algorithm(InterpolationAlgorithm::CatmullRom);
 
@@ -27,7 +34,7 @@ pub fn load_flight_data(content: &str) -> Result<(SampledPositionProperty, cesiu
         let longitude = wp["longitude"].as_f64().unwrap_or(0.0);
         let latitude = wp["latitude"].as_f64().unwrap_or(0.0);
         let altitude = wp["altitude"].as_f64().unwrap_or(0.0);
-        
+
         let sun_intensity = wp["sunIntensity"].as_f64().unwrap_or(1.0);
 
         let ecef_array = lon_lat_alt_to_ecef_f64(longitude, latitude, altitude);
@@ -102,25 +109,40 @@ impl FlightTrackerApp {
         }
     }
 
-    pub fn get_plane_state_at_time_delta(&self, progress_val: f64, delta_seconds: f64) -> Option<cesium_engine::math::trajectory::TransformState> {
+    pub fn get_plane_state_at_time_delta(
+        &self,
+        progress_val: f64,
+        delta_seconds: f64,
+    ) -> Option<cesium_engine::math::trajectory::TransformState> {
         if let Some(flight) = self.flights.first() {
-            let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
-            let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+            let start_t = flight
+                .property
+                .start_time()
+                .map(|t| t.seconds)
+                .unwrap_or(0.0);
+            let stop_t = flight
+                .property
+                .stop_time()
+                .map(|t| t.seconds)
+                .unwrap_or(1.0);
             let current_time_seconds = start_t + progress_val * (stop_t - start_t);
-            let time = cesium_engine::time::SimulationTime::new(current_time_seconds + delta_seconds);
-            
-            let evaluator = cesium_engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 30.0);
+            let time =
+                cesium_engine::time::SimulationTime::new(current_time_seconds + delta_seconds);
+
+            let evaluator =
+                cesium_engine::math::trajectory::TrajectoryEvaluator::new(&flight.property, 30.0);
             evaluator.evaluate(time)
         } else {
             None
         }
     }
 
-
-
-    pub fn get_plane_state_at(&self, progress_val: f64) -> Option<cesium_engine::math::trajectory::TransformState> {
+    pub fn get_plane_state_at(
+        &self,
+        progress_val: f64,
+    ) -> Option<cesium_engine::math::trajectory::TransformState> {
         let mut state = self.get_plane_state_at_time_delta(progress_val, 0.0);
-        
+
         if let Some(ref mut s) = state {
             if progress_val > 0.999 {
                 // Plane has arrived. Derive rotation robustly by looking exactly 1 second in the past.
@@ -129,17 +151,25 @@ impl FlightTrackerApp {
                 }
             }
         }
-        
+
         state
     }
 
     pub fn get_sun_intensity_at(&self, progress_val: f64) -> Option<f64> {
         if let Some(flight) = self.flights.first() {
-            let start_t = flight.property.start_time().map(|t| t.seconds).unwrap_or(0.0);
-            let stop_t = flight.property.stop_time().map(|t| t.seconds).unwrap_or(1.0);
+            let start_t = flight
+                .property
+                .start_time()
+                .map(|t| t.seconds)
+                .unwrap_or(0.0);
+            let stop_t = flight
+                .property
+                .stop_time()
+                .map(|t| t.seconds)
+                .unwrap_or(1.0);
             let current_time_seconds = start_t + progress_val * (stop_t - start_t);
             let time = cesium_engine::time::SimulationTime::new(current_time_seconds);
-            
+
             use cesium_engine::property::Property;
             flight.sun_intensity_property.evaluate(time)
         } else {
@@ -148,10 +178,9 @@ impl FlightTrackerApp {
     }
 
     pub fn add_flight_path(&mut self, id: &str, json_content: String, is_secondary: bool) {
-        self.pending_flights.push((id.to_string(), json_content, is_secondary));
+        self.pending_flights
+            .push((id.to_string(), json_content, is_secondary));
     }
-
-
 }
 
 impl GlobeExtension for FlightTrackerApp {
@@ -165,14 +194,20 @@ impl GlobeExtension for FlightTrackerApp {
         // Try loading the A350.glb model from the root directory
         match std::fs::read("A350.glb") {
             Ok(glb_bytes) => {
-                match ModelRenderer::new(device, queue, config, camera_bind_group_layout, &glb_bytes) {
+                match ModelRenderer::new(
+                    device,
+                    queue,
+                    config,
+                    camera_bind_group_layout,
+                    &glb_bytes,
+                ) {
                     Ok(renderer) => {
                         println!("A350.glb successfully loaded and renderer initialized!");
                         self.airplane_renderer = Some(renderer);
-                    },
+                    }
                     Err(e) => eprintln!("Failed to initialize ModelRenderer: {:?}", e),
                 }
-            },
+            }
             Err(e) => eprintln!("Failed to read A350.glb from disk: {:?}", e),
         }
 
@@ -181,9 +216,11 @@ impl GlobeExtension for FlightTrackerApp {
                 if let Some(bvh) = PolylineBVH::build(&property) {
                     println!("BVH loaded: {}", id);
                     let renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
-                    let mut poly_config = PolylineConfig::default();
-                    poly_config.color_end = [0.9, 0.9, 0.9, 1.0];
-                    
+                    let mut poly_config = PolylineConfig {
+                        color_end: [0.9, 0.9, 0.9, 1.0],
+                        ..PolylineConfig::default()
+                    };
+
                     if is_secondary {
                         poly_config.split_progress = 0.5;
                     }
@@ -216,7 +253,11 @@ impl GlobeExtension for FlightTrackerApp {
         if let Some(rx) = &self.command_rx {
             while let Ok(cmd) = rx.try_recv() {
                 match cmd {
-                    FlightCommand::LoadFlight { id, json, is_secondary } => {
+                    FlightCommand::LoadFlight {
+                        id,
+                        json,
+                        is_secondary,
+                    } => {
                         self.pending_flights.push((id, json, is_secondary));
                     }
                     FlightCommand::SetProgress(p) => {
@@ -225,7 +266,7 @@ impl GlobeExtension for FlightTrackerApp {
                     FlightCommand::SetSpeed(s) => {
                         self.play_speed = s;
                     }
-                    FlightCommand::Play  => self.is_playing = true,
+                    FlightCommand::Play => self.is_playing = true,
                     FlightCommand::Pause => self.is_playing = false,
                 }
             }
@@ -251,11 +292,17 @@ impl GlobeExtension for FlightTrackerApp {
         for flight in &mut self.flights {
             let mut vertices = Vec::new();
 
-            let visible_strips = flight.bvh.collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
+            let visible_strips =
+                flight
+                    .bvh
+                    .collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
             for strip in visible_strips {
-                let mut strip_verts = cesium_engine::render::polyline_pipeline::bvh::generate_vertices(
-                    &strip, camera_pos_dvec3, flight.reference_point
-                );
+                let mut strip_verts =
+                    cesium_engine::render::polyline_pipeline::bvh::generate_vertices(
+                        &strip,
+                        camera_pos_dvec3,
+                        flight.reference_point,
+                    );
                 if !vertices.is_empty() && !strip_verts.is_empty() {
                     vertices.push(*vertices.last().unwrap());
                     vertices.push(*strip_verts.first().unwrap());
@@ -269,11 +316,11 @@ impl GlobeExtension for FlightTrackerApp {
 
         // Camera Logic
         camera.mode = self.view_mode;
-        
+
         if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
             camera.sun_intensity = intensity as f32;
         }
-        
+
         let mut mode_switched_or_reset = false;
         if self.view_mode != self.last_view_mode || self.reset_viewport {
             mode_switched_or_reset = true;
@@ -284,18 +331,36 @@ impl GlobeExtension for FlightTrackerApp {
         if let Some(state) = self.get_plane_state_at(current_progress) {
             match self.view_mode {
                 CameraMode::Tracking => {
-                    crate::camera_modes::tracking::update_tracking_mode(camera, &state, mode_switched_or_reset);
+                    crate::camera_modes::tracking::update_tracking_mode(
+                        camera,
+                        &state,
+                        mode_switched_or_reset,
+                    );
                 }
                 CameraMode::Cockpit => {
-                    crate::camera_modes::cockpit::update_cockpit_mode(camera, &state, mode_switched_or_reset);
+                    crate::camera_modes::cockpit::update_cockpit_mode(
+                        camera,
+                        &state,
+                        mode_switched_or_reset,
+                    );
                 }
                 CameraMode::Free => {
-                    crate::camera_modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
+                    crate::camera_modes::free::update_free_mode(
+                        camera,
+                        &self.flights,
+                        aspect_ratio,
+                        mode_switched_or_reset,
+                    );
                 }
             }
         } else if self.view_mode == CameraMode::Free {
             // Free mode does not require an active plane state
-            crate::camera_modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
+            crate::camera_modes::free::update_free_mode(
+                camera,
+                &self.flights,
+                aspect_ratio,
+                mode_switched_or_reset,
+            );
         }
     }
 
@@ -326,7 +391,13 @@ impl GlobeExtension for FlightTrackerApp {
 
             config.airplane_forward = if let Some(state) = airplane_state {
                 let cur_rot = state.rotation;
-                let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
+                let rot_f32 = glam::Quat::from_xyzw(
+                    cur_rot.x as f32,
+                    cur_rot.y as f32,
+                    cur_rot.z as f32,
+                    cur_rot.w as f32,
+                )
+                .normalize();
                 let forward = rot_f32 * glam::Vec3::new(0.0, 0.0, -1.0);
                 [forward.x, forward.y, forward.z, 0.0]
             } else {
@@ -338,7 +409,11 @@ impl GlobeExtension for FlightTrackerApp {
                 camera_bind_group,
                 viewport_size,
                 camera_pos_f64,
-                [flight.reference_point.x, flight.reference_point.y, flight.reference_point.z],
+                [
+                    flight.reference_point.x,
+                    flight.reference_point.y,
+                    flight.reference_point.z,
+                ],
                 &config,
             );
         }
@@ -351,34 +426,44 @@ impl GlobeExtension for FlightTrackerApp {
                 let elevated_position = state.position + up_dir * 0.00001;
                 let camera_pos = glam::DVec3::from_slice(&camera_pos_f64);
                 let relative_pos_f64 = elevated_position - camera_pos;
-                let relative_pos = glam::Vec3::new(relative_pos_f64.x as f32, relative_pos_f64.y as f32, relative_pos_f64.z as f32);
+                let relative_pos = glam::Vec3::new(
+                    relative_pos_f64.x as f32,
+                    relative_pos_f64.y as f32,
+                    relative_pos_f64.z as f32,
+                );
                 let translation = glam::Mat4::from_translation(relative_pos);
 
                 let cur_rot = state.rotation;
-                let rot_f32 = glam::Quat::from_xyzw(cur_rot.x as f32, cur_rot.y as f32, cur_rot.z as f32, cur_rot.w as f32).normalize();
+                let rot_f32 = glam::Quat::from_xyzw(
+                    cur_rot.x as f32,
+                    cur_rot.y as f32,
+                    cur_rot.z as f32,
+                    cur_rot.w as f32,
+                )
+                .normalize();
                 let rotation = glam::Mat4::from_quat(rot_f32);
-                
+
                 // Dynamic scaling based on camera distance
                 let distance = relative_pos.length(); // Distance in Megameters
-                
+
                 // Desired length of the airplane in Megameters (now half as big as 0.0333)
                 let desired_length_mm = distance * 0.01665;
-                
-                let min_length_mm = 67.0 / 1_000_000.0;      // 67 meters (A350 length)
+
+                let min_length_mm = 67.0 / 1_000_000.0; // 67 meters (A350 length)
                 let max_length_mm = 2000.0 * 1000.0 / 1_000_000.0; // 2000 km
-                
+
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
-                
+
                 // Assuming the A350 model is approximately 1.0 local units long.
-                let scale_factor = clamped_length_mm / 1.0; 
+                let scale_factor = clamped_length_mm / 1.0;
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
                 // Apply a constant yaw correction to align the A350.glb model with standard axes
                 let model_correction = glam::Mat4::from_euler(
-                    glam::EulerRot::YXZ, 
-                    std::f32::consts::PI,        // Yaw
-                    0.0,                         // Pitch
-                    0.0                          // Roll
+                    glam::EulerRot::YXZ,
+                    std::f32::consts::PI, // Yaw
+                    0.0,                  // Pitch
+                    0.0,                  // Roll
                 );
 
                 let model_matrix = translation * rotation * scale * model_correction;
@@ -389,7 +474,12 @@ impl GlobeExtension for FlightTrackerApp {
                     model_matrix_1: model_matrix.y_axis.to_array(),
                     model_matrix_2: model_matrix.z_axis.to_array(),
                     model_matrix_3: model_matrix.w_axis.to_array(),
-                    camera_pos: [camera_pos_f64[0] as f32, camera_pos_f64[1] as f32, camera_pos_f64[2] as f32, 1.0],
+                    camera_pos: [
+                        camera_pos_f64[0] as f32,
+                        camera_pos_f64[1] as f32,
+                        camera_pos_f64[2] as f32,
+                        1.0,
+                    ],
                     viewport_size,
                     padding: [0.0, 0.0],
                 };
@@ -402,13 +492,19 @@ impl GlobeExtension for FlightTrackerApp {
     fn render_ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.label("Flight Controls");
         let mut p = *self.progress.lock().unwrap() as f32;
-        if ui.add(egui::Slider::new(&mut p, 0.0..=1.0).text("Flight Progress")).changed() {
+        if ui
+            .add(egui::Slider::new(&mut p, 0.0..=1.0).text("Flight Progress"))
+            .changed()
+        {
             *self.progress.lock().unwrap() = p as f64;
             self.is_playing = false; // Pause when manually dragged
         }
-        
+
         ui.horizontal(|ui| {
-            if ui.button(if self.is_playing { "Pause" } else { "Play" }).clicked() {
+            if ui
+                .button(if self.is_playing { "Pause" } else { "Play" })
+                .clicked()
+            {
                 self.is_playing = !self.is_playing;
             }
             ui.add(egui::Slider::new(&mut self.play_speed, -0.5..=0.5).text("Speed"));
@@ -420,7 +516,7 @@ impl GlobeExtension for FlightTrackerApp {
             ui.radio_value(&mut self.view_mode, CameraMode::Free, "Free");
             ui.radio_value(&mut self.view_mode, CameraMode::Tracking, "Tracking");
             ui.radio_value(&mut self.view_mode, CameraMode::Cockpit, "Cockpit");
-            
+
             if ui.button("Reset Viewport").clicked() {
                 self.reset_viewport = true;
             }

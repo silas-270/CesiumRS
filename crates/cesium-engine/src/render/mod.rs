@@ -16,6 +16,6 @@ pub mod camera_uniform;
 #[cfg(not(feature = "testing"))]
 pub(crate) mod camera_uniform;
 pub mod globe_pipeline;
-pub mod sky_pipeline;
 pub mod model_pipeline;
 pub mod polyline_pipeline;
+pub mod sky_pipeline;

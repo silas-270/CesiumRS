@@ -61,7 +61,11 @@ pub struct TileFetcher {
 }
 
 impl TileFetcher {
-    pub fn new(tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>, base_url: String, offline_mode: bool) -> Self {
+    pub fn new(
+        tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>,
+        base_url: String,
+        offline_mode: bool,
+    ) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -81,7 +85,15 @@ impl TileFetcher {
         let worker_tx = tx.clone();
 
         runtime.spawn(async move {
-            Self::worker_loop(client, worker_queue, worker_notify, worker_tx, base_url, offline_mode).await;
+            Self::worker_loop(
+                client,
+                worker_queue,
+                worker_notify,
+                worker_tx,
+                base_url,
+                offline_mode,
+            )
+            .await;
         });
 
         Self {
@@ -147,7 +159,11 @@ impl TileFetcher {
         }
     }
 
-    async fn fetch_and_decode(client: reqwest::Client, id: TileId, base_url: String) -> Result<Vec<u8>, String> {
+    async fn fetch_and_decode(
+        client: reqwest::Client,
+        id: TileId,
+        base_url: String,
+    ) -> Result<Vec<u8>, String> {
         let url = base_url
             .replace("{z}", &id.z.to_string())
             .replace("{x}", &id.x.to_string())

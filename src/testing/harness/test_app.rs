@@ -1,6 +1,6 @@
-use cesium_engine::core::app::App;
 use crate::testing::harness::simulator::Simulator;
 use crate::testing::VerifyConfig;
+use cesium_engine::core::app::App;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -22,7 +22,9 @@ impl<'a> TestApp<'a> {
             Simulator { actions: vec![] }
         };
 
-        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(std::sync::Arc::new(std::sync::Mutex::new(0.0))));
+        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
+            std::sync::Arc::new(std::sync::Mutex::new(0.0)),
+        ));
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, true);
         }
@@ -30,7 +32,7 @@ impl<'a> TestApp<'a> {
 
         Self {
             inner: App::new(
-                cesium_engine::globe::tiles::config::TileEngineConfig::default(), 
+                cesium_engine::globe::tiles::config::TileEngineConfig::default(),
                 Some(flight_app),
                 None,
             ),
@@ -52,18 +54,18 @@ impl<'a> ApplicationHandler for TestApp<'a> {
                     self.config.cam_y as f32,
                     self.config.cam_z as f32,
                 );
-                
+
                 let d = eye.length();
                 let r = 6.378137f32; // Earth radius in Megameters
                 let target = if d > r {
                     let normal = eye / d; // Pointing outward from center
-                    // Find a tangent vector perpendicular to normal
+                                          // Find a tangent vector perpendicular to normal
                     let tangent = if normal.y.abs() < 0.9 {
                         normal.cross(glam::Vec3::Y).normalize()
                     } else {
                         normal.cross(glam::Vec3::X).normalize()
                     };
-                    
+
                     // The triangle formed by Center, Horizon, Eye is right-angled at Horizon.
                     // sin(alpha) = r / d.
                     // cos(alpha) = sqrt(1.0 - sin(alpha)^2).
@@ -82,23 +84,33 @@ impl<'a> ApplicationHandler for TestApp<'a> {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
         if let WindowEvent::RedrawRequested = event {
             let synthetic_events = self.simulator.pump_events();
             for syn_ev in synthetic_events {
                 self.inner.window_event(event_loop, window_id, syn_ev);
             }
-            
+
             let mut capture_path = None;
             if self.simulator.actions.is_empty() {
                 if let Some(state) = self.inner.wgpu_state_mut() {
-                    if state.tile_system.texture_manager.fetcher.is_loading_complete() {
+                    if state
+                        .tile_system
+                        .texture_manager
+                        .fetcher
+                        .is_loading_complete()
+                    {
                         self.frames_stable += 1;
                     } else {
                         self.frames_stable = 0;
                     }
                 }
-                
+
                 if self.frames_stable > 5 {
                     capture_path = Some(self.config.out_path.as_str());
                 }

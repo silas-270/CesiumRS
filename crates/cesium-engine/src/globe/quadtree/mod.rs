@@ -1,7 +1,8 @@
-pub mod tile_id;
+#![allow(clippy::module_inception)]
 pub mod bounding_volume;
 pub mod quadtree;
+pub mod tile_id;
 
-pub use tile_id::{TileId, web_mercator_y_to_lat};
-pub use bounding_volume::{OrientedBoundingBox, Frustum};
-pub use quadtree::{QuadtreeNode, QuadtreeManager};
+pub use bounding_volume::{Frustum, OrientedBoundingBox};
+pub use quadtree::{QuadtreeManager, QuadtreeNode};
+pub use tile_id::{web_mercator_y_to_lat, TileId};

@@ -11,7 +11,11 @@ fn test_obb_debug() {
 
     let frustum_planes = cam.calculate_frustum_planes(16.0 / 9.0);
     let (global_pos_dvec, _) = cam.global_transform_f64();
-    let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
+    let global_pos_f32 = glam::Vec3::new(
+        global_pos_dvec.x as f32,
+        global_pos_dvec.y as f32,
+        global_pos_dvec.z as f32,
+    );
     quadtree.update(global_pos_f32, frustum_planes);
 
     let tiles1 = quadtree.get_visible_tiles();
@@ -20,7 +24,11 @@ fn test_obb_debug() {
     cam.set_local_transform(Vec3::new(0.0, 0.0, 8.0), Quat::IDENTITY);
     let frustum_planes2 = cam.calculate_frustum_planes(16.0 / 9.0);
     let (global_pos_dvec2, _) = cam.global_transform_f64();
-    let global_pos_f32_2 = glam::Vec3::new(global_pos_dvec2.x as f32, global_pos_dvec2.y as f32, global_pos_dvec2.z as f32);
+    let global_pos_f32_2 = glam::Vec3::new(
+        global_pos_dvec2.x as f32,
+        global_pos_dvec2.y as f32,
+        global_pos_dvec2.z as f32,
+    );
     quadtree.update(global_pos_f32_2, frustum_planes2);
     let tiles = quadtree.get_visible_tiles();
 

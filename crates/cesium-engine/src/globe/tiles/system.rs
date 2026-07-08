@@ -43,29 +43,48 @@ impl TileSystem {
             if let Some(last_pos) = self.last_camera_pos {
                 let velocity = camera_pos - last_pos;
                 if velocity.length_squared() > 1e-6 {
-                let norm_vel = velocity.normalize();
-                
-                for (id, center, _) in visible_tiles {
-                    if id.z < 4 { continue; } // Prevent root-level prefetch flooding
+                    let norm_vel = velocity.normalize();
 
-                    let to_tile = (*center - camera_pos).normalize_or_zero();
-                    if to_tile.dot(norm_vel) > 0.5 {
-                        let mut neighbors = Vec::new();
-                        neighbors.push(TileId { z: id.z, x: id.x.saturating_add(1), y: id.y });
-                        neighbors.push(TileId { z: id.z, x: id.x.saturating_sub(1), y: id.y });
-                        neighbors.push(TileId { z: id.z, x: id.x, y: id.y.saturating_add(1) });
-                        neighbors.push(TileId { z: id.z, x: id.x, y: id.y.saturating_sub(1) });
-                        
-                        let max_x_y = (1 << id.z) - 1;
-                        for n in neighbors {
-                            if n.x <= max_x_y && n.y <= max_x_y {
-                                self.texture_manager.request_tile(n, TilePriority::Low);
+                    for (id, center, _) in visible_tiles {
+                        if id.z < 4 {
+                            continue;
+                        } // Prevent root-level prefetch flooding
+
+                        let to_tile = (*center - camera_pos).normalize_or_zero();
+                        if to_tile.dot(norm_vel) > 0.5 {
+                            let neighbors = vec![
+                                TileId {
+                                    z: id.z,
+                                    x: id.x.saturating_add(1),
+                                    y: id.y,
+                                },
+                                TileId {
+                                    z: id.z,
+                                    x: id.x.saturating_sub(1),
+                                    y: id.y,
+                                },
+                                TileId {
+                                    z: id.z,
+                                    x: id.x,
+                                    y: id.y.saturating_add(1),
+                                },
+                                TileId {
+                                    z: id.z,
+                                    x: id.x,
+                                    y: id.y.saturating_sub(1),
+                                },
+                            ];
+
+                            let max_x_y = (1 << id.z) - 1;
+                            for n in neighbors {
+                                if n.x <= max_x_y && n.y <= max_x_y {
+                                    self.texture_manager.request_tile(n, TilePriority::Low);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
         }
         self.last_camera_pos = Some(camera_pos);
 
@@ -98,8 +117,8 @@ impl TileSystem {
         let mut curr = child;
 
         while let Some(p) = curr.parent() {
-            let is_right = curr.x % 2 != 0;
-            let is_bottom = curr.y % 2 != 0;
+            let is_right = !curr.x.is_multiple_of(2);
+            let is_bottom = !curr.y.is_multiple_of(2);
 
             scale_x *= 0.5;
             scale_y *= 0.5;

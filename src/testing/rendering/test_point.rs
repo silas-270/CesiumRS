@@ -50,8 +50,6 @@ fn test_point() {
     }
     println!("Surface points visible for Z=5 X=7 Y=15: {}", any_visible);
 
-
-
     let obb_pass = frustum.intersects_obb(&node.obb);
     println!("OBB pass for Z=5, X=7, Y=15: {}", obb_pass);
     println!("OBB center: {:?}", node.obb.center);

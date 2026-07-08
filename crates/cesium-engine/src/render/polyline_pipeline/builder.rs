@@ -1,7 +1,7 @@
-use glam::DVec3;
-use crate::property::Property;
 use crate::property::sampled::SampledPositionProperty;
+use crate::property::Property;
 use crate::time::SimulationTime;
+use glam::DVec3;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -82,8 +82,6 @@ impl AdaptiveSubdivisionBuilder {
         }
     }
 
-
-
     pub fn build(&self, property: &SampledPositionProperty) -> Vec<PolylineVertex> {
         if self.force_all_samples {
             let samples = property.samples();
@@ -114,20 +112,29 @@ impl AdaptiveSubdivisionBuilder {
         }
 
         let mut path_points = Vec::new();
-        
+
         let mut current_time = start_time.seconds;
-        let mut last_p = property.evaluate(SimulationTime::new(current_time)).unwrap();
+        let mut last_p = property
+            .evaluate(SimulationTime::new(current_time))
+            .unwrap();
         path_points.push(last_p);
 
         let max_step = 60.0 * 5.0; // 5 minutes max step
-        
+
         while current_time < stop_time.seconds {
             let next_time = (current_time + max_step).min(stop_time.seconds);
             let p_start = last_p;
             let p_end = property.evaluate(SimulationTime::new(next_time)).unwrap();
-            
-            self.subdivide(property, current_time, next_time, p_start, p_end, &mut path_points);
-            
+
+            self.subdivide(
+                property,
+                current_time,
+                next_time,
+                p_start,
+                p_end,
+                &mut path_points,
+            );
+
             path_points.push(p_end);
             current_time = next_time;
             last_p = p_end;
@@ -143,7 +150,7 @@ impl AdaptiveSubdivisionBuilder {
         t_end: f64,
         p_start: DVec3,
         p_end: DVec3,
-        points: &mut Vec<DVec3>
+        points: &mut Vec<DVec3>,
     ) {
         if (t_end - t_start) <= self.min_step {
             return;
@@ -155,7 +162,7 @@ impl AdaptiveSubdivisionBuilder {
         // Calculate distance from p_mid_true to the line segment (p_start, p_end)
         let line_vec = p_end - p_start;
         let length_sq = line_vec.length_squared();
-        
+
         let dist = if length_sq < 1e-8 {
             (p_mid_true - p_start).length()
         } else {
@@ -176,9 +183,17 @@ impl AdaptiveSubdivisionBuilder {
 
         for i in 0..points.len() {
             let curr = points[i];
-            
-            let prev = if i > 0 { points[i - 1] } else { curr + (curr - points[i + 1]).normalize_or_zero() * 1.0 };
-            let next = if i < points.len() - 1 { points[i + 1] } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
+
+            let prev = if i > 0 {
+                points[i - 1]
+            } else {
+                curr + (curr - points[i + 1]).normalize_or_zero() * 1.0
+            };
+            let next = if i < points.len() - 1 {
+                points[i + 1]
+            } else {
+                curr + (curr - prev).normalize_or_zero() * 1.0
+            };
 
             let curr_f32 = [curr.x as f32, curr.y as f32, curr.z as f32];
             let prev_f32 = [prev.x as f32, prev.y as f32, prev.z as f32];

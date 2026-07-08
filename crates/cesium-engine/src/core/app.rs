@@ -1,16 +1,16 @@
-use std::sync::Arc;
-use std::time::Instant;
+use glam::Vec3;
 use std::collections::HashSet;
 use std::sync::mpsc;
-use glam::Vec3;
+use std::sync::Arc;
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::core::command::{CameraCommandMode, ViewerCommand};
 use crate::render::wgpu_state::WgpuState;
-use crate::core::command::{ViewerCommand, CameraCommandMode};
 
 pub struct App<'a> {
     window: Option<Arc<Window>>,
@@ -46,92 +46,101 @@ impl<'a> App<'a> {
     }
 
     fn render_ui(ctx: &egui::Context, state: &mut WgpuState) {
-        egui::Window::new("Flight Tracker Debug").resizable(false).show(ctx, |ui| {
-            ui.label(format!("Altitude: {:.4}", state.camera.altitude()));
+        egui::Window::new("Flight Tracker Debug")
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!("Altitude: {:.4}", state.camera.altitude()));
 
-            // Sun intensity is now controlled by the flight JSON interpolation
-            ui.horizontal(|ui| {
-                ui.label(format!("Sun Intensity: {:.2}", state.camera.sun_intensity));
-            });
-
-            let mut is_debug = state.debug_mode;
-            if ui.checkbox(&mut is_debug, "Debug Mode (Dual Camera)").changed() {
-                state.debug_mode = is_debug;
-                if is_debug && !state.debug_camera_initialized {
-                    let (global_pos, global_ori) = state.camera.global_transform();
-                    let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
-                    let pitch = forward.y.asin();
-                    let yaw = forward.x.atan2(-forward.z);
-                    state.debug_camera = crate::camera::GodCamera::new(
-                        global_pos,
-                        yaw,
-                        pitch,
-                    );
-                    state.debug_camera_initialized = true;
-                }
-            }
-
-            if state.debug_mode {
-                ui.separator();
-                ui.label("Controls: WASD to move, Right-Click to look");
-                ui.label("Space / Ctrl+Space for Up / Down. Shift to boost.");
-                ui.separator();
+                // Sun intensity is now controlled by the flight JSON interpolation
                 ui.horizontal(|ui| {
-                    if ui.button("Snap God Camera to Main Camera").clicked() {
+                    ui.label(format!("Sun Intensity: {:.2}", state.camera.sun_intensity));
+                });
+
+                let mut is_debug = state.debug_mode;
+                if ui
+                    .checkbox(&mut is_debug, "Debug Mode (Dual Camera)")
+                    .changed()
+                {
+                    state.debug_mode = is_debug;
+                    if is_debug && !state.debug_camera_initialized {
                         let (global_pos, global_ori) = state.camera.global_transform();
-                        let forward = (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
+                        let forward =
+                            (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
                         let pitch = forward.y.asin();
                         let yaw = forward.x.atan2(-forward.z);
                         state.debug_camera = crate::camera::GodCamera::new(global_pos, yaw, pitch);
+                        state.debug_camera_initialized = true;
                     }
-                });
+                }
+
+                if state.debug_mode {
+                    ui.separator();
+                    ui.label("Controls: WASD to move, Right-Click to look");
+                    ui.label("Space / Ctrl+Space for Up / Down. Shift to boost.");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Snap God Camera to Main Camera").clicked() {
+                            let (global_pos, global_ori) = state.camera.global_transform();
+                            let forward =
+                                (global_ori * glam::Vec3::new(0.0, 0.0, -1.0)).normalize_or_zero();
+                            let pitch = forward.y.asin();
+                            let yaw = forward.x.atan2(-forward.z);
+                            state.debug_camera =
+                                crate::camera::GodCamera::new(global_pos, yaw, pitch);
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label("Main Camera State:");
+                    ui.horizontal(|ui| {
+                        ui.label("Pos:");
+                        ui.add(egui::DragValue::new(&mut state.camera.local_pos.x).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut state.camera.local_pos.y).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut state.camera.local_pos.z).speed(0.1));
+                    });
+
+                    let (yaw, pitch, roll) = state.camera.local_ori.to_euler(glam::EulerRot::YXZ);
+                    let mut yaw_deg = yaw.to_degrees();
+                    let mut pitch_deg = pitch.to_degrees();
+                    let mut roll_deg = roll.to_degrees();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Rot:");
+                        ui.add(
+                            egui::DragValue::new(&mut pitch_deg)
+                                .speed(1.0)
+                                .prefix("P: "),
+                        );
+                        ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
+                        ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Lens:");
+                        ui.add(
+                            egui::Slider::new(&mut state.camera.focal_length, 12.0..=200.0)
+                                .text("Focal Length (mm)"),
+                        );
+                    });
+
+                    if pitch_deg != pitch.to_degrees()
+                        || yaw_deg != yaw.to_degrees()
+                        || roll_deg != roll.to_degrees()
+                    {
+                        state.camera.local_ori = glam::Quat::from_euler(
+                            glam::EulerRot::YXZ,
+                            yaw_deg.to_radians(),
+                            pitch_deg.to_radians(),
+                            roll_deg.to_radians(),
+                        );
+                    }
+                }
 
                 ui.separator();
-                ui.label("Main Camera State:");
-                ui.horizontal(|ui| {
-                    ui.label("Pos:");
-                    ui.add(egui::DragValue::new(&mut state.camera.local_pos.x).speed(0.1));
-                    ui.add(egui::DragValue::new(&mut state.camera.local_pos.y).speed(0.1));
-                    ui.add(egui::DragValue::new(&mut state.camera.local_pos.z).speed(0.1));
-                });
-
-                let (yaw, pitch, roll) = state.camera.local_ori.to_euler(glam::EulerRot::YXZ);
-                let mut yaw_deg = yaw.to_degrees();
-                let mut pitch_deg = pitch.to_degrees();
-                let mut roll_deg = roll.to_degrees();
-
-                ui.horizontal(|ui| {
-                    ui.label("Rot:");
-                    ui.add(egui::DragValue::new(&mut pitch_deg).speed(1.0).prefix("P: "));
-                    ui.add(egui::DragValue::new(&mut yaw_deg).speed(1.0).prefix("Y: "));
-                    ui.add(egui::DragValue::new(&mut roll_deg).speed(1.0).prefix("R: "));
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Lens:");
-                    ui.add(egui::Slider::new(&mut state.camera.focal_length, 12.0..=200.0).text("Focal Length (mm)"));
-                });
-
-
-
-                if pitch_deg != pitch.to_degrees()
-                    || yaw_deg != yaw.to_degrees()
-                    || roll_deg != roll.to_degrees()
-                {
-                    state.camera.local_ori = glam::Quat::from_euler(
-                        glam::EulerRot::YXZ,
-                        yaw_deg.to_radians(),
-                        pitch_deg.to_radians(),
-                        roll_deg.to_radians(),
-                    );
+                if let Some(ext) = &mut state.extension {
+                    ext.render_ui(ctx, ui);
                 }
-            }
-
-            ui.separator();
-            if let Some(ext) = &mut state.extension {
-                ext.render_ui(ctx, ui);
-            }
-        });
+            });
     }
 }
 
@@ -139,7 +148,7 @@ impl<'a> App<'a> {
     pub fn wgpu_state_mut(&mut self) -> Option<&mut WgpuState<'a>> {
         self.wgpu_state.as_mut()
     }
-    
+
     pub fn window(&self) -> Option<&Arc<Window>> {
         self.window.as_ref()
     }
@@ -148,15 +157,18 @@ impl<'a> App<'a> {
 impl<'a> ApplicationHandler for App<'a> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let window_attributes =
-                Window::default_attributes()
-                    .with_title("CesiumRS WGS84 Ellipsoid")
-                    .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
+            let window_attributes = Window::default_attributes()
+                .with_title("CesiumRS WGS84 Ellipsoid")
+                .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
 
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
             self.window = Some(window.clone());
 
-            let state = pollster::block_on(WgpuState::new(window, self.config.clone(), self.extension.take()));
+            let state = pollster::block_on(WgpuState::new(
+                window,
+                self.config.clone(),
+                self.extension.take(),
+            ));
             self.wgpu_state = Some(state);
         }
     }
@@ -193,7 +205,7 @@ impl<'a> ApplicationHandler for App<'a> {
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     Err(e) => log::error!("{:?}", e),
                 }
-            },
+            }
             WindowEvent::MouseInput {
                 state: element_state,
                 button,
@@ -297,11 +309,11 @@ impl<'a> ApplicationHandler for App<'a> {
                                 window.request_redraw();
                             }
                         }
-                        KeyCode::ArrowDown | KeyCode::KeyS => {
-                            if element_state == ElementState::Pressed {
-                                state.camera.pitch(-1.0);
-                                window.request_redraw();
-                            }
+                        KeyCode::ArrowDown | KeyCode::KeyS
+                            if element_state == ElementState::Pressed =>
+                        {
+                            state.camera.pitch(-1.0);
+                            window.request_redraw();
                         }
                         _ => {}
                     }
@@ -331,29 +343,47 @@ impl<'a> ApplicationHandler for App<'a> {
                 while let Ok(cmd) = rx.try_recv() {
                     match cmd {
                         ViewerCommand::CameraSetPosition { lon, lat, alt } => {
-                            let ecef = crate::globe::geometry::lon_lat_alt_to_ecef_f64(lon, lat, alt);
-                            let pos = glam::Vec3::new(ecef[0] as f32, ecef[1] as f32, ecef[2] as f32);
+                            let ecef =
+                                crate::globe::geometry::lon_lat_alt_to_ecef_f64(lon, lat, alt);
+                            let pos =
+                                glam::Vec3::new(ecef[0] as f32, ecef[1] as f32, ecef[2] as f32);
                             state.camera.set_eye(pos, glam::Vec3::ZERO);
                         }
                         ViewerCommand::CameraSetMode(mode) => {
                             state.camera.mode = match mode {
-                                CameraCommandMode::Free     => crate::camera::camera::CameraMode::Free,
-                                CameraCommandMode::Tracking => crate::camera::camera::CameraMode::Tracking,
-                                CameraCommandMode::Cockpit  => crate::camera::camera::CameraMode::Cockpit,
+                                CameraCommandMode::Free => crate::camera::camera::CameraMode::Free,
+                                CameraCommandMode::Tracking => {
+                                    crate::camera::camera::CameraMode::Tracking
+                                }
+                                CameraCommandMode::Cockpit => {
+                                    crate::camera::camera::CameraMode::Cockpit
+                                }
                             };
                         }
-                        ViewerCommand::CameraSetAnchor { position, orientation } => {
+                        ViewerCommand::CameraSetAnchor {
+                            position,
+                            orientation,
+                        } => {
                             let pos = glam::DVec3::from_array(position);
                             let ori = glam::DQuat::from_xyzw(
-                                orientation[0], orientation[1], orientation[2], orientation[3],
+                                orientation[0],
+                                orientation[1],
+                                orientation[2],
+                                orientation[3],
                             );
                             state.camera.set_anchor(pos, ori);
                         }
-                        ViewerCommand::CameraZoom(delta)  => state.camera.zoom(delta),
+                        ViewerCommand::CameraZoom(delta) => state.camera.zoom(delta),
                         ViewerCommand::CameraPitch(delta) => state.camera.pitch(delta),
-                        ViewerCommand::MapSetSaturation(v) => state.tile_system.config.map_saturation = v,
-                        ViewerCommand::MapSetContrast(v)   => state.tile_system.config.map_contrast = v,
-                        ViewerCommand::MapSetBrightness(v) => state.tile_system.config.map_brightness = v,
+                        ViewerCommand::MapSetSaturation(v) => {
+                            state.tile_system.config.map_saturation = v
+                        }
+                        ViewerCommand::MapSetContrast(v) => {
+                            state.tile_system.config.map_contrast = v
+                        }
+                        ViewerCommand::MapSetBrightness(v) => {
+                            state.tile_system.config.map_brightness = v
+                        }
                     }
                 }
             }
@@ -373,10 +403,12 @@ impl<'a> ApplicationHandler for App<'a> {
                     movement.x -= 1.0;
                 }
 
-                let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft) || self.pressed_keys.contains(&KeyCode::ShiftRight);
+                let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft)
+                    || self.pressed_keys.contains(&KeyCode::ShiftRight);
 
                 if self.pressed_keys.contains(&KeyCode::Space) {
-                    let ctrl = self.pressed_keys.contains(&KeyCode::ControlLeft) || self.pressed_keys.contains(&KeyCode::ControlRight);
+                    let ctrl = self.pressed_keys.contains(&KeyCode::ControlLeft)
+                        || self.pressed_keys.contains(&KeyCode::ControlRight);
                     if ctrl {
                         movement.y -= 1.0;
                     } else {
@@ -384,7 +416,9 @@ impl<'a> ApplicationHandler for App<'a> {
                     }
                 }
                 if movement != Vec3::ZERO {
-                    state.debug_camera.update(dt, movement.normalize_or_zero(), fast);
+                    state
+                        .debug_camera
+                        .update(dt, movement.normalize_or_zero(), fast);
                 }
             }
         }

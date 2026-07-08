@@ -39,8 +39,10 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-const INV_A2_F64: f64 = 1.0 / (crate::globe::geometry::EARTH_RADIUS_A_F64 * crate::globe::geometry::EARTH_RADIUS_A_F64);
-const INV_B2_F64: f64 = 1.0 / (crate::globe::geometry::EARTH_RADIUS_B_F64 * crate::globe::geometry::EARTH_RADIUS_B_F64);
+const INV_A2_F64: f64 =
+    1.0 / (crate::globe::geometry::EARTH_RADIUS_A_F64 * crate::globe::geometry::EARTH_RADIUS_A_F64);
+const INV_B2_F64: f64 =
+    1.0 / (crate::globe::geometry::EARTH_RADIUS_B_F64 * crate::globe::geometry::EARTH_RADIUS_B_F64);
 
 const EARTH_RADIUS_A_F64: f64 = 6.378137;
 const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
@@ -109,8 +111,17 @@ impl Camera {
 
     /// Computes the absolute global state of the camera in double precision.
     pub fn global_transform_f64(&self) -> (glam::DVec3, glam::DQuat) {
-        let local_pos_dvec = glam::DVec3::new(self.local_pos.x as f64, self.local_pos.y as f64, self.local_pos.z as f64);
-        let local_ori_dquat = glam::DQuat::from_xyzw(self.local_ori.x as f64, self.local_ori.y as f64, self.local_ori.z as f64, self.local_ori.w as f64);
+        let local_pos_dvec = glam::DVec3::new(
+            self.local_pos.x as f64,
+            self.local_pos.y as f64,
+            self.local_pos.z as f64,
+        );
+        let local_ori_dquat = glam::DQuat::from_xyzw(
+            self.local_ori.x as f64,
+            self.local_ori.y as f64,
+            self.local_ori.z as f64,
+            self.local_ori.w as f64,
+        );
         let global_pos = self.anchor_pos + (self.anchor_ori * local_pos_dvec);
         let global_ori = self.anchor_ori * local_ori_dquat;
         (global_pos, global_ori)
@@ -121,7 +132,13 @@ impl Camera {
         let (pos_dvec, ori_dquat) = self.global_transform_f64();
         (
             Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32),
-            Quat::from_xyzw(ori_dquat.x as f32, ori_dquat.y as f32, ori_dquat.z as f32, ori_dquat.w as f32).normalize(),
+            Quat::from_xyzw(
+                ori_dquat.x as f32,
+                ori_dquat.y as f32,
+                ori_dquat.z as f32,
+                ori_dquat.w as f32,
+            )
+            .normalize(),
         )
     }
 
@@ -174,18 +191,31 @@ impl Camera {
         let dist = global_pos_dvec.length();
 
         let dir = global_pos_dvec.normalize_or_zero();
-        let t =
-            1.0 / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64).sqrt();
+        let t = 1.0
+            / (dir.x * dir.x * INV_A2_F64
+                + dir.y * dir.y * INV_B2_F64
+                + dir.z * dir.z * INV_A2_F64)
+                .sqrt();
         let dynamic_min_distance = t + 0.000002;
 
         if dist < dynamic_min_distance {
             let new_global_pos_dvec = dir * dynamic_min_distance;
-            let local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
-            self.local_pos = Vec3::new(local_pos_dvec.x as f32, local_pos_dvec.y as f32, local_pos_dvec.z as f32);
+            let local_pos_dvec =
+                self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
+            self.local_pos = Vec3::new(
+                local_pos_dvec.x as f32,
+                local_pos_dvec.y as f32,
+                local_pos_dvec.z as f32,
+            );
         } else if dist > self.max_distance as f64 {
             let new_global_pos_dvec = dir * (self.max_distance as f64);
-            let local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
-            self.local_pos = Vec3::new(local_pos_dvec.x as f32, local_pos_dvec.y as f32, local_pos_dvec.z as f32);
+            let local_pos_dvec =
+                self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
+            self.local_pos = Vec3::new(
+                local_pos_dvec.x as f32,
+                local_pos_dvec.y as f32,
+                local_pos_dvec.z as f32,
+            );
         }
     }
 
@@ -231,24 +261,30 @@ impl Camera {
         if right.length_squared() > 0.001 {
             let rot_yaw = Quat::from_axis_angle(Vec3::Y, yaw);
             let rot_pitch = Quat::from_axis_angle(right, pitch);
-            
+
             let new_pos_both = (rot_yaw * rot_pitch) * self.local_pos;
             let new_pos_yaw = rot_yaw * self.local_pos;
-            
+
             // Helper to check if a local_pos is above the ground
             let is_above_ground = |pos: Vec3| -> bool {
                 let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
                 let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
                 let dir = global_pos.normalize_or_zero();
-                let t = 1.0 / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64).sqrt();
+                let t = 1.0
+                    / (dir.x * dir.x * INV_A2_F64
+                        + dir.y * dir.y * INV_B2_F64
+                        + dir.z * dir.z * INV_A2_F64)
+                        .sqrt();
                 global_pos.length() >= t + 0.000002
             };
 
             let dot_y_both = new_pos_both.normalize_or_zero().dot(Vec3::Y);
-            
+
             let final_pos = if dot_y_both.abs() < 0.99 && is_above_ground(new_pos_both) {
                 Some(new_pos_both)
-            } else if new_pos_yaw.normalize_or_zero().dot(Vec3::Y).abs() < 0.99 && is_above_ground(new_pos_yaw) {
+            } else if new_pos_yaw.normalize_or_zero().dot(Vec3::Y).abs() < 0.99
+                && is_above_ground(new_pos_yaw)
+            {
                 Some(new_pos_yaw)
             } else {
                 None
@@ -257,7 +293,7 @@ impl Camera {
             if let Some(pos) = final_pos {
                 self.local_pos = pos;
                 self.enforce_bounds();
-                
+
                 let forward = -self.local_pos.normalize_or_zero();
                 if forward.length_squared() > 0.1 {
                     let actual_right = forward.cross(Vec3::Y).normalize_or_zero();
@@ -277,28 +313,34 @@ impl Camera {
 
         let yaw_quat = Quat::from_axis_angle(Vec3::Y, yaw);
         let pitch_quat = Quat::from_axis_angle(Vec3::X, pitch);
-        
+
         let new_ori = self.local_ori * yaw_quat * pitch_quat;
-        
+
         let (y, p, _r) = new_ori.to_euler(glam::EulerRot::YXZ);
-        
+
         let mut rel_y = y;
-        while rel_y > std::f32::consts::PI { rel_y -= std::f32::consts::PI * 2.0; }
-        while rel_y < -std::f32::consts::PI { rel_y += std::f32::consts::PI * 2.0; }
-        
+        while rel_y > std::f32::consts::PI {
+            rel_y -= std::f32::consts::PI * 2.0;
+        }
+        while rel_y < -std::f32::consts::PI {
+            rel_y += std::f32::consts::PI * 2.0;
+        }
+
         let clamped_rel_y = rel_y.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4);
-        
+
         let clamped_p = p.clamp(-0.35, 0.35); // roughly +/- 20 deg
-        
-        self.local_ori = Quat::from_euler(glam::EulerRot::YXZ, clamped_rel_y, clamped_p, 0.0).normalize();
+
+        self.local_ori =
+            Quat::from_euler(glam::EulerRot::YXZ, clamped_rel_y, clamped_p, 0.0).normalize();
     }
 
     // --- MATRICES & PROJECTIONS ---
 
     pub fn get_view_matrix(&self) -> Mat4 {
         let (pos_dvec, ori_dquat) = self.global_transform();
-        let pos = glam::Vec3::new(pos_dvec.x as f32, pos_dvec.y as f32, pos_dvec.z as f32);
-        let ori = glam::Quat::from_xyzw(ori_dquat.x as f32, ori_dquat.y as f32, ori_dquat.z as f32, ori_dquat.w as f32).normalize();
+        let pos = glam::Vec3::new(pos_dvec.x, pos_dvec.y, pos_dvec.z);
+        let ori =
+            glam::Quat::from_xyzw(ori_dquat.x, ori_dquat.y, ori_dquat.z, ori_dquat.w).normalize();
         Mat4::from_rotation_translation(ori, pos).inverse()
     }
 
@@ -306,8 +348,11 @@ impl Camera {
         let (pos_dvec, _) = self.global_transform_f64();
 
         let dir = pos_dvec.normalize_or_zero();
-        let t =
-            1.0 / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64).sqrt();
+        let t = 1.0
+            / (dir.x * dir.x * INV_A2_F64
+                + dir.y * dir.y * INV_B2_F64
+                + dir.z * dir.z * INV_A2_F64)
+                .sqrt();
 
         (pos_dvec.length() - t) as f32
     }
@@ -326,18 +371,15 @@ impl Camera {
             }
         };
         let (pos_dvec, _) = self.global_transform();
-        let zfar = (pos_dvec.length() + 10.0) as f32;
-        
+        let zfar = pos_dvec.length() + 10.0;
+
         let sensor_height = 24.0;
         let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length)).atan();
         let proj = Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
-        
+
         // Convert to Reverse-Z: map [0, 1] to [1, 0]
         let reverse_z = Mat4::from_cols_array(&[
-            1.0, 0.0,  0.0, 0.0,
-            0.0, 1.0,  0.0, 0.0,
-            0.0, 0.0, -1.0, 0.0,
-            0.0, 0.0,  1.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
         ]);
         reverse_z * proj
     }
@@ -353,17 +395,14 @@ impl Camera {
         };
         let (pos_dvec, _) = self.global_transform_f64();
         let zfar = pos_dvec.length() + 10.0;
-        
+
         let sensor_height = 24.0;
         let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan();
         let proj = glam::DMat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
-        
+
         // Convert to Reverse-Z: map [0, 1] to [1, 0]
         let reverse_z = glam::DMat4::from_cols_array(&[
-            1.0, 0.0,  0.0, 0.0,
-            0.0, 1.0,  0.0, 0.0,
-            0.0, 0.0, -1.0, 0.0,
-            0.0, 0.0,  1.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
         ]);
         reverse_z * proj
     }
@@ -417,12 +456,13 @@ impl Camera {
 
         let fov_y = std::f32::consts::FRAC_PI_4;
         let tan_half_fov = (fov_y / 2.0).tan();
-        
+
         let local_dir = Vec3::new(
             ndc_x * aspect_ratio * tan_half_fov,
             ndc_y * tan_half_fov,
             -1.0,
-        ).normalize();
+        )
+        .normalize();
 
         let (global_pos, global_ori) = self.global_transform();
         let ray_dir = global_ori * local_dir;
@@ -500,10 +540,19 @@ impl Camera {
                 let inv_rot = q.inverse();
 
                 // Get the starting global transform
-                let start_local_pos_dvec = glam::DVec3::new(self.drag_start_local_pos.x as f64, self.drag_start_local_pos.y as f64, self.drag_start_local_pos.z as f64);
+                let start_local_pos_dvec = glam::DVec3::new(
+                    self.drag_start_local_pos.x as f64,
+                    self.drag_start_local_pos.y as f64,
+                    self.drag_start_local_pos.z as f64,
+                );
                 let start_global_pos = self.anchor_pos + (self.anchor_ori * start_local_pos_dvec);
-                
-                let start_local_ori_dquat = glam::DQuat::from_xyzw(self.drag_start_local_ori.x as f64, self.drag_start_local_ori.y as f64, self.drag_start_local_ori.z as f64, self.drag_start_local_ori.w as f64);
+
+                let start_local_ori_dquat = glam::DQuat::from_xyzw(
+                    self.drag_start_local_ori.x as f64,
+                    self.drag_start_local_ori.y as f64,
+                    self.drag_start_local_ori.z as f64,
+                    self.drag_start_local_ori.w as f64,
+                );
                 let start_global_ori = self.anchor_ori * start_local_ori_dquat;
 
                 // Orbit the camera around the earth (origin)
@@ -511,11 +560,22 @@ impl Camera {
                 let new_global_ori = inv_rot * start_global_ori;
 
                 // Project back into anchor-local space
-                let new_local_pos_dvec = self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
-                self.local_pos = Vec3::new(new_local_pos_dvec.x as f32, new_local_pos_dvec.y as f32, new_local_pos_dvec.z as f32);
-                
+                let new_local_pos_dvec =
+                    self.anchor_ori.inverse() * (new_global_pos - self.anchor_pos);
+                self.local_pos = Vec3::new(
+                    new_local_pos_dvec.x as f32,
+                    new_local_pos_dvec.y as f32,
+                    new_local_pos_dvec.z as f32,
+                );
+
                 let new_local_ori_dquat = (self.anchor_ori.inverse() * new_global_ori).normalize();
-                self.local_ori = Quat::from_xyzw(new_local_ori_dquat.x as f32, new_local_ori_dquat.y as f32, new_local_ori_dquat.z as f32, new_local_ori_dquat.w as f32).normalize();
+                self.local_ori = Quat::from_xyzw(
+                    new_local_ori_dquat.x as f32,
+                    new_local_ori_dquat.y as f32,
+                    new_local_ori_dquat.z as f32,
+                    new_local_ori_dquat.w as f32,
+                )
+                .normalize();
             } else {
                 // If ray doesn't intersect anymore, retain the current position
                 self.local_pos = current_pos;

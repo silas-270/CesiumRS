@@ -4,7 +4,7 @@ use cesium_engine::globe::tiles::system::TileSystem;
 #[test]
 fn test_compute_fallback_uv_1_level() {
     let parent = TileId { z: 1, x: 0, y: 0 };
-    
+
     // Top-left child
     let child_tl = TileId { z: 2, x: 0, y: 0 };
     let uv = TileSystem::compute_fallback_uv(child_tl, parent);
@@ -29,7 +29,7 @@ fn test_compute_fallback_uv_1_level() {
 #[test]
 fn test_compute_fallback_uv_2_levels() {
     let parent = TileId { z: 1, x: 0, y: 0 };
-    
+
     // Child of bottom-right child (so it's z=3, x=3, y=3)
     let child_br_br = TileId { z: 3, x: 3, y: 3 };
     let uv = TileSystem::compute_fallback_uv(child_br_br, parent);
@@ -48,7 +48,7 @@ fn test_compute_fallback_uv_2_levels() {
 fn test_compute_fallback_uv_3_levels() {
     let parent = TileId { z: 0, x: 0, y: 0 };
     let child = TileId { z: 3, x: 5, y: 2 };
-    
+
     // Z=1: x=0, y=0
     // Z=2: x=1, y=0
     // Z=3: x=2, y=1 (Wait, 5/2 = 2. 2/2 = 1. So Z=2 is x=2, y=1. Z=1 is x=1, y=0. Wait, parent is z=0,x=0,y=0)
@@ -57,7 +57,7 @@ fn test_compute_fallback_uv_3_levels() {
     // z=2, x=2, y=1 -> is_right=1, is_bottom=0
     // z=1, x=1, y=0 -> is_right=0, is_bottom=1
     // z=0, x=0, y=0 -> is_right=1, is_bottom=0
-    
+
     let uv = TileSystem::compute_fallback_uv(child, parent);
     // Expected Scale: 0.125 (1/8)
     // Offset X: 5 * 0.125 = 0.625
