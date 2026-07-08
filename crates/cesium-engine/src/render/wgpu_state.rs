@@ -51,6 +51,7 @@ pub struct WgpuState<'a> {
     /// hi-res texture. Used by Fix 4 to skip the sibling-gate on re-entry.
     /// Capacity 4096 to handle long Europe→US flights without unbounded growth.
     tiles_with_own_texture: LruCache<TileId, ()>,
+    pub label_manager: crate::label::LabelManager,
 }
 
 fn create_depth_texture(
@@ -292,6 +293,7 @@ impl<'a> WgpuState<'a> {
             display_state: HashMap::new(),
             last_visible_set: HashSet::new(),
             tiles_with_own_texture: LruCache::new(std::num::NonZeroUsize::new(4096).unwrap()),
+            label_manager: crate::label::LabelManager::new(),
         }
     }
 
@@ -417,6 +419,13 @@ impl<'a> WgpuState<'a> {
             camera_pos_dvec.z as f32,
         );
         self.quadtree_manager.update(camera_pos_f32, frustum);
+
+        let altitude = self.camera.altitude();
+        let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
+        let frustum_obj = crate::globe::quadtree::Frustum::from_planes(frustum);
+        self.label_manager.update(camera_pos_f32, zoom, &frustum_obj);
+        
+
 
         let mut gpu_view_matrix = view_matrix;
         gpu_view_matrix.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0); // Strip translation for shader
