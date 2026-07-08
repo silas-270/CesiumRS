@@ -144,6 +144,47 @@ impl<'a> App<'a> {
                 }
             });
     }
+
+    fn render_label_indicators(ctx: &egui::Context, state: &WgpuState) {
+        let screen_rect = ctx.screen_rect();
+        let width = screen_rect.width();
+        let height = screen_rect.height();
+        let aspect_ratio = width / height;
+
+        let view_matrix = state.camera.get_view_matrix();
+        let proj_matrix = state.camera.get_projection_matrix(aspect_ratio);
+        let view_proj = proj_matrix * view_matrix;
+
+        // Paint on the background layer so indicators sit behind egui widgets
+        let painter = ctx.layer_painter(egui::LayerId::background());
+
+        for label in &state.label_manager.visible_labels {
+            let ecef = label.ecef_pos;
+            let clip_pos = view_proj * glam::Vec4::new(ecef.x, ecef.y, ecef.z, 1.0);
+
+            // Only render points in front of the near clipping plane
+            if clip_pos.w <= 0.0 {
+                continue;
+            }
+
+            let ndc_x = clip_pos.x / clip_pos.w;
+            let ndc_y = clip_pos.y / clip_pos.w;
+
+            // Clip to visible viewport
+            if ndc_x < -1.0 || ndc_x > 1.0 || ndc_y < -1.0 || ndc_y > 1.0 {
+                continue;
+            }
+
+            let screen_x = (ndc_x + 1.0) * 0.5 * width;
+            let screen_y = (1.0 - ndc_y) * 0.5 * height;
+
+            let center = egui::pos2(screen_x, screen_y);
+
+            // Draw a dark border first, then a bright red filled circle on top
+            painter.circle_filled(center, 5.0, egui::Color32::from_black_alpha(200));
+            painter.circle_filled(center, 3.5, egui::Color32::from_rgb(255, 40, 40));
+        }
+    }
 }
 
 impl<'a> App<'a> {
@@ -201,7 +242,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 state.resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
-                match state.render(None, false, |ctx, s| Self::render_ui(ctx, s)) {
+                match state.render(None, false, |ctx, s| { Self::render_ui(ctx, s); Self::render_label_indicators(ctx, s); }) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
