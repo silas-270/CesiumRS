@@ -394,6 +394,19 @@ impl<'a> ApplicationHandler for App<'a> {
                 }
             }
 
+            if !state.debug_mode {
+                let mut zoom_delta = 0.0;
+                if self.pressed_keys.contains(&KeyCode::KeyI) || self.pressed_keys.contains(&KeyCode::PageUp) {
+                    zoom_delta += 1.0;
+                }
+                if self.pressed_keys.contains(&KeyCode::KeyO) || self.pressed_keys.contains(&KeyCode::PageDown) {
+                    zoom_delta -= 1.0;
+                }
+                if zoom_delta != 0.0 {
+                    state.camera.zoom(zoom_delta * 4.0 * dt);
+                }
+            }
+
             if state.debug_mode {
                 let mut movement = Vec3::ZERO;
                 if self.pressed_keys.contains(&KeyCode::KeyW) {
