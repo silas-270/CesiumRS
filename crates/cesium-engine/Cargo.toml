@@ -23,3 +23,6 @@ byteorder = "1.5.0"
 sha2 = "0.11.0"
 gltf = "1.4.1"
 winit = { version = "0.30", features = ["rwh_06"] }
+
+[features]
+testing = []
