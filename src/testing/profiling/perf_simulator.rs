@@ -30,9 +30,10 @@ impl<'a> PerfSimulatorApp<'a> {
             flight_handle.load_flight("flight_FRA_STR", content);
         }
 
-        // Start playing immediately
+        // Start playing immediately. Set speed so the flight lasts ~100 seconds
+        // (so it's still flying when we switch modes at 20s and 40s)
         flight_handle.play();
-        flight_handle.set_speed(0.1); // Ensure it's flying at a visible pace
+        flight_handle.set_speed(0.01);
 
         // Set up the simulator script for Free Mode (1200 frames):
         // Wait 50, Zoom in 150, Wait 50, Drag 300, Wait 50, Zoom out 150, Wait 50, Drag 300, Wait 100.
