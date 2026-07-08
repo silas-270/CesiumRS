@@ -40,7 +40,7 @@ fn test_plane_tangent_alignment() {
 }
 
 
-use crate::engine::render::polyline::bvh::{generate_vertices, PolylineBVH};
+use crate::engine::render::polyline_pipeline::bvh::{generate_vertices, PolylineBVH};
 
 #[test]
 fn test_split_delta() {

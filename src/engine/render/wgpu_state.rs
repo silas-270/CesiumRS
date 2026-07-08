@@ -261,18 +261,18 @@ impl<'a> WgpuState<'a> {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("globe_pipeline/shader.wgsl").into()),
         });
         
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sky Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky_pipeline/sky.wgsl").into()),
         });
 
         let config_engine = engine_config;
         let tile_system = crate::engine::globe::tiles::system::TileSystem::new(&device, &queue, config_engine);
 
-        let (solid_pipeline, wireframe_pipeline, debug_pipeline) = crate::engine::render::pipelines::create_pipelines(
+        let (solid_pipeline, wireframe_pipeline, debug_pipeline) = crate::engine::render::globe_pipeline::pipeline::create_pipelines(
             &device,
             &config,
             &shader,
@@ -280,7 +280,7 @@ impl<'a> WgpuState<'a> {
             &tile_system.texture_manager.bind_group_layout,
         );
         
-        let sky_pipeline = crate::engine::render::pipelines::create_sky_pipeline(
+        let sky_pipeline = crate::engine::render::globe_pipeline::pipeline::create_sky_pipeline(
             &device,
             &config,
             &sky_shader,

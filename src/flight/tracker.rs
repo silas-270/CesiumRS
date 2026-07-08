@@ -3,10 +3,10 @@ use glam::DVec3;
 use crate::engine::property::sampled::{SampledPositionProperty, InterpolationAlgorithm};
 use crate::engine::time::SimulationTime;
 use crate::engine::globe::geometry::lon_lat_alt_to_ecef_f64;
-use crate::engine::render::polyline::bvh::PolylineBVH;
-use crate::engine::render::polyline::pipeline::{PolylineRenderer, PolylineConfig};
+use crate::engine::render::polyline_pipeline::bvh::PolylineBVH;
+use crate::engine::render::polyline_pipeline::pipeline::{PolylineRenderer, PolylineConfig};
 use crate::engine::core::extension::GlobeExtension;
-use crate::engine::render::model::pipeline::ModelRenderer;
+use crate::engine::render::model_pipeline::pipeline::ModelRenderer;
 use crate::engine::camera::camera::CameraMode;
 
 
@@ -208,7 +208,7 @@ impl GlobeExtension for FlightTrackerApp {
 
             let visible_strips = flight.bvh.collect_visible_segments(camera_pos_dvec3, frustum, 5e-8);
             for strip in visible_strips {
-                let mut strip_verts = crate::engine::render::polyline::bvh::generate_vertices(
+                let mut strip_verts = crate::engine::render::polyline_pipeline::bvh::generate_vertices(
                     &strip, camera_pos_dvec3, flight.reference_point
                 );
                 if !vertices.is_empty() && !strip_verts.is_empty() {
@@ -239,18 +239,18 @@ impl GlobeExtension for FlightTrackerApp {
         if let Some(state) = self.get_plane_state_at(current_progress) {
             match self.view_mode {
                 CameraMode::Tracking => {
-                    crate::flight::modes::tracking::update_tracking_mode(camera, &state, mode_switched_or_reset);
+                    crate::flight::camera_modes::tracking::update_tracking_mode(camera, &state, mode_switched_or_reset);
                 }
                 CameraMode::Cockpit => {
-                    crate::flight::modes::cockpit::update_cockpit_mode(camera, &state, mode_switched_or_reset);
+                    crate::flight::camera_modes::cockpit::update_cockpit_mode(camera, &state, mode_switched_or_reset);
                 }
                 CameraMode::Free => {
-                    crate::flight::modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
+                    crate::flight::camera_modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
                 }
             }
         } else if self.view_mode == CameraMode::Free {
             // Free mode does not require an active plane state
-            crate::flight::modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
+            crate::flight::camera_modes::free::update_free_mode(camera, &self.flights, aspect_ratio, mode_switched_or_reset);
         }
     }
 
@@ -338,7 +338,7 @@ impl GlobeExtension for FlightTrackerApp {
 
                 let model_matrix = translation * rotation * scale * model_correction;
 
-                use crate::engine::render::model::pipeline::ModelPushConstants;
+                use crate::engine::render::model_pipeline::pipeline::ModelPushConstants;
                 let push = ModelPushConstants {
                     model_matrix_0: model_matrix.x_axis.to_array(),
                     model_matrix_1: model_matrix.y_axis.to_array(),

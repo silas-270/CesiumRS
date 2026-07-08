@@ -1,6 +1,7 @@
 pub mod wgpu_state;
-pub mod debug_geometry;
-pub mod pipelines;
 pub mod capture;
-pub mod polyline;
-pub mod model;
+pub mod debug_geometry;
+pub mod globe_pipeline;
+pub mod sky_pipeline;
+pub mod model_pipeline;
+pub mod polyline_pipeline;

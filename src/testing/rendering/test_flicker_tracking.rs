@@ -46,7 +46,7 @@ impl<'a> FlickerTrackingApp<'a> {
         app_config.enable_prefetch = config.prefetch;
 
         let progress = Arc::new(Mutex::new(0.0));
-        let mut flight_app = Box::new(crate::flight::app::FlightTrackerApp::new(progress.clone()));
+        let mut flight_app = Box::new(crate::flight::tracker::FlightTrackerApp::new(progress.clone()));
 
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);

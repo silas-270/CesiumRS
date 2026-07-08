@@ -16,19 +16,19 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Poll);
         if cfg.regression {
-            let mut app = testing::regression_app::RegressionApp::new(cfg);
+            let mut app = testing::harness::regression_app::RegressionApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
         } else if cfg.stress {
-            let mut app = testing::stress_app::StressApp::new(cfg);
+            let mut app = testing::harness::stress_app::StressApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
         } else if cfg.flicker {
-            let mut app = testing::test_flicker_tracking::FlickerTrackingApp::new(cfg);
+            let mut app = testing::rendering::test_flicker_tracking::FlickerTrackingApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
         } else if cfg.monitor {
-            let mut app = testing::test_tile_monitor::TileMonitorApp::new(cfg);
+            let mut app = testing::rendering::test_tile_monitor::TileMonitorApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
         } else {
-            let mut app = testing::test_app::TestApp::new(cfg);
+            let mut app = testing::harness::test_app::TestApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
         }
     } else {
