@@ -176,11 +176,13 @@ impl PolylineBVH {
             }
         }
 
-        // LOD check
-        let distance = (node.center - camera_pos).length().max(0.000001);
-        let screen_error = (node.max_geometric_error * 1732.0) / distance;
+        // LOD check without sqrt
+        let distance_sq = (node.center - camera_pos).length_squared().max(1e-12);
+        let max_geom_err_sq = node.max_geometric_error * node.max_geometric_error;
+        let screen_error_sq = (max_geom_err_sq * 2999824.0) / distance_sq; // 1732.0^2 = 2999824.0
+        let max_screen_error_sq = max_screen_error * max_screen_error;
 
-        if screen_error <= max_screen_error || node.children.is_none() {
+        if screen_error_sq <= max_screen_error_sq || node.children.is_none() {
             // Emit this leaf segment
             let prog_start = self.to_progress(node.t_start);
             let prog_end = self.to_progress(node.t_end);
@@ -208,15 +210,8 @@ impl PolylineBVH {
 
             if out.is_empty() {
                 out.push(cp_start);
-            } else {
-                // Only push start if the last point doesn't already cover it
-                let last = out.last().unwrap();
-                let last_pos = DVec3::new(last.position[0] as f64, last.position[1] as f64, last.position[2] as f64);
-                let start_pos = DVec3::new(p_start_rel.x, p_start_rel.y, p_start_rel.z);
-                if last_pos.distance(start_pos) > 1e-7 {
-                    out.push(cp_start);
-                }
             }
+
             out.push(cp_end);
         } else {
             // Recurse into children
