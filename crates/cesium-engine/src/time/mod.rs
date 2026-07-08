@@ -14,7 +14,9 @@ impl std::ops::Add<f64> for SimulationTime {
     type Output = Self;
 
     fn add(self, rhs: f64) -> Self::Output {
-        Self { seconds: self.seconds + rhs }
+        Self {
+            seconds: self.seconds + rhs,
+        }
     }
 }
 
@@ -22,7 +24,9 @@ impl std::ops::Sub<f64> for SimulationTime {
     type Output = Self;
 
     fn sub(self, rhs: f64) -> Self::Output {
-        Self { seconds: self.seconds - rhs }
+        Self {
+            seconds: self.seconds - rhs,
+        }
     }
 }
 
@@ -67,20 +71,22 @@ impl Clock {
         if self.multiplier > 0.0 {
             if self.current_time.seconds >= self.stop_time.seconds {
                 if self.should_loop {
-                    self.current_time.seconds = self.start_time.seconds + (self.current_time.seconds - self.stop_time.seconds) % (self.stop_time.seconds - self.start_time.seconds).max(0.001);
+                    self.current_time.seconds = self.start_time.seconds
+                        + (self.current_time.seconds - self.stop_time.seconds)
+                            % (self.stop_time.seconds - self.start_time.seconds).max(0.001);
                 } else {
                     self.current_time.seconds = self.stop_time.seconds;
                     self.is_playing = false;
                 }
             }
-        } else if self.multiplier < 0.0 {
-            if self.current_time.seconds <= self.start_time.seconds {
-                if self.should_loop {
-                    self.current_time.seconds = self.stop_time.seconds - (self.start_time.seconds - self.current_time.seconds) % (self.stop_time.seconds - self.start_time.seconds).max(0.001);
-                } else {
-                    self.current_time.seconds = self.start_time.seconds;
-                    self.is_playing = false;
-                }
+        } else if self.multiplier < 0.0 && self.current_time.seconds <= self.start_time.seconds {
+            if self.should_loop {
+                self.current_time.seconds = self.stop_time.seconds
+                    - (self.start_time.seconds - self.current_time.seconds)
+                        % (self.stop_time.seconds - self.start_time.seconds).max(0.001);
+            } else {
+                self.current_time.seconds = self.start_time.seconds;
+                self.is_playing = false;
             }
         }
     }

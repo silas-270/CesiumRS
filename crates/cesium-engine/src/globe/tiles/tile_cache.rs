@@ -1,7 +1,7 @@
+use crate::globe::quadtree::TileId;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-use crate::globe::quadtree::TileId;
 
 pub enum TileState<T> {
     Fetching,
@@ -39,7 +39,7 @@ impl<T> TileCacheManager<T> {
         }
 
         // Now we know it's not an expired failure and it exists. Update LRU and return.
-        self.cache.get(id).map(|s| &*s)
+        self.cache.get(id)
     }
 
     /// Like `get_state` but does NOT promote the entry in the LRU order.
@@ -72,7 +72,9 @@ impl<T> TileCacheManager<T> {
     }
 
     pub fn has_fetching(&self) -> bool {
-        self.cache.iter().any(|(_, state)| matches!(state, TileState::Fetching))
+        self.cache
+            .iter()
+            .any(|(_, state)| matches!(state, TileState::Fetching))
     }
 
     pub fn clear(&mut self) {

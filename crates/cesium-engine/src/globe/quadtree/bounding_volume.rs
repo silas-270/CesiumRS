@@ -15,7 +15,11 @@ impl Frustum {
         let mut f32_planes = [(Vec3::ZERO, 0.0); 6];
         for i in 0..6 {
             f32_planes[i] = (
-                Vec3::new(planes[i].0.x as f32, planes[i].0.y as f32, planes[i].0.z as f32),
+                Vec3::new(
+                    planes[i].0.x as f32,
+                    planes[i].0.y as f32,
+                    planes[i].0.z as f32,
+                ),
                 planes[i].1 as f32,
             );
         }
@@ -30,8 +34,6 @@ impl Frustum {
         }
         true
     }
-
-
 
     pub fn intersects_obb(&self, obb: &OrientedBoundingBox) -> bool {
         for (n, d) in &self.planes {
@@ -48,7 +50,7 @@ impl Frustum {
 
 pub(super) fn get_tile_corner(lon_deg: f32, lat_deg: f32, alt: f32) -> Vec3 {
     let a = 6.378137_f32;
-    let b = 6.3567523142_f32;
+    let b = 6.356_752_4_f32;
 
     let phi = lat_deg.to_radians();
     let theta = lon_deg.to_radians();
@@ -67,11 +69,14 @@ pub(super) fn get_tile_corner(lon_deg: f32, lat_deg: f32, alt: f32) -> Vec3 {
 
 pub(super) fn transform_to_scaled_space(p: Vec3) -> Vec3 {
     let a = 6.378137_f32;
-    let b = 6.3567523142_f32;
+    let b = 6.356_752_4_f32;
     Vec3::new(p.x / a, p.y / b, p.z / a)
 }
 
-pub(super) fn compute_horizon_culling_point(direction_to_point: Vec3, corners: &[Vec3]) -> Option<Vec3> {
+pub(super) fn compute_horizon_culling_point(
+    direction_to_point: Vec3,
+    corners: &[Vec3],
+) -> Option<Vec3> {
     if direction_to_point.length_squared() < 0.000001 {
         return None;
     }
@@ -116,4 +121,3 @@ pub(super) fn compute_horizon_culling_point(direction_to_point: Vec3, corners: &
         Some(scaled_dir * max_magnitude)
     }
 }
-

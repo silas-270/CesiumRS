@@ -1,5 +1,5 @@
-use glam::{DVec3, DQuat};
 use crate::property::Property;
+use glam::{DQuat, DVec3};
 
 pub struct Entity {
     pub id: String,
@@ -19,6 +19,12 @@ impl Entity {
 
 pub struct EntityCollection {
     entities: Vec<Entity>,
+}
+
+impl Default for EntityCollection {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EntityCollection {

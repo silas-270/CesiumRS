@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 use std::io::{Cursor, Read};
 
 #[derive(Debug, Clone)]
@@ -109,13 +110,19 @@ pub fn parse_quantized_mesh(buffer: &[u8]) -> Result<QuantizedMeshTile, ParseErr
     let vertex_count = cursor.read_u32_le()? as usize;
 
     let mut u = vec![0u16; vertex_count];
-    for i in 0..vertex_count { u[i] = cursor.read_u16_le()?; }
+    for i in 0..vertex_count {
+        u[i] = cursor.read_u16_le()?;
+    }
 
     let mut v = vec![0u16; vertex_count];
-    for i in 0..vertex_count { v[i] = cursor.read_u16_le()?; }
+    for i in 0..vertex_count {
+        v[i] = cursor.read_u16_le()?;
+    }
 
     let mut height = vec![0u16; vertex_count];
-    for i in 0..vertex_count { height[i] = cursor.read_u16_le()?; }
+    for i in 0..vertex_count {
+        height[i] = cursor.read_u16_le()?;
+    }
 
     decode_zigzag_delta(&mut u);
     decode_zigzag_delta(&mut v);
@@ -127,7 +134,7 @@ pub fn parse_quantized_mesh(buffer: &[u8]) -> Result<QuantizedMeshTile, ParseErr
     let index_size = if is_32_bit { 4 } else { 2 };
 
     // Align to index_size
-    let pos = cursor.position() as u64;
+    let pos = cursor.position();
     let remainder = pos % index_size;
     if remainder != 0 {
         cursor.set_position(pos + (index_size - remainder));
@@ -162,33 +169,49 @@ pub fn parse_quantized_mesh(buffer: &[u8]) -> Result<QuantizedMeshTile, ParseErr
     let west_count = cursor.read_u32_le()? as usize;
     let mut west = vec![0u32; west_count];
     if is_32_bit {
-        for i in 0..west_count { west[i] = cursor.read_u32_le()?; }
+        for i in 0..west_count {
+            west[i] = cursor.read_u32_le()?;
+        }
     } else {
-        for i in 0..west_count { west[i] = cursor.read_u16_le()? as u32; }
+        for i in 0..west_count {
+            west[i] = cursor.read_u16_le()? as u32;
+        }
     }
 
     let south_count = cursor.read_u32_le()? as usize;
     let mut south = vec![0u32; south_count];
     if is_32_bit {
-        for i in 0..south_count { south[i] = cursor.read_u32_le()?; }
+        for i in 0..south_count {
+            south[i] = cursor.read_u32_le()?;
+        }
     } else {
-        for i in 0..south_count { south[i] = cursor.read_u16_le()? as u32; }
+        for item in south.iter_mut().take(south_count) {
+            *item = cursor.read_u16_le()? as u32;
+        }
     }
 
     let east_count = cursor.read_u32_le()? as usize;
     let mut east = vec![0u32; east_count];
     if is_32_bit {
-        for i in 0..east_count { east[i] = cursor.read_u32_le()?; }
+        for item in east.iter_mut().take(east_count) {
+            *item = cursor.read_u32_le()?;
+        }
     } else {
-        for i in 0..east_count { east[i] = cursor.read_u16_le()? as u32; }
+        for item in east.iter_mut().take(east_count) {
+            *item = cursor.read_u16_le()? as u32;
+        }
     }
 
     let north_count = cursor.read_u32_le()? as usize;
     let mut north = vec![0u32; north_count];
     if is_32_bit {
-        for i in 0..north_count { north[i] = cursor.read_u32_le()?; }
+        for item in north.iter_mut().take(north_count) {
+            *item = cursor.read_u32_le()?;
+        }
     } else {
-        for i in 0..north_count { north[i] = cursor.read_u16_le()? as u32; }
+        for item in north.iter_mut().take(north_count) {
+            *item = cursor.read_u16_le()? as u32;
+        }
     }
 
     let edge_indices = EdgeIndices {

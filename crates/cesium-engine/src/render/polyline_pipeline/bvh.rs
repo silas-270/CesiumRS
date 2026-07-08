@@ -1,8 +1,9 @@
-use glam::DVec3;
+#![allow(clippy::unnecessary_unwrap)]
 use crate::property::sampled::SampledPositionProperty;
-use crate::time::SimulationTime;
 use crate::property::Property;
 use crate::render::polyline_pipeline::builder::PolylineVertex;
+use crate::time::SimulationTime;
+use glam::DVec3;
 
 #[derive(Clone, Debug)]
 pub struct PolylineNode {
@@ -35,9 +36,17 @@ impl PolylineBVH {
         let p_end = property.evaluate(stop_time)?;
 
         // Recursive build with max depth 16 and min time step 0.02s
-        let root = Self::build_node(property, start_time.seconds, stop_time.seconds, p_start, p_end, 0, 16);
-        
-        Some(Self { 
+        let root = Self::build_node(
+            property,
+            start_time.seconds,
+            stop_time.seconds,
+            p_start,
+            p_end,
+            0,
+            16,
+        );
+
+        Some(Self {
             root,
             global_start: start_time.seconds,
             global_duration: stop_time.seconds - start_time.seconds,
@@ -54,16 +63,18 @@ impl PolylineBVH {
         max_depth: u32,
     ) -> PolylineNode {
         let t_mid = (t_start + t_end) * 0.5;
-        let p_mid = property.evaluate(SimulationTime::new(t_mid)).unwrap_or_else(|| p_start.lerp(p_end, 0.5));
+        let p_mid = property
+            .evaluate(SimulationTime::new(t_mid))
+            .unwrap_or_else(|| p_start.lerp(p_end, 0.5));
 
         // Geometric error calculation
         let line_vec = p_end - p_start;
         let length_sq = line_vec.length_squared();
-        
+
         // Sample points to find max error and bounding sphere radius
         let num_samples = 10;
         let dt = (t_end - t_start) / num_samples as f64;
-        
+
         let mut max_err = 0.0f64;
         let mut center = (p_start + p_end) * 0.5;
         let mut radius = (p_start - center).length();
@@ -97,9 +108,18 @@ impl PolylineBVH {
         // or min step size of 0.02s
         let mut children = None;
         if depth < max_depth && (t_end - t_start) > 0.02 && max_err > 5e-8 {
-            let left = Self::build_node(property, t_start, t_mid, p_start, p_mid, depth + 1, max_depth);
-            let right = Self::build_node(property, t_mid, t_end, p_mid, p_end, depth + 1, max_depth);
-            
+            let left = Self::build_node(
+                property,
+                t_start,
+                t_mid,
+                p_start,
+                p_mid,
+                depth + 1,
+                max_depth,
+            );
+            let right =
+                Self::build_node(property, t_mid, t_end, p_mid, p_end, depth + 1, max_depth);
+
             // Re-adjust parent bounding sphere to encompass children
             let dist = (left.center - right.center).length();
             center = (left.center + right.center) * 0.5;
@@ -131,7 +151,14 @@ impl PolylineBVH {
     ) -> Vec<Vec<(DVec3, f32)>> {
         let mut strips = Vec::new();
         let mut current_strip = Vec::new();
-        self.traverse(&self.root, camera_pos, frustum_planes, max_screen_error, &mut strips, &mut current_strip);
+        self.traverse(
+            &self.root,
+            camera_pos,
+            frustum_planes,
+            max_screen_error,
+            &mut strips,
+            &mut current_strip,
+        );
         if current_strip.len() > 1 {
             strips.push(current_strip);
         }
@@ -168,9 +195,17 @@ impl PolylineBVH {
 
         if screen_error_approx <= max_screen_error || node.children.is_none() {
             // Render this node as a single segment
-            let progress_start = if self.global_duration > 0.0 { ((node.t_start - self.global_start) / self.global_duration) as f32 } else { 0.0 };
-            let progress_end = if self.global_duration > 0.0 { ((node.t_end - self.global_start) / self.global_duration) as f32 } else { 0.0 };
-            
+            let progress_start = if self.global_duration > 0.0 {
+                ((node.t_start - self.global_start) / self.global_duration) as f32
+            } else {
+                0.0
+            };
+            let progress_end = if self.global_duration > 0.0 {
+                ((node.t_end - self.global_start) / self.global_duration) as f32
+            } else {
+                0.0
+            };
+
             if current_strip.is_empty() {
                 current_strip.push((node.p_start, progress_start));
             } else if current_strip.last().unwrap().0.distance(node.p_start) > 1e-5 {
@@ -186,8 +221,22 @@ impl PolylineBVH {
         } else {
             // Recurse
             let children = node.children.as_ref().unwrap();
-            self.traverse(&children[0], camera_pos, frustum_planes, max_screen_error, strips, current_strip);
-            self.traverse(&children[1], camera_pos, frustum_planes, max_screen_error, strips, current_strip);
+            self.traverse(
+                &children[0],
+                camera_pos,
+                frustum_planes,
+                max_screen_error,
+                strips,
+                current_strip,
+            );
+            self.traverse(
+                &children[1],
+                camera_pos,
+                frustum_planes,
+                max_screen_error,
+                strips,
+                current_strip,
+            );
         }
     }
 }
@@ -213,11 +262,20 @@ pub fn generate_vertices(
     };
 
     // Helper closure to emit a single face strip
-    let emit_strip = |verts: &mut Vec<PolylineVertex>, side_a: f32, v_side_a: f32, side_b: f32, v_side_b: f32, face: f32| {
+    let emit_strip = |verts: &mut Vec<PolylineVertex>,
+                      side_a: f32,
+                      v_side_a: f32,
+                      side_b: f32,
+                      v_side_b: f32,
+                      face: f32| {
         // Start cap (if this is the absolute start of the flight path)
         if !points.is_empty() && points[0].1 < 1e-5 {
             let (curr, _prog) = points[0];
-            let next = if points.len() > 1 { points[1].0 } else { curr + DVec3::X };
+            let next = if points.len() > 1 {
+                points[1].0
+            } else {
+                curr + DVec3::X
+            };
             let prev = curr + (curr - next).normalize_or_zero() * 1.0;
 
             let curr_rel = curr - reference_point;
@@ -228,19 +286,39 @@ pub fn generate_vertices(
             let next_f32 = [next_rel.x as f32, next_rel.y as f32, next_rel.z as f32];
 
             verts.push(PolylineVertex {
-                position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: points[0].1, forward: -1.0,
+                position: curr_f32,
+                previous: prev_f32,
+                next: next_f32,
+                side: side_a,
+                v_side: v_side_a,
+                face,
+                progress: points[0].1,
+                forward: -1.0,
             });
             verts.push(PolylineVertex {
-                position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: points[0].1, forward: -1.0,
+                position: curr_f32,
+                previous: prev_f32,
+                next: next_f32,
+                side: side_b,
+                v_side: v_side_b,
+                face,
+                progress: points[0].1,
+                forward: -1.0,
             });
         }
 
         for i in 0..points.len() {
             let (curr, _prog) = points[i];
-            let prev = if i > 0 { points[i - 1].0 } else { curr + (curr - points[i + 1].0).normalize_or_zero() * 1.0 };
-            let next = if i < points.len() - 1 { points[i + 1].0 } else { curr + (curr - prev).normalize_or_zero() * 1.0 };
+            let prev = if i > 0 {
+                points[i - 1].0
+            } else {
+                curr + (curr - points[i + 1].0).normalize_or_zero() * 1.0
+            };
+            let next = if i < points.len() - 1 {
+                points[i + 1].0
+            } else {
+                curr + (curr - prev).normalize_or_zero() * 1.0
+            };
 
             let curr_rel = curr - reference_point;
             let prev_rel = prev - reference_point;
@@ -250,19 +328,35 @@ pub fn generate_vertices(
             let next_f32 = [next_rel.x as f32, next_rel.y as f32, next_rel.z as f32];
 
             verts.push(PolylineVertex {
-                position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: points[i].1, forward: 0.0,
+                position: curr_f32,
+                previous: prev_f32,
+                next: next_f32,
+                side: side_a,
+                v_side: v_side_a,
+                face,
+                progress: points[i].1,
+                forward: 0.0,
             });
             verts.push(PolylineVertex {
-                position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: points[i].1, forward: 0.0,
+                position: curr_f32,
+                previous: prev_f32,
+                next: next_f32,
+                side: side_b,
+                v_side: v_side_b,
+                face,
+                progress: points[i].1,
+                forward: 0.0,
             });
         }
 
         // End cap (if this is the absolute end of the flight path)
         if !points.is_empty() && points.last().unwrap().1 > 1.0 - 1e-5 {
             let (curr, _prog) = *points.last().unwrap();
-            let prev = if points.len() > 1 { points[points.len() - 2].0 } else { curr + DVec3::X };
+            let prev = if points.len() > 1 {
+                points[points.len() - 2].0
+            } else {
+                curr + DVec3::X
+            };
             let next = curr + (curr - prev).normalize_or_zero() * 1.0;
 
             let curr_rel = curr - reference_point;
@@ -273,12 +367,24 @@ pub fn generate_vertices(
             let next_f32 = [next_rel.x as f32, next_rel.y as f32, next_rel.z as f32];
 
             verts.push(PolylineVertex {
-                position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_a, v_side: v_side_a, face, progress: points.last().unwrap().1, forward: 1.0,
+                position: curr_f32,
+                previous: prev_f32,
+                next: next_f32,
+                side: side_a,
+                v_side: v_side_a,
+                face,
+                progress: points.last().unwrap().1,
+                forward: 1.0,
             });
             verts.push(PolylineVertex {
-                position: curr_f32, previous: prev_f32, next: next_f32,
-                side: side_b, v_side: v_side_b, face, progress: points.last().unwrap().1, forward: 1.0,
+                position: curr_f32,
+                previous: prev_f32,
+                next: next_f32,
+                side: side_b,
+                v_side: v_side_b,
+                face,
+                progress: points.last().unwrap().1,
+                forward: 1.0,
             });
         }
     };

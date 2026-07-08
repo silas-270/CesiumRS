@@ -3,7 +3,11 @@ use std::sync::mpsc;
 /// Commands that can be sent to a `FlightTrackerApp` from another thread.
 pub enum FlightCommand {
     /// Load a new flight path from a JSON string.
-    LoadFlight { id: String, json: String, is_secondary: bool },
+    LoadFlight {
+        id: String,
+        json: String,
+        is_secondary: bool,
+    },
     /// Set the playback progress (0.0 – 1.0) of the primary flight.
     SetProgress(f64),
     /// Set playback speed multiplier.

@@ -1,37 +1,38 @@
-/// Comprehensive tile & texture monitor.
-///
-/// Tracks:
-///   a) Every time a tile enters/leaves the visible set, or its zoom level changes
-///      (indicating a resolution/LOD change).
-///   b) Every time a tile's display_state changes (texture_id, uv_scale_offset, or
-///      showing_own_texture flag).
-///
-/// Runs the flight at play_speed=0.01 (on-screen, not headless).
-/// Stops when progress reaches 0.5.
-/// Writes detailed CSV logs and prints a concise analysis at the end.
+#![allow(clippy::type_complexity)]
+// Comprehensive tile & texture monitor.
+//
+// Tracks:
+//   a) Every time a tile enters/leaves the visible set, or its zoom level changes
+//      (indicating a resolution/LOD change).
+//   b) Every time a tile's display_state changes (texture_id, uv_scale_offset, or
+//      showing_own_texture flag).
+//
+// Runs the flight at play_speed=0.01 (on-screen, not headless).
+// Stops when progress reaches 0.5.
+// Writes detailed CSV logs and prints a concise analysis at the end.
 
-use cesium_engine::core::app::App;
 use crate::testing::VerifyConfig;
 use cesium_engine::camera::camera::CameraMode;
+use cesium_engine::core::app::App;
 use cesium_engine::globe::quadtree::TileId;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::fs::File;
-use std::io::Write;
 
 // ─── per-tile history structs ────────────────────────────────────────────────
 
-/// Tracks presence in the visible set and its LOD zoom level.
+// Tracks presence in the visible set and its LOD zoom level.
 struct TileVisibilityHistory {
     last_z: u8,
     last_change_frame: u32,
 }
 
-/// A point-in-time snapshot of a tile's display_state entry.
+// A point-in-time snapshot of a tile's display_state entry.
 #[derive(Clone, PartialEq)]
 struct TileDisplaySnapshot {
     texture_id: TileId,
@@ -56,7 +57,9 @@ struct TileEventBucket {
 }
 
 impl TileEventBucket {
-    fn new() -> Self { Self { events: Vec::new() } }
+    fn new() -> Self {
+        Self { events: Vec::new() }
+    }
     fn push(&mut self, frame: u32, kind: &str, detail: String) {
         self.events.push((frame, kind.to_string(), detail));
     }
@@ -72,9 +75,9 @@ pub struct TileMonitorApp<'a> {
     pub frame_count: u32,
 
     visibility_log: File,
-    texture_log:    File,
+    texture_log: File,
 
-    vis_history:     HashMap<TileId, TileVisibilityHistory>,
+    vis_history: HashMap<TileId, TileVisibilityHistory>,
     display_history: HashMap<TileId, TileDisplaySnapshot>,
 
     vis_buckets: HashMap<TileId, TileEventBucket>,
@@ -83,16 +86,18 @@ pub struct TileMonitorApp<'a> {
 
 impl<'a> TileMonitorApp<'a> {
     pub fn new(config: VerifyConfig) -> Self {
-        let mut app_config =
-            cesium_engine::globe::tiles::config::TileEngineConfig::default();
-        app_config.offline_mode    = false;
-        app_config.mesh_cache_size = std::num::NonZeroUsize::new(512).unwrap();
-        app_config.max_cache_size  = std::num::NonZeroUsize::new(512).unwrap();
-        app_config.enable_prefetch = false;
+        let app_config = cesium_engine::globe::tiles::config::TileEngineConfig {
+            offline_mode: false,
+            mesh_cache_size: std::num::NonZeroUsize::new(512).unwrap(),
+            max_cache_size: std::num::NonZeroUsize::new(512).unwrap(),
+            enable_prefetch: false,
+            ..cesium_engine::globe::tiles::config::TileEngineConfig::default()
+        };
 
         let progress = Arc::new(Mutex::new(0.0_f64));
-        let mut flight_app =
-            Box::new(cesium_flight::tracker::FlightTrackerApp::new(progress.clone()));
+        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
+            progress.clone(),
+        ));
 
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);
@@ -101,21 +106,25 @@ impl<'a> TileMonitorApp<'a> {
         }
         flight_app.is_playing = true;
         flight_app.play_speed = 0.01;
-        flight_app.view_mode  = CameraMode::Tracking;
+        flight_app.view_mode = CameraMode::Tracking;
 
-        let mut visibility_log =
-            File::create("tile_monitor_visibility.csv")
-                .expect("failed to create tile_monitor_visibility.csv");
-        writeln!(visibility_log, "Frame,Progress,TileZ,TileX,TileY,Event,Detail").unwrap();
+        let mut visibility_log = File::create("tile_monitor_visibility.csv")
+            .expect("failed to create tile_monitor_visibility.csv");
+        writeln!(
+            visibility_log,
+            "Frame,Progress,TileZ,TileX,TileY,Event,Detail"
+        )
+        .unwrap();
 
-        let mut texture_log =
-            File::create("tile_monitor_texture.csv")
-                .expect("failed to create tile_monitor_texture.csv");
-        writeln!(texture_log,
+        let mut texture_log = File::create("tile_monitor_texture.csv")
+            .expect("failed to create tile_monitor_texture.csv");
+        writeln!(
+            texture_log,
             "Frame,Progress,TileZ,TileX,TileY,Event,\
              OldTexZ,OldTexX,OldTexY,OldOwnTex,\
              NewTexZ,NewTexX,NewTexY,NewOwnTex,NewUV"
-        ).unwrap();
+        )
+        .unwrap();
 
         Self {
             inner: App::new(app_config, Some(flight_app), None),
@@ -125,51 +134,70 @@ impl<'a> TileMonitorApp<'a> {
             frame_count: 0,
             visibility_log,
             texture_log,
-            vis_history:     HashMap::new(),
+            vis_history: HashMap::new(),
             display_history: HashMap::new(),
-            vis_buckets:     HashMap::new(),
-            tex_buckets:     HashMap::new(),
+            vis_buckets: HashMap::new(),
+            tex_buckets: HashMap::new(),
         }
     }
 
     // ── logging helpers ────────────────────────────────────────────────────
 
-    fn log_vis(&mut self, frame: u32, progress: f64,
-               id: TileId, event: &str, detail: &str) {
-        writeln!(self.visibility_log,
+    fn log_vis(&mut self, frame: u32, progress: f64, id: TileId, event: &str, detail: &str) {
+        writeln!(
+            self.visibility_log,
             "{},{:.5},{},{},{},{},{}",
             frame, progress, id.z, id.x, id.y, event, detail
-        ).unwrap();
+        )
+        .unwrap();
         self.vis_buckets
             .entry(id)
             .or_insert_with(TileEventBucket::new)
             .push(frame, event, detail.to_string());
     }
 
-    fn log_tex(&mut self, frame: u32, progress: f64,
-               id: TileId, event: &str,
-               old: Option<&TileDisplaySnapshot>,
-               new: &TileDisplaySnapshot) {
+    fn log_tex(
+        &mut self,
+        frame: u32,
+        progress: f64,
+        id: TileId,
+        event: &str,
+        old: Option<&TileDisplaySnapshot>,
+        new: &TileDisplaySnapshot,
+    ) {
         let (oz, ox, oy, oown) = if let Some(o) = old {
-            (o.texture_id.z, o.texture_id.x, o.texture_id.y, o.showing_own as u8)
+            (
+                o.texture_id.z,
+                o.texture_id.x,
+                o.texture_id.y,
+                o.showing_own as u8,
+            )
         } else {
             (0, 0, 0, 0)
         };
-        writeln!(self.texture_log,
+        writeln!(
+            self.texture_log,
             "{},{:.5},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            frame, progress,
-            id.z, id.x, id.y,
+            frame,
+            progress,
+            id.z,
+            id.x,
+            id.y,
             event,
-            oz, ox, oy, oown,
-            new.texture_id.z, new.texture_id.x, new.texture_id.y,
+            oz,
+            ox,
+            oy,
+            oown,
+            new.texture_id.z,
+            new.texture_id.x,
+            new.texture_id.y,
             new.showing_own as u8,
             new.uv_key
-        ).unwrap();
+        )
+        .unwrap();
         let detail = format!(
             "tex=({},{},{}) own={} uv={}",
-            new.texture_id.z, new.texture_id.x, new.texture_id.y,
-            new.showing_own,
-            new.uv_key
+            new.texture_id.z, new.texture_id.x, new.texture_id.y, new.showing_own, new.uv_key
         );
         self.tex_buckets
             .entry(id)
@@ -198,10 +226,12 @@ impl<'a> TileMonitorApp<'a> {
                 .display_state
                 .iter()
                 .map(|(mesh_id, entry)| {
-                    (*mesh_id,
-                     entry.texture_id,
-                     entry.uv_scale_offset,
-                     entry.showing_own_texture)
+                    (
+                        *mesh_id,
+                        entry.texture_id,
+                        entry.uv_scale_offset,
+                        entry.showing_own_texture,
+                    )
                 })
                 .collect();
 
@@ -217,7 +247,11 @@ impl<'a> TileMonitorApp<'a> {
         for id in &visible_ids {
             if let Some(hist) = self.vis_history.get_mut(id) {
                 if hist.last_z != id.z {
-                    let event = if id.z > hist.last_z { "LOD_UP" } else { "LOD_DOWN" };
+                    let event = if id.z > hist.last_z {
+                        "LOD_UP"
+                    } else {
+                        "LOD_DOWN"
+                    };
                     let detail = format!("z_old={} z_new={}", hist.last_z, id.z);
                     self.log_vis(frame, progress, *id, event, &detail);
                     self.vis_history.get_mut(id).unwrap().last_z = id.z;
@@ -228,7 +262,10 @@ impl<'a> TileMonitorApp<'a> {
                 self.log_vis(frame, progress, *id, "APPEAR", &detail);
                 self.vis_history.insert(
                     *id,
-                    TileVisibilityHistory { last_z: id.z, last_change_frame: frame },
+                    TileVisibilityHistory {
+                        last_z: id.z,
+                        last_change_frame: frame,
+                    },
                 );
             }
         }
@@ -308,7 +345,10 @@ impl<'a> TileMonitorApp<'a> {
         println!("╚══════════════════════════════════════════════════════════╝\n");
 
         // ── A) Visibility rapid changes ───────────────────────────────────
-        println!("── A) Visibility / LOD rapid changes (≤{} frames between events) ──", RAPID_FRAMES);
+        println!(
+            "── A) Visibility / LOD rapid changes (≤{} frames between events) ──",
+            RAPID_FRAMES
+        );
 
         let mut rapid_vis: Vec<(TileId, Vec<(u32, u32, String, String)>)> = Vec::new();
         for (id, bucket) in &self.vis_buckets {
@@ -317,30 +357,57 @@ impl<'a> TileMonitorApp<'a> {
                 .filter_map(|i| {
                     let gap = evs[i].0.saturating_sub(evs[i - 1].0);
                     if gap <= RAPID_FRAMES {
-                        Some((evs[i - 1].0, evs[i].0,
-                              evs[i - 1].1.clone(), evs[i].1.clone()))
-                    } else { None }
+                        Some((
+                            evs[i - 1].0,
+                            evs[i].0,
+                            evs[i - 1].1.clone(),
+                            evs[i].1.clone(),
+                        ))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
-            if !pairs.is_empty() { rapid_vis.push((*id, pairs)); }
+            if !pairs.is_empty() {
+                rapid_vis.push((*id, pairs));
+            }
         }
 
         if rapid_vis.is_empty() {
             println!("  ✓ No rapid visibility/LOD changes detected.\n");
         } else {
             rapid_vis.sort_by_key(|(id, _)| (id.z, id.x, id.y));
-            println!("  {} tile(s) with rapid visibility/LOD changes:\n", rapid_vis.len());
+            println!(
+                "  {} tile(s) with rapid visibility/LOD changes:\n",
+                rapid_vis.len()
+            );
             for (id, pairs) in &rapid_vis {
-                println!("  Tile z={} x={} y={} ({} rapid pair(s)):", id.z, id.x, id.y, pairs.len());
+                println!(
+                    "  Tile z={} x={} y={} ({} rapid pair(s)):",
+                    id.z,
+                    id.x,
+                    id.y,
+                    pairs.len()
+                );
                 for (f1, f2, k1, k2) in pairs {
-                    println!("    frame {} [{}] → frame {} [{}]  gap={}", f1, k1, f2, k2, f2 - f1);
+                    println!(
+                        "    frame {} [{}] → frame {} [{}]  gap={}",
+                        f1,
+                        k1,
+                        f2,
+                        k2,
+                        f2 - f1
+                    );
                 }
             }
             println!();
         }
 
         // ── B) Texture rapid changes ──────────────────────────────────────
-        println!("── B) Texture (display_state) rapid changes (≤{} frames between events) ──", RAPID_FRAMES);
+        println!(
+            "── B) Texture (display_state) rapid changes (≤{} frames between events) ──",
+            RAPID_FRAMES
+        );
 
         let mut rapid_tex: Vec<(TileId, Vec<(u32, u32, String, String)>)> = Vec::new();
         for (id, bucket) in &self.tex_buckets {
@@ -349,24 +416,45 @@ impl<'a> TileMonitorApp<'a> {
                 .filter_map(|i| {
                     let gap = evs[i].0.saturating_sub(evs[i - 1].0);
                     if gap <= RAPID_FRAMES {
-                        Some((evs[i - 1].0, evs[i].0,
-                              format!("{} [{}]", evs[i - 1].1, evs[i - 1].2),
-                              format!("{} [{}]", evs[i].1,     evs[i].2)))
-                    } else { None }
+                        Some((
+                            evs[i - 1].0,
+                            evs[i].0,
+                            format!("{} [{}]", evs[i - 1].1, evs[i - 1].2),
+                            format!("{} [{}]", evs[i].1, evs[i].2),
+                        ))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
-            if !pairs.is_empty() { rapid_tex.push((*id, pairs)); }
+            if !pairs.is_empty() {
+                rapid_tex.push((*id, pairs));
+            }
         }
 
         if rapid_tex.is_empty() {
             println!("  ✓ No rapid texture changes detected.\n");
         } else {
             rapid_tex.sort_by_key(|(id, _)| (id.z, id.x, id.y));
-            println!("  {} tile(s) with rapid texture changes:\n", rapid_tex.len());
+            println!(
+                "  {} tile(s) with rapid texture changes:\n",
+                rapid_tex.len()
+            );
             for (id, pairs) in &rapid_tex {
-                println!("  Tile z={} x={} y={} ({} rapid pair(s)):", id.z, id.x, id.y, pairs.len());
+                println!(
+                    "  Tile z={} x={} y={} ({} rapid pair(s)):",
+                    id.z,
+                    id.x,
+                    id.y,
+                    pairs.len()
+                );
                 for (f1, f2, d1, d2) in pairs {
-                    println!("    frame {} → frame {}  gap={}", f1, f2, f2.saturating_sub(*f1));
+                    println!(
+                        "    frame {} → frame {}  gap={}",
+                        f1,
+                        f2,
+                        f2.saturating_sub(*f1)
+                    );
                     println!("      before: {}", d1);
                     println!("      after : {}", d2);
                 }
@@ -379,11 +467,14 @@ impl<'a> TileMonitorApp<'a> {
         let mut hypotheses: Vec<String> = Vec::new();
 
         // Oscillating APPEAR/DISAPPEAR
-        let osc_count = rapid_vis.iter().filter(|(_, pairs)| {
-            pairs.iter().any(|(_, _, k1, k2)|
-                (k1 == "APPEAR" && k2 == "DISAPPEAR") ||
-                (k1 == "DISAPPEAR" && k2 == "APPEAR"))
-        }).count();
+        let osc_count = rapid_vis
+            .iter()
+            .filter(|(_, pairs)| {
+                pairs.iter().any(|(_, _, k1, k2)| {
+                    (k1 == "APPEAR" && k2 == "DISAPPEAR") || (k1 == "DISAPPEAR" && k2 == "APPEAR")
+                })
+            })
+            .count();
         if osc_count > 0 {
             hypotheses.push(format!(
                 "[VIS-OSC] {} tile(s) oscillate APPEAR↔DISAPPEAR. \
@@ -399,11 +490,15 @@ impl<'a> TileMonitorApp<'a> {
         }
 
         // LOD up/down oscillation
-        let lod_osc_count = rapid_vis.iter().filter(|(_, pairs)| {
-            pairs.iter().any(|(_, _, k1, k2)|
-                (k1.starts_with("LOD_UP") && k2.starts_with("LOD_DOWN")) ||
-                (k1.starts_with("LOD_DOWN") && k2.starts_with("LOD_UP")))
-        }).count();
+        let lod_osc_count = rapid_vis
+            .iter()
+            .filter(|(_, pairs)| {
+                pairs.iter().any(|(_, _, k1, k2)| {
+                    (k1.starts_with("LOD_UP") && k2.starts_with("LOD_DOWN"))
+                        || (k1.starts_with("LOD_DOWN") && k2.starts_with("LOD_UP"))
+                })
+            })
+            .count();
         if lod_osc_count > 0 {
             hypotheses.push(format!(
                 "[LOD-OSC] {} tile(s) rapidly flip between higher and lower \
@@ -414,11 +509,15 @@ impl<'a> TileMonitorApp<'a> {
         }
 
         // Texture APPEAR right after REMOVED
-        let tex_appear_removed = rapid_tex.iter().filter(|(_, pairs)| {
-            pairs.iter().any(|(_, _, d1, d2)|
-                (d1.contains("APPEAR") || d2.contains("APPEAR")) ||
-                (d1.contains("REMOVED") || d2.contains("REMOVED")))
-        }).count();
+        let tex_appear_removed = rapid_tex
+            .iter()
+            .filter(|(_, pairs)| {
+                pairs.iter().any(|(_, _, d1, d2)| {
+                    (d1.contains("APPEAR") || d2.contains("APPEAR"))
+                        || (d1.contains("REMOVED") || d2.contains("REMOVED"))
+                })
+            })
+            .count();
         if tex_appear_removed > 0 {
             hypotheses.push(format!(
                 "[TEX-BLINK] {} tile(s) had APPEAR/REMOVED texture events in \
@@ -436,11 +535,17 @@ impl<'a> TileMonitorApp<'a> {
         }
 
         // Own↔Fallback toggling
-        let own_fallback_toggle = rapid_tex.iter().filter(|(_, pairs)| {
-            pairs.iter().any(|(_, _, d1, d2)|
-                d1.contains("UPGRADE") || d2.contains("UPGRADE") ||
-                d1.contains("DOWNGRADE") || d2.contains("DOWNGRADE"))
-        }).count();
+        let own_fallback_toggle = rapid_tex
+            .iter()
+            .filter(|(_, pairs)| {
+                pairs.iter().any(|(_, _, d1, d2)| {
+                    d1.contains("UPGRADE")
+                        || d2.contains("UPGRADE")
+                        || d1.contains("DOWNGRADE")
+                        || d2.contains("DOWNGRADE")
+                })
+            })
+            .count();
         if own_fallback_toggle > 0 {
             hypotheses.push(format!(
                 "[TEX-TOGGLE] {} tile(s) toggled between own hi-res texture and \
@@ -496,10 +601,11 @@ impl<'a> ApplicationHandler for TileMonitorApp<'a> {
         event: WindowEvent,
     ) {
         if let WindowEvent::RedrawRequested = event {
-            self.inner.window_event(event_loop, window_id, WindowEvent::RedrawRequested);
+            self.inner
+                .window_event(event_loop, window_id, WindowEvent::RedrawRequested);
 
             self.frame_count += 1;
-            let frame    = self.frame_count;
+            let frame = self.frame_count;
             let progress = *self.progress.lock().unwrap();
 
             // Skip first 30 frames of startup noise.
@@ -507,7 +613,7 @@ impl<'a> ApplicationHandler for TileMonitorApp<'a> {
                 self.process_frame(frame, progress);
             }
 
-            if frame % 120 == 0 {
+            if frame.is_multiple_of(120) {
                 let total_vis: usize = self.vis_buckets.values().map(|b| b.events.len()).sum();
                 let total_tex: usize = self.tex_buckets.values().map(|b| b.events.len()).sum();
                 println!(

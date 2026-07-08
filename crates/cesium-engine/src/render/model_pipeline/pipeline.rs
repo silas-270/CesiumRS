@@ -87,7 +87,7 @@ impl ModelRenderer {
             if let Some(mesh) = node.mesh() {
                 for primitive in mesh.primitives() {
                     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-                    
+
                     let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
                     let normals: Vec<[f32; 3]> = reader.read_normals().unwrap().collect();
                     let mut tex_coords: Vec<[f32; 2]> = Vec::new();
@@ -105,20 +105,32 @@ impl ModelRenderer {
 
                     let base_index = vertices.len() as u32;
 
-                    for (i, (pos, norm)) in positions.into_iter().zip(normals.into_iter()).enumerate() {
-                        let uv = if i < tex_coords.len() { tex_coords[i] } else { [0.0, 0.0] };
-                        let color = if i < vertex_colors.len() { vertex_colors[i] } else { base_color };
-                        
+                    for (i, (pos, norm)) in positions.into_iter().zip(normals).enumerate() {
+                        let uv = if i < tex_coords.len() {
+                            tex_coords[i]
+                        } else {
+                            [0.0, 0.0]
+                        };
+                        let color = if i < vertex_colors.len() {
+                            vertex_colors[i]
+                        } else {
+                            base_color
+                        };
+
                         // Apply node transform
                         let world_pos = transform * glam::Vec4::new(pos[0], pos[1], pos[2], 1.0);
-                        
+
                         // Normal transform (inverse transpose). For uniform scales, we can just use the upper 3x3
                         let normal_matrix = glam::Mat3::from_cols(
                             transform.x_axis.truncate(),
                             transform.y_axis.truncate(),
                             transform.z_axis.truncate(),
-                        ).inverse().transpose();
-                        let world_norm = (normal_matrix * glam::Vec3::new(norm[0], norm[1], norm[2])).normalize();
+                        )
+                        .inverse()
+                        .transpose();
+                        let world_norm = (normal_matrix
+                            * glam::Vec3::new(norm[0], norm[1], norm[2]))
+                        .normalize();
 
                         vertices.push(ModelVertex {
                             position: [world_pos.x, world_pos.y, world_pos.z],
@@ -143,14 +155,23 @@ impl ModelRenderer {
 
         for scene in document.scenes() {
             for node in scene.nodes() {
-                process_node(node, glam::Mat4::IDENTITY, &buffers, &mut vertices, &mut indices);
+                process_node(
+                    node,
+                    glam::Mat4::IDENTITY,
+                    &buffers,
+                    &mut vertices,
+                    &mut indices,
+                );
             }
         }
 
         // Normalize the entire assembled mesh so it has a radius of exactly 1.0
         let mut max_extent: f32 = 0.0001;
         for v in &vertices {
-            let len = (v.position[0]*v.position[0] + v.position[1]*v.position[1] + v.position[2]*v.position[2]).sqrt();
+            let len = (v.position[0] * v.position[0]
+                + v.position[1] * v.position[1]
+                + v.position[2] * v.position[2])
+                .sqrt();
             if len > max_extent {
                 max_extent = len;
             }
@@ -175,53 +196,64 @@ impl ModelRenderer {
         });
 
         // Setup Texture
-        let (texture_size, padded_data, padded_bytes_per_row, format) = if let Some(image) = images.first() {
-            let width = image.width;
-            let height = image.height;
-            let rgba = match image.format {
-                gltf::image::Format::R8G8B8 => {
-                    // Convert RGB to RGBA
-                    let mut data = Vec::with_capacity(image.pixels.len() / 3 * 4);
-                    for chunk in image.pixels.chunks(3) {
-                        data.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+        let (texture_size, padded_data, padded_bytes_per_row, format) =
+            if let Some(image) = images.first() {
+                let width = image.width;
+                let height = image.height;
+                let rgba = match image.format {
+                    gltf::image::Format::R8G8B8 => {
+                        // Convert RGB to RGBA
+                        let mut data = Vec::with_capacity(image.pixels.len() / 3 * 4);
+                        for chunk in image.pixels.chunks(3) {
+                            data.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+                        }
+                        data
                     }
-                    data
-                },
-                gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
-                _ => vec![255; (width * height * 4) as usize], // Fallback to white
+                    gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
+                    _ => vec![255; (width * height * 4) as usize], // Fallback to white
+                };
+
+                let bytes_per_pixel = 4;
+                let unpadded_bytes_per_row = width * bytes_per_pixel;
+                let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+                let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) & !(align - 1);
+
+                let mut padded_data = vec![0; (padded_bytes_per_row * height) as usize];
+                for y in 0..height {
+                    let src_offset = (y * unpadded_bytes_per_row) as usize;
+                    let dst_offset = (y * padded_bytes_per_row) as usize;
+                    padded_data[dst_offset..dst_offset + unpadded_bytes_per_row as usize]
+                        .copy_from_slice(
+                            &rgba[src_offset..src_offset + unpadded_bytes_per_row as usize],
+                        );
+                }
+
+                (
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    padded_data,
+                    padded_bytes_per_row,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                )
+            } else {
+                // Fallback 1x1 white texture
+                let padded_bytes_per_row = 256; // Minimum alignment
+                let mut data = vec![0; 256];
+                data[0..4].copy_from_slice(&[255, 255, 255, 255]);
+                (
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    data,
+                    padded_bytes_per_row,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                )
             };
-
-            let bytes_per_pixel = 4;
-            let unpadded_bytes_per_row = width as u32 * bytes_per_pixel;
-            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) & !(align - 1);
-
-            let mut padded_data = vec![0; (padded_bytes_per_row * height as u32) as usize];
-            for y in 0..height as u32 {
-                let src_offset = (y * unpadded_bytes_per_row) as usize;
-                let dst_offset = (y * padded_bytes_per_row) as usize;
-                padded_data[dst_offset..dst_offset + unpadded_bytes_per_row as usize]
-                    .copy_from_slice(&rgba[src_offset..src_offset + unpadded_bytes_per_row as usize]);
-            }
-
-            (
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 }, 
-                padded_data, 
-                padded_bytes_per_row,
-                wgpu::TextureFormat::Rgba8UnormSrgb
-            )
-        } else {
-            // Fallback 1x1 white texture
-            let padded_bytes_per_row = 256; // Minimum alignment
-            let mut data = vec![0; 256];
-            data[0..4].copy_from_slice(&[255, 255, 255, 255]);
-            (
-                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, 
-                data, 
-                padded_bytes_per_row,
-                wgpu::TextureFormat::Rgba8UnormSrgb
-            )
-        };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Model Texture"),
@@ -381,7 +413,7 @@ impl ModelRenderer {
             0,
             bytemuck::cast_slice(&[push_constants]),
         );
-        
+
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);

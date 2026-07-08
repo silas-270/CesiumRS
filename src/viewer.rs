@@ -41,15 +41,18 @@ pub struct ViewerOptions {
 
 impl ViewerOptions {
     pub(crate) fn into_tile_engine_config(self) -> TileEngineConfig {
-        let mut config = TileEngineConfig::default();
-        config.max_cache_size = NonZeroUsize::new(self.globe.tile_cache_size).unwrap_or(NonZeroUsize::new(1).unwrap());
-        config.mesh_cache_size = NonZeroUsize::new(self.globe.tile_cache_size).unwrap_or(NonZeroUsize::new(1).unwrap());
-        config.lod_factor = self.globe.maximum_screen_space_error;
-        config.enable_prefetch = self.globe.enable_prefetch;
-        config.map_saturation = self.globe.map_saturation;
-        config.map_contrast = self.globe.map_contrast;
-        config.map_brightness = self.globe.map_brightness;
-        config
+        TileEngineConfig {
+            max_cache_size: NonZeroUsize::new(self.globe.tile_cache_size)
+                .unwrap_or(NonZeroUsize::new(1).unwrap()),
+            mesh_cache_size: NonZeroUsize::new(self.globe.tile_cache_size)
+                .unwrap_or(NonZeroUsize::new(1).unwrap()),
+            lod_factor: self.globe.maximum_screen_space_error,
+            enable_prefetch: self.globe.enable_prefetch,
+            map_saturation: self.globe.map_saturation,
+            map_contrast: self.globe.map_contrast,
+            map_brightness: self.globe.map_brightness,
+            ..TileEngineConfig::default()
+        }
     }
 }
 
@@ -64,7 +67,7 @@ impl Viewer {
     pub fn new(options: ViewerOptions) -> Self {
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Poll);
-        
+
         Self {
             event_loop,
             options,

@@ -2,9 +2,16 @@
 /// Drained every frame in `App::about_to_wait`.
 pub enum ViewerCommand {
     // Camera
-    CameraSetPosition { lon: f64, lat: f64, alt: f64 },
+    CameraSetPosition {
+        lon: f64,
+        lat: f64,
+        alt: f64,
+    },
     CameraSetMode(CameraCommandMode),
-    CameraSetAnchor { position: [f64; 3], orientation: [f64; 4] },
+    CameraSetAnchor {
+        position: [f64; 3],
+        orientation: [f64; 4],
+    },
     CameraZoom(f32),
     CameraPitch(f32),
     // Map imagery adjustments

@@ -1,16 +1,16 @@
-use cesium_engine::core::app::App;
 use crate::testing::VerifyConfig;
 use cesium_engine::camera::camera::CameraMode;
+use cesium_engine::core::app::App;
 use cesium_engine::globe::quadtree::TileId;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
-use std::sync::{Arc, Mutex};
-use std::fs::File;
-use std::io::Write;
-use std::collections::HashMap;
-use std::time::Instant;
 
 /// Tracks the last known texture assignment for a tile and when it last changed.
 struct TileTextureHistory {
@@ -39,14 +39,18 @@ pub struct FlickerTrackingApp<'a> {
 
 impl<'a> FlickerTrackingApp<'a> {
     pub fn new(config: VerifyConfig) -> Self {
-        let mut app_config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
-        app_config.offline_mode = false;
-        app_config.mesh_cache_size = std::num::NonZeroUsize::new(config.cache_size).unwrap();
-        app_config.max_cache_size = std::num::NonZeroUsize::new(config.cache_size).unwrap();
-        app_config.enable_prefetch = config.prefetch;
+        let app_config = cesium_engine::globe::tiles::config::TileEngineConfig {
+            offline_mode: false,
+            mesh_cache_size: std::num::NonZeroUsize::new(config.cache_size).unwrap(),
+            max_cache_size: std::num::NonZeroUsize::new(config.cache_size).unwrap(),
+            enable_prefetch: config.prefetch,
+            ..cesium_engine::globe::tiles::config::TileEngineConfig::default()
+        };
 
         let progress = Arc::new(Mutex::new(0.0));
-        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(progress.clone()));
+        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
+            progress.clone(),
+        ));
 
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);
@@ -58,9 +62,13 @@ impl<'a> FlickerTrackingApp<'a> {
         flight_app.play_speed = 0.01;
         flight_app.view_mode = CameraMode::Tracking;
 
-        let mut frame_log = File::create("flicker_frame_log.csv")
-            .expect("Failed to create flicker_frame_log.csv");
-        writeln!(frame_log, "Frame,Progress,VisibleTiles,DisplayedTiles,TextureChanges,FastFlickers").unwrap();
+        let mut frame_log =
+            File::create("flicker_frame_log.csv").expect("Failed to create flicker_frame_log.csv");
+        writeln!(
+            frame_log,
+            "Frame,Progress,VisibleTiles,DisplayedTiles,TextureChanges,FastFlickers"
+        )
+        .unwrap();
 
         let per_tile_log = File::create("flicker_per_tile_log.csv")
             .expect("Failed to create flicker_per_tile_log.csv");
@@ -87,9 +95,15 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
         if let WindowEvent::RedrawRequested = event {
-            self.inner.window_event(event_loop, window_id, WindowEvent::RedrawRequested);
+            self.inner
+                .window_event(event_loop, window_id, WindowEvent::RedrawRequested);
 
             self.frame_count += 1;
             let frame = self.frame_count;
@@ -110,7 +124,8 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
 
                 // Snapshot the current display_state (texture_id per mesh tile)
                 // display_state is pub on WgpuState
-                let current_assignments: Vec<(TileId, TileId, bool)> = state.display_state
+                let current_assignments: Vec<(TileId, TileId, bool)> = state
+                    .display_state
                     .iter()
                     .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.showing_own_texture))
                     .collect();
@@ -150,13 +165,16 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
                             }
                         } else {
                             // First time we see this tile
-                            self.texture_history.insert(*mesh_id, TileTextureHistory {
-                                texture_id: *texture_id,
-                                showing_own: *showing_own,
-                                last_change_frame: frame,
-                                last_change_time: now,
-                                flip_count: 0,
-                            });
+                            self.texture_history.insert(
+                                *mesh_id,
+                                TileTextureHistory {
+                                    texture_id: *texture_id,
+                                    showing_own: *showing_own,
+                                    last_change_frame: frame,
+                                    last_change_time: now,
+                                    flip_count: 0,
+                                },
+                            );
                         }
                     }
                 }
@@ -167,11 +185,16 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
             writeln!(
                 self.frame_log,
                 "{},{:.5},{},{},{},{}",
-                frame, current_progress, visible_count, displayed_tiles,
-                texture_changes_this_frame, fast_flickers_this_frame
-            ).unwrap();
+                frame,
+                current_progress,
+                visible_count,
+                displayed_tiles,
+                texture_changes_this_frame,
+                fast_flickers_this_frame
+            )
+            .unwrap();
 
-            if frame % 60 == 0 {
+            if frame.is_multiple_of(60) {
                 println!(
                     "Frame {:4}: progress={:.4}  visible={}  displayed={}  changes={}  fast_flickers={}  total_flicker_events={}",
                     frame, current_progress, visible_count, displayed_tiles,
@@ -185,7 +208,12 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
                 writeln!(self.per_tile_log, "TileZ,TileX,TileY,FlipCount").unwrap();
                 for (id, hist) in &self.texture_history {
                     if hist.flip_count > 0 {
-                        writeln!(self.per_tile_log, "{},{},{},{}", id.z, id.x, id.y, hist.flip_count).unwrap();
+                        writeln!(
+                            self.per_tile_log,
+                            "{},{},{},{}",
+                            id.z, id.x, id.y, hist.flip_count
+                        )
+                        .unwrap();
                     }
                 }
 

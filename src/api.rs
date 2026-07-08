@@ -31,11 +31,11 @@
 //! }
 //! ```
 
-use std::sync::mpsc;
 use cesium_engine::core::app::App;
-use cesium_engine::core::command::{ViewerCommand, CameraCommandMode};
+use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
 use cesium_engine::globe::tiles::config::TileEngineConfig;
 use std::num::NonZeroUsize;
+use std::sync::mpsc;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 // ─── Public re-exports ────────────────────────────────────────────────────────
@@ -137,8 +137,10 @@ impl CesiumViewerBuilder {
     /// Consume the builder and produce a `CesiumViewer`.
     pub fn build(self) -> CesiumViewer {
         let config = TileEngineConfig {
-            max_cache_size: NonZeroUsize::new(self.tile_cache_size).unwrap_or(NonZeroUsize::new(1).unwrap()),
-            mesh_cache_size: NonZeroUsize::new(self.tile_cache_size / 4).unwrap_or(NonZeroUsize::new(1).unwrap()),
+            max_cache_size: NonZeroUsize::new(self.tile_cache_size)
+                .unwrap_or(NonZeroUsize::new(1).unwrap()),
+            mesh_cache_size: NonZeroUsize::new(self.tile_cache_size / 4)
+                .unwrap_or(NonZeroUsize::new(1).unwrap()),
             lod_factor: self.max_screen_space_error,
             enable_prefetch: self.enable_prefetch,
             map_saturation: self.map_saturation,
@@ -187,7 +189,9 @@ impl CesiumViewer {
     ///
     /// Must be called **before** `run()`.
     pub fn handle(&self) -> ViewerHandle {
-        ViewerHandle { tx: self.command_tx.clone() }
+        ViewerHandle {
+            tx: self.command_tx.clone(),
+        }
     }
 
     /// Start the application event loop. **Blocks the calling thread and never returns.**
@@ -217,15 +221,17 @@ impl ViewerHandle {
     /// - `lat`: latitude in decimal degrees (−90 … +90)
     /// - `alt`: altitude in kilometres above the WGS84 ellipsoid
     pub fn camera_set_position(&self, lon: f64, lat: f64, alt: f64) {
-        let _ = self.tx.try_send(ViewerCommand::CameraSetPosition { lon, lat, alt });
+        let _ = self
+            .tx
+            .try_send(ViewerCommand::CameraSetPosition { lon, lat, alt });
     }
 
     /// Switch the camera to a different tracking mode.
     pub fn camera_set_mode(&self, mode: CameraMode) {
         let engine_mode = match mode {
-            CameraMode::Free     => CameraCommandMode::Free,
+            CameraMode::Free => CameraCommandMode::Free,
             CameraMode::Tracking => CameraCommandMode::Tracking,
-            CameraMode::Cockpit  => CameraCommandMode::Cockpit,
+            CameraMode::Cockpit => CameraCommandMode::Cockpit,
         };
         let _ = self.tx.try_send(ViewerCommand::CameraSetMode(engine_mode));
     }
@@ -235,7 +241,10 @@ impl ViewerHandle {
     /// - `position`: ECEF position in kilometres `[x, y, z]`
     /// - `orientation`: unit quaternion `[x, y, z, w]`
     pub fn camera_set_anchor(&self, position: [f64; 3], orientation: [f64; 4]) {
-        let _ = self.tx.try_send(ViewerCommand::CameraSetAnchor { position, orientation });
+        let _ = self.tx.try_send(ViewerCommand::CameraSetAnchor {
+            position,
+            orientation,
+        });
     }
 
     /// Zoom in (`delta > 0`) or out (`delta < 0`). Scales distance by ~15% per unit.

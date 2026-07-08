@@ -35,25 +35,26 @@ impl GodCamera {
     pub fn update(&mut self, dt: f32, movement: Vec3, fast: bool) {
         // Calculate altitude above Earth's surface (approx radius 6.378137)
         let altitude = (self.position.length() - 6.378137).max(0.0001);
-        
+
         // Scale speed dynamically: slower near surface, normal speed far away.
         let altitude_factor = altitude.clamp(0.0001, 1.0);
 
-        let speed = if fast { self.fast_speed } else { self.base_speed };
+        let speed = if fast {
+            self.fast_speed
+        } else {
+            self.base_speed
+        };
         let dynamic_speed = speed * altitude_factor;
         let velocity = movement * dynamic_speed * dt;
 
         let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
 
-        // Forward vector for movement (ignores pitch for WASD, so you don't fly into the ground when looking down, 
+        // Forward vector for movement (ignores pitch for WASD, so you don't fly into the ground when looking down,
         // but since it's a god camera, it's often preferred to fly in the look direction.
         // Let's make it fly in the look direction for true 3D movement).
         let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
-        let forward = Vec3::new(
-            pitch_cos * yaw_sin,
-            pitch_sin,
-            -pitch_cos * yaw_cos,
-        ).normalize_or_zero();
+        let forward =
+            Vec3::new(pitch_cos * yaw_sin, pitch_sin, -pitch_cos * yaw_cos).normalize_or_zero();
 
         // Right vector is perpendicular to forward and world up
         let right = Vec3::new(yaw_cos, 0.0, yaw_sin).normalize_or_zero();
@@ -69,18 +70,18 @@ impl GodCamera {
         self.pitch += dy * self.sensitivity; // Inverted Y-axis
 
         // Clamp pitch to avoid gimbal lock
-        self.pitch = self.pitch.clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+        self.pitch = self.pitch.clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.01,
+            std::f32::consts::FRAC_PI_2 - 0.01,
+        );
     }
 
     pub fn get_view_matrix(&self) -> Mat4 {
         let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
         let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
 
-        let forward = Vec3::new(
-            pitch_cos * yaw_sin,
-            pitch_sin,
-            -pitch_cos * yaw_cos,
-        ).normalize_or_zero();
+        let forward =
+            Vec3::new(pitch_cos * yaw_sin, pitch_sin, -pitch_cos * yaw_cos).normalize_or_zero();
 
         Mat4::look_to_rh(self.position, forward, Vec3::Y)
     }
@@ -97,13 +98,18 @@ impl GodCamera {
             (pitch_cos * yaw_sin) as f64,
             pitch_sin as f64,
             -(pitch_cos * yaw_cos) as f64,
-        ).normalize_or_zero();
+        )
+        .normalize_or_zero();
 
         let rot = glam::DQuat::from_rotation_arc(glam::DVec3::Z, -forward);
 
         (
-            glam::DVec3::new(self.position.x as f64, self.position.y as f64, self.position.z as f64),
-            rot
+            glam::DVec3::new(
+                self.position.x as f64,
+                self.position.y as f64,
+                self.position.z as f64,
+            ),
+            rot,
         )
     }
 

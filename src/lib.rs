@@ -5,10 +5,10 @@ pub mod viewer;
 pub mod testing;
 
 // ── Primary public API ────────────────────────────────────────────────────────
-pub use api::{CesiumViewer, ViewerHandle, CameraMode, CameraState};
+pub use api::{CameraMode, CameraState, CesiumViewer, ViewerHandle};
 
 // ── Legacy path (kept for the test harness) ───────────────────────────────────
-pub use viewer::{Viewer, ViewerOptions, GlobeOptions};
+pub use viewer::{GlobeOptions, Viewer, ViewerOptions};
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

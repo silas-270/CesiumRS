@@ -1,6 +1,9 @@
-﻿use glam::Vec3;
-use super::tile_id::{TileId, MAX_ZOOM, web_mercator_y_to_lat};
-use super::bounding_volume::{OrientedBoundingBox, Frustum, compute_horizon_culling_point, get_tile_corner};
+#![allow(clippy::type_complexity)]
+use super::bounding_volume::{
+    compute_horizon_culling_point, get_tile_corner, Frustum, OrientedBoundingBox,
+};
+use super::tile_id::{web_mercator_y_to_lat, TileId, MAX_ZOOM};
+use glam::Vec3;
 
 pub struct QuadtreeNode {
     pub id: TileId,
@@ -17,7 +20,8 @@ pub struct QuadtreeNode {
 
 impl QuadtreeNode {
     pub fn new(id: TileId) -> Self {
-        let (center, radius, lod_radius, surface_points, obb, tight_obbs) = Self::compute_bounding_volume(&id);
+        let (center, radius, lod_radius, surface_points, obb, tight_obbs) =
+            Self::compute_bounding_volume(&id);
         let geographic_corners = Self::compute_geographic_corners(&id);
         let horizon_culling_point =
             compute_horizon_culling_point(center.normalize(), &geographic_corners);
@@ -36,20 +40,26 @@ impl QuadtreeNode {
         }
     }
 
-    fn compute_sub_obb(id: &TileId, u_min: f32, u_max: f32, v_min: f32, v_max: f32) -> OrientedBoundingBox {
+    fn compute_sub_obb(
+        id: &TileId,
+        u_min: f32,
+        u_max: f32,
+        v_min: f32,
+        v_max: f32,
+    ) -> OrientedBoundingBox {
         let z_pow = (1_u32 << id.z) as f32;
         let base_lon = -180.0 + (id.x as f32) * 360.0 / z_pow;
         let lon_span = 360.0 / z_pow;
-        
+
         let sub_lon_min = base_lon + u_min * lon_span;
         let sub_lon_max = base_lon + u_max * lon_span;
-        
+
         let y_min = id.y as f32 + v_min;
         let y_max = id.y as f32 + v_max;
-        
+
         let mut sub_lat_max = web_mercator_y_to_lat(y_min, id.z);
         let mut sub_lat_min = web_mercator_y_to_lat(y_max, id.z);
-        
+
         if id.y == 0 && v_min == 0.0 {
             sub_lat_max = 90.0;
         }
@@ -62,7 +72,7 @@ impl QuadtreeNode {
         let surface_center = get_tile_corner(center_lon, center_lat, 0.0);
 
         let a2 = 6.378137_f32 * 6.378137_f32;
-        let b2 = 6.3567523142_f32 * 6.3567523142_f32;
+        let b2 = 6.356_752_4_f32 * 6.356_752_4_f32;
         let normal = Vec3::new(
             surface_center.x / a2,
             surface_center.y / b2,
@@ -106,7 +116,16 @@ impl QuadtreeNode {
         }
     }
 
-    fn compute_bounding_volume(id: &TileId) -> (Vec3, f32, f32, [Vec3; 9], OrientedBoundingBox, Option<Box<Vec<OrientedBoundingBox>>>) {
+    fn compute_bounding_volume(
+        id: &TileId,
+    ) -> (
+        Vec3,
+        f32,
+        f32,
+        [Vec3; 9],
+        OrientedBoundingBox,
+        Option<Box<Vec<OrientedBoundingBox>>>,
+    ) {
         let z_pow = (1_u32 << id.z) as f32;
 
         let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
@@ -165,7 +184,7 @@ impl QuadtreeNode {
 
         // Compute OrientedBoundingBox using a dense sample grid
         let a2 = 6.378137_f32 * 6.378137_f32;
-        let b2 = 6.3567523142_f32 * 6.3567523142_f32;
+        let b2 = 6.356_752_4_f32 * 6.356_752_4_f32;
         let normal = Vec3::new(
             surface_center.x / a2,
             surface_center.y / b2,
@@ -273,7 +292,7 @@ impl QuadtreeNode {
     pub fn update(&mut self, camera_pos: Vec3, lod_factor: f32, frustum: &Frustum) {
         if let Some(hcp) = self.horizon_culling_point {
             let a = 6.378137_f32;
-            let b = 6.3567523142_f32;
+            let b = 6.356_752_4_f32;
             let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
             let vh_mag_sq = cv.length_squared() - 1.0;
 
@@ -306,7 +325,7 @@ impl QuadtreeNode {
                 if frustum.intersects_obb(obb) {
                     let normal = obb.half_axes[2].normalize_or_zero();
                     let cam_to_center = camera_pos - obb.center;
-                    
+
                     let max_extent = obb.half_axes[0].length().max(obb.half_axes[1].length());
                     // Only consider the sub-OBB visible if it's not strictly behind the horizon.
                     // The tangent plane at the center of the sub-OBB is a good approximation.
@@ -405,6 +424,12 @@ pub struct QuadtreeManager {
     pub lod_factor: f32, // Multiplier for subdivision distance check
 }
 
+impl Default for QuadtreeManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuadtreeManager {
     pub fn new() -> Self {
         Self {
@@ -433,7 +458,10 @@ impl QuadtreeManager {
         active_tiles
     }
 
-    pub fn get_renderable_tiles<F: FnMut(&TileId) -> bool>(&self, mut is_ready: F) -> Vec<(TileId, Vec3, f32)> {
+    pub fn get_renderable_tiles<F: FnMut(&TileId) -> bool>(
+        &self,
+        mut is_ready: F,
+    ) -> Vec<(TileId, Vec3, f32)> {
         let mut active_tiles = Vec::new();
         for root in self.roots.iter() {
             root.collect_renderable_tiles(&mut active_tiles, &mut is_ready);

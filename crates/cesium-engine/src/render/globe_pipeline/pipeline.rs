@@ -7,35 +7,33 @@ pub fn create_pipelines(
     shader: &wgpu::ShaderModule,
     camera_bind_group_layout: &wgpu::BindGroupLayout,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
-) -> (wgpu::RenderPipeline, wgpu::RenderPipeline, wgpu::RenderPipeline) {
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+) {
     let push_constant_ranges = [wgpu::PushConstantRange {
         stages: wgpu::ShaderStages::VERTEX,
         range: 0..32,
     }];
 
-    let render_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[
-                camera_bind_group_layout,
-                texture_bind_group_layout,
-            ],
-            push_constant_ranges: &push_constant_ranges,
-        });
+    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Render Pipeline Layout"),
+        bind_group_layouts: &[camera_bind_group_layout, texture_bind_group_layout],
+        push_constant_ranges: &push_constant_ranges,
+    });
 
-    let basic_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Basic Pipeline Layout"),
-            bind_group_layouts: &[camera_bind_group_layout],
-            push_constant_ranges: &push_constant_ranges,
-        });
+    let basic_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Basic Pipeline Layout"),
+        bind_group_layouts: &[camera_bind_group_layout],
+        push_constant_ranges: &push_constant_ranges,
+    });
 
-    let debug_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Debug Pipeline Layout"),
-            bind_group_layouts: &[camera_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+    let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Debug Pipeline Layout"),
+        bind_group_layouts: &[camera_bind_group_layout],
+        push_constant_ranges: &[],
+    });
 
     let solid_depth_stencil = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth32Float,

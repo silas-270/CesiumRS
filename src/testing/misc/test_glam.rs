@@ -6,5 +6,9 @@ fn test_glam_proj() {
     let v_far = glam::Vec4::new(0.0, 0.0, -100.0, 1.0);
     let c_near = p * v_near;
     let c_far = p * v_far;
-    println!("near_z: {}, far_z: {}", c_near.z / c_near.w, c_far.z / c_far.w);
+    println!(
+        "near_z: {}, far_z: {}",
+        c_near.z / c_near.w,
+        c_far.z / c_far.w
+    );
 }

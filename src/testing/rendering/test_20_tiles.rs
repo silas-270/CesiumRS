@@ -11,8 +11,12 @@ fn test_20_tiles() {
     let aspect_ratio = 1.92;
     let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
     let (global_pos_dvec, _) = cam.global_transform_f64();
-    let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
-    
+    let global_pos_f32 = glam::Vec3::new(
+        global_pos_dvec.x as f32,
+        global_pos_dvec.y as f32,
+        global_pos_dvec.z as f32,
+    );
+
     let mut quadtree = QuadtreeManager::new();
     quadtree.update(global_pos_f32, frustum_planes);
     let tiles = quadtree.get_visible_tiles();

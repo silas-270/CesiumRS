@@ -11,8 +11,12 @@ fn test_high_alt() {
     let aspect_ratio = 16.0 / 9.0;
     let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
     let (global_pos_dvec, _) = cam.global_transform_f64();
-    let global_pos_f32 = glam::Vec3::new(global_pos_dvec.x as f32, global_pos_dvec.y as f32, global_pos_dvec.z as f32);
-    
+    let global_pos_f32 = glam::Vec3::new(
+        global_pos_dvec.x as f32,
+        global_pos_dvec.y as f32,
+        global_pos_dvec.z as f32,
+    );
+
     let mut quadtree = QuadtreeManager::new();
     quadtree.update(global_pos_f32, frustum_planes);
     let tiles = quadtree.get_visible_tiles();
@@ -21,7 +25,6 @@ fn test_high_alt() {
     let mut ghost_count = 0;
 
     for (id, _, _) in tiles.iter() {
-
         let frustum = cesium_engine::globe::quadtree::Frustum::from_planes(frustum_planes);
         let a2 = 6.378137_f32 * 6.378137_f32;
         let b2 = 6.3567524_f32 * 6.3567524_f32;

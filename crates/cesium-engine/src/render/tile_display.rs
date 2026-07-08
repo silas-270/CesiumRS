@@ -1,5 +1,5 @@
-use std::time::Instant;
 use crate::globe::quadtree::TileId;
+use std::time::Instant;
 
 pub struct TileBuffers {
     pub vertex_buffer: wgpu::Buffer,

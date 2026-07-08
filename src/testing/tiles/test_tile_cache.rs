@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use cesium_engine::globe::tiles::tile_cache::{TileCacheManager, TileState};
     use cesium_engine::globe::quadtree::TileId;
+    use cesium_engine::globe::tiles::tile_cache::{TileCacheManager, TileState};
     use std::num::NonZeroUsize;
-    use std::time::Duration;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_tile_cache_basic() {
