@@ -29,6 +29,9 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         } else if cfg.monitor {
             let mut app = testing::rendering::test_tile_monitor::TileMonitorApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
+        } else if cfg.profile {
+            let mut app = testing::profiling::perf_simulator::PerfSimulatorApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
         } else {
             let mut app = testing::harness::test_app::TestApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
