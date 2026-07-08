@@ -1,5 +1,7 @@
 use crate::engine::camera::camera::Camera;
 use crate::engine::globe::quadtree::{QuadtreeManager, TileId};
+use crate::engine::render::tile_display::{TileBuffers, TilePushConstants, TileDisplayEntry};
+use crate::engine::render::camera_uniform::CameraUniform;
 use egui_wgpu::Renderer as EguiRenderer;
 use egui_winit::State as EguiState;
 use glam::{Mat4, Vec3};
@@ -9,66 +11,6 @@ use winit::window::Window;
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-
-pub struct TileBuffers {
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
-    pub num_indices: u32,
-    pub center_f64: [f64; 3],
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct TilePushConstants {
-    pub relative_center: [f32; 4], // Padding to 16 bytes included
-    pub uv_scale_offset: [f32; 4],
-}
-
-/// Stable per-tile texture assignment. Once set, this is only changed
-/// under controlled conditions (sibling-complete upgrade, or timeout).
-#[derive(Clone)]
-pub struct TileDisplayEntry {
-    /// Which texture tile is actually sampled (may be an ancestor for fallback).
-    pub texture_id: TileId,
-    /// UV scale/offset to sample the correct region of `texture_id`.
-    pub uv_scale_offset: [f32; 4],
-    /// When this tile first became visible (used for timeout-based sibling upgrade).
-    pub first_seen: Instant,
-    /// True if this tile is currently showing its own hi-res texture (not a fallback).
-    pub showing_own_texture: bool,
-    /// Fix 2: set to Some(now) on the first frame the tile leaves the visible set.
-    /// The entry is only evicted from display_state once this has been Some for ≥200 ms,
-    /// giving transient LOD oscillations time to resolve without a texture blink.
-    pub absent_since: Option<Instant>,
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
-    view_proj: [[f32; 4]; 4],
-    inv_view_proj: [[f32; 4]; 4],
-    camera_pos: [f32; 4],
-    sun_params: [f32; 4],
-}
-
-impl CameraUniform {
-    fn new() -> Self {
-        Self {
-            view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            inv_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            camera_pos: [0.0; 4],
-            sun_params: [1.0, 0.0, 0.0, 0.0],
-        }
-    }
-
-    fn update_matrix(&mut self, view: Mat4, proj: Mat4, camera_pos_dvec: glam::DVec3, sun_intensity: f32, color_grading: [f32; 3]) {
-        let view_proj = proj * view;
-        self.view_proj = view_proj.to_cols_array_2d();
-        self.inv_view_proj = view_proj.inverse().to_cols_array_2d();
-        self.camera_pos = [camera_pos_dvec.x as f32, camera_pos_dvec.y as f32, camera_pos_dvec.z as f32, 1.0];
-        self.sun_params = [sun_intensity, color_grading[0], color_grading[1], color_grading[2]];
-    }
-}
 
 pub struct WgpuState<'a> {
     pub surface: wgpu::Surface<'a>,

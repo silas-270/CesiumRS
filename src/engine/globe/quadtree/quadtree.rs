@@ -1,33 +1,6 @@
-use glam::Vec3;
-
-pub fn web_mercator_y_to_lat(y: f32, z: u8) -> f32 {
-    let n = (1_u32 << z) as f32;
-    let phi = (std::f32::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan();
-    phi.to_degrees()
-}
-
-const MAX_ZOOM: u8 = 20;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TileId {
-    pub z: u8,
-    pub x: u32,
-    pub y: u32,
-}
-
-impl TileId {
-    pub fn parent(&self) -> Option<TileId> {
-        if self.z == 0 {
-            None
-        } else {
-            Some(TileId {
-                z: self.z - 1,
-                x: self.x / 2,
-                y: self.y / 2,
-            })
-        }
-    }
-}
+﻿use glam::Vec3;
+use super::tile_id::{TileId, MAX_ZOOM, web_mercator_y_to_lat};
+use super::bounding_volume::{OrientedBoundingBox, Frustum, compute_horizon_culling_point, get_tile_corner};
 
 pub struct QuadtreeNode {
     pub id: TileId,
@@ -40,123 +13,6 @@ pub struct QuadtreeNode {
     pub horizon_culling_point: Option<Vec3>,
     pub visible: bool,
     pub children: Option<Box<[QuadtreeNode; 4]>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct OrientedBoundingBox {
-    pub center: Vec3,
-    pub half_axes: [Vec3; 3],
-}
-
-pub struct Frustum {
-    pub planes: [(Vec3, f32); 6],
-}
-
-impl Frustum {
-    pub fn from_planes(planes: [(glam::DVec3, f64); 6]) -> Self {
-        let mut f32_planes = [(Vec3::ZERO, 0.0); 6];
-        for i in 0..6 {
-            f32_planes[i] = (
-                Vec3::new(planes[i].0.x as f32, planes[i].0.y as f32, planes[i].0.z as f32),
-                planes[i].1 as f32,
-            );
-        }
-        Self { planes: f32_planes }
-    }
-
-    pub fn contains_point(&self, p: Vec3) -> bool {
-        for (normal, distance) in &self.planes {
-            if normal.dot(p) + *distance < 0.0 {
-                return false;
-            }
-        }
-        true
-    }
-
-
-
-    pub fn intersects_obb(&self, obb: &OrientedBoundingBox) -> bool {
-        for (n, d) in &self.planes {
-            let r = n.dot(obb.half_axes[0]).abs()
-                + n.dot(obb.half_axes[1]).abs()
-                + n.dot(obb.half_axes[2]).abs();
-            if n.dot(obb.center) + d < -r {
-                return false;
-            }
-        }
-        true
-    }
-}
-
-fn get_tile_corner(lon_deg: f32, lat_deg: f32, alt: f32) -> Vec3 {
-    let a = 6.378137_f32;
-    let b = 6.3567523142_f32;
-
-    let phi = lat_deg.to_radians();
-    let theta = lon_deg.to_radians();
-
-    let x = a * phi.cos() * theta.cos();
-    let y = b * phi.sin();
-    let z = -a * phi.cos() * theta.sin();
-
-    let pos = Vec3::new(x, y, z);
-    if alt == 0.0 {
-        pos
-    } else {
-        pos + pos.normalize() * alt
-    }
-}
-
-fn transform_to_scaled_space(p: Vec3) -> Vec3 {
-    let a = 6.378137_f32;
-    let b = 6.3567523142_f32;
-    Vec3::new(p.x / a, p.y / b, p.z / a)
-}
-
-fn compute_horizon_culling_point(direction_to_point: Vec3, corners: &[Vec3]) -> Option<Vec3> {
-    if direction_to_point.length_squared() < 0.000001 {
-        return None;
-    }
-    let scaled_dir = transform_to_scaled_space(direction_to_point).normalize();
-
-    let mut max_magnitude = 0.0_f32;
-    for &p in corners {
-        let scaled_pos = transform_to_scaled_space(p);
-        let mut mag_sq = scaled_pos.length_squared();
-        let mut mag = mag_sq.sqrt();
-
-        let dir = if mag > 0.000001 {
-            scaled_pos / mag
-        } else {
-            Vec3::ZERO
-        };
-
-        // For the purpose of this computation, points below the ellipsoid are considered to be on it instead.
-        mag_sq = mag_sq.max(1.0);
-        mag = mag.max(1.0);
-
-        let cos_alpha = dir.dot(scaled_dir);
-        let cross = dir.cross(scaled_dir);
-        let sin_alpha = cross.length();
-
-        let cos_beta = 1.0 / mag;
-        let sin_beta = (mag_sq - 1.0).max(0.0).sqrt() * cos_beta;
-
-        let denom = cos_alpha * cos_beta - sin_alpha * sin_beta;
-        if denom <= 0.0 {
-            // all points should face the same direction, but this one doesn't
-            return None;
-        }
-
-        let candidate = 1.0 / denom;
-        max_magnitude = max_magnitude.max(candidate);
-    }
-
-    if max_magnitude <= 0.0 || max_magnitude.is_nan() || max_magnitude.is_infinite() {
-        None
-    } else {
-        Some(scaled_dir * max_magnitude)
-    }
 }
 
 impl QuadtreeNode {
@@ -474,7 +330,7 @@ impl QuadtreeNode {
 
         // Hysteresis logic: Subdivide at 1.0x, but don't collapse until 1.2x.
         // A 20% band prevents LOD oscillation when the camera straddles the
-        // subdivision threshold. The old 1.05× band (≈50 m at z=19) was too
+        // subdivision threshold. The old 1.05├ù band (Ôëê50 m at z=19) was too
         // narrow and caused rapid APPEAR/DISAPPEAR flicker on high-detail tiles.
         let is_subdivided = self.children.is_some();
         let subdivide_dist = self.lod_radius * lod_factor;
