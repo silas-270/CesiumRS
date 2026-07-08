@@ -122,6 +122,10 @@ pub struct LabelManager {
     last_update_pos: Vec3,
     last_update_ori: Quat,
     frame_accum: usize,
+    pub enabled: bool,
+    pub size_scale: f32,
+    pub max_importance_rank: u8,
+    pub show_anchor_dots: bool,
 }
 
 impl LabelManager {
@@ -196,11 +200,22 @@ impl LabelManager {
             last_update_pos: Vec3::ZERO,
             last_update_ori: Quat::IDENTITY,
             frame_accum: 9999, // Force immediate update on first frame
+            enabled: true,
+            size_scale: 1.0,
+            max_importance_rank: 15,
+            show_anchor_dots: true,
         }
     }
 
     /// Updates the visible label cache based on camera position, orientation, altitude, and frustum planes.
     pub fn update(&mut self, camera_pos: Vec3, camera_ori: Quat, altitude: f32, current_zoom: usize, frustum: &Frustum) {
+        if !self.enabled {
+            if !self.visible_labels.is_empty() {
+                self.visible_labels.clear();
+            }
+            return;
+        }
+
         self.frame_accum += 1;
         
         let pos_dist = (camera_pos - self.last_update_pos).length_squared();
@@ -240,6 +255,11 @@ impl LabelManager {
             
             // Step 3: Precise culling loop for labels in this grid cell
             for label in candidate_labels {
+                // Filter by max importance rank settings
+                if label.label_rank > self.max_importance_rank {
+                    continue;
+                }
+
                 let label_pos = Vec3::new(label.ecef_pos[0], label.ecef_pos[1], label.ecef_pos[2]);
                 
                 // Check distance-based rank culling to prevent horizon clustering

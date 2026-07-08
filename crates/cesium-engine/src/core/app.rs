@@ -137,7 +137,26 @@ impl<'a> App<'a> {
                 }
 
                 ui.separator();
-                ui.label(format!("Visible Labels: {}", state.label_manager.visible_labels.len()));
+                ui.collapsing("Map Labels Settings", |ui| {
+                    ui.checkbox(&mut state.label_manager.enabled, "Enable Labels");
+                    if state.label_manager.enabled {
+                        ui.add(
+                            egui::Slider::new(&mut state.label_manager.size_scale, 0.5..=2.0)
+                                .text("Size Scale"),
+                        );
+                        
+                        let mut max_rank = state.label_manager.max_importance_rank;
+                        if ui.add(
+                            egui::Slider::new(&mut max_rank, 0..=15)
+                                .text("Max Rank (0=Capitals, 15=All)")
+                        ).changed() {
+                            state.label_manager.max_importance_rank = max_rank;
+                        }
+                        
+                        ui.checkbox(&mut state.label_manager.show_anchor_dots, "Show Anchor Dots");
+                        ui.label(format!("Visible Labels: {}", state.label_manager.visible_labels.len()));
+                    }
+                });
                 ui.separator();
                 if let Some(ext) = &mut state.extension {
                     ext.render_ui(ctx, ui);
@@ -147,6 +166,10 @@ impl<'a> App<'a> {
 
 
     fn render_label_indicators(ctx: &egui::Context, state: &WgpuState) {
+        if !state.label_manager.enabled {
+            return;
+        }
+
         let screen_rect = ctx.screen_rect();
         let width = screen_rect.width();
         let height = screen_rect.height();
@@ -165,8 +188,6 @@ impl<'a> App<'a> {
             egui::Order::Background,
             egui::Id::new("label_layer"),
         ));
-
-
 
         for label in &state.label_manager.visible_labels {
             let ecef = label.ecef_pos;
@@ -203,8 +224,8 @@ impl<'a> App<'a> {
                 0.82_f32
             };
 
-            // Dynamic font size: ranges from 9px (distant) to 14px (near), scaled by rank
-            let font_size = (9.0 + proximity * 5.0) * rank_scale;
+            // Dynamic font size: ranges from 9px (distant) to 14px (near), scaled by rank and size_scale
+            let font_size = (9.0 + proximity * 5.0) * rank_scale * state.label_manager.size_scale;
 
             // Dynamic opacity for text and backdrop
             let text_alpha = ((160.0 + proximity * 95.0) as u8).max(100);
@@ -229,7 +250,8 @@ impl<'a> App<'a> {
             let pill_w = text_size.x + pad_x * 2.0;
             let pill_h = text_size.y + pad_y * 2.0;
             let pill_x = screen_x - pill_w * 0.5;
-            let pill_y = screen_y - dot_radius - 3.0 - pill_h;
+            let dot_offset = if state.label_manager.show_anchor_dots { dot_radius } else { 0.0 };
+            let pill_y = screen_y - dot_offset - 3.0 - pill_h;
 
             let bg_rect = egui::Rect::from_min_size(
                 egui::pos2(pill_x, pill_y),
@@ -247,8 +269,10 @@ impl<'a> App<'a> {
             );
 
             // Anchor dot
-            painter.circle_filled(anchor_pos, dot_radius + 0.5, egui::Color32::from_black_alpha(120));
-            painter.circle_filled(anchor_pos, dot_radius, egui::Color32::from_white_alpha(text_alpha));
+            if state.label_manager.show_anchor_dots {
+                painter.circle_filled(anchor_pos, dot_radius + 0.5, egui::Color32::from_black_alpha(120));
+                painter.circle_filled(anchor_pos, dot_radius, egui::Color32::from_white_alpha(text_alpha));
+            }
         }
     }
 }

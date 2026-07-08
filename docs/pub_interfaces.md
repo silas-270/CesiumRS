@@ -286,4 +286,13 @@ This file documents all pub items across the codebase and briefly explains why t
 | `src/testing/test_flicker_tracking.rs` | `fn` | `new` | Constructor for module struct |
 | `src/testing/test_tile_monitor.rs` | `struct` | `TileMonitorApp` | Internal testing utility |
 | `src/testing/test_tile_monitor.rs` | `fn` | `new` | Constructor for module struct |
+| `crates/cesium-engine/src/label/mod.rs` | `struct` | `LabelManager` | Manager for loading and culling globe place labels |
+| `crates/cesium-engine/src/label/mod.rs` | `fn` | `new` | Constructor for LabelManager |
+| `crates/cesium-engine/src/label/mod.rs` | `fn` | `update` | Runs the spatial and depth-culling pipeline |
+| `crates/cesium-engine/src/label/mod.rs` | `pub field` | `enabled` | Toggle switch to enable/disable label culling and rendering |
+| `crates/cesium-engine/src/label/mod.rs` | `pub field` | `size_scale` | Scaling factor for label font sizes |
+| `crates/cesium-engine/src/label/mod.rs` | `pub field` | `max_importance_rank` | Filter threshold for place prominence (0 to 15) |
+| `crates/cesium-engine/src/label/mod.rs` | `pub field` | `show_anchor_dots` | Toggle to render white screen anchor dots |
+| `crates/cesium-engine/src/label/mod.rs` | `struct` | `VisibleLabel` | Struct holding a single culled place ready for rendering |
+
 
