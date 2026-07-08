@@ -412,18 +412,24 @@ impl<'a> WgpuState<'a> {
             )
         };
 
-        let (camera_pos_dvec, _) = self.camera.global_transform_f64();
+        let (camera_pos_dvec, camera_ori_dquat) = self.camera.global_transform_f64();
         let camera_pos_f32 = glam::Vec3::new(
             camera_pos_dvec.x as f32,
             camera_pos_dvec.y as f32,
             camera_pos_dvec.z as f32,
+        );
+        let camera_ori_f32 = glam::Quat::from_xyzw(
+            camera_ori_dquat.x as f32,
+            camera_ori_dquat.y as f32,
+            camera_ori_dquat.z as f32,
+            camera_ori_dquat.w as f32,
         );
         self.quadtree_manager.update(camera_pos_f32, frustum);
 
         let altitude = self.camera.altitude();
         let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
         let frustum_obj = crate::globe::quadtree::Frustum::from_planes(frustum);
-        self.label_manager.update(camera_pos_f32, zoom, &frustum_obj);
+        self.label_manager.update(camera_pos_f32, camera_ori_f32, zoom, &frustum_obj);
         
 
 
