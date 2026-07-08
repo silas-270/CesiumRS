@@ -513,7 +513,23 @@ impl Camera {
         let (ray_origin, ray_dir) =
             self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
 
-        self.drag_start_point = self.intersect_ellipsoid(ray_origin, ray_dir);
+        let mut drag_point = self.intersect_ellipsoid(ray_origin, ray_dir);
+        if drag_point.is_none() {
+            let t = -ray_origin.dot(ray_dir);
+            if t > 0.0 {
+                let p_close = ray_origin + t * ray_dir;
+                let dir = p_close.normalize_or_zero();
+                let dir_f64 = glam::DVec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
+                let t_ellipsoid = 1.0
+                    / (dir_f64.x * dir_f64.x * INV_A2_F64
+                        + dir_f64.y * dir_f64.y * INV_B2_F64
+                        + dir_f64.z * dir_f64.z * INV_A2_F64)
+                        .sqrt();
+                drag_point = Some(dir_f64 * t_ellipsoid);
+            }
+        }
+
+        self.drag_start_point = drag_point;
         self.drag_start_local_pos = self.local_pos;
         self.drag_start_local_ori = self.local_ori;
     }
@@ -530,7 +546,23 @@ impl Camera {
             let (ray_origin, ray_dir) =
                 self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
 
-            if let Some(current_point) = self.intersect_ellipsoid(ray_origin, ray_dir) {
+            let mut current_point = self.intersect_ellipsoid(ray_origin, ray_dir);
+            if current_point.is_none() {
+                let t = -ray_origin.dot(ray_dir);
+                if t > 0.0 {
+                    let p_close = ray_origin + t * ray_dir;
+                    let dir = p_close.normalize_or_zero();
+                    let dir_f64 = glam::DVec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
+                    let t_ellipsoid = 1.0
+                        / (dir_f64.x * dir_f64.x * INV_A2_F64
+                            + dir_f64.y * dir_f64.y * INV_B2_F64
+                            + dir_f64.z * dir_f64.z * INV_A2_F64)
+                            .sqrt();
+                    current_point = Some(dir_f64 * t_ellipsoid);
+                }
+            }
+
+            if let Some(current_point) = current_point {
                 let start_f64 = start_point.normalize();
                 let current_f64 = current_point.normalize();
 

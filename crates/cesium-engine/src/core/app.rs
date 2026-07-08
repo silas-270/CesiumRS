@@ -23,6 +23,7 @@ pub struct App<'a> {
     config: crate::globe::tiles::config::TileEngineConfig,
     extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
     command_rx: Option<mpsc::Receiver<ViewerCommand>>,
+    touch_interpreter: crate::core::touch::TouchInterpreter,
 }
 
 impl<'a> App<'a> {
@@ -42,6 +43,7 @@ impl<'a> App<'a> {
             config,
             extension,
             command_rx,
+            touch_interpreter: crate::core::touch::TouchInterpreter::new(),
         }
     }
 
@@ -421,6 +423,21 @@ impl<'a> ApplicationHandler for App<'a> {
                     };
                     state.camera.zoom(zoom_delta);
                     window.request_redraw();
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                if !state.debug_mode {
+                    let screen_width = state.size.width as f32;
+                    let screen_height = state.size.height as f32;
+                    let redrew = self.touch_interpreter.handle_touch_event(
+                        &touch,
+                        &mut state.camera,
+                        screen_width,
+                        screen_height,
+                    );
+                    if redrew {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
