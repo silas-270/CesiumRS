@@ -121,13 +121,13 @@ impl LabelManager {
         for label in candidate_labels {
             let label_pos = Vec3::new(label.ecef_pos[0], label.ecef_pos[1], label.ecef_pos[2]);
             
-            // Check frustum culling first (Cheap, highly selective: exits early for 99.9% of labels)
-            if !culling::is_in_frustum(frustum, label_pos) {
+            // Check horizon culling first (Branchless math, rejects ~50% of labels quickly)
+            if culling::is_behind_horizon(cv, vh_mag_sq, label_pos) {
                 continue;
             }
             
-            // Check horizon culling (Expensive, only run for labels in the view frustum)
-            if culling::is_behind_horizon(cv, vh_mag_sq, label_pos) {
+            // Check frustum culling (Branchy loop, only run for labels in front of the horizon)
+            if !culling::is_in_frustum(frustum, label_pos) {
                 continue;
             }
             
