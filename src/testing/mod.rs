@@ -7,6 +7,7 @@ pub mod rendering;
 pub mod terrain;
 pub mod tiles;
 pub mod profiling;
+pub mod benchmark;
 
 #[derive(Clone, Debug, Default)]
 pub struct VerifyConfig {
@@ -16,6 +17,7 @@ pub struct VerifyConfig {
     pub flicker: bool,
     pub monitor: bool,
     pub profile: bool,
+    pub benchmark: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,

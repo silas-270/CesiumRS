@@ -32,6 +32,9 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         } else if cfg.profile {
             let mut app = testing::profiling::perf_simulator::PerfSimulatorApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
+        } else if cfg.benchmark {
+            let mut app = testing::benchmark::BenchmarkApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
         } else {
             let mut app = testing::harness::test_app::TestApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
