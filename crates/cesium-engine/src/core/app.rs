@@ -45,6 +45,10 @@ impl<'a> App<'a> {
         }
     }
 
+    pub fn render_state(&self) -> Option<&WgpuState<'a>> {
+        self.wgpu_state.as_ref()
+    }
+
     fn render_ui(ctx: &egui::Context, state: &mut WgpuState) {
         egui::Window::new("Flight Tracker Debug")
             .resizable(false)

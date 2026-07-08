@@ -12,6 +12,13 @@ use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+#[derive(Default, Clone, Copy, Debug)]
+pub struct FrameTimings {
+    pub update_logic_us: f64,
+    pub label_manager_us: f64,
+    pub render_scene_us: f64,
+}
+
 pub struct WgpuState<'a> {
     pub surface: wgpu::Surface<'a>,
     pub device: wgpu::Device,
@@ -52,6 +59,7 @@ pub struct WgpuState<'a> {
     /// Capacity 4096 to handle long Europe→US flights without unbounded growth.
     tiles_with_own_texture: LruCache<TileId, ()>,
     pub label_manager: crate::label::LabelManager,
+    pub last_timings: FrameTimings,
 }
 
 fn create_depth_texture(
@@ -294,6 +302,7 @@ impl<'a> WgpuState<'a> {
             last_visible_set: HashSet::new(),
             tiles_with_own_texture: LruCache::new(std::num::NonZeroUsize::new(4096).unwrap()),
             label_manager: crate::label::LabelManager::new(),
+            last_timings: FrameTimings::default(),
         }
     }
 
@@ -429,7 +438,10 @@ impl<'a> WgpuState<'a> {
         let altitude = self.camera.altitude();
         let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
         let frustum_obj = crate::globe::quadtree::Frustum::from_planes(frustum);
+        
+        let label_start = Instant::now();
         self.label_manager.update(camera_pos_f32, camera_ori_f32, altitude, zoom, &frustum_obj);
+        self.last_timings.label_manager_us = label_start.elapsed().as_secs_f64() * 1_000_000.0;
         
 
 
@@ -892,7 +904,9 @@ impl<'a> WgpuState<'a> {
         let main_view_proj =
             self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
 
+        let update_start = Instant::now();
         let visible_tiles = self.update_logic(aspect_ratio, main_view_proj);
+        self.last_timings.update_logic_us = update_start.elapsed().as_secs_f64() * 1_000_000.0;
 
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -913,7 +927,10 @@ impl<'a> WgpuState<'a> {
         };
         self.compute_debug_vertices(main_view_proj, &visible_tiles, camera_pos);
 
+        let render_start = Instant::now();
         self.render_scene(&mut encoder, &view, &visible_tiles);
+        self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
+        
         self.render_egui(&mut encoder, &view, ui_closure);
 
         self.queue.submit(std::iter::once(encoder.finish()));
