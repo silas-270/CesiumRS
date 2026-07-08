@@ -137,6 +137,12 @@ impl<'a> App<'a> {
                 }
 
                 ui.separator();
+                ui.collapsing(format!("Visible Labels ({})", state.label_manager.visible_labels.len()), |ui| {
+                    for lbl in state.label_manager.visible_labels.iter().take(20) {
+                        ui.label(format!("- {} (Scale: {}, Rank: {})", lbl.name, lbl.scale_rank, lbl.label_rank));
+                    }
+                });
+                ui.separator();
                 if let Some(ext) = &mut state.extension {
                     ext.render_ui(ctx, ui);
                 }
