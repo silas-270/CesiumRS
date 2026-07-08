@@ -1,6 +1,6 @@
-use crate::flight::tracker::load_flight_data;
-use crate::engine::time::SimulationTime;
-use crate::engine::property::Property;
+use cesium_flight::tracker::load_flight_data;
+use cesium_engine::time::SimulationTime;
+use cesium_engine::property::Property;
 
 #[test]
 fn test_flight_parsing() {

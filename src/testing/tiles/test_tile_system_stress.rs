@@ -1,7 +1,7 @@
-use crate::engine::globe::quadtree::TileId;
-use crate::engine::globe::tiles::mesh_worker::MeshWorkerPool;
-use crate::engine::globe::tiles::tile_cache::TileCacheManager;
-use crate::engine::globe::tiles::system::TileSystem;
+use cesium_engine::globe::quadtree::TileId;
+use cesium_engine::globe::tiles::mesh_worker::MeshWorkerPool;
+use cesium_engine::globe::tiles::tile_cache::TileCacheManager;
+use cesium_engine::globe::tiles::system::TileSystem;
 use std::time::{Duration, Instant};
 
 // ---
@@ -49,7 +49,7 @@ fn test_parent_fallback_math_stress_deep() {
 // ---
 #[test]
 fn test_tile_fetcher_priority_queue_ordering() {
-    use crate::engine::globe::tiles::tile_fetcher::TilePriority;
+    use cesium_engine::globe::tiles::tile_fetcher::TilePriority;
     use std::cmp::Ordering;
 
     // Verify the Ord implementation directly

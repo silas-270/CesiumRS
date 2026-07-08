@@ -1,6 +1,6 @@
 use glam::{DMat4, DVec3, Vec3};
-use crate::engine::globe::quadtree::{QuadtreeManager, TileId};
-use crate::engine::camera::camera::Camera;
+use cesium_engine::globe::quadtree::{QuadtreeManager, TileId};
+use cesium_engine::camera::camera::Camera;
 
 /// Checks if a tile is marked as visible by the quadtree.
 fn is_tile_visible(visible_tiles: &[(TileId, Vec3, f32)], target_id: TileId) -> bool {

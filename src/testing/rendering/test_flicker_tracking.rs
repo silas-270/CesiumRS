@@ -1,7 +1,7 @@
-use crate::engine::core::app::App;
+use cesium_engine::core::app::App;
 use crate::testing::VerifyConfig;
-use crate::engine::camera::camera::CameraMode;
-use crate::engine::globe::quadtree::TileId;
+use cesium_engine::camera::camera::CameraMode;
+use cesium_engine::globe::quadtree::TileId;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -39,14 +39,14 @@ pub struct FlickerTrackingApp<'a> {
 
 impl<'a> FlickerTrackingApp<'a> {
     pub fn new(config: VerifyConfig) -> Self {
-        let mut app_config = crate::engine::globe::tiles::config::TileEngineConfig::default();
+        let mut app_config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
         app_config.offline_mode = false;
         app_config.mesh_cache_size = std::num::NonZeroUsize::new(config.cache_size).unwrap();
         app_config.max_cache_size = std::num::NonZeroUsize::new(config.cache_size).unwrap();
         app_config.enable_prefetch = config.prefetch;
 
         let progress = Arc::new(Mutex::new(0.0));
-        let mut flight_app = Box::new(crate::flight::tracker::FlightTrackerApp::new(progress.clone()));
+        let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(progress.clone()));
 
         if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
             flight_app.add_flight_path("flight_FRA_STR.json", content, false);

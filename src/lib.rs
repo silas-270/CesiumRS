@@ -1,6 +1,4 @@
-pub mod engine;
 pub mod viewer;
-pub mod flight;
 
 #[cfg(not(target_os = "android"))]
 pub mod testing;
@@ -48,6 +46,6 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut winit_app = crate::engine::core::app::App::new(crate::engine::globe::tiles::config::TileEngineConfig::default(), None);
+    let mut winit_app = cesium_engine::core::app::App::new(cesium_engine::globe::tiles::config::TileEngineConfig::default(), None);
     event_loop.run_app(&mut winit_app).unwrap();
 }

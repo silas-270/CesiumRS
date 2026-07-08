@@ -1,7 +1,7 @@
 use super::test_frustum_coverage::{dvec3_to_lat_lon, tile_contains, intersect_ellipsoid};
-use crate::engine::camera::camera::Camera;
+use cesium_engine::camera::camera::Camera;
 use glam::{Vec3, Vec4};
-use crate::engine::globe::quadtree::{TileId, QuadtreeManager};
+use cesium_engine::globe::quadtree::{TileId, QuadtreeManager};
 use rayon::prelude::*;
 use std::io::Write;
 

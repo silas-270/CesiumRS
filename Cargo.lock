@@ -518,20 +518,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "cesium_rs"
+name = "cesium-engine"
 version = "0.1.0"
 dependencies = [
- "android-activity",
- "android_logger",
  "async-trait",
  "bytemuck",
  "byteorder",
  "cfg-if",
- "clap",
  "egui",
  "egui-wgpu",
  "egui-winit",
- "env_logger",
  "glam",
  "gltf",
  "image",
@@ -540,9 +536,38 @@ dependencies = [
  "pollster",
  "rayon",
  "reqwest",
- "serde_json",
  "sha2",
  "tokio",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "cesium-flight"
+version = "0.1.0"
+dependencies = [
+ "cesium-engine",
+ "egui",
+ "glam",
+ "log",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
+name = "cesium_rs"
+version = "0.1.0"
+dependencies = [
+ "android-activity",
+ "android_logger",
+ "cesium-engine",
+ "cesium-flight",
+ "cfg-if",
+ "clap",
+ "env_logger",
+ "glam",
+ "log",
+ "sha2",
  "wgpu",
  "winit",
 ]

@@ -1,8 +1,8 @@
 // Removed unused import
-use crate::engine::camera::camera::Camera;
+use cesium_engine::camera::camera::Camera;
 use glam::{Vec3, Quat, EulerRot};
 use super::test_frustum_coverage::{intersect_ellipsoid, dvec3_to_lat_lon, tile_contains};
-use crate::engine::globe::quadtree::{TileId, QuadtreeManager};
+use cesium_engine::globe::quadtree::{TileId, QuadtreeManager};
 use std::io::Write;
 use rayon::prelude::*;
 use glam::Vec4;

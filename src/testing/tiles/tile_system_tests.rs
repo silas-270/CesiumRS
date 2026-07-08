@@ -1,5 +1,5 @@
-use crate::engine::globe::quadtree::TileId;
-use crate::engine::globe::tiles::system::TileSystem;
+use cesium_engine::globe::quadtree::TileId;
+use cesium_engine::globe::tiles::system::TileSystem;
 
 #[test]
 fn test_compute_fallback_uv_1_level() {

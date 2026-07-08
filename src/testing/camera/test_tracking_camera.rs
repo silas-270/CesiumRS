@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::engine::camera::camera::Camera;
+    use cesium_engine::camera::camera::Camera;
     use glam::{Vec3, Quat, Mat3, DVec3, DQuat, DMat3};
 
     #[test]
@@ -73,7 +73,7 @@ mod tests {
 
         let mut camera = Camera::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0));
         camera.set_anchor(anchor_pos, anchor_ori);
-        camera.mode = crate::engine::camera::camera::CameraMode::Tracking;
+        camera.mode = cesium_engine::camera::camera::CameraMode::Tracking;
 
         // Position camera 250m behind the plane
         // 250m is 0.00025 megameters
