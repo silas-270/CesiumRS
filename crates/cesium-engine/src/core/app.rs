@@ -304,7 +304,8 @@ impl<'a> ApplicationHandler for App<'a> {
             self.window = Some(window.clone());
 
             let state = pollster::block_on(WgpuState::new(
-                window,
+                Some(window.clone()),
+                None,
                 self.config.clone(),
                 self.extension.take(),
             ));
@@ -325,7 +326,7 @@ impl<'a> ApplicationHandler for App<'a> {
 
         let state = self.wgpu_state.as_mut().unwrap();
 
-        let response = state.egui_state.on_window_event(window, &event);
+        let response = state.egui_state.as_mut().unwrap().on_window_event(window, &event);
         if response.consumed {
             return;
         }

@@ -98,36 +98,15 @@ pub extern "C" fn render_routes_headless(
     let _ = total_z;
     let _ = count;
 
-    let mut app = crate::headless::routes_headless_app::RoutesHeadlessApp {
-        wgpu_state: None,
-        window: None,
-        config,
-        frames_stable: 0,
-        total_frames: 0,
-        setup_done: false,
+    pollster::block_on(crate::headless::routes_headless_app::run_headless_render(
         width,
         height,
-        out_path: path_str,
-        extension: Some(extension),
-        initial_cam_pos: eye,
-        initial_cam_target: glam::Vec3::ZERO, // Look at earth center so it remains centered
-    };
-
-    let mut builder = winit::event_loop::EventLoop::builder();
-    #[cfg(target_os = "linux")]
-    {
-        use winit::platform::x11::EventLoopBuilderExtX11;
-        use winit::platform::wayland::EventLoopBuilderExtWayland;
-        EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
-        EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
-    }
-    let event_loop = builder.build().unwrap();
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    
-    if let Err(e) = event_loop.run_app(&mut app) {
-        error!("Event loop error: {:?}", e);
-        return false;
-    }
+        config,
+        Some(extension),
+        eye,
+        glam::Vec3::ZERO,
+        &path_str,
+    ));
 
     true
 }
