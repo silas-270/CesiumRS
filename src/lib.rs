@@ -1,5 +1,6 @@
 pub mod api;
 pub mod viewer;
+pub mod headless;
 
 #[cfg(not(target_os = "android"))]
 pub mod testing;

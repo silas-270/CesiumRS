@@ -51,6 +51,9 @@ struct Cli {
 
     #[arg(long)]
     pub benchmark: bool,
+
+    #[arg(long)]
+    pub routes_test: bool,
 }
 
 fn main() {
@@ -64,6 +67,30 @@ fn main() {
     }
 
     let cli = Cli::parse();
+    
+    if cli.routes_test {
+        let routes = vec![
+            cesium_rs::headless::api::HeadlessRoute {
+                start: cesium_rs::headless::api::LatLon { lat: 40.6413, lon: -73.7781 }, // JFK
+                end: cesium_rs::headless::api::LatLon { lat: 51.4700, lon: -0.4543 },    // LHR
+            },
+            cesium_rs::headless::api::HeadlessRoute {
+                start: cesium_rs::headless::api::LatLon { lat: 50.0333, lon: 8.5706 },   // FRA
+                end: cesium_rs::headless::api::LatLon { lat: 48.6899, lon: 9.2219 },     // STR
+            }
+        ];
+        
+        let path = std::ffi::CString::new("routes_test.png").unwrap();
+        
+        cesium_rs::headless::api::render_routes_headless(
+            800,
+            600,
+            routes.as_ptr(),
+            routes.len(),
+            path.as_ptr(),
+        );
+        return;
+    }
     let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark {
         Some(VerifyConfig {
             enabled: cli.verify,
