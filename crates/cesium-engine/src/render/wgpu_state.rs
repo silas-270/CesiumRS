@@ -20,12 +20,12 @@ pub struct FrameTimings {
 }
 
 pub struct WgpuState<'a> {
-    pub surface: wgpu::Surface<'a>,
+    pub surface: Option<wgpu::Surface<'a>>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
-    pub window: Arc<Window>,
+    pub window: Option<Arc<Window>>,
     solid_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     #[allow(dead_code)]
@@ -45,7 +45,7 @@ pub struct WgpuState<'a> {
     debug_vertex_buffer: wgpu::Buffer,
     num_debug_vertices: u32,
     pub egui_ctx: egui::Context,
-    pub egui_state: EguiState,
+    pub egui_state: Option<EguiState>,
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::globe::tiles::system::TileSystem,
@@ -111,22 +111,23 @@ fn execute_egui<'rp>(
 
 impl<'a> WgpuState<'a> {
     pub async fn new(
-        window: Arc<Window>,
+        window: Option<Arc<Window>>,
+        headless_size: Option<winit::dpi::PhysicalSize<u32>>,
         engine_config: crate::globe::tiles::config::TileEngineConfig,
         mut extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
     ) -> Self {
-        let size = window.inner_size();
+        let size = window.as_ref().map(|w| w.inner_size()).unwrap_or(headless_size.unwrap_or(winit::dpi::PhysicalSize::new(800, 600)));
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = window.as_ref().map(|w| instance.create_surface(w.clone()).unwrap());
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
+                compatible_surface: surface.as_ref(),
                 force_fallback_adapter: false,
             })
             .await
@@ -149,20 +150,20 @@ impl<'a> WgpuState<'a> {
             .await
             .unwrap();
 
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+        let surface_format = surface.as_ref().map(|s| {
+            let caps = s.get_capabilities(&adapter);
+            caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0])
+        }).unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
+        let present_mode = surface.as_ref().map(|s| s.get_capabilities(&adapter).present_modes[0]).unwrap_or(wgpu::PresentMode::Fifo);
+        let alpha_mode = surface.as_ref().map(|s| s.get_capabilities(&adapter).alpha_modes[0]).unwrap_or(wgpu::CompositeAlphaMode::Auto);
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
+            present_mode,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -255,14 +256,14 @@ impl<'a> WgpuState<'a> {
         let tile_cache = LruCache::new(tile_system.config.mesh_cache_size);
 
         let egui_ctx = egui::Context::default();
-        let egui_state = EguiState::new(
+        let egui_state = window.as_ref().map(|w| EguiState::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
+            w.as_ref(),
+            Some(w.scale_factor() as f32),
             None,
             Some(2048),
-        );
+        ));
         let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
         if let Some(ext) = &mut extension {
             ext.init(&device, &queue, &config, &camera_bind_group_layout);
@@ -311,7 +312,7 @@ impl<'a> WgpuState<'a> {
             self.size = new_size;
             self.config.width = new_size.width;
             self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
+            if let Some(s) = &self.surface { s.configure(&self.device, &self.config); }
 
             // Recreate depth texture
             self.depth_texture_view = create_depth_texture(&self.device, &self.config);
@@ -840,7 +841,9 @@ impl<'a> WgpuState<'a> {
         view: &wgpu::TextureView,
         mut ui_closure: F,
     ) {
-        let raw_input = self.egui_state.take_egui_input(&self.window);
+        if self.egui_state.is_none() { return; }
+        let e = self.egui_state.as_mut().unwrap();
+        let raw_input = e.take_egui_input(self.window.as_ref().unwrap());
         let ctx = self.egui_ctx.clone();
 
         let full_output = ctx.run(raw_input, |ctx_ref| {
@@ -858,7 +861,7 @@ impl<'a> WgpuState<'a> {
         {
             let screen_descriptor = egui_wgpu::ScreenDescriptor {
                 size_in_pixels: [self.config.width, self.config.height],
-                pixels_per_point: self.window.scale_factor() as f32,
+                pixels_per_point: self.window.as_ref().unwrap().scale_factor() as f32,
             };
             self.egui_renderer.update_buffers(
                 &self.device,
@@ -914,10 +917,28 @@ impl<'a> WgpuState<'a> {
         let visible_tiles = self.update_logic(aspect_ratio, main_view_proj);
         self.last_timings.update_logic_us = update_start.elapsed().as_secs_f64() * 1_000_000.0;
 
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut output = None;
+        let mut headless_texture = None;
+        let mut view_opt = None;
+        if let Some(s) = &self.surface {
+            let out = s.get_current_texture()?;
+            view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+            output = Some(out);
+        } else {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Headless Output"),
+                size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            view_opt = Some(tex.create_view(&wgpu::TextureViewDescriptor::default()));
+            headless_texture = Some(tex);
+        }
+        let view = view_opt.unwrap();
 
         let mut encoder = self
             .device
@@ -942,13 +963,16 @@ impl<'a> WgpuState<'a> {
         self.queue.submit(std::iter::once(encoder.finish()));
 
         let mut captured_pixels = None;
+        let tex = output.as_ref().map(|o| &o.texture).unwrap_or_else(|| headless_texture.as_ref().unwrap());
         if capture_memory {
-            captured_pixels = Some(self.capture_pixels(&output.texture));
+            captured_pixels = Some(self.capture_pixels(tex));
         } else if let Some(out_path) = screenshot_out {
-            self.capture_screenshot(&output.texture, out_path);
+            self.capture_screenshot(tex, out_path);
         }
 
-        output.present();
+        if let Some(out) = output {
+            out.present();
+        }
 
         Ok(captured_pixels)
     }
