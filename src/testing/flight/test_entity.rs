@@ -117,7 +117,7 @@ fn test_adaptive_subdivision_stress() {
         cesium_engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder::new(5.0);
 
     let start_time = Instant::now();
-    let vertices = builder.build(&prop);
+    let vertices = builder.build(&prop, glam::DVec3::ZERO);
     let duration = start_time.elapsed();
 
     println!("Adaptive Subdivision Stress Test Results:");

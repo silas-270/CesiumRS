@@ -566,9 +566,12 @@ dependencies = [
  "clap",
  "env_logger",
  "glam",
+ "image",
  "log",
  "pollster 1.0.1",
+ "rayon",
  "sha2",
+ "tokio",
  "wgpu",
  "winit",
 ]

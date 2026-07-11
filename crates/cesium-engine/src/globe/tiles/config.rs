@@ -15,6 +15,8 @@ pub struct TileEngineConfig {
     pub map_saturation: f32,
     pub map_contrast: f32,
     pub map_brightness: f32,
+    pub transparent_background: bool,
+    pub mesh_segments: u32,
 }
 
 impl Default for TileEngineConfig {
@@ -33,6 +35,8 @@ impl Default for TileEngineConfig {
             map_saturation: 0.0,
             map_contrast: 0.0,
             map_brightness: 0.0,
+            transparent_background: false,
+            mesh_segments: 16,
         }
     }
 }

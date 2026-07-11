@@ -12,10 +12,10 @@ fn test_flight_parsing() {
     let prop = load_flight_data(&content).expect("Failed to load flight JSON");
 
     let start_pos = prop
-        .evaluate(SimulationTime::new(0.0))
-        .expect("No position at start");
+        .0.evaluate(SimulationTime::new(0.0))
+        .unwrap();
     let mid_pos = prop
-        .evaluate(SimulationTime::new(10.0))
+        .0.evaluate(SimulationTime::new(10.0))
         .unwrap_or(start_pos);
 
     let distance = (start_pos - mid_pos).length();
