@@ -1,9 +1,9 @@
 use crate::globe::quadtree::TileId;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, Notify};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TilePriority {
@@ -62,7 +62,7 @@ pub struct TileFetcher {
 
 impl TileFetcher {
     pub fn new(
-        tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>,
+        tx: tokio::sync::mpsc::UnboundedSender<(TileId, Result<Vec<u8>, String>)>,
         base_url: String,
         offline_mode: bool,
     ) -> Self {
@@ -120,7 +120,7 @@ impl TileFetcher {
         client: reqwest::Client,
         queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
         notify: Arc<Notify>,
-        tx: mpsc::Sender<(TileId, Result<Vec<u8>, String>)>,
+        tx: mpsc::UnboundedSender<(TileId, Result<Vec<u8>, String>)>,
         base_url: String,
         offline_mode: bool,
     ) {

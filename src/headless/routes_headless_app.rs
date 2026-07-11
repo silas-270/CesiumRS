@@ -49,7 +49,27 @@ impl<'a> ApplicationHandler for RoutesHeadlessApp<'a> {
         }
 
         if !self.setup_done {
+            let state = self.wgpu_state.as_mut().unwrap();
+
+            // Calculate visible tiles for this camera
+            let aspect_ratio = state.size.width as f32 / state.size.height as f32;
+            let main_view_proj = state.camera.get_projection_matrix(aspect_ratio) * state.camera.get_view_matrix();
+            let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+
+            // Wait asynchronously for all tiles to fetch
+            pollster::block_on(state.tile_system.texture_manager.fetch_and_upload_all(
+                &state.device,
+                &state.queue,
+                &visible_tiles,
+            ));
+
+            // Render EXACTLY one frame and capture
+            state
+                .render(Some(self.out_path.as_str()), false, |_, _| {})
+                .expect("Failed to render headless frame");
+
             self.setup_done = true;
+            event_loop.exit();
         }
     }
 
@@ -64,40 +84,8 @@ impl<'a> ApplicationHandler for RoutesHeadlessApp<'a> {
             return;
         }
 
-        let state = self.wgpu_state.as_mut().unwrap();
-
-        match event {
-            WindowEvent::CloseRequested => {
-                event_loop.exit();
-            }
-            WindowEvent::RedrawRequested => {
-                self.total_frames += 1;
-                
-                if self.total_frames > 60 && state.tile_system.texture_manager.fetcher.is_loading_complete() {
-                    self.frames_stable += 1;
-                } else {
-                    self.frames_stable = 0;
-                }
-
-                let mut capture_path = None;
-                if self.frames_stable > 10 {
-                    capture_path = Some(self.out_path.as_str());
-                }
-
-                match state.render(capture_path, false, |_, _| {}) {
-                    Ok(_) => {
-                        if capture_path.is_some() {
-                            event_loop.exit();
-                        } else {
-                            window.request_redraw();
-                        }
-                    }
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(e) => log::error!("Render error: {:?}", e),
-                }
-            }
-            _ => {}
+        if let WindowEvent::CloseRequested = event {
+            event_loop.exit();
         }
     }
 

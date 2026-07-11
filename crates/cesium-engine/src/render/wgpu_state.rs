@@ -386,7 +386,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
-    fn update_logic(
+    pub fn update_logic(
         &mut self,
         aspect_ratio: f32,
         _main_view_proj: Mat4,

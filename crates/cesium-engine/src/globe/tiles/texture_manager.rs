@@ -2,11 +2,11 @@ use crate::globe::quadtree::TileId;
 use crate::globe::tiles::config::TileEngineConfig;
 use crate::globe::tiles::tile_cache::TileCacheManager;
 use crate::globe::tiles::tile_fetcher::{TileFetcher, TilePriority};
-use std::sync::mpsc::{self, Receiver};
+use tokio::sync::mpsc;
 
 pub struct TileTextureManager {
     pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
-    rx: Receiver<(TileId, Result<Vec<u8>, String>)>,
+    rx: mpsc::UnboundedReceiver<(TileId, Result<Vec<u8>, String>)>,
     pub fetcher: TileFetcher,
     pub bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -15,7 +15,7 @@ pub struct TileTextureManager {
 
 impl TileTextureManager {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: &TileEngineConfig) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded_channel();
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Tile Texture Bind Group Layout"),
@@ -121,82 +121,127 @@ impl TileTextureManager {
 
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         while let Ok((id, result)) = self.rx.try_recv() {
-            // Check if we still care about this tile (it hasn't been evicted from LRU)
-            let is_still_needed = matches!(
-                self.cache.get_state(&id),
-                Some(crate::globe::tiles::tile_cache::TileState::Fetching)
-            );
+            self.process_tile_result(device, queue, id, result);
+        }
+    }
 
-            if !is_still_needed {
-                continue; // Drop the result, we don't need it anymore
+    fn process_tile_result(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: TileId,
+        result: Result<Vec<u8>, String>,
+    ) {
+        // Check if we still care about this tile (it hasn't been evicted from LRU)
+        let is_still_needed = matches!(
+            self.cache.get_state(&id),
+            Some(crate::globe::tiles::tile_cache::TileState::Fetching)
+        );
+
+        if !is_still_needed {
+            return; // Drop the result, we don't need it anymore
+        }
+
+        match result {
+            Ok(rgba) => {
+                let size = wgpu::Extent3d {
+                    width: 256,
+                    height: 256,
+                    depth_or_array_layers: 1,
+                };
+
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(&format!("Tile Texture {:?}", id)),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+
+                queue.write_texture(
+                    wgpu::ImageCopyTexture {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &rgba,
+                    wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * 256),
+                        rows_per_image: Some(256),
+                    },
+                    size,
+                );
+
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                    label: Some(&format!("Tile Bind Group {:?}", id)),
+                });
+
+                self.cache.mark_ready(id, (texture, bind_group));
             }
-
-            match result {
-                Ok(rgba) => {
-                    let size = wgpu::Extent3d {
-                        width: 256,
-                        height: 256,
-                        depth_or_array_layers: 1,
-                    };
-
-                    let texture = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some(&format!("Tile Texture {:?}", id)),
-                        size,
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    });
-
-                    queue.write_texture(
-                        wgpu::ImageCopyTexture {
-                            texture: &texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        &rgba,
-                        wgpu::ImageDataLayout {
-                            offset: 0,
-                            bytes_per_row: Some(4 * 256),
-                            rows_per_image: Some(256),
-                        },
-                        size,
-                    );
-
-                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        layout: &self.bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&self.sampler),
-                            },
-                        ],
-                        label: Some(&format!("Tile Bind Group {:?}", id)),
-                    });
-
-                    self.cache.mark_ready(id, (texture, bind_group));
-                }
-                Err(e) => {
-                    log::error!(
-                        "Failed to fetch tile z:{} x:{} y:{}: {}",
-                        id.z,
-                        id.x,
-                        id.y,
-                        e
-                    );
-                    self.cache.mark_failed(id);
-                }
+            Err(e) => {
+                log::error!(
+                    "Failed to fetch tile z:{} x:{} y:{}: {}",
+                    id.z,
+                    id.x,
+                    id.y,
+                    e
+                );
+                self.cache.mark_failed(id);
             }
         }
+    }
+
+    pub async fn fetch_and_upload_all(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        visible_tiles: &[(TileId, glam::Vec3, f32)],
+    ) {
+        loop {
+            // Check if all requested tiles are resolved
+            let mut ready_count = 0;
+            for (id, _, _) in visible_tiles {
+                let is_fetching = matches!(
+                    self.cache.get_state(id),
+                    Some(crate::globe::tiles::tile_cache::TileState::Fetching)
+                );
+                if !is_fetching {
+                    ready_count += 1;
+                }
+            }
+            if ready_count == visible_tiles.len() {
+                break;
+            }
+
+            // Await the next tile from the background thread
+            if let Some((id, result)) = self.rx.recv().await {
+                self.process_tile_result(device, queue, id, result);
+            } else {
+                // Sender dropped, break to avoid infinite loop
+                break;
+            }
+        }
+
+        // Just in case there are any lingering fast-resolved messages in the queue
+        self.update(device, queue);
     }
 
     pub fn resize(&mut self, new_capacity: std::num::NonZeroUsize) {
