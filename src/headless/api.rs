@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use log::{error, info};
+use cesium_engine::globe::tiles::config::TileEngineConfig;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -50,25 +51,52 @@ pub extern "C" fn render_routes_headless(
         extension_routes.push(*r);
     }
 
-    let target_center = if count > 0 {
-        glam::Vec3::new(
-            (total_x / count as f64) as f32,
-            (total_y / count as f64) as f32,
-            (total_z / count as f64) as f32,
-        )
-    } else {
-        glam::Vec3::new(0.0, 0.0, 6.378) // default surface
-    };
+    let hub_ecef = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(route_slice[0].start.lon, route_slice[0].start.lat, 0.0);
+    let target_center = glam::Vec3::new(hub_ecef[0] as f32, hub_ecef[1] as f32, hub_ecef[2] as f32);
 
-    let target = target_center;
-    let r = 6.378137f32; // Earth radius in Megameters
-    let d = r * 3.0; // Zoomed out
-    
-    let normal = target_center.normalize_or_zero();
-    let eye = normal * d;
+    // 1. Reference frame (Frankfurt)
+    let fra_ecef = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(8.5706, 50.0333, 0.0);
+    let fra_pos = glam::Vec3::new(fra_ecef[0] as f32, fra_ecef[1] as f32, fra_ecef[2] as f32);
+    let fra_up = fra_pos.normalize_or_zero();
+    let fra_east = glam::Vec3::new(0.0, 0.0, 1.0).cross(fra_up).normalize_or_zero();
+    let fra_north = fra_up.cross(fra_east).normalize_or_zero();
+    let t_fra = glam::Mat3::from_cols(fra_east, fra_north, fra_up);
+
+    // 2. Target frame (The hub of the routes)
+    let hub_up = target_center.normalize_or_zero();
+    let hub_east = glam::Vec3::new(0.0, 0.0, 1.0).cross(hub_up).normalize_or_zero();
+    let hub_north = hub_up.cross(hub_east).normalize_or_zero();
+    let t_hub = glam::Mat3::from_cols(hub_east, hub_north, hub_up);
+
+    // 3. Transform to map Frankfurt's ENU to the new hub's ENU
+    let rotation_to_hub = t_hub * t_fra.inverse();
+
+    // 4. Base camera position for Frankfurt (from UI)
+    let p_cam_base = glam::Vec3::new(7.415, 14.539, 1.184);
+
+    // 5. Final transformed coordinates
+    let eye = rotation_to_hub * p_cam_base;
 
     let extension = Box::new(crate::headless::route_builder::RoutesExtension::new(&extension_routes));
-    let config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
+    let mut config = TileEngineConfig::default();
+    config.offline_mode = false;
+    config.base_imagery_url =
+        "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png"
+            .to_string();
+    config.transparent_background = true;
+    
+    // Force extremely high mesh subdivision for a perfectly smooth globe horizon.
+    // We can do this safely because headless mode waits for all tiles to fetch asynchronously.
+    config.lod_factor = 2.0; 
+    config.mesh_segments = 128; // High resolution mesh per tile
+    config.max_cache_size = std::num::NonZeroUsize::new(16384).unwrap();
+    config.mesh_cache_size = std::num::NonZeroUsize::new(8192).unwrap();
+
+    // Remove unused total_x, total_y, total_z warnings
+    let _ = total_x;
+    let _ = total_y;
+    let _ = total_z;
+    let _ = count;
 
     let mut app = crate::headless::routes_headless_app::RoutesHeadlessApp {
         wgpu_state: None,
@@ -82,10 +110,18 @@ pub extern "C" fn render_routes_headless(
         out_path: path_str,
         extension: Some(extension),
         initial_cam_pos: eye,
-        initial_cam_target: target,
+        initial_cam_target: glam::Vec3::ZERO, // Look at earth center so it remains centered
     };
 
-    let event_loop = winit::event_loop::EventLoop::new().unwrap();
+    let mut builder = winit::event_loop::EventLoop::builder();
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+        EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+        EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+    }
+    let event_loop = builder.build().unwrap();
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     
     if let Err(e) = event_loop.run_app(&mut app) {

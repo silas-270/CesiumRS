@@ -1,5 +1,5 @@
 // Removed unused import
-use super::test_frustum_coverage::{dvec3_to_lat_lon, intersect_ellipsoid, tile_contains};
+use crate::testing::culling::test_frustum_coverage::{dvec3_to_lat_lon, intersect_ellipsoid, tile_contains};
 use cesium_engine::camera::camera::Camera;
 use cesium_engine::globe::quadtree::{QuadtreeManager, TileId};
 use glam::Vec4;
@@ -7,7 +7,7 @@ use glam::{EulerRot, Quat, Vec3};
 use rayon::prelude::*;
 use std::io::Write;
 
-use super::test_frustum_coverage::setup_camera;
+use crate::testing::culling::test_frustum_coverage::setup_camera;
 
 fn setup_parametric_camera(lat: f32, lon: f32, alt: f32, pitch: f32, roll: f32) -> Camera {
     // setup_camera automatically looks straight down at the earth, and applies a pitch offset

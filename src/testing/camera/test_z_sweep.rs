@@ -1,4 +1,4 @@
-use super::test_frustum_coverage::{dvec3_to_lat_lon, intersect_ellipsoid, tile_contains};
+use crate::testing::culling::test_frustum_coverage::{dvec3_to_lat_lon, intersect_ellipsoid, tile_contains};
 use cesium_engine::camera::camera::Camera;
 use cesium_engine::globe::quadtree::{QuadtreeManager, TileId};
 use glam::{Vec3, Vec4};

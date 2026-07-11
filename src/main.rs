@@ -71,12 +71,20 @@ fn main() {
     if cli.routes_test {
         let routes = vec![
             cesium_rs::headless::api::HeadlessRoute {
-                start: cesium_rs::headless::api::LatLon { lat: 40.6413, lon: -73.7781 }, // JFK
-                end: cesium_rs::headless::api::LatLon { lat: 51.4700, lon: -0.4543 },    // LHR
+                start: cesium_rs::headless::api::LatLon { lat: 25.2532, lon: 55.3657 },   // DXB
+                end: cesium_rs::headless::api::LatLon { lat: 40.6413, lon: -73.7781 },    // JFK
             },
             cesium_rs::headless::api::HeadlessRoute {
-                start: cesium_rs::headless::api::LatLon { lat: 50.0333, lon: 8.5706 },   // FRA
-                end: cesium_rs::headless::api::LatLon { lat: 48.6899, lon: 9.2219 },     // STR
+                start: cesium_rs::headless::api::LatLon { lat: 25.2532, lon: 55.3657 },   // DXB
+                end: cesium_rs::headless::api::LatLon { lat: 51.4700, lon: -0.4543 },     // LHR
+            },
+            cesium_rs::headless::api::HeadlessRoute {
+                start: cesium_rs::headless::api::LatLon { lat: 25.2532, lon: 55.3657 },   // DXB
+                end: cesium_rs::headless::api::LatLon { lat: -33.9399, lon: 151.1753 },   // SYD
+            },
+            cesium_rs::headless::api::HeadlessRoute {
+                start: cesium_rs::headless::api::LatLon { lat: 25.2532, lon: 55.3657 },   // DXB
+                end: cesium_rs::headless::api::LatLon { lat: 35.7720, lon: 140.3929 },    // NRT
             }
         ];
         

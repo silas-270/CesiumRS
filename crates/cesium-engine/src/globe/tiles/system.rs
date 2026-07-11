@@ -89,7 +89,7 @@ impl TileSystem {
         self.last_camera_pos = Some(camera_pos);
 
         for id in missing_meshes {
-            self.mesh_worker.request_mesh(*id, 16);
+            self.mesh_worker.request_mesh(*id, self.config.mesh_segments);
         }
 
         for (id, _, _) in visible_tiles {

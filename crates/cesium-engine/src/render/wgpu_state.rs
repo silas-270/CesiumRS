@@ -721,12 +721,16 @@ impl<'a> WgpuState<'a> {
                 view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.2,
-                        b: 0.3,
-                        a: 1.0,
-                    }),
+                    load: if self.tile_system.config.transparent_background {
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                    } else {
+                        wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        })
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -813,10 +817,12 @@ impl<'a> WgpuState<'a> {
         // --- SKY RENDERING ---
         // Draw the procedural sky perfectly isolated in the background!
         // Uses depth Equal 1.0, so it's perfectly rejected by any terrain already drawn.
-        render_pass.set_pipeline(&self.sky_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        // Full-screen triangle is drawn with exactly 3 virtual vertices
-        render_pass.draw(0..3, 0..1);
+        if !self.tile_system.config.transparent_background {
+            render_pass.set_pipeline(&self.sky_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            // Full-screen triangle is drawn with exactly 3 virtual vertices
+            render_pass.draw(0..3, 0..1);
+        }
 
         if let Some(ext) = &self.extension {
             ext.render(
