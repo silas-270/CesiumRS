@@ -171,11 +171,11 @@ impl CesiumViewerBuilder {
 /// Call `handle()` to obtain a `ViewerHandle` *before* calling `run()`,
 /// since `run()` takes `self` and blocks the calling thread.
 pub struct CesiumViewer {
-    event_loop: EventLoop<()>,
-    config: TileEngineConfig,
-    extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
-    command_tx: mpsc::SyncSender<ViewerCommand>,
-    command_rx: mpsc::Receiver<ViewerCommand>,
+    pub(crate) event_loop: EventLoop<()>,
+    pub(crate) config: TileEngineConfig,
+    pub(crate) extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+    pub(crate) command_tx: mpsc::SyncSender<ViewerCommand>,
+    pub(crate) command_rx: mpsc::Receiver<ViewerCommand>,
 }
 
 impl CesiumViewer {

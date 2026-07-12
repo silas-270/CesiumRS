@@ -1157,3 +1157,114 @@ warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
 
 warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
     Finished `release` profile [optimized] target(s) in 0.63s
+    Building arm64-v8a (aarch64-linux-android)
+    Updating crates.io index
+     Locking 11 packages to latest compatible versions
+      Adding cesu8 v1.1.0
+      Adding jni v0.21.1 (available: v0.22.4)
+      Adding windows-sys v0.45.0
+      Adding windows-targets v0.42.2
+      Adding windows_aarch64_gnullvm v0.42.2
+      Adding windows_aarch64_msvc v0.42.2
+      Adding windows_i686_gnu v0.42.2
+      Adding windows_i686_msvc v0.42.2
+      Adding windows_x86_64_gnu v0.42.2
+      Adding windows_x86_64_gnullvm v0.42.2
+      Adding windows_x86_64_msvc v0.42.2
+ Downloading crates ...
+  Downloaded cesu8 v1.1.0
+  Downloaded windows-targets v0.42.2
+  Downloaded jni v0.21.1
+  Downloaded windows_x86_64_msvc v0.42.2
+  Downloaded windows-sys v0.45.0
+   Compiling ring v0.17.14
+   Compiling android-activity v0.6.1
+   Compiling cesu8 v1.1.0
+   Compiling pollster v1.0.1
+   Compiling jni v0.21.1
+   Compiling rustls v0.23.41
+   Compiling rustls-webpki v0.103.13
+   Compiling winit v0.30.13
+   Compiling egui-winit v0.29.1
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.9
+   Compiling reqwest v0.12.28
+   Compiling cesium-engine v0.1.0 (C:\Users\kamme\Desktop\CesiumRS\crates\cesium-engine)
+warning: value assigned to `view_opt` is never read
+   --> crates\cesium-engine\src\render\wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling cesium-flight v0.1.0 (C:\Users\kamme\Desktop\CesiumRS\crates\cesium-flight)
+warning: unused variable: `cruise_alt`
+   --> crates\cesium-flight\src\telemetry\generator.rs:275:9
+    |
+275 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates\cesium-flight\src\telemetry\generator.rs:138:13
+    |
+137 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+138 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: `cesium-engine` (lib) generated 1 warning
+   Compiling cesium_rs v0.1.0 (C:\Users\kamme\Desktop\CesiumRS)
+warning: unused import: `std::sync::Arc`
+ --> src\headless\routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src\headless\routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+error[E0616]: field `extension` of struct `CesiumViewer` is private
+  --> src\lib.rs:89:16
+   |
+89 |         viewer.extension,
+   |                ^^^^^^^^^ private field
+
+error[E0616]: field `command_rx` of struct `CesiumViewer` is private
+  --> src\lib.rs:90:21
+   |
+90 |         Some(viewer.command_rx),
+   |                     ^^^^^^^^^^ private field
+
+warning: unused variable: `visible_tiles`
+  --> src\headless\routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0616`.
+warning: `cesium_rs` (lib) generated 3 warnings
+error: could not compile `cesium_rs` (lib) due to 2 previous errors; 3 warnings emitted
+note: If the build failed due to a missing target, you can run this command:
+note: 
+note:     rustup target install aarch64-linux-android
