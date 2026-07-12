@@ -22,7 +22,7 @@
 //!     let cam = viewer.handle();
 //!
 //!     std::thread::spawn(move || {
-//!         flight_handle.load_flight("my_flight", include_str!("../flight_FRA_STR.json").to_string());
+//!         flight_handle.load_flight("my_flight", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, None, None);
 //!         flight_handle.play();
 //!         cam.camera_set_position(8.68, 50.11, 0.5); // Frankfurt, Germany
 //!     });

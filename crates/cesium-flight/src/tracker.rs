@@ -12,39 +12,18 @@ use cesium_engine::time::SimulationTime;
 
 use crate::flight_handle::{FlightCommand, FlightHandle};
 
-pub fn load_flight_data(
-    content: &str,
-) -> Result<
-    (
-        SampledPositionProperty,
-        cesium_engine::property::sampled::SampledScalarProperty,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    let waypoints: Vec<serde_json::Value> = serde_json::from_str(content)?;
+use crate::telemetry::generate;
 
-    let mut property =
-        SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
-
-    let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new()
-        .with_algorithm(InterpolationAlgorithm::CatmullRom);
-
-    for wp in waypoints {
-        let time_offset_ms = wp["timeOffsetMs"].as_u64().unwrap_or(0);
-        let longitude = wp["longitude"].as_f64().unwrap_or(0.0);
-        let latitude = wp["latitude"].as_f64().unwrap_or(0.0);
-        let altitude = wp["altitude"].as_f64().unwrap_or(0.0);
-
-        let sun_intensity = wp["sunIntensity"].as_f64().unwrap_or(1.0);
-
-        let ecef_array = lon_lat_alt_to_ecef_f64(longitude, latitude, altitude);
-        let position = DVec3::from_array(ecef_array);
-        let time = SimulationTime::new(time_offset_ms as f64 / 1000.0);
-        property.add_sample(time, position);
-        sun_intensity_property.add_sample(time, sun_intensity);
-    }
-
-    Ok((property, sun_intensity_property))
+pub struct PendingFlight {
+    pub id: String,
+    pub departure_lon: f64,
+    pub departure_lat: f64,
+    pub arrival_lon: f64,
+    pub arrival_lat: f64,
+    pub total_duration_ms: u64,
+    pub dep_heading_deg: Option<f64>,
+    pub arr_heading_deg: Option<f64>,
+    pub is_secondary: bool,
 }
 
 pub struct FlightEntity {
@@ -58,7 +37,7 @@ pub struct FlightEntity {
 
 pub struct FlightTrackerApp {
     pub progress: std::sync::Arc<std::sync::Mutex<f64>>,
-    pub pending_flights: Vec<(String, String, bool)>, // id, json_content, is_secondary
+    pub pending_flights: Vec<PendingFlight>,
     pub flights: Vec<FlightEntity>,
     pub airplane_renderer: Option<ModelRenderer>,
     pub last_update_time: std::time::Instant,
@@ -176,9 +155,27 @@ impl FlightTrackerApp {
         }
     }
 
-    pub fn add_flight_path(&mut self, id: &str, json_content: String, is_secondary: bool) {
-        self.pending_flights
-            .push((id.to_string(), json_content, is_secondary));
+    pub fn add_flight_path(
+        &mut self,
+        id: &str,
+        departure_lon: f64,
+        departure_lat: f64,
+        arrival_lon: f64,
+        arrival_lat: f64,
+        total_duration_ms: u64,
+        is_secondary: bool,
+    ) {
+        self.pending_flights.push(PendingFlight {
+            id: id.to_string(),
+            departure_lon,
+            departure_lat,
+            arrival_lon,
+            arrival_lat,
+            total_duration_ms,
+            dep_heading_deg: None,
+            arr_heading_deg: None,
+            is_secondary,
+        });
     }
 }
 
@@ -196,10 +193,26 @@ impl GlobeExtension for FlightTrackerApp {
                 match cmd {
                     FlightCommand::LoadFlight {
                         id,
-                        json,
+                        departure_lon,
+                        departure_lat,
+                        arrival_lon,
+                        arrival_lat,
+                        total_duration_ms,
+                        dep_heading_deg,
+                        arr_heading_deg,
                         is_secondary,
                     } => {
-                        self.pending_flights.push((id, json, is_secondary));
+                        self.pending_flights.push(PendingFlight {
+                            id,
+                            departure_lon,
+                            departure_lat,
+                            arrival_lon,
+                            arrival_lat,
+                            total_duration_ms,
+                            dep_heading_deg,
+                            arr_heading_deg,
+                            is_secondary,
+                        });
                     }
                     FlightCommand::SetProgress(p) => {
                         *self.progress.lock().unwrap() = p.clamp(0.0, 1.0);
@@ -233,38 +246,57 @@ impl GlobeExtension for FlightTrackerApp {
             Err(e) => eprintln!("Failed to read A350.glb from disk: {:?}", e),
         }
 
-        for (id, content, is_secondary) in self.pending_flights.drain(..) {
-            if let Ok((property, sun_intensity_property)) = load_flight_data(&content) {
-                use cesium_engine::property::Property;
-                if let Some(start_time) = property.start_time() {
-                    let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
-                    let builder = AdaptiveSubdivisionBuilder::new(1e-7); // High precision tolerance
-                    let control_points = builder.build(&property, reference_point);
-                    
-                    println!("Flight path loaded: {} ({} control points)", id, control_points.len());
-                    
-                    let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
-                    // Upload geometry statically once
-                    renderer.update_geometry(device, queue, &control_points);
-                    
-                    let mut poly_config = PolylineConfig {
-                        color_end: [0.9, 0.9, 0.9, 1.0],
-                        ..PolylineConfig::default()
-                    };
+        for pending in self.pending_flights.drain(..) {
+            let points = generate(
+                pending.departure_lon,
+                pending.departure_lat,
+                pending.arrival_lon,
+                pending.arrival_lat,
+                pending.total_duration_ms,
+                pending.dep_heading_deg,
+                pending.arr_heading_deg,
+            );
 
-                    if is_secondary {
-                        poly_config.split_progress = 0.5;
-                    }
+            let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+            let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
 
-                    self.flights.push(FlightEntity {
-                        id,
-                        renderer,
-                        config: poly_config,
-                        property,
-                        sun_intensity_property,
-                        reference_point,
-                    });
+            for pt in points {
+                let ecef_array = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+                let position = DVec3::from_array(ecef_array);
+                let time = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
+                property.add_sample(time, position);
+                sun_intensity_property.add_sample(time, pt.sun_intensity as f64);
+            }
+
+            use cesium_engine::property::Property;
+            if let Some(start_time) = property.start_time() {
+                let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
+                let builder = AdaptiveSubdivisionBuilder::new(1e-7); // High precision tolerance
+                let control_points = builder.build(&property, reference_point);
+                
+                println!("Flight path loaded: {} ({} control points)", pending.id, control_points.len());
+                
+                let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
+                // Upload geometry statically once
+                renderer.update_geometry(device, queue, &control_points);
+                
+                let mut poly_config = PolylineConfig {
+                    color_end: [0.9, 0.9, 0.9, 1.0],
+                    ..PolylineConfig::default()
+                };
+
+                if pending.is_secondary {
+                    poly_config.split_progress = 0.5;
                 }
+
+                self.flights.push(FlightEntity {
+                    id: pending.id,
+                    renderer,
+                    config: poly_config,
+                    property,
+                    sun_intensity_property,
+                    reference_point,
+                });
             }
         }
     }
@@ -284,10 +316,26 @@ impl GlobeExtension for FlightTrackerApp {
                 match cmd {
                     FlightCommand::LoadFlight {
                         id,
-                        json,
+                        departure_lon,
+                        departure_lat,
+                        arrival_lon,
+                        arrival_lat,
+                        total_duration_ms,
+                        dep_heading_deg,
+                        arr_heading_deg,
                         is_secondary,
                     } => {
-                        self.pending_flights.push((id, json, is_secondary));
+                        self.pending_flights.push(PendingFlight {
+                            id,
+                            departure_lon,
+                            departure_lat,
+                            arrival_lon,
+                            arrival_lat,
+                            total_duration_ms,
+                            dep_heading_deg,
+                            arr_heading_deg,
+                            is_secondary,
+                        });
                     }
                     FlightCommand::SetProgress(p) => {
                         *self.progress.lock().unwrap() = p.clamp(0.0, 1.0);

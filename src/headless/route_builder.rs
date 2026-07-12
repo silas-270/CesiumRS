@@ -30,43 +30,36 @@ impl RoutesExtension {
             let start = route.start;
             let end = route.end;
 
-            let altitude_meters = 10000.0; // Constant altitude matching real flights
-
-            let p1 = lon_lat_alt_to_ecef_f64(start.lon, start.lat, altitude_meters);
-            let p2 = lon_lat_alt_to_ecef_f64(end.lon, end.lat, altitude_meters);
-            let u1 = DVec3::from_array(p1).normalize();
-            let u2 = DVec3::from_array(p2).normalize();
-            
-            let reference_point = DVec3::new(
-                (p1[0] + p2[0]) / 2.0,
-                (p1[1] + p2[1]) / 2.0,
-                (p1[2] + p2[2]) / 2.0,
+            // Use the new telemetry generator
+            let points = cesium_flight::telemetry::generate(
+                start.lon,
+                start.lat,
+                end.lon,
+                end.lat,
+                3600_000, // Dummy duration, headless doesn't care about time
+                None,
+                None,
             );
 
-            let dot = u1.dot(u2).clamp(-1.0, 1.0);
-            let omega = dot.acos();
-            let sin_omega = omega.sin();
+            // Compute the average reference point for precision
+            let mut p_sum = DVec3::ZERO;
+            let mut count = 0;
+            for pt in &points {
+                let ecef = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+                p_sum += DVec3::from_array(ecef);
+                count += 1;
+            }
+            let reference_point = p_sum / count as f64;
 
-            let num_segments = 64;
-            let mut control_points = Vec::with_capacity(num_segments + 1);
-
-            for i in 0..=num_segments {
-                let t = i as f64 / num_segments as f64;
-                let pos = if sin_omega < 1e-6 {
-                    u1.lerp(u2, t).normalize() * DVec3::from_array(p1).length()
-                } else {
-                    let a = ((1.0 - t) * omega).sin() / sin_omega;
-                    let b = (t * omega).sin() / sin_omega;
-                    let dir = (u1 * a + u2 * b).normalize();
-                    let r1 = DVec3::from_array(p1).length();
-                    let r2 = DVec3::from_array(p2).length();
-                    dir * (r1 + (r2 - r1) * t)
-                };
-
+            let mut control_points = Vec::with_capacity(points.len());
+            for (i, pt) in points.iter().enumerate() {
+                let ecef = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+                let pos = DVec3::from_array(ecef);
                 let rel = pos - reference_point;
+                let t = i as f32 / (points.len() - 1) as f32;
                 control_points.push(ControlPoint {
                     position: [rel.x as f32, rel.y as f32, rel.z as f32],
-                    progress: t as f32,
+                    progress: t,
                 });
             }
 

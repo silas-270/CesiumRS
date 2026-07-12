@@ -26,9 +26,7 @@ impl<'a> PerfSimulatorApp<'a> {
         let (flight_app, flight_handle) = FlightTrackerApp::with_handle();
 
         // Load the sample flight for the tracker
-        if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
-            flight_handle.load_flight("flight_FRA_STR", content);
-        }
+        flight_handle.load_flight("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, None, None);
 
         // Start playing immediately. Set speed so the flight lasts ~100 seconds
         // (so it's still flying when we switch modes at 20s and 40s)
