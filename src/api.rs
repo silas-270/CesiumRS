@@ -151,10 +151,15 @@ impl CesiumViewerBuilder {
 
         let (tx, rx) = mpsc::sync_channel(128);
 
-        let event_loop = EventLoop::new().unwrap();
-        event_loop.set_control_flow(ControlFlow::Poll);
+        #[cfg(not(target_os = "android"))]
+        let event_loop = {
+            let el = EventLoop::new().unwrap();
+            el.set_control_flow(ControlFlow::Poll);
+            el
+        };
 
         CesiumViewer {
+            #[cfg(not(target_os = "android"))]
             event_loop,
             config,
             extension: self.extension,
@@ -171,6 +176,7 @@ impl CesiumViewerBuilder {
 /// Call `handle()` to obtain a `ViewerHandle` *before* calling `run()`,
 /// since `run()` takes `self` and blocks the calling thread.
 pub struct CesiumViewer {
+    #[cfg(not(target_os = "android"))]
     pub(crate) event_loop: EventLoop<()>,
     pub(crate) config: TileEngineConfig,
     pub(crate) extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
@@ -195,6 +201,7 @@ impl CesiumViewer {
     }
 
     /// Start the application event loop. **Blocks the calling thread and never returns.**
+    #[cfg(not(target_os = "android"))]
     pub fn run(self) {
         let mut app = App::new(self.config, self.extension, Some(self.command_rx));
         self.event_loop.run_app(&mut app).unwrap();
