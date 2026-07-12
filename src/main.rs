@@ -126,10 +126,15 @@ fn main() {
     } else {
         let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
 
-        // Load a flight path before starting if the file is present
-        if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
-            flight_handle.load_flight("flight_FRA_STR", content);
-        }
+        // Load a flight path before starting
+        flight_handle.load_flight(
+            "flight_FRA_STR", 
+            8.5706, 50.0333, // FRA
+            9.2219, 48.6899, // STR
+            1_800_000,       // 30 mins
+            None,
+            None
+        );
 
         let viewer = cesium_rs::CesiumViewer::builder()
             .tile_cache_size(2048)

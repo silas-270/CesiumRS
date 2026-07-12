@@ -2,10 +2,16 @@ use std::sync::mpsc;
 
 /// Commands that can be sent to a `FlightTrackerApp` from another thread.
 pub enum FlightCommand {
-    /// Load a new flight path from a JSON string.
+    /// Load a new flight path from runway coordinates.
     LoadFlight {
         id: String,
-        json: String,
+        departure_lon: f64,
+        departure_lat: f64,
+        arrival_lon: f64,
+        arrival_lat: f64,
+        total_duration_ms: u64,
+        dep_heading_deg: Option<f64>,
+        arr_heading_deg: Option<f64>,
         is_secondary: bool,
     },
     /// Set the playback progress (0.0 – 1.0) of the primary flight.
@@ -30,20 +36,52 @@ impl FlightHandle {
         Self { tx }
     }
 
-    /// Load a flight from a JSON string. Non-blocking.
-    pub fn load_flight(&self, id: impl Into<String>, json: impl Into<String>) {
+    /// Load a flight path by generating it from runway coordinates. Non-blocking.
+    pub fn load_flight(
+        &self, 
+        id: impl Into<String>, 
+        departure_lon: f64, 
+        departure_lat: f64,
+        arrival_lon: f64,
+        arrival_lat: f64,
+        total_duration_ms: u64,
+        dep_heading_deg: Option<f64>,
+        arr_heading_deg: Option<f64>,
+    ) {
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
             id: id.into(),
-            json: json.into(),
+            departure_lon,
+            departure_lat,
+            arrival_lon,
+            arrival_lat,
+            total_duration_ms,
+            dep_heading_deg,
+            arr_heading_deg,
             is_secondary: false,
         });
     }
 
     /// Load a secondary (reference) flight path. Non-blocking.
-    pub fn load_secondary_flight(&self, id: impl Into<String>, json: impl Into<String>) {
+    pub fn load_secondary_flight(
+        &self, 
+        id: impl Into<String>, 
+        departure_lon: f64, 
+        departure_lat: f64,
+        arrival_lon: f64,
+        arrival_lat: f64,
+        total_duration_ms: u64,
+        dep_heading_deg: Option<f64>,
+        arr_heading_deg: Option<f64>,
+    ) {
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
             id: id.into(),
-            json: json.into(),
+            departure_lon,
+            departure_lat,
+            arrival_lon,
+            arrival_lat,
+            total_duration_ms,
+            dep_heading_deg,
+            arr_heading_deg,
             is_secondary: true,
         });
     }

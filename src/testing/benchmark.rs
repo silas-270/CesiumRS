@@ -44,11 +44,7 @@ impl<'a> BenchmarkApp<'a> {
         let (flight_app, flight_handle) = FlightTrackerApp::with_handle();
 
         // Load the sample flight for the tracker
-        if let Ok(content) = std::fs::read_to_string("flight_FRA_JFK.json") {
-            flight_handle.load_flight("flight_FRA_JFK", content);
-        } else {
-            eprintln!("Warning: flight_FRA_JFK.json not found!");
-        }
+        flight_handle.load_flight("flight_FRA_JFK", 8.5706, 50.0333, -73.7781, 40.6413, 28_800_000, None, None);
 
         // Start playing immediately. Set speed higher to fly faster through it
         flight_handle.play();

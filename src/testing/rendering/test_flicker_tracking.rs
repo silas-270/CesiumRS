@@ -52,11 +52,7 @@ impl<'a> FlickerTrackingApp<'a> {
             progress.clone(),
         ));
 
-        if let Ok(content) = std::fs::read_to_string("flight_FRA_STR.json") {
-            flight_app.add_flight_path("flight_FRA_STR.json", content, false);
-        } else {
-            eprintln!("Warning: flight_FRA_STR.json not found.");
-        }
+        flight_app.add_flight_path("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, false);
 
         flight_app.is_playing = true;
         flight_app.play_speed = 0.01;
