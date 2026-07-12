@@ -441,3 +441,719 @@ warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
 
 warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
     Finished `release` profile [optimized] target(s) in 26.55s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+   Compiling cesium_rs v0.1.0 (/home/silas270/CesiumRS)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 6.07s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+   Compiling cesium_rs v0.1.0 (/home/silas270/CesiumRS)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 5.46s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.71s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.48s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.55s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.50s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.61s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.46s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.02s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.55s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.76s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.59s
+    Building arm64-v8a (aarch64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.64s
+    Building x86_64 (x86_64-linux-android)
+warning: value assigned to `view_opt` is never read
+   --> crates/cesium-engine/src/render/wgpu_state.rs:922:28
+    |
+922 |         let mut view_opt = None;
+    |                            ^^^^ this value is reassigned later and never used
+...
+925 |             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    |             -------- `view_opt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-engine` (lib) generated 1 warning
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:51:37
+   |
+51 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 4 warnings (run `cargo fix --lib -p cesium_rs` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.63s
