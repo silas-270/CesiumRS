@@ -179,7 +179,7 @@ mod dubins_solver {
         let mut v = Point2D { x: c_l2.x - c_l1.x, y: c_l2.y - c_l1.y };
         let mut d = v.x.hypot(v.y);
         if d > 1e-6 {
-            let gamma = v.y.atan2(v.x);
+            let gamma = v.x.atan2(v.y);
             let nx = gamma.cos();
             let ny = -gamma.sin();
             let t1 = Point2D { x: c_l1.x + r * nx, y: c_l1.y + r * ny };
@@ -191,7 +191,7 @@ mod dubins_solver {
         v = Point2D { x: c_r2.x - c_r1.x, y: c_r2.y - c_r1.y };
         d = v.x.hypot(v.y);
         if d > 1e-6 {
-            let gamma = v.y.atan2(v.x);
+            let gamma = v.x.atan2(v.y);
             let nx = -gamma.cos();
             let ny = gamma.sin();
             let t1 = Point2D { x: c_r1.x + r * nx, y: c_r1.y + r * ny };
@@ -203,7 +203,7 @@ mod dubins_solver {
         v = Point2D { x: c_l2.x - c_r1.x, y: c_l2.y - c_r1.y };
         d = v.x.hypot(v.y);
         if d >= 2.0 * r {
-            let gamma = v.y.atan2(v.x);
+            let gamma = v.x.atan2(v.y);
             let beta = (2.0 * r / d).asin();
             let path_heading = gamma + beta;
             let t1 = Point2D { x: c_r1.x + r * (-path_heading.cos()), y: c_r1.y + r * path_heading.sin() };
@@ -215,7 +215,7 @@ mod dubins_solver {
         v = Point2D { x: c_r2.x - c_l1.x, y: c_r2.y - c_l1.y };
         d = v.x.hypot(v.y);
         if d >= 2.0 * r {
-            let gamma = v.y.atan2(v.x);
+            let gamma = v.x.atan2(v.y);
             let beta = (2.0 * r / d).asin();
             let path_heading = gamma - beta;
             let t1 = Point2D { x: c_l1.x + r * path_heading.cos(), y: c_l1.y + r * (-path_heading.sin()) };
@@ -384,14 +384,16 @@ pub fn generate(
     while current_t <= total_s {
         let p2d = path.get_point(current_s);
         let (lon, lat) = to_geo(p2d);
-        let alt = get_altitude(current_s);
+        let raw_alt = get_altitude(current_s);
+        let alt = raw_alt + 5.0;
+        let intensity = (1.0 - (raw_alt / cruise_alt_m).clamp(0.0, 1.0)) as f32;
         
         points.push(TelemetryPoint {
             time_offset_ms: (current_t * 1000.0) as u64,
             longitude: lon,
             latitude: lat,
             altitude: alt,
-            sun_intensity: 1.0, // Default sun intensity
+            sun_intensity: intensity,
         });
 
         let v_shape = get_speed_shape(current_s);
@@ -405,7 +407,7 @@ pub fn generate(
         time_offset_ms: total_duration_ms,
         longitude: final_lon,
         latitude: final_lat,
-        altitude: 0.0,
+        altitude: 5.0,
         sun_intensity: 1.0,
     });
 
