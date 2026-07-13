@@ -1,4 +1,5 @@
 use crate::globe::geometry::Vertex;
+#[cfg(feature = "debug_panel")]
 use crate::render::debug_geometry::DebugVertex;
 
 pub fn create_pipelines(
@@ -10,7 +11,7 @@ pub fn create_pipelines(
 ) -> (
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
+    Option<wgpu::RenderPipeline>,
 ) {
     let push_constant_ranges = [wgpu::PushConstantRange {
         stages: wgpu::ShaderStages::VERTEX,
@@ -29,6 +30,7 @@ pub fn create_pipelines(
         push_constant_ranges: &push_constant_ranges,
     });
 
+    #[cfg(feature = "debug_panel")]
     let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Debug Pipeline Layout"),
         bind_group_layouts: &[camera_bind_group_layout],
@@ -123,6 +125,7 @@ pub fn create_pipelines(
         cache: None,
     });
 
+    #[cfg(feature = "debug_panel")]
     let debug_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Debug Pipeline"),
         layout: Some(&debug_pipeline_layout),
@@ -157,7 +160,12 @@ pub fn create_pipelines(
         cache: None,
     });
 
-    (solid_pipeline, wireframe_pipeline, debug_pipeline)
+    #[cfg(feature = "debug_panel")]
+    let res = (solid_pipeline, wireframe_pipeline, Some(debug_pipeline));
+    #[cfg(not(feature = "debug_panel"))]
+    let res = (solid_pipeline, wireframe_pipeline, None);
+
+    res
 }
 
 pub fn create_sky_pipeline(

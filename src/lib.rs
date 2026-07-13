@@ -1,8 +1,9 @@
 pub mod api;
 pub mod viewer;
+#[cfg(feature = "testing")]
 pub mod headless;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), feature = "testing"))]
 pub mod testing;
 
 #[cfg(target_os = "android")]
@@ -14,9 +15,10 @@ pub use api::{CameraMode, CameraState, CesiumViewer, ViewerHandle};
 // ── Legacy path (kept for the test harness) ───────────────────────────────────
 pub use viewer::{GlobeOptions, Viewer, ViewerOptions};
 
+#[cfg(feature = "testing")]
 use winit::event_loop::{ControlFlow, EventLoop};
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), feature = "testing"))]
 pub fn run(config: Option<testing::VerifyConfig>) {
     if let Some(cfg) = config {
         let event_loop = EventLoop::new().unwrap();
@@ -47,6 +49,12 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         let viewer = Viewer::new(ViewerOptions::default());
         viewer.run(None);
     }
+}
+
+#[cfg(all(not(target_os = "android"), not(feature = "testing")))]
+pub fn run(config: Option<()>) {
+    let viewer = Viewer::new(ViewerOptions::default());
+    viewer.run(None);
 }
 
 #[cfg(target_os = "android")]

@@ -19,7 +19,7 @@ name = "cesium_app"
 path = "src/main.rs"
 
 [dependencies]
-cesium-engine = { path = "crates/cesium-engine", features = ["testing"] }
+cesium-engine = { path = "crates/cesium-engine" }
 cesium-flight = { path = "crates/cesium-flight" }
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4"
@@ -29,6 +29,12 @@ winit = { version = "0.30", features = ["rwh_06"] }
 wgpu = "22.0"
 sha2 = "0.11.0"
 pollster = "1.0.1"
+
+[features]
+default = ["debug_panel", "testing"]
+debug_panel = ["cesium-engine/debug_panel", "cesium-flight/debug_panel"]
+testing = ["cesium-engine/testing"]
+
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.11"

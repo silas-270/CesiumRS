@@ -30,5 +30,6 @@ pub trait GlobeExtension {
     );
 
     /// Called every frame during egui rendering to add custom UI elements
+    #[cfg(feature = "debug_panel")]
     fn render_ui(&mut self, _ctx: &egui::Context, _ui: &mut egui::Ui) {}
 }

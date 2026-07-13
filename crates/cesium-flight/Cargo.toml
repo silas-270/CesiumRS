@@ -8,5 +8,8 @@ cesium-engine = { path = "../cesium-engine" }
 glam = "0.27"
 serde_json = "1.0.150"
 log = "0.4"
-egui = "0.29.0"
+egui = { version = "0.29.0", optional = true }
 wgpu = "22.0"
+
+[features]
+debug_panel = ["cesium-engine/debug_panel", "dep:egui"]

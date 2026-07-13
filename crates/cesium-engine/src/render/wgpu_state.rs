@@ -2,7 +2,9 @@ use crate::camera::camera::Camera;
 use crate::globe::quadtree::{QuadtreeManager, TileId};
 use crate::render::camera_uniform::CameraUniform;
 use crate::render::tile_display::{TileBuffers, TileDisplayEntry, TilePushConstants};
+#[cfg(feature = "debug_panel")]
 use egui_wgpu::Renderer as EguiRenderer;
+#[cfg(feature = "debug_panel")]
 use egui_winit::State as EguiState;
 use glam::{Mat4, Vec3};
 use lru::LruCache;
@@ -36,16 +38,25 @@ pub struct WgpuState<'a> {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     pub camera: Camera,
+    #[cfg(feature = "debug_panel")]
     pub debug_mode: bool,
+    #[cfg(feature = "debug_panel")]
     pub debug_camera: crate::camera::GodCamera,
+    #[cfg(feature = "debug_panel")]
     pub debug_camera_initialized: bool,
     pub last_requested_tiles_count: usize,
     pub last_missing_tiles_count: usize,
+    #[cfg(feature = "debug_panel")]
     debug_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "debug_panel")]
     debug_vertex_buffer: wgpu::Buffer,
+    #[cfg(feature = "debug_panel")]
     num_debug_vertices: u32,
+    #[cfg(feature = "debug_panel")]
     pub egui_ctx: egui::Context,
+    #[cfg(feature = "debug_panel")]
     pub egui_state: Option<EguiState>,
+    #[cfg(feature = "debug_panel")]
     pub egui_renderer: EguiRenderer,
     pub quadtree_manager: QuadtreeManager,
     pub tile_system: crate::globe::tiles::system::TileSystem,
@@ -83,6 +94,7 @@ fn create_depth_texture(
     depth_texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+#[cfg(feature = "debug_panel")]
 fn execute_egui<'rp>(
     renderer: &'rp EguiRenderer,
     encoder: &'rp mut wgpu::CommandEncoder,
@@ -230,7 +242,7 @@ impl<'a> WgpuState<'a> {
         let tile_system =
             crate::globe::tiles::system::TileSystem::new(&device, &queue, config_engine);
 
-        let (solid_pipeline, wireframe_pipeline, debug_pipeline) =
+        let (solid_pipeline, wireframe_pipeline, _debug_pipeline) =
             crate::render::globe_pipeline::pipeline::create_pipelines(
                 &device,
                 &config,
@@ -246,6 +258,7 @@ impl<'a> WgpuState<'a> {
             &camera_bind_group_layout,
         );
 
+        #[cfg(feature = "debug_panel")]
         let debug_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Vertex Buffer"),
             size: std::mem::size_of::<crate::render::debug_geometry::DebugVertex>() as u64 * 100000,
@@ -255,7 +268,9 @@ impl<'a> WgpuState<'a> {
 
         let tile_cache = LruCache::new(tile_system.config.mesh_cache_size);
 
+        #[cfg(feature = "debug_panel")]
         let egui_ctx = egui::Context::default();
+        #[cfg(feature = "debug_panel")]
         let egui_state = window.as_ref().map(|w| EguiState::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -264,6 +279,7 @@ impl<'a> WgpuState<'a> {
             None,
             Some(2048),
         ));
+        #[cfg(feature = "debug_panel")]
         let egui_renderer = EguiRenderer::new(&device, config.format, None, 1, false);
         if let Some(ext) = &mut extension {
             ext.init(&device, &queue, &config, &camera_bind_group_layout);
@@ -285,16 +301,25 @@ impl<'a> WgpuState<'a> {
             camera_buffer,
             camera_bind_group,
             camera,
+            #[cfg(feature = "debug_panel")]
             debug_mode: false,
+            #[cfg(feature = "debug_panel")]
             debug_camera: crate::camera::GodCamera::new(glam::Vec3::ZERO, 0.0, 0.0),
+            #[cfg(feature = "debug_panel")]
             debug_camera_initialized: false,
             last_requested_tiles_count: 0,
             last_missing_tiles_count: 0,
-            debug_pipeline,
+            #[cfg(feature = "debug_panel")]
+            debug_pipeline: _debug_pipeline.unwrap(),
+            #[cfg(feature = "debug_panel")]
             debug_vertex_buffer,
+            #[cfg(feature = "debug_panel")]
             num_debug_vertices: 0,
+            #[cfg(feature = "debug_panel")]
             egui_ctx,
+            #[cfg(feature = "debug_panel")]
             egui_state,
+            #[cfg(feature = "debug_panel")]
             egui_renderer,
             quadtree_manager: QuadtreeManager::new(),
             tile_system,
@@ -410,6 +435,7 @@ impl<'a> WgpuState<'a> {
             frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         }
 
+        #[cfg(feature = "debug_panel")]
         let (view_matrix, proj_matrix) = if self.debug_mode {
             (
                 self.debug_camera.get_view_matrix(),
@@ -421,6 +447,12 @@ impl<'a> WgpuState<'a> {
                 self.camera.get_projection_matrix(aspect_ratio),
             )
         };
+
+        #[cfg(not(feature = "debug_panel"))]
+        let (view_matrix, proj_matrix) = (
+            self.camera.get_view_matrix(),
+            self.camera.get_projection_matrix(aspect_ratio),
+        );
 
         let (camera_pos_dvec, camera_ori_dquat) = self.camera.global_transform_f64();
         let camera_pos_f32 = glam::Vec3::new(
@@ -668,6 +700,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
+    #[cfg(feature = "debug_panel")]
     fn compute_debug_vertices(
         &mut self,
         main_view_proj: Mat4,
@@ -747,6 +780,7 @@ impl<'a> WgpuState<'a> {
             timestamp_writes: None,
         });
 
+        #[cfg(feature = "debug_panel")]
         let camera_pos_f64 = if self.debug_mode {
             [
                 self.debug_camera.position.x as f64,
@@ -754,6 +788,12 @@ impl<'a> WgpuState<'a> {
                 self.debug_camera.position.z as f64,
             ]
         } else {
+            let (pos_dvec, _) = self.camera.global_transform_f64();
+            [pos_dvec.x, pos_dvec.y, pos_dvec.z]
+        };
+
+        #[cfg(not(feature = "debug_panel"))]
+        let camera_pos_f64 = {
             let (pos_dvec, _) = self.camera.global_transform_f64();
             [pos_dvec.x, pos_dvec.y, pos_dvec.z]
         };
@@ -804,6 +844,7 @@ impl<'a> WgpuState<'a> {
 
         // Wireframe overlay rendering removed as per user request
 
+        #[cfg(feature = "debug_panel")]
         if self.debug_mode && self.num_debug_vertices > 0 {
             render_pass.set_pipeline(&self.debug_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
@@ -835,6 +876,7 @@ impl<'a> WgpuState<'a> {
         }
     }
 
+    #[cfg(feature = "debug_panel")]
     fn render_egui<F: FnMut(&egui::Context, &mut Self)>(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -903,6 +945,7 @@ impl<'a> WgpuState<'a> {
         )
     }
 
+    #[cfg(feature = "debug_panel")]
     pub fn render<F: FnMut(&egui::Context, &mut Self)>(
         &mut self,
         screenshot_out: Option<&str>,
@@ -919,7 +962,7 @@ impl<'a> WgpuState<'a> {
 
         let mut output = None;
         let mut headless_texture = None;
-        let mut view_opt = None;
+        let view_opt;
         if let Some(s) = &self.surface {
             let out = s.get_current_texture()?;
             view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
@@ -959,6 +1002,70 @@ impl<'a> WgpuState<'a> {
         self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
         
         self.render_egui(&mut encoder, &view, ui_closure);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let mut captured_pixels = None;
+        let tex = output.as_ref().map(|o| &o.texture).unwrap_or_else(|| headless_texture.as_ref().unwrap());
+        if capture_memory {
+            captured_pixels = Some(self.capture_pixels(tex));
+        } else if let Some(out_path) = screenshot_out {
+            self.capture_screenshot(tex, out_path);
+        }
+
+        if let Some(out) = output {
+            out.present();
+        }
+
+        Ok(captured_pixels)
+    }
+
+    #[cfg(not(feature = "debug_panel"))]
+    pub fn render(
+        &mut self,
+        screenshot_out: Option<&str>,
+        capture_memory: bool,
+    ) -> Result<Option<Vec<u8>>, wgpu::SurfaceError> {
+        let aspect_ratio = self.size.width as f32 / self.size.height as f32;
+        let main_view_proj =
+            self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
+
+        let update_start = Instant::now();
+        let visible_tiles = self.update_logic(aspect_ratio, main_view_proj);
+        self.last_timings.update_logic_us = update_start.elapsed().as_secs_f64() * 1_000_000.0;
+
+        let mut output = None;
+        let mut headless_texture = None;
+        let view_opt;
+        if let Some(s) = &self.surface {
+            let out = s.get_current_texture()?;
+            view_opt = Some(out.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+            output = Some(out);
+        } else {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Headless Output"),
+                size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            view_opt = Some(tex.create_view(&wgpu::TextureViewDescriptor::default()));
+            headless_texture = Some(tex);
+        }
+        let view = view_opt.unwrap();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        let render_start = Instant::now();
+        self.render_scene(&mut encoder, &view, &visible_tiles);
+        self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
 
         self.queue.submit(std::iter::once(encoder.finish()));
 

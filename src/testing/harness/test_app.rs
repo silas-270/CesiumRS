@@ -115,7 +115,12 @@ impl<'a> ApplicationHandler for TestApp<'a> {
             }
 
             if let Some(state) = self.inner.wgpu_state_mut() {
-                match state.render(capture_path, false, |_, _| {}) {
+                #[cfg(feature = "debug_panel")]
+                let render_res = state.render(capture_path, false, |_, _| {});
+                #[cfg(not(feature = "debug_panel"))]
+                let render_res = state.render(capture_path, false);
+
+                match render_res {
                     Ok(_) => {
                         if capture_path.is_some() {
                             event_loop.exit();

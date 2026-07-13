@@ -83,6 +83,16 @@ pub struct Camera {
     pub inertia_axis: glam::Vec3,
     pub inertia_velocity: f32,
     pub last_drag_time: std::time::Instant,
+    
+    // Twist Inertia
+    pub twist_inertia_active: bool,
+    pub twist_inertia_velocity: f32,
+    
+    // Zoom Animation
+    pub zoom_anim_active: bool,
+    pub zoom_anim_progress: f32,
+    pub zoom_anim_start_pos: Vec3,
+    pub zoom_anim_target_pos: Vec3,
 }
 
 impl Camera {
@@ -105,6 +115,12 @@ impl Camera {
             inertia_axis: glam::Vec3::Y,
             inertia_velocity: 0.0,
             last_drag_time: std::time::Instant::now(),
+            twist_inertia_active: false,
+            twist_inertia_velocity: 0.0,
+            zoom_anim_active: false,
+            zoom_anim_progress: 0.0,
+            zoom_anim_start_pos: Vec3::ZERO,
+            zoom_anim_target_pos: Vec3::ZERO,
         };
         cam.set_eye(position, target);
         cam
@@ -261,6 +277,92 @@ impl Camera {
 
         let forward = -Vec3::Z; // Translate local expects local offset.
         self.translate_local(forward * move_distance);
+    }
+    
+    pub fn cancel_all_inertia(&mut self) {
+        self.inertia_active = false;
+        self.inertia_velocity = 0.0;
+        self.twist_inertia_active = false;
+        self.twist_inertia_velocity = 0.0;
+        self.zoom_anim_active = false;
+    }
+    
+    pub fn zoom_toward_point(&mut self, delta: f32, screen_x: f32, screen_y: f32, screen_width: f32, screen_height: f32) {
+        if delta == 0.0 { return; }
+        
+        let (ray_origin, ray_dir) = self.screen_to_world_ray(screen_x, screen_y, screen_width, screen_height);
+        let mut target_point = self.intersect_ellipsoid(ray_origin, ray_dir);
+        
+        if target_point.is_none() {
+            let t = -ray_origin.dot(ray_dir);
+            if t > 0.0 {
+                let p_close = ray_origin + t * ray_dir;
+                let dir = p_close.normalize_or_zero();
+                let dir_f64 = glam::DVec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
+                let t_ellipsoid = 1.0 / (dir_f64.x * dir_f64.x * INV_A2_F64 + dir_f64.y * dir_f64.y * INV_B2_F64 + dir_f64.z * dir_f64.z * INV_A2_F64).sqrt();
+                target_point = Some(dir_f64 * t_ellipsoid);
+            }
+        }
+        
+        if let Some(target) = target_point {
+            let target_local_dvec = self.anchor_ori.inverse() * (target - self.anchor_pos);
+            let target_local = Vec3::new(target_local_dvec.x as f32, target_local_dvec.y as f32, target_local_dvec.z as f32);
+            
+            let vec_to_target = target_local - self.local_pos;
+            let dist = vec_to_target.length();
+            let move_dist = dist * 0.15 * delta;
+            
+            if move_dist.abs() > 0.00001 {
+                self.local_pos += vec_to_target.normalize_or_zero() * move_dist;
+                self.enforce_bounds();
+            }
+        } else {
+            self.zoom(delta);
+        }
+    }
+    
+    pub fn animate_zoom_toward_point(&mut self, delta: f32, screen_x: f32, screen_y: f32, screen_width: f32, screen_height: f32) {
+        let old_pos = self.local_pos;
+        self.zoom_toward_point(delta, screen_x, screen_y, screen_width, screen_height);
+        let target_pos = self.local_pos;
+        self.local_pos = old_pos;
+        
+        self.zoom_anim_active = true;
+        self.zoom_anim_progress = 0.0;
+        self.zoom_anim_start_pos = old_pos;
+        self.zoom_anim_target_pos = target_pos;
+    }
+    
+    pub fn update_animations(&mut self, dt: f32) -> bool {
+        let mut redrew = false;
+        if self.zoom_anim_active {
+            self.zoom_anim_progress += dt / 0.3; // 300ms duration
+            if self.zoom_anim_progress >= 1.0 {
+                self.zoom_anim_progress = 1.0;
+                self.zoom_anim_active = false;
+            }
+            
+            // Cubic ease-out
+            let t = self.zoom_anim_progress;
+            let ease = 1.0 - (1.0 - t).powi(3);
+            
+            self.local_pos = self.zoom_anim_start_pos.lerp(self.zoom_anim_target_pos, ease);
+            self.enforce_bounds();
+            redrew = true;
+        }
+        redrew
+    }
+    
+    pub fn twist_view(&mut self, angle: f32) {
+        if angle == 0.0 { return; }
+        
+        let (pos_dvec, _) = self.global_transform_f64();
+        let up = pos_dvec.normalize_or_zero();
+        let up_local_dvec = self.anchor_ori.inverse() * up;
+        let up_local = Vec3::new(up_local_dvec.x as f32, up_local_dvec.y as f32, up_local_dvec.z as f32);
+        
+        let local_twist = Quat::from_axis_angle(up_local, angle);
+        self.rotate_local(local_twist);
     }
 
     pub fn orbit_mouse(&mut self, dx: f32, dy: f32) {
@@ -666,24 +768,37 @@ impl Camera {
     }
 
     pub fn update_inertia(&mut self, dt: f32) -> bool {
-        if !self.inertia_active {
-            return false;
+        let mut redrew = false;
+        if self.inertia_active {
+            // Apply friction decay (0.92 per 1/60th of a second)
+            let decay = 0.92_f32.powf(dt * 60.0);
+            self.inertia_velocity *= decay;
+            
+            if self.inertia_velocity < 0.05 {
+                self.inertia_active = false;
+                self.inertia_velocity = 0.0;
+            } else {
+                // Rotate the camera around the Earth's center (orbit anchor)
+                let step_angle = self.inertia_velocity * dt;
+                let rot = glam::Quat::from_axis_angle(self.inertia_axis, step_angle);
+                self.orbit_anchor(rot);
+                redrew = true;
+            }
         }
-
-        // Apply friction decay (0.92 per 1/60th of a second)
-        let decay = 0.92_f32.powf(dt * 60.0);
-        self.inertia_velocity *= decay;
-
-        if self.inertia_velocity < 0.05 {
-            self.inertia_active = false;
-            self.inertia_velocity = 0.0;
-            return false;
+        
+        if self.twist_inertia_active {
+            let decay = 0.92_f32.powf(dt * 60.0);
+            self.twist_inertia_velocity *= decay;
+            if self.twist_inertia_velocity.abs() < 0.05 {
+                self.twist_inertia_active = false;
+                self.twist_inertia_velocity = 0.0;
+            } else {
+                let step_angle = self.twist_inertia_velocity * dt;
+                self.twist_view(step_angle);
+                redrew = true;
+            }
         }
-
-        // Rotate the camera around the Earth's center (orbit anchor)
-        let step_angle = self.inertia_velocity * dt;
-        let rot = glam::Quat::from_axis_angle(self.inertia_axis, step_angle);
-        self.orbit_anchor(rot);
-        true
+        
+        redrew
     }
 }

@@ -1,3 +1,4 @@
+#[cfg(feature = "debug_panel")]
 use glam::{Mat4, Vec3};
 
 pub struct GodCamera {
