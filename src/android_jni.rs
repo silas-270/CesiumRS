@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use jni::{
     objects::JClass,
     sys::{jdouble, jint, jlong},
@@ -20,6 +21,8 @@ pub struct PendingFlightData {
 pub static FLIGHT_DATA: Mutex<Option<PendingFlightData>> = Mutex::new(None);
 pub static FLIGHT_HANDLE: Mutex<Option<FlightHandle>> = Mutex::new(None);
 pub static VIEWER_HANDLE: Mutex<Option<ViewerHandle>> = Mutex::new(None);
+
+
 
 #[no_mangle]
 pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetPendingFlight(
@@ -90,4 +93,34 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeGe
     let array = env.new_double_array(8).unwrap();
     env.set_double_array_region(&array, 0, &vals).unwrap();
     array.into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetRenderingEnabled(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    enabled: jni::sys::jboolean,
+) {
+    cesium_engine::core::app::RENDERING_ENABLED.store(enabled != 0, Ordering::Relaxed);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeLoadPendingFlight(
+    mut _env: JNIEnv,
+    _cls: JClass,
+) {
+    if let Some(data) = FLIGHT_DATA.lock().unwrap().take() {
+        if let Some(handle) = FLIGHT_HANDLE.lock().unwrap().as_ref() {
+            handle.load_flight(
+                "primary",
+                data.dep_lon,
+                data.dep_lat,
+                data.arr_lon,
+                data.arr_lat,
+                data.duration_ms,
+                None,
+                None,
+            );
+        }
+    }
 }

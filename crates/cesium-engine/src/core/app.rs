@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub static RENDERING_ENABLED: AtomicBool = AtomicBool::new(false);
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -303,23 +306,32 @@ impl<'a> ApplicationHandler for App<'a> {
                 .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
 
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-            self.window = Some(window.clone());
 
-            let state = pollster::block_on(WgpuState::new(
-                Some(window.clone()),
-                None,
-                self.config.clone(),
-                self.extension.take(),
-            ));
-            self.wgpu_state = Some(state);
+            if let Some(state) = &mut self.wgpu_state {
+                state.recreate_surface(window.clone());
+                self.window = Some(window);
+            } else {
+                self.window = Some(window.clone());
+                let state = pollster::block_on(WgpuState::new(
+                    Some(window.clone()),
+                    None,
+                    self.config.clone(),
+                    self.extension.take(),
+                ));
+                self.wgpu_state = Some(state);
+            }
         }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         // On Android, this is called when the Activity is destroyed or sent to background.
-        // We must drop the window and graphics state so we don't try to render to a dead surface.
-        self.wgpu_state = None;
+        // We drop only the surface and window so we don't try to render to a dead surface,
+        // but keep the WgpuState (device, pipelines, buffers) alive for fast resume.
+        if let Some(state) = &mut self.wgpu_state {
+            state.surface = None;
+            state.window = None;
+        }
         self.window = None;
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
     }
@@ -330,12 +342,18 @@ impl<'a> ApplicationHandler for App<'a> {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let window = self.window.as_ref().unwrap();
+        let window = match self.window.as_ref() {
+            Some(w) => w,
+            None => return,
+        };
         if window.id() != window_id {
             return;
         }
 
-        let state = self.wgpu_state.as_mut().unwrap();
+        let state = match self.wgpu_state.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
         #[cfg(feature = "debug_panel")]
         let is_debug = state.debug_mode;
         #[cfg(not(feature = "debug_panel"))]
@@ -357,6 +375,12 @@ impl<'a> ApplicationHandler for App<'a> {
                 state.resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
+                // Skip rendering when the Compose UI is covering the globe (battery saver)
+                #[cfg(target_os = "android")]
+                if !RENDERING_ENABLED.load(Ordering::Relaxed) {
+                    return;
+                }
+
                 #[cfg(feature = "debug_panel")]
                 let render_result = state.render(None, false, |ctx, s| {
                     Self::render_ui(ctx, s);
@@ -506,6 +530,15 @@ impl<'a> ApplicationHandler for App<'a> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // ── Battery saver: skip rendering when Compose UI is covering the globe ──
+        #[cfg(target_os = "android")]
+        {
+            if !RENDERING_ENABLED.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                return;
+            }
+        }
+
         let now = Instant::now();
         let dt = if let Some(last) = self.last_frame_time {
             let elapsed = now.duration_since(last);

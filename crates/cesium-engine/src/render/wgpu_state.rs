@@ -22,6 +22,7 @@ pub struct FrameTimings {
 }
 
 pub struct WgpuState<'a> {
+    pub instance: wgpu::Instance,
     pub surface: Option<wgpu::Surface<'a>>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -179,6 +180,10 @@ impl<'a> WgpuState<'a> {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+        
+        if let Some(s) = &surface {
+            s.configure(&device, &config);
+        }
 
         let depth_texture_view = create_depth_texture(&device, &config);
 
@@ -286,6 +291,7 @@ impl<'a> WgpuState<'a> {
         }
 
         Self {
+            instance,
             surface,
             device,
             queue,
@@ -330,6 +336,13 @@ impl<'a> WgpuState<'a> {
             label_manager: crate::label::LabelManager::new(),
             last_timings: FrameTimings::default(),
         }
+    }
+
+    pub fn recreate_surface(&mut self, window: Arc<Window>) {
+        let surface = self.instance.create_surface(window.clone()).unwrap();
+        surface.configure(&self.device, &self.config);
+        self.surface = Some(surface);
+        self.window = Some(window);
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
