@@ -70,19 +70,8 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
     let current_telemetry = flight_app.current_telemetry.clone();
 
-    // Read the flight data Kotlin set right before launching this Activity
-    if let Some(data) = android_jni::FLIGHT_DATA.lock().unwrap().take() {
-        flight_handle.load_flight(
-            "primary",
-            data.dep_lon,
-            data.dep_lat,
-            data.arr_lon,
-            data.arr_lat,
-            data.duration_ms,
-            None,
-            None,
-        );
-    }
+    // Flight data is now loaded on-demand via nativeLoadPendingFlight() JNI call.
+    // The engine starts idle and waits for the user to book a flight.
 
     let viewer = crate::api::CesiumViewer::builder()
         .with_extension(Box::new(flight_app))

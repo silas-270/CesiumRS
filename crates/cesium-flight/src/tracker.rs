@@ -62,6 +62,8 @@ pub struct FlightTrackerApp {
     pub reset_viewport: bool,
     command_rx: Option<mpsc::Receiver<FlightCommand>>,
     pub current_telemetry: std::sync::Arc<std::sync::Mutex<Option<FlightTelemetry>>>,
+    /// Cached from `init()` so we can create PolylineRenderers on-demand in `update()`.
+    cached_surface_config: Option<wgpu::SurfaceConfiguration>,
 }
 
 impl FlightTrackerApp {
@@ -83,6 +85,7 @@ impl FlightTrackerApp {
             reset_viewport: true,
             command_rx: Some(rx),
             current_telemetry,
+            cached_surface_config: None,
         };
         (app, FlightHandle::new(tx))
     }
@@ -102,6 +105,7 @@ impl FlightTrackerApp {
             reset_viewport: true,
             command_rx: None,
             current_telemetry: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            cached_surface_config: None,
         }
     }
 
@@ -266,6 +270,8 @@ impl GlobeExtension for FlightTrackerApp {
         config: &wgpu::SurfaceConfiguration,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) {
+        self.cached_surface_config = Some(config.clone());
+
         // Drain any commands that were sent before init
         if let Some(rx) = &self.command_rx {
             while let Ok(cmd) = rx.try_recv() {
@@ -380,8 +386,8 @@ impl GlobeExtension for FlightTrackerApp {
 
     fn update(
         &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         _camera_pos_dvec3: DVec3,
         _frustum: &[(DVec3, f64); 6],
         camera: &mut cesium_engine::camera::camera::Camera,
@@ -422,6 +428,90 @@ impl GlobeExtension for FlightTrackerApp {
                     }
                     FlightCommand::Play => self.is_playing = true,
                     FlightCommand::Pause => self.is_playing = false,
+                }
+            }
+        }
+
+        // On-demand flight materialization
+        if !self.pending_flights.is_empty() {
+            if let Some(config) = &self.cached_surface_config {
+                // Clear old flights so the previous flight path doesn't stay visible
+                self.flights.clear();
+                
+                // Reset playback state for the new flight
+                *self.progress.lock().unwrap() = 0.0;
+                self.is_playing = false;
+                
+                // Reset camera back to Tracking default perspective
+                self.reset_viewport = true;
+
+                let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                    label: Some("camera_bind_group_layout"),
+                });
+
+                for pending in self.pending_flights.drain(..) {
+                    let points = generate(
+                        pending.departure_lon,
+                        pending.departure_lat,
+                        pending.arrival_lon,
+                        pending.arrival_lat,
+                        pending.total_duration_ms,
+                        pending.dep_heading_deg,
+                        pending.arr_heading_deg,
+                    );
+
+                    let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+                    let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+
+                    for pt in &points {
+                        let ecef_array = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+                        let position = DVec3::from_array(ecef_array);
+                        let time = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
+                        property.add_sample(time, position);
+                        sun_intensity_property.add_sample(time, pt.sun_intensity as f64);
+                    }
+
+                    use cesium_engine::property::Property;
+                    if let Some(start_time) = property.start_time() {
+                        let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
+                        let builder = AdaptiveSubdivisionBuilder::new(1e-7);
+                        let control_points = builder.build(&property, reference_point);
+                        
+                        println!("Flight path dynamically loaded: {} ({} control points)", pending.id, control_points.len());
+                        
+                        let mut renderer = PolylineRenderer::new(device, config, &camera_bind_group_layout);
+                        renderer.update_geometry(device, queue, &control_points);
+                        
+                        let mut poly_config = PolylineConfig {
+                            color_end: [0.9, 0.9, 0.9, 1.0],
+                            ..PolylineConfig::default()
+                        };
+
+                        if pending.is_secondary {
+                            poly_config.split_progress = 0.5;
+                        }
+
+                        self.flights.push(FlightEntity {
+                            id: pending.id,
+                            renderer,
+                            config: poly_config,
+                            property,
+                            sun_intensity_property,
+                            telemetry_points: points,
+                            total_duration_ms: pending.total_duration_ms,
+                            reference_point,
+                        });
+                    }
                 }
             }
         }
