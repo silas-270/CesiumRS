@@ -4,6 +4,7 @@ pub mod wgpu_state;
 pub(crate) mod wgpu_state;
 
 pub mod capture;
+#[cfg(feature = "debug_panel")]
 pub mod debug_geometry;
 
 #[cfg(feature = "testing")]

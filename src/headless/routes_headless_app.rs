@@ -40,7 +40,10 @@ pub async fn run_headless_render(
     }
 
     // Render EXACTLY one frame and capture
-    state
-        .render(Some(out_path), false, |_, _| {})
-        .expect("Failed to render headless frame");
+    #[cfg(feature = "debug_panel")]
+    let render_res = state.render(Some(out_path), false, |_, _| {});
+    #[cfg(not(feature = "debug_panel"))]
+    let render_res = state.render(Some(out_path), false);
+
+    render_res.expect("Failed to render headless frame");
 }

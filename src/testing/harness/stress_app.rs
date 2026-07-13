@@ -103,7 +103,12 @@ impl<'a> ApplicationHandler for StressApp<'a> {
                     );
                 }
 
-                match state.render(None, false, |_, _| {}) {
+                #[cfg(feature = "debug_panel")]
+                let render_res = state.render(None, false, |_, _| {});
+                #[cfg(not(feature = "debug_panel"))]
+                let render_res = state.render(None, false);
+
+                match render_res {
                     Ok(_) => {
                         let (req, miss) = state.get_fetch_stats();
                         writeln!(

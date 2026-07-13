@@ -1,3 +1,4 @@
+#[cfg(feature = "debug_panel")]
 use glam::Vec3;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -51,6 +52,7 @@ impl<'a> App<'a> {
         self.wgpu_state.as_ref()
     }
 
+    #[cfg(feature = "debug_panel")]
     fn render_ui(ctx: &egui::Context, state: &mut WgpuState) {
         egui::Window::new("Flight Tracker Debug")
             .resizable(false)
@@ -170,7 +172,7 @@ impl<'a> App<'a> {
             });
     }
 
-
+    #[cfg(feature = "debug_panel")]
     fn render_label_indicators(ctx: &egui::Context, state: &WgpuState) {
         if !state.label_manager.enabled {
             return;
@@ -325,10 +327,17 @@ impl<'a> ApplicationHandler for App<'a> {
         }
 
         let state = self.wgpu_state.as_mut().unwrap();
+        #[cfg(feature = "debug_panel")]
+        let is_debug = state.debug_mode;
+        #[cfg(not(feature = "debug_panel"))]
+        let is_debug = false;
 
-        let response = state.egui_state.as_mut().unwrap().on_window_event(window, &event);
-        if response.consumed {
-            return;
+        #[cfg(feature = "debug_panel")]
+        {
+            let response = state.egui_state.as_mut().unwrap().on_window_event(window, &event);
+            if response.consumed {
+                return;
+            }
         }
 
         match event {
@@ -339,7 +348,15 @@ impl<'a> ApplicationHandler for App<'a> {
                 state.resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
-                match state.render(None, false, |ctx, s| { Self::render_ui(ctx, s); Self::render_label_indicators(ctx, s); }) {
+                #[cfg(feature = "debug_panel")]
+                let render_result = state.render(None, false, |ctx, s| {
+                    Self::render_ui(ctx, s);
+                    Self::render_label_indicators(ctx, s);
+                });
+                #[cfg(not(feature = "debug_panel"))]
+                let render_result = state.render(None, false);
+
+                match render_result {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
@@ -354,7 +371,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 let pressed = element_state == ElementState::Pressed;
                 if button == MouseButton::Left {
                     self.mouse_pressed = pressed;
-                    if !state.debug_mode {
+                    if !is_debug {
                         if pressed {
                             if let Some((x, y)) = self.last_mouse_pos {
                                 if state.camera.mode == crate::camera::camera::CameraMode::Free {
@@ -388,7 +405,8 @@ impl<'a> ApplicationHandler for App<'a> {
                     0.0
                 };
 
-                if state.debug_mode {
+                if is_debug {
+                    #[cfg(feature = "debug_panel")]
                     if self.right_mouse_pressed {
                         state.debug_camera.process_mouse(dx as f32, dy as f32);
                         window.request_redraw();
@@ -417,7 +435,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 self.last_mouse_pos = Some((position.x, position.y));
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if !state.debug_mode {
+                if !is_debug {
                     let zoom_delta = match delta {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(pos) => (pos.y / 50.0) as f32,
@@ -427,7 +445,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 }
             }
             WindowEvent::Touch(touch) => {
-                if !state.debug_mode {
+                if !is_debug {
                     let screen_width = state.size.width as f32;
                     let screen_height = state.size.height as f32;
                     let redrew = self.touch_interpreter.handle_touch_event(
@@ -456,7 +474,7 @@ impl<'a> ApplicationHandler for App<'a> {
                     self.pressed_keys.remove(&keycode);
                 }
 
-                if !state.debug_mode {
+                if !is_debug {
                     match keycode {
                         KeyCode::ArrowUp | KeyCode::KeyW => {
                             if element_state == ElementState::Pressed {
@@ -493,6 +511,11 @@ impl<'a> ApplicationHandler for App<'a> {
         self.last_frame_time = Some(Instant::now());
 
         if let Some(state) = &mut self.wgpu_state {
+            #[cfg(feature = "debug_panel")]
+            let is_debug = state.debug_mode;
+            #[cfg(not(feature = "debug_panel"))]
+            let is_debug = false;
+
             // Drain any commands submitted via ViewerHandle
             if let Some(rx) = &self.command_rx {
                 while let Ok(cmd) = rx.try_recv() {
@@ -543,7 +566,7 @@ impl<'a> ApplicationHandler for App<'a> {
                 }
             }
 
-            if !state.debug_mode {
+            if !is_debug {
                 let mut zoom_delta = 0.0;
                 if self.pressed_keys.contains(&KeyCode::KeyI) || self.pressed_keys.contains(&KeyCode::PageUp) {
                     zoom_delta += 1.0;
@@ -554,40 +577,54 @@ impl<'a> ApplicationHandler for App<'a> {
                 if zoom_delta != 0.0 {
                     state.camera.zoom(zoom_delta * 4.0 * dt);
                 }
-                state.camera.update_inertia(dt);
-            }
-
-            if state.debug_mode {
-                let mut movement = Vec3::ZERO;
-                if self.pressed_keys.contains(&KeyCode::KeyW) {
-                    movement.z += 1.0;
+                let mut needs_redraw = false;
+                if state.camera.update_inertia(dt) {
+                    needs_redraw = true;
                 }
-                if self.pressed_keys.contains(&KeyCode::KeyS) {
-                    movement.z -= 1.0;
+                if state.camera.update_animations(dt) {
+                    needs_redraw = true;
                 }
-                if self.pressed_keys.contains(&KeyCode::KeyD) {
-                    movement.x += 1.0;
-                }
-                if self.pressed_keys.contains(&KeyCode::KeyA) {
-                    movement.x -= 1.0;
-                }
-
-                let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft)
-                    || self.pressed_keys.contains(&KeyCode::ShiftRight);
-
-                if self.pressed_keys.contains(&KeyCode::Space) {
-                    let ctrl = self.pressed_keys.contains(&KeyCode::ControlLeft)
-                        || self.pressed_keys.contains(&KeyCode::ControlRight);
-                    if ctrl {
-                        movement.y -= 1.0;
-                    } else {
-                        movement.y += 1.0;
+                if needs_redraw {
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
                     }
                 }
-                if movement != Vec3::ZERO {
-                    state
-                        .debug_camera
-                        .update(dt, movement.normalize_or_zero(), fast);
+            }
+
+            if is_debug {
+                #[cfg(feature = "debug_panel")]
+                {
+                    let mut movement = Vec3::ZERO;
+                    if self.pressed_keys.contains(&KeyCode::KeyW) {
+                        movement.z += 1.0;
+                    }
+                    if self.pressed_keys.contains(&KeyCode::KeyS) {
+                        movement.z -= 1.0;
+                    }
+                    if self.pressed_keys.contains(&KeyCode::KeyD) {
+                        movement.x += 1.0;
+                    }
+                    if self.pressed_keys.contains(&KeyCode::KeyA) {
+                        movement.x -= 1.0;
+                    }
+
+                    let fast = self.pressed_keys.contains(&KeyCode::ShiftLeft)
+                        || self.pressed_keys.contains(&KeyCode::ShiftRight);
+
+                    if self.pressed_keys.contains(&KeyCode::Space) {
+                        let ctrl = self.pressed_keys.contains(&KeyCode::ControlLeft)
+                            || self.pressed_keys.contains(&KeyCode::ControlRight);
+                        if ctrl {
+                            movement.y -= 1.0;
+                        } else {
+                            movement.y += 1.0;
+                        }
+                    }
+                    if movement != Vec3::ZERO {
+                        state
+                            .debug_camera
+                            .update(dt, movement.normalize_or_zero(), fast);
+                    }
                 }
             }
         }

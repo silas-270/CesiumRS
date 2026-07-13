@@ -554,6 +554,7 @@ impl GlobeExtension for FlightTrackerApp {
         }
     }
 
+    #[cfg(feature = "debug_panel")]
     fn render_ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.label("Flight Controls");
         let mut p = *self.progress.lock().unwrap() as f32;
