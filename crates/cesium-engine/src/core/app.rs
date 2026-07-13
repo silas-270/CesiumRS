@@ -581,9 +581,6 @@ impl<'a> ApplicationHandler for App<'a> {
                 if state.camera.update_inertia(dt) {
                     needs_redraw = true;
                 }
-                if state.camera.update_animations(dt) {
-                    needs_redraw = true;
-                }
                 if needs_redraw {
                     if let Some(w) = &self.window {
                         w.request_redraw();

@@ -15,7 +15,7 @@ pub use api::{CameraMode, CameraState, CesiumViewer, ViewerHandle};
 // ── Legacy path (kept for the test harness) ───────────────────────────────────
 pub use viewer::{GlobeOptions, Viewer, ViewerOptions};
 
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", target_os = "android"))]
 use winit::event_loop::{ControlFlow, EventLoop};
 
 #[cfg(all(not(target_os = "android"), feature = "testing"))]

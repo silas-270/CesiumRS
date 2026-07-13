@@ -12,13 +12,20 @@ pub struct TouchPoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TwoFingerMode {
+    Undecided,
+    PinchTwist,
+    Pitch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GestureMode {
     Idle,
     TapPending { tap_candidate: bool },
     Pan,
     DoubleTapPending,
     OneFingerZoom,
-    TwoFinger,
+    TwoFinger { mode: TwoFingerMode },
 }
 
 pub struct TouchInterpreter {
@@ -36,13 +43,12 @@ pub struct TouchInterpreter {
     prev_two_finger_dist: f32,
     prev_two_finger_angle: f32,
     prev_two_finger_mid: Vec2,
-    two_finger_start_dist: f32,
-    two_finger_start_time: Instant,
     
-    // Twist inertia
-    last_twist_time: Instant,
-    twist_velocity_samples: [(f32, Instant); 6],
-    twist_velocity_count: usize,
+    two_finger_start_dist: f32,
+    two_finger_start_angle: f32,
+    two_finger_start_mid: Vec2,
+    
+    two_finger_start_time: std::time::Instant,
 }
 
 impl TouchInterpreter {
@@ -60,11 +66,9 @@ impl TouchInterpreter {
             prev_two_finger_angle: 0.0,
             prev_two_finger_mid: Vec2::ZERO,
             two_finger_start_dist: 0.0,
-            two_finger_start_time: Instant::now(),
-            
-            last_twist_time: Instant::now(),
-            twist_velocity_samples: [(0.0, Instant::now()); 6],
-            twist_velocity_count: 0,
+            two_finger_start_angle: 0.0,
+            two_finger_start_mid: Vec2::ZERO,
+            two_finger_start_time: std::time::Instant::now(),
         }
     }
 
@@ -123,18 +127,24 @@ impl TouchInterpreter {
                     camera.cancel_all_inertia(); // End the pan without momentum when adding second finger
                 }
                 
-                self.gesture_mode = GestureMode::TwoFinger;
+                self.gesture_mode = GestureMode::TwoFinger { mode: TwoFingerMode::Undecided };
                 
                 let pts: Vec<Vec2> = self.active_touches.values().map(|tp| tp.current_pos).collect();
                 let p1 = pts[0];
                 let p2 = pts[1];
-                self.prev_two_finger_dist = (p1 - p2).length();
-                self.prev_two_finger_angle = (p2.y - p1.y).atan2(p2.x - p1.x);
-                self.prev_two_finger_mid = (p1 + p2) * 0.5;
+                let dist = (p1 - p2).length();
+                let angle = (p2.y - p1.y).atan2(p2.x - p1.x);
+                let mid = (p1 + p2) * 0.5;
                 
-                self.two_finger_start_dist = self.prev_two_finger_dist;
+                self.prev_two_finger_dist = dist;
+                self.prev_two_finger_angle = angle;
+                self.prev_two_finger_mid = mid;
+                
+                self.two_finger_start_dist = dist;
+                self.two_finger_start_angle = angle;
+                self.two_finger_start_mid = mid;
+                
                 self.two_finger_start_time = now;
-                self.twist_velocity_count = 0;
             } else if count > 2 {
                 if self.gesture_mode == GestureMode::Pan {
                     camera.end_drag();
@@ -181,71 +191,95 @@ impl TouchInterpreter {
                 }
                 GestureMode::Pan => {
                     if let Some(tp) = self.active_touches.get(&touch_id) {
-                        camera.drag(tp.current_pos.x, tp.current_pos.y, screen_width, screen_height);
+                        match camera.mode {
+                            crate::camera::camera::CameraMode::Free => {
+                                camera.drag(tp.current_pos.x, tp.current_pos.y, screen_width, screen_height);
+                            }
+                            crate::camera::camera::CameraMode::Tracking => {
+                                let dx = (tp.current_pos.x - tp.prev_pos.x) * 0.5;
+                                let dy = (tp.current_pos.y - tp.prev_pos.y) * 0.5;
+                                camera.orbit_mouse(dx, dy);
+                            }
+                            crate::camera::camera::CameraMode::Cockpit => {
+                                let dx = (tp.current_pos.x - tp.prev_pos.x) * 0.5;
+                                let dy = (tp.current_pos.y - tp.prev_pos.y) * 0.5;
+                                camera.look_around(dx, dy);
+                            }
+                        }
                         redrew = true;
                     }
                 }
-                GestureMode::TwoFinger => {
+                GestureMode::TwoFinger { ref mut mode } => {
                     let pts: Vec<&TouchPoint> = self.active_touches.values().collect();
                     if pts.len() >= 2 {
                         let p1_cur = pts[0].current_pos;
                         let p2_cur = pts[1].current_pos;
-                        let p1_prev = pts[0].prev_pos;
-                        let p2_prev = pts[1].prev_pos;
 
                         let cur_dist = (p1_cur - p2_cur).length();
                         let cur_angle = (p2_cur.y - p1_cur.y).atan2(p2_cur.x - p1_cur.x);
                         let cur_mid = (p1_cur + p2_cur) * 0.5;
 
-                        // 1. Pinch Zoom
-                        if self.prev_two_finger_dist > 1.0 && cur_dist > 1.0 {
-                            let ratio = cur_dist / self.prev_two_finger_dist;
-                            let zoom_delta = ratio.log2() * 4.0;
-                            if zoom_delta.abs() > 0.005 {
-                                camera.zoom_toward_point(zoom_delta, cur_mid.x, cur_mid.y, screen_width, screen_height);
-                                redrew = true;
+                        if *mode == TwoFingerMode::Undecided {
+                            let dist_delta = (cur_dist - self.two_finger_start_dist).abs();
+                            
+                            let mut angle_delta = cur_angle - self.two_finger_start_angle;
+                            while angle_delta > std::f32::consts::PI { angle_delta -= std::f32::consts::PI * 2.0; }
+                            while angle_delta < -std::f32::consts::PI { angle_delta += std::f32::consts::PI * 2.0; }
+                            let twist_arc_dist = self.two_finger_start_dist * angle_delta.abs(); // Arc length of twist
+                            
+                            let mid_delta_y = (cur_mid.y - self.two_finger_start_mid.y).abs();
+                            
+                            // Determine primary intent
+                            if mid_delta_y > 20.0 && mid_delta_y > dist_delta * 1.5 && mid_delta_y > twist_arc_dist * 1.5 {
+                                *mode = TwoFingerMode::Pitch;
+                            } else if dist_delta > 15.0 || twist_arc_dist > 15.0 {
+                                *mode = TwoFingerMode::PinchTwist;
                             }
                         }
 
-                        // 2. Twist
-                        let mut angle_delta = cur_angle - self.prev_two_finger_angle;
-                        while angle_delta > std::f32::consts::PI { angle_delta -= std::f32::consts::PI * 2.0; }
-                        while angle_delta < -std::f32::consts::PI { angle_delta += std::f32::consts::PI * 2.0; }
-                        if angle_delta.abs() > 0.001 {
-                            camera.twist_view(-angle_delta);
-                            redrew = true;
-                            
-                            let dt = (now - self.last_twist_time).as_secs_f32();
-                            if dt > 0.001 {
-                                let velocity = -angle_delta / dt;
-                                let idx = self.twist_velocity_count % 6;
-                                self.twist_velocity_samples[idx] = (velocity, now);
-                                self.twist_velocity_count += 1;
+                        if *mode == TwoFingerMode::PinchTwist {
+                            // 1. Pinch Zoom
+                            if self.prev_two_finger_dist > 1.0 && cur_dist > 1.0 {
+                                let ratio = cur_dist / self.prev_two_finger_dist;
+                                let zoom_delta = ratio.log2() * 4.0;
+                                if zoom_delta.abs() > 0.005 {
+                                    if camera.mode != crate::camera::camera::CameraMode::Cockpit {
+                                        let sensitivity_scale = if camera.mode == crate::camera::camera::CameraMode::Tracking { 0.5 } else { 1.0 };
+                                        camera.zoom(zoom_delta * sensitivity_scale);
+                                        redrew = true;
+                                    }
+                                }
                             }
-                        }
 
-                        // 3. Pan (Incremental)
-                        let mid_delta = cur_mid - self.prev_two_finger_mid;
-                        if mid_delta.length() > 0.1 {
-                            camera.begin_drag(self.prev_two_finger_mid.x, self.prev_two_finger_mid.y, screen_width, screen_height);
-                            camera.drag(cur_mid.x, cur_mid.y, screen_width, screen_height);
-                            // We don't call end_drag() because we don't want to trigger 2-finger pan inertia here
-                            // Let the ring buffer collect samples for when they release to 1-finger.
-                            redrew = true;
-                        }
-
-                        // 4. Pitch (Tilt)
-                        let p1_delta = p1_cur - p1_prev;
-                        let p2_delta = p2_cur - p2_prev;
-                        // If moving in same vertical direction and primarily vertical
-                        if p1_delta.y * p2_delta.y > 0.0 {
-                            let avg_y_delta = (p1_delta.y + p2_delta.y) * 0.5;
-                            let avg_x_delta = (p1_delta.x + p2_delta.x).abs() * 0.5;
-                            let dist_delta = (cur_dist - self.prev_two_finger_dist).abs();
-                            
-                            // Condition: More vertical movement than horizontal or pinch
-                            if avg_y_delta.abs() > avg_x_delta && avg_y_delta.abs() > dist_delta * 2.0 {
-                                camera.pitch(-avg_y_delta * 0.1);
+                            // 2. Twist (Roll)
+                            let mut angle_delta = cur_angle - self.prev_two_finger_angle;
+                            while angle_delta > std::f32::consts::PI { angle_delta -= std::f32::consts::PI * 2.0; }
+                            while angle_delta < -std::f32::consts::PI { angle_delta += std::f32::consts::PI * 2.0; }
+                            let twist_sensitivity = 1.0;
+                            if angle_delta.abs() > 0.001 {
+                                if camera.mode == crate::camera::camera::CameraMode::Free {
+                                    camera.roll(angle_delta * twist_sensitivity);
+                                    redrew = true;
+                                }
+                            }
+                        } else if *mode == TwoFingerMode::Pitch {
+                            // 3. Pitch (Two-finger swipe)
+                            let mid_delta = cur_mid - self.prev_two_finger_mid;
+                            if mid_delta.y.abs() > 0.1 {
+                                match camera.mode {
+                                    crate::camera::camera::CameraMode::Free => {
+                                        let tilt_sensitivity = 0.1;
+                                        camera.pitch(mid_delta.y * tilt_sensitivity);
+                                    }
+                                    crate::camera::camera::CameraMode::Tracking => {
+                                        let tilt_sensitivity = 0.25;
+                                        camera.orbit_mouse(0.0, mid_delta.y * tilt_sensitivity);
+                                    }
+                                    crate::camera::camera::CameraMode::Cockpit => {
+                                        let tilt_sensitivity = 0.25;
+                                        camera.look_around(0.0, mid_delta.y * tilt_sensitivity);
+                                    }
+                                }
                                 redrew = true;
                             }
                         }
@@ -253,7 +287,6 @@ impl TouchInterpreter {
                         self.prev_two_finger_dist = cur_dist;
                         self.prev_two_finger_angle = cur_angle;
                         self.prev_two_finger_mid = cur_mid;
-                        self.last_twist_time = now;
                     }
                 }
                 _ => {}
@@ -277,8 +310,8 @@ impl TouchInterpreter {
                     GestureMode::DoubleTapPending => {
                         let duration = now.duration_since(tp.start_time);
                         if duration.as_millis() < 250 {
-                            // Instant Double tap! Use smooth zoom
-                            camera.animate_zoom_toward_point(4.0, tp.current_pos.x, tp.current_pos.y, screen_width, screen_height);
+                            // Instant Double tap! Use stable zoom
+                            camera.zoom(4.0);
                             redrew = true;
                         }
                         self.last_tap_time = None;
@@ -287,7 +320,7 @@ impl TouchInterpreter {
                     GestureMode::Pan => {
                         camera.end_drag();
                     }
-                    GestureMode::TwoFinger => {
+                    GestureMode::TwoFinger { mode: _ } => {
                         // Check for two-finger tap (zoom out)
                         if self.active_touches.len() == 2 {
                             let duration = now.duration_since(self.two_finger_start_time);
@@ -299,36 +332,8 @@ impl TouchInterpreter {
                                 let moved_2 = (pts[1] - start_pts[1]).length() > 15.0;
                                 
                                 if !moved_1 && !moved_2 {
-                                    let mid = (pts[0] + pts[1]) * 0.5;
-                                    camera.animate_zoom_toward_point(-4.0, mid.x, mid.y, screen_width, screen_height);
+                                    camera.zoom(-4.0);
                                     redrew = true;
-                                }
-                            }
-                            
-                            // Handle Twist Inertia
-                            let window = std::time::Duration::from_millis(100);
-                            let n = self.twist_velocity_count.min(6);
-                            let mut valid_samples = 0;
-                            let mut velocity_sum = 0.0;
-                            
-                            for i in 0..n {
-                                let idx = if self.twist_velocity_count > 6 {
-                                    (self.twist_velocity_count - n + i) % 6
-                                } else {
-                                    i
-                                };
-                                let (vel, t) = self.twist_velocity_samples[idx];
-                                if now.duration_since(t) <= window {
-                                    velocity_sum += vel;
-                                    valid_samples += 1;
-                                }
-                            }
-                            
-                            if valid_samples > 0 {
-                                let avg_vel = velocity_sum / valid_samples as f32;
-                                if avg_vel.abs() > 0.5 { // threshold
-                                    camera.twist_inertia_active = true;
-                                    camera.twist_inertia_velocity = avg_vel;
                                 }
                             }
                         }

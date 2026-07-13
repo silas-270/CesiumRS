@@ -31,11 +31,13 @@
 //! }
 //! ```
 
+#[cfg(not(target_os = "android"))]
 use cesium_engine::core::app::App;
 use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
 use cesium_engine::globe::tiles::config::TileEngineConfig;
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
+#[cfg(not(target_os = "android"))]
 use winit::event_loop::{ControlFlow, EventLoop};
 
 // ─── Public re-exports ────────────────────────────────────────────────────────
