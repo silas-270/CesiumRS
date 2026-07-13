@@ -32,7 +32,21 @@ pub struct FlightEntity {
     pub config: PolylineConfig,
     pub property: SampledPositionProperty,
     pub sun_intensity_property: cesium_engine::property::sampled::SampledScalarProperty,
+    pub telemetry_points: Vec<crate::telemetry::generator::TelemetryPoint>,
+    pub total_duration_ms: u64,
     pub reference_point: glam::DVec3,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FlightTelemetry {
+    pub progress: f64,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub altitude: f64,
+    pub velocity_m_s: f64,
+    pub heading_rad: f64,
+    pub pitch_rad: f64,
+    pub roll_rad: f64,
 }
 
 pub struct FlightTrackerApp {
@@ -47,6 +61,7 @@ pub struct FlightTrackerApp {
     pub last_view_mode: CameraMode,
     pub reset_viewport: bool,
     command_rx: Option<mpsc::Receiver<FlightCommand>>,
+    pub current_telemetry: std::sync::Arc<std::sync::Mutex<Option<FlightTelemetry>>>,
 }
 
 impl FlightTrackerApp {
@@ -54,6 +69,7 @@ impl FlightTrackerApp {
     pub fn with_handle() -> (Self, FlightHandle) {
         let (tx, rx) = mpsc::sync_channel(64);
         let progress = std::sync::Arc::new(std::sync::Mutex::new(0.0_f64));
+        let current_telemetry = std::sync::Arc::new(std::sync::Mutex::new(None));
         let app = Self {
             progress,
             pending_flights: Vec::new(),
@@ -66,6 +82,7 @@ impl FlightTrackerApp {
             last_view_mode: cesium_engine::camera::camera::CameraMode::Free,
             reset_viewport: true,
             command_rx: Some(rx),
+            current_telemetry,
         };
         (app, FlightHandle::new(tx))
     }
@@ -84,6 +101,7 @@ impl FlightTrackerApp {
             last_view_mode: cesium_engine::camera::camera::CameraMode::Free,
             reset_viewport: true,
             command_rx: None,
+            current_telemetry: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -150,6 +168,67 @@ impl FlightTrackerApp {
 
             use cesium_engine::property::Property;
             flight.sun_intensity_property.evaluate(time)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_telemetry_at(&self, progress_val: f64) -> Option<FlightTelemetry> {
+        if let Some(flight) = self.flights.first() {
+            let target_time_ms = (progress_val * flight.total_duration_ms as f64) as u64;
+            let pts = &flight.telemetry_points;
+            if pts.is_empty() { return None; }
+            
+            let idx = pts.partition_point(|p| p.time_offset_ms < target_time_ms);
+            
+            if idx == 0 {
+                let p = &pts[0];
+                Some(FlightTelemetry {
+                    progress: progress_val,
+                    latitude: p.latitude,
+                    longitude: p.longitude,
+                    altitude: p.altitude,
+                    velocity_m_s: p.velocity_m_s,
+                    heading_rad: p.heading_rad,
+                    pitch_rad: p.pitch_rad,
+                    roll_rad: p.roll_rad,
+                })
+            } else if idx >= pts.len() {
+                let p = &pts[pts.len() - 1];
+                Some(FlightTelemetry {
+                    progress: progress_val,
+                    latitude: p.latitude,
+                    longitude: p.longitude,
+                    altitude: p.altitude,
+                    velocity_m_s: p.velocity_m_s,
+                    heading_rad: p.heading_rad,
+                    pitch_rad: p.pitch_rad,
+                    roll_rad: p.roll_rad,
+                })
+            } else {
+                let p0 = &pts[idx - 1];
+                let p1 = &pts[idx];
+                let dt = (p1.time_offset_ms - p0.time_offset_ms) as f64;
+                let t = if dt > 0.0 { (target_time_ms as f64 - p0.time_offset_ms as f64) / dt } else { 0.0 };
+                
+                let lerp = |a, b| a + (b - a) * t;
+                
+                let mut d_heading = p1.heading_rad - p0.heading_rad;
+                if d_heading > std::f64::consts::PI { d_heading -= 2.0 * std::f64::consts::PI; }
+                if d_heading < -std::f64::consts::PI { d_heading += 2.0 * std::f64::consts::PI; }
+                let heading_rad = p0.heading_rad + d_heading * t;
+                
+                Some(FlightTelemetry {
+                    progress: progress_val,
+                    latitude: lerp(p0.latitude, p1.latitude),
+                    longitude: lerp(p0.longitude, p1.longitude),
+                    altitude: lerp(p0.altitude, p1.altitude),
+                    velocity_m_s: lerp(p0.velocity_m_s, p1.velocity_m_s),
+                    heading_rad,
+                    pitch_rad: lerp(p0.pitch_rad, p1.pitch_rad),
+                    roll_rad: lerp(p0.roll_rad, p1.roll_rad),
+                })
+            }
         } else {
             None
         }
@@ -226,24 +305,20 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
 
-        // Try loading the A350.glb model from the root directory
-        match std::fs::read("A350.glb") {
-            Ok(glb_bytes) => {
-                match ModelRenderer::new(
-                    device,
-                    queue,
-                    config,
-                    camera_bind_group_layout,
-                    &glb_bytes,
-                ) {
-                    Ok(renderer) => {
-                        println!("A350.glb successfully loaded and renderer initialized!");
-                        self.airplane_renderer = Some(renderer);
-                    }
-                    Err(e) => eprintln!("Failed to initialize ModelRenderer: {:?}", e),
-                }
+        // Load the A350.glb model (baked into the binary)
+        let glb_bytes = include_bytes!("../../../A350.glb");
+        match ModelRenderer::new(
+            device,
+            queue,
+            config,
+            camera_bind_group_layout,
+            glb_bytes,
+        ) {
+            Ok(renderer) => {
+                println!("A350.glb successfully loaded and renderer initialized!");
+                self.airplane_renderer = Some(renderer);
             }
-            Err(e) => eprintln!("Failed to read A350.glb from disk: {:?}", e),
+            Err(e) => eprintln!("Failed to initialize ModelRenderer: {:?}", e),
         }
 
         for pending in self.pending_flights.drain(..) {
@@ -260,7 +335,7 @@ impl GlobeExtension for FlightTrackerApp {
             let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
             let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
 
-            for pt in points {
+            for pt in &points {
                 let ecef_array = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
                 let position = DVec3::from_array(ecef_array);
                 let time = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
@@ -295,6 +370,8 @@ impl GlobeExtension for FlightTrackerApp {
                     config: poly_config,
                     property,
                     sun_intensity_property,
+                    telemetry_points: points,
+                    total_duration_ms: pending.total_duration_ms,
                     reference_point,
                 });
             }
@@ -367,6 +444,13 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         let current_progress = *self.progress.lock().unwrap();
+
+        // Update the shared telemetry object
+        if let Some(telemetry) = self.get_telemetry_at(current_progress) {
+            if let Ok(mut lock) = self.current_telemetry.lock() {
+                *lock = Some(telemetry);
+            }
+        }
 
         if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
             camera.sun_intensity = intensity as f32;

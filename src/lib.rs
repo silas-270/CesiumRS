@@ -1,6 +1,5 @@
 pub mod api;
 pub mod viewer;
-#[cfg(feature = "testing")]
 pub mod headless;
 
 #[cfg(all(not(target_os = "android"), feature = "testing"))]
@@ -69,6 +68,7 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
+    let current_telemetry = flight_app.current_telemetry.clone();
 
     // Read the flight data Kotlin set right before launching this Activity
     if let Some(data) = android_jni::FLIGHT_DATA.lock().unwrap().take() {
@@ -90,6 +90,7 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
 
     *android_jni::VIEWER_HANDLE.lock().unwrap() = Some(viewer.handle());
     *android_jni::FLIGHT_HANDLE.lock().unwrap() = Some(flight_handle.clone());
+    *android_jni::CURRENT_TELEMETRY.lock().unwrap() = Some(current_telemetry);
 
     // The core app loop wrapper
     let mut winit_app = cesium_engine::core::app::App::new(
