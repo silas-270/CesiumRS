@@ -313,6 +313,15 @@ impl<'a> ApplicationHandler for App<'a> {
             ));
             self.wgpu_state = Some(state);
         }
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+    }
+
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        // On Android, this is called when the Activity is destroyed or sent to background.
+        // We must drop the window and graphics state so we don't try to render to a dead surface.
+        self.wgpu_state = None;
+        self.window = None;
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
     }
 
     fn window_event(
@@ -341,7 +350,7 @@ impl<'a> ApplicationHandler for App<'a> {
         }
 
         match event {
-            WindowEvent::CloseRequested => {
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                 event_loop.exit();
             }
             WindowEvent::Resized(physical_size) => {
@@ -629,5 +638,11 @@ impl<'a> ApplicationHandler for App<'a> {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Ensure we release any resources when the loop exits
+        self.wgpu_state = None;
+        self.window = None;
     }
 }

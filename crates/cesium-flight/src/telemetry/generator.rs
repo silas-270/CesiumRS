@@ -6,6 +6,10 @@ pub struct TelemetryPoint {
     pub longitude: f64,
     pub latitude: f64,
     pub altitude: f64,
+    pub velocity_m_s: f64,
+    pub heading_rad: f64,
+    pub pitch_rad: f64,
+    pub roll_rad: f64,
     pub sun_intensity: f32,
 }
 
@@ -382,22 +386,46 @@ pub fn generate(
     let dt = 2.0;
 
     while current_t <= total_s {
-        let p2d = path.get_point(current_s);
-        let (lon, lat) = to_geo(p2d);
+        let p_prev = path.get_point(f64::max(current_s - 1.0, 0.0));
+        let p_now = path.get_point(current_s);
+        let p_next = path.get_point(f64::min(current_s + 1.0, s_total));
+        
+        let (lon, lat) = to_geo(p_now);
         let raw_alt = get_altitude(current_s);
         let alt = raw_alt + 5.0;
         let intensity = (1.0 - (raw_alt / cruise_alt_m).clamp(0.0, 1.0)) as f32;
+        
+        let v_shape = get_speed_shape(current_s);
+        let real_v = v_shape * (unscaled_time / total_s);
+        
+        let h_prev = (p_now.x - p_prev.x).atan2(p_now.y - p_prev.y);
+        let h_next = (p_next.x - p_now.x).atan2(p_next.y - p_now.y);
+        let heading_rad = h_next;
+        
+        let mut d_heading = h_next - h_prev;
+        if d_heading > std::f64::consts::PI { d_heading -= 2.0 * std::f64::consts::PI; }
+        if d_heading < -std::f64::consts::PI { d_heading += 2.0 * std::f64::consts::PI; }
+        
+        let dist = (p_next.x - p_prev.x).hypot(p_next.y - p_prev.y);
+        let turn_rate_rad_per_sec = if dist > 0.0 { (d_heading / dist) * real_v } else { 0.0 };
+        let roll_rad = ((real_v * turn_rate_rad_per_sec) / 9.81).atan();
+        
+        let alt_prev = get_altitude(f64::max(current_s - 1.0, 0.0));
+        let alt_next = get_altitude(f64::min(current_s + 1.0, s_total));
+        let pitch_rad = if dist > 0.0 { (alt_next - alt_prev).atan2(dist) } else { 0.0 };
         
         points.push(TelemetryPoint {
             time_offset_ms: (current_t * 1000.0) as u64,
             longitude: lon,
             latitude: lat,
             altitude: alt,
+            velocity_m_s: real_v,
+            heading_rad,
+            pitch_rad,
+            roll_rad,
             sun_intensity: intensity,
         });
 
-        let v_shape = get_speed_shape(current_s);
-        let real_v = v_shape * (unscaled_time / total_s);
         current_s += real_v * dt;
         current_t += dt;
     }
@@ -408,6 +436,10 @@ pub fn generate(
         longitude: final_lon,
         latitude: final_lat,
         altitude: 5.0,
+        velocity_m_s: 0.0,
+        heading_rad: 0.0,
+        pitch_rad: 0.0,
+        roll_rad: 0.0,
         sun_intensity: 1.0,
     });
 

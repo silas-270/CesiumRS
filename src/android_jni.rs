@@ -66,3 +66,28 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
         handle.camera_set_mode(m);
     }
 }
+
+pub static CURRENT_TELEMETRY: Mutex<Option<std::sync::Arc<std::sync::Mutex<Option<cesium_flight::tracker::FlightTelemetry>>>>> = Mutex::new(None);
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeGetTelemetry(
+    env: JNIEnv,
+    _cls: JClass,
+) -> jni::sys::jdoubleArray {
+    let telemetry_opt = if let Some(arc) = CURRENT_TELEMETRY.lock().unwrap().as_ref() {
+        *arc.lock().unwrap()
+    } else {
+        None
+    };
+    
+    // If we have no telemetry, return a zeroed array or null. We'll return an array of 8 zeros.
+    let vals = if let Some(t) = telemetry_opt {
+        [t.progress, t.latitude, t.longitude, t.altitude, t.velocity_m_s, t.heading_rad, t.pitch_rad, t.roll_rad]
+    } else {
+        [0.0; 8]
+    };
+    
+    let array = env.new_double_array(8).unwrap();
+    env.set_double_array_region(&array, 0, &vals).unwrap();
+    array.into_raw()
+}

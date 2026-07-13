@@ -100,7 +100,7 @@ impl Camera {
             drag_start_local_ori: Quat::IDENTITY,
             focal_length: 28.0,
             sun_intensity: 1.0,
-            mode: CameraMode::Free,
+            mode: CameraMode::Tracking,
             inertia_active: false,
             inertia_axis: glam::Vec3::Y,
             inertia_velocity: 0.0,
