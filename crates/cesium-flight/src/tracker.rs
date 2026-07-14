@@ -24,6 +24,7 @@ pub struct PendingFlight {
     pub dep_heading_deg: Option<f64>,
     pub arr_heading_deg: Option<f64>,
     pub is_secondary: bool,
+    pub runways: Vec<crate::flight_handle::RunwayData>,
 }
 
 pub struct FlightEntity {
@@ -247,6 +248,7 @@ impl FlightTrackerApp {
         arrival_lat: f64,
         total_duration_ms: u64,
         is_secondary: bool,
+        runways: Vec<crate::flight_handle::RunwayData>,
     ) {
         self.pending_flights.push(PendingFlight {
             id: id.to_string(),
@@ -258,6 +260,7 @@ impl FlightTrackerApp {
             dep_heading_deg: None,
             arr_heading_deg: None,
             is_secondary,
+            runways,
         });
     }
 }
@@ -286,6 +289,7 @@ impl GlobeExtension for FlightTrackerApp {
                         dep_heading_deg,
                         arr_heading_deg,
                         is_secondary,
+                        runways,
                     } => {
                         self.pending_flights.push(PendingFlight {
                             id,
@@ -297,6 +301,7 @@ impl GlobeExtension for FlightTrackerApp {
                             dep_heading_deg,
                             arr_heading_deg,
                             is_secondary,
+                            runways,
                         });
                     }
                     FlightCommand::SetProgress(p) => {
@@ -407,7 +412,15 @@ impl GlobeExtension for FlightTrackerApp {
                         dep_heading_deg,
                         arr_heading_deg,
                         is_secondary,
+                        runways,
                     } => {
+                        log::info!("Received {} runways from Android database!", runways.len());
+                        for r in &runways {
+                            log::info!("Runway {}: {}x{}ft, LE {}° ({},{}), HE {}° ({},{})", 
+                                r.airport_id, r.length_ft, r.width_ft, 
+                                r.le_heading, r.le_lat, r.le_lon, 
+                                r.he_heading, r.he_lat, r.he_lon);
+                        }
                         self.pending_flights.push(PendingFlight {
                             id,
                             departure_lon,
@@ -418,6 +431,7 @@ impl GlobeExtension for FlightTrackerApp {
                             dep_heading_deg,
                             arr_heading_deg,
                             is_secondary,
+                            runways,
                         });
                     }
                     FlightCommand::SetProgress(p) => {
@@ -613,7 +627,7 @@ impl GlobeExtension for FlightTrackerApp {
 
         for flight in &self.flights {
             let mut config = flight.config.clone();
-            config.physical_half_width = 2.98 / 1_000_000.0;
+            config.physical_half_width = 1.49 / 1_000_000.0;
             config.split_progress = current_progress as f32;
 
             // Compute airplane position relative to reference_point for world-space split.
@@ -685,11 +699,11 @@ impl GlobeExtension for FlightTrackerApp {
                 // Dynamic scaling based on camera distance
                 let distance = relative_pos.length(); // Distance in Megameters
 
-                // Desired length of the airplane in Megameters (now half as big as 0.0333)
-                let desired_length_mm = distance * 0.01665;
+                // Desired length of the airplane in Megameters
+                let desired_length_mm = distance * 0.008325;
 
-                let min_length_mm = 67.0 / 1_000_000.0; // 67 meters (A350 length)
-                let max_length_mm = 2000.0 * 1000.0 / 1_000_000.0; // 2000 km
+                let min_length_mm = 33.5 / 1_000_000.0; // 33.5 meters (half of A350 length)
+                let max_length_mm = 1000.0 * 1000.0 / 1_000_000.0; // 1000 km
 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
 

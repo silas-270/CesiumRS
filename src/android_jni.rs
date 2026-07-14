@@ -6,7 +6,7 @@ use jni::{
     JNIEnv,
 };
 
-use cesium_flight::flight_handle::FlightHandle;
+use cesium_flight::flight_handle::{FlightHandle, RunwayData};
 use crate::api::{CameraMode, ViewerHandle};
 
 pub struct PendingFlightData {
@@ -19,6 +19,7 @@ pub struct PendingFlightData {
 
 // Global state to bridge Kotlin and the android_main thread
 pub static FLIGHT_DATA: Mutex<Option<PendingFlightData>> = Mutex::new(None);
+pub static RUNWAY_DATA: Mutex<Option<Vec<RunwayData>>> = Mutex::new(None);
 pub static FLIGHT_HANDLE: Mutex<Option<FlightHandle>> = Mutex::new(None);
 pub static VIEWER_HANDLE: Mutex<Option<ViewerHandle>> = Mutex::new(None);
 
@@ -110,6 +111,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeLo
     _cls: JClass,
 ) {
     if let Some(data) = FLIGHT_DATA.lock().unwrap().take() {
+        let runways = RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
         if let Some(handle) = FLIGHT_HANDLE.lock().unwrap().as_ref() {
             handle.load_flight(
                 "primary",
@@ -120,7 +122,66 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeLo
                 data.duration_ms,
                 None,
                 None,
+                runways,
             );
         }
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetRunways(
+    mut env: JNIEnv,
+    _cls: JClass,
+    airport_ids: jni::objects::JIntArray,
+    length_ft: jni::objects::JFloatArray,
+    width_ft: jni::objects::JFloatArray,
+    le_heading: jni::objects::JFloatArray,
+    le_lat: jni::objects::JDoubleArray,
+    le_lon: jni::objects::JDoubleArray,
+    he_heading: jni::objects::JFloatArray,
+    he_lat: jni::objects::JDoubleArray,
+    he_lon: jni::objects::JDoubleArray,
+) {
+    let count = env.get_array_length(&airport_ids).unwrap_or(0) as usize;
+    if count == 0 {
+        *RUNWAY_DATA.lock().unwrap() = Some(vec![]);
+        return;
+    }
+    
+    let mut vec_airport_ids = vec![0i32; count];
+    let mut vec_length_ft = vec![0f32; count];
+    let mut vec_width_ft = vec![0f32; count];
+    let mut vec_le_heading = vec![0f32; count];
+    let mut vec_le_lat = vec![0f64; count];
+    let mut vec_le_lon = vec![0f64; count];
+    let mut vec_he_heading = vec![0f32; count];
+    let mut vec_he_lat = vec![0f64; count];
+    let mut vec_he_lon = vec![0f64; count];
+
+    let _ = env.get_int_array_region(&airport_ids, 0, &mut vec_airport_ids);
+    let _ = env.get_float_array_region(&length_ft, 0, &mut vec_length_ft);
+    let _ = env.get_float_array_region(&width_ft, 0, &mut vec_width_ft);
+    let _ = env.get_float_array_region(&le_heading, 0, &mut vec_le_heading);
+    let _ = env.get_double_array_region(&le_lat, 0, &mut vec_le_lat);
+    let _ = env.get_double_array_region(&le_lon, 0, &mut vec_le_lon);
+    let _ = env.get_float_array_region(&he_heading, 0, &mut vec_he_heading);
+    let _ = env.get_double_array_region(&he_lat, 0, &mut vec_he_lat);
+    let _ = env.get_double_array_region(&he_lon, 0, &mut vec_he_lon);
+
+    let mut runways = Vec::with_capacity(count);
+    for i in 0..count {
+        runways.push(RunwayData {
+            airport_id: vec_airport_ids[i],
+            length_ft: vec_length_ft[i],
+            width_ft: vec_width_ft[i],
+            le_heading: vec_le_heading[i],
+            le_lat: vec_le_lat[i],
+            le_lon: vec_le_lon[i],
+            he_heading: vec_he_heading[i],
+            he_lat: vec_he_lat[i],
+            he_lon: vec_he_lon[i],
+        });
+    }
+    
+    *RUNWAY_DATA.lock().unwrap() = Some(runways);
 }

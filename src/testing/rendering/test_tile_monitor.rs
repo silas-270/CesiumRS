@@ -99,7 +99,7 @@ impl<'a> TileMonitorApp<'a> {
             progress.clone(),
         ));
 
-        flight_app.add_flight_path("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, false);
+        flight_app.add_flight_path("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, false, Vec::new());
         flight_app.is_playing = true;
         flight_app.play_speed = 0.01;
         flight_app.view_mode = CameraMode::Tracking;

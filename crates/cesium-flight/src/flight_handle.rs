@@ -1,5 +1,18 @@
 use std::sync::mpsc;
 
+#[derive(Clone, Debug)]
+pub struct RunwayData {
+    pub airport_id: i32,
+    pub length_ft: f32,
+    pub width_ft: f32,
+    pub le_heading: f32,
+    pub le_lat: f64,
+    pub le_lon: f64,
+    pub he_heading: f32,
+    pub he_lat: f64,
+    pub he_lon: f64,
+}
+
 /// Commands that can be sent to a `FlightTrackerApp` from another thread.
 pub enum FlightCommand {
     /// Load a new flight path from runway coordinates.
@@ -13,6 +26,7 @@ pub enum FlightCommand {
         dep_heading_deg: Option<f64>,
         arr_heading_deg: Option<f64>,
         is_secondary: bool,
+        runways: Vec<RunwayData>,
     },
     /// Set the playback progress (0.0 – 1.0) of the primary flight.
     SetProgress(f64),
@@ -47,6 +61,7 @@ impl FlightHandle {
         total_duration_ms: u64,
         dep_heading_deg: Option<f64>,
         arr_heading_deg: Option<f64>,
+        runways: Vec<RunwayData>,
     ) {
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
             id: id.into(),
@@ -58,6 +73,7 @@ impl FlightHandle {
             dep_heading_deg,
             arr_heading_deg,
             is_secondary: false,
+            runways,
         });
     }
 
@@ -83,6 +99,7 @@ impl FlightHandle {
             dep_heading_deg,
             arr_heading_deg,
             is_secondary: true,
+            runways: Vec::new(),
         });
     }
 
