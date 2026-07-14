@@ -7,6 +7,15 @@ use std::time::Instant;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static RENDERING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy)]
+pub enum EngineEvent {
+    Suspend,
+    Resume,
+    /// Sent by CesiumEngineManager.onDestroy (only when NOT isChangingConfigurations).
+    /// Causes the winit event loop to exit cleanly, dropping WgpuState and all Vulkan resources.
+    Destroy,
+}
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -298,9 +307,33 @@ impl<'a> App<'a> {
     }
 }
 
-impl<'a> ApplicationHandler for App<'a> {
+#[cfg(target_os = "android")]
+pub type AppUserEvent = EngineEvent;
+
+#[cfg(not(target_os = "android"))]
+pub type AppUserEvent = ();
+
+impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: AppUserEvent) {
+        #[cfg(target_os = "android")]
+        match _event {
+            EngineEvent::Suspend => {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            }
+            EngineEvent::Resume => {
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            }
+            EngineEvent::Destroy => {
+                // Exits the winit run_app() loop. WgpuState is dropped when App is dropped
+                // immediately after, releasing the wgpu::Device and all Vulkan resources.
+                event_loop.exit();
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
+
             let window_attributes = Window::default_attributes()
                 .with_title("CesiumRS WGS84 Ellipsoid")
                 .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));

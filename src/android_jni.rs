@@ -22,6 +22,7 @@ pub static FLIGHT_DATA: Mutex<Option<PendingFlightData>> = Mutex::new(None);
 pub static RUNWAY_DATA: Mutex<Option<Vec<RunwayData>>> = Mutex::new(None);
 pub static FLIGHT_HANDLE: Mutex<Option<FlightHandle>> = Mutex::new(None);
 pub static VIEWER_HANDLE: Mutex<Option<ViewerHandle>> = Mutex::new(None);
+pub static EVENT_LOOP_PROXY: Mutex<Option<winit::event_loop::EventLoopProxy<cesium_engine::core::app::EngineEvent>>> = Mutex::new(None);
 
 
 
@@ -103,6 +104,37 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
     enabled: jni::sys::jboolean,
 ) {
     cesium_engine::core::app::RENDERING_ENABLED.store(enabled != 0, Ordering::Relaxed);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetSuspended(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    suspended: jni::sys::jboolean,
+) {
+    let is_suspended = suspended != 0;
+    
+    // Send event to wake up the event loop and tell it to suspend or resume
+    if let Some(proxy) = EVENT_LOOP_PROXY.lock().unwrap().as_ref() {
+        let event = if is_suspended {
+            cesium_engine::core::app::EngineEvent::Suspend
+        } else {
+            cesium_engine::core::app::EngineEvent::Resume
+        };
+        let _ = proxy.send_event(event);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeDestroyEngine(
+    mut _env: JNIEnv,
+    _cls: JClass,
+) {
+    // Send Destroy so the winit event loop exits cleanly and WgpuState drops,
+    // releasing all Vulkan resources. Only called when isChangingConfigurations is false.
+    if let Some(proxy) = EVENT_LOOP_PROXY.lock().unwrap().take() {
+        let _ = proxy.send_event(cesium_engine::core::app::EngineEvent::Destroy);
+    }
 }
 
 #[no_mangle]
