@@ -67,10 +67,10 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // Performance optimization: skip color grading entirely if all adjustments are 0.0
     if (saturation_adj != 0.0 || contrast_adj != 0.0 || brightness_adj != 0.0) {
         
-        // 1. Brightness (-1 to 1) -> gamma correction
+        // 1. Brightness (-1 to 1) -> multiplicative scaling
         if (brightness_adj != 0.0) {
-            let gamma = max(1.0 - brightness_adj, 0.1); 
-            tex_color_rgb = pow(max(tex_color_rgb, vec3<f32>(0.0)), vec3<f32>(gamma));
+            let multiplier = max(1.0 + brightness_adj * 2.0, 0.0);
+            tex_color_rgb = tex_color_rgb * multiplier;
         }
         
         // 2. Contrast (-1 to 1) 
