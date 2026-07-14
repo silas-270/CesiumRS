@@ -285,12 +285,15 @@ impl GlobeExtension for FlightTrackerApp {
                         departure_lat,
                         arrival_lon,
                         arrival_lat,
-                        total_duration_ms,
                         dep_heading_deg,
                         arr_heading_deg,
                         is_secondary,
                         runways,
+                        total_duration_ms,
                     } => {
+                        if !is_secondary {
+                            self.pending_flights.retain(|f| f.is_secondary);
+                        }
                         self.pending_flights.push(PendingFlight {
                             id,
                             departure_lon,
@@ -341,7 +344,10 @@ impl GlobeExtension for FlightTrackerApp {
                 pending.total_duration_ms,
                 pending.dep_heading_deg,
                 pending.arr_heading_deg,
+                &pending.runways,
             );
+
+            let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
 
             let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
             let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
@@ -361,7 +367,27 @@ impl GlobeExtension for FlightTrackerApp {
                 let control_points = builder.build(&property, reference_point);
                 
                 println!("Flight path loaded: {} ({} control points)", pending.id, control_points.len());
-                
+                if let Some(first_point) = control_points.first() {
+                    let pos = first_point.position;
+                    log::error!("[LUANDA_DEBUG] tracker::update Polyline control points - first point ECEF: ({}, {}, {})", pos[0], pos[1], pos[2]);
+                    // Also convert back to lat/lon for easy reading
+                    let a = 6378137.0_f64;
+                    let b = 6356752.314245_f64;
+                    let e2 = 1.0 - (b * b) / (a * a);
+                    
+                    let x = pos[0] as f64;
+                    let y = pos[1] as f64;
+                    let z = pos[2] as f64;
+                    
+                    let p = (x * x + y * y).sqrt();
+                    let theta = (z * a).atan2(p * b);
+                    let st = theta.sin();
+                    let ct = theta.cos();
+                    let lon = y.atan2(x);
+                    let lat = (z + e2 * e2 / (1.0 - e2) * b * st * st * st).atan2(p - e2 * a * ct * ct * ct);
+                    log::error!("[LUANDA_DEBUG] tracker::update Polyline control points - first point LatLon: ({}, {})", lon.to_degrees(), lat.to_degrees());
+                }
+
                 let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
                 // Upload geometry statically once
                 renderer.update_geometry(device, queue, &control_points);
@@ -376,13 +402,13 @@ impl GlobeExtension for FlightTrackerApp {
                 }
 
                 self.flights.push(FlightEntity {
-                    id: pending.id,
+                    id: pending.id.clone(),
                     renderer,
                     config: poly_config,
                     property,
                     sun_intensity_property,
                     telemetry_points: points,
-                    total_duration_ms: pending.total_duration_ms,
+                    total_duration_ms: calculated_duration_ms,
                     reference_point,
                 });
             }
@@ -408,11 +434,11 @@ impl GlobeExtension for FlightTrackerApp {
                         departure_lat,
                         arrival_lon,
                         arrival_lat,
-                        total_duration_ms,
                         dep_heading_deg,
                         arr_heading_deg,
                         is_secondary,
                         runways,
+                        total_duration_ms,
                     } => {
                         log::info!("Received {} runways from Android database!", runways.len());
                         for r in &runways {
@@ -420,6 +446,9 @@ impl GlobeExtension for FlightTrackerApp {
                                 r.airport_id, r.length_ft, r.width_ft, 
                                 r.le_heading, r.le_lat, r.le_lon, 
                                 r.he_heading, r.he_lat, r.he_lon);
+                        }
+                        if !is_secondary {
+                            self.pending_flights.retain(|f| f.is_secondary);
                         }
                         self.pending_flights.push(PendingFlight {
                             id,
@@ -482,7 +511,10 @@ impl GlobeExtension for FlightTrackerApp {
                         pending.total_duration_ms,
                         pending.dep_heading_deg,
                         pending.arr_heading_deg,
+                        &pending.runways,
                     );
+                    
+                    let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
 
                     let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
                     let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
@@ -516,13 +548,13 @@ impl GlobeExtension for FlightTrackerApp {
                         }
 
                         self.flights.push(FlightEntity {
-                            id: pending.id,
+                            id: pending.id.clone(),
                             renderer,
                             config: poly_config,
                             property,
                             sun_intensity_property,
                             telemetry_points: points,
-                            total_duration_ms: pending.total_duration_ms,
+                            total_duration_ms: calculated_duration_ms,
                             reference_point,
                         });
                     }

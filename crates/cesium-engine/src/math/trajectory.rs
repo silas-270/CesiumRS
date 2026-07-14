@@ -101,7 +101,7 @@ impl<'a> TrajectoryEvaluator<'a> {
             let gravity_vector = -earth_up * g_mm;
 
             // Apply a cinematic multiplier to the centripetal acceleration so the banking is visually noticeable
-            let cinematic_g_multiplier = 2.5;
+            let cinematic_g_multiplier = 2.5 / 3.0;
 
             // Perceived gravity is actual gravity minus the acceleration (F_apparent = m*g - m*a)
             let perceived_gravity = gravity_vector - avg_a * cinematic_g_multiplier;

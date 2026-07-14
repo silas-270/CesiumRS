@@ -39,6 +39,7 @@ impl RoutesExtension {
                 3600_000, // Dummy duration, headless doesn't care about time
                 None,
                 None,
+                &[],
             );
 
             // Compute the average reference point for precision

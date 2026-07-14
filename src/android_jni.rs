@@ -36,6 +36,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
     arr_lat: jdouble,
     duration_ms: jlong,
 ) {
+    log::error!("[LUANDA_DEBUG] JNI nativeSetPendingFlight - Kotlin passed dep: ({}, {})", dep_lon, dep_lat);
     *FLIGHT_DATA.lock().unwrap() = Some(PendingFlightData {
         dep_lon,
         dep_lat,
@@ -142,9 +143,10 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeLo
     mut _env: JNIEnv,
     _cls: JClass,
 ) {
-    if let Some(data) = FLIGHT_DATA.lock().unwrap().take() {
-        let runways = RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
-        if let Some(handle) = FLIGHT_HANDLE.lock().unwrap().as_ref() {
+    let handle_lock = FLIGHT_HANDLE.lock().unwrap();
+    if let Some(handle) = handle_lock.as_ref() {
+        if let Some(data) = FLIGHT_DATA.lock().unwrap().take() {
+            let runways = RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
             handle.load_flight(
                 "primary",
                 data.dep_lon,
