@@ -135,7 +135,8 @@ mod inner {
                 9.2219, 48.6899, // STR
                 1_800_000,       // 30 mins
                 Some(249.0),     // FRA Runway 25C heading
-                Some(73.0)       // STR Runway 07 heading
+                Some(73.0),      // STR Runway 07 heading
+                Vec::new()
             );
 
             let viewer = cesium_rs::CesiumViewer::builder()
@@ -178,7 +179,8 @@ fn main() {
         9.2219, 48.6899, // STR
         1_800_000,       // 30 mins
         Some(249.0),     // FRA Runway 25C heading
-        Some(73.0)       // STR Runway 07 heading
+        Some(73.0),      // STR Runway 07 heading
+        Vec::new()
     );
 
     let viewer = cesium_rs::CesiumViewer::builder()
