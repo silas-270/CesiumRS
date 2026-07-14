@@ -85,12 +85,11 @@ pub extern "C" fn render_routes_headless(
             .to_string();
     config.transparent_background = true;
     
-    // Force extremely high mesh subdivision for a perfectly smooth globe horizon.
-    // We can do this safely because headless mode waits for all tiles to fetch asynchronously.
+    // Lowered mesh subdivision to prevent massive VRAM over-allocation on mobile
     config.lod_factor = 2.0; 
-    config.mesh_segments = 128; // High resolution mesh per tile
-    config.max_cache_size = std::num::NonZeroUsize::new(16384).unwrap();
-    config.mesh_cache_size = std::num::NonZeroUsize::new(8192).unwrap();
+    config.mesh_segments = 32; 
+    config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
+    config.mesh_cache_size = std::num::NonZeroUsize::new(1024).unwrap();
 
     // Remove unused total_x, total_y, total_z warnings
     let _ = total_x;

@@ -1,4 +1,5 @@
 pub mod api;
+#[cfg(not(target_os = "android"))]
 pub mod viewer;
 pub mod headless;
 
@@ -12,6 +13,7 @@ pub mod android_jni;
 pub use api::{CameraMode, CameraState, CesiumViewer, ViewerHandle};
 
 // ── Legacy path (kept for the test harness) ───────────────────────────────────
+#[cfg(not(target_os = "android"))]
 pub use viewer::{GlobeOptions, Viewer, ViewerOptions};
 
 #[cfg(any(feature = "testing", target_os = "android"))]
@@ -64,8 +66,10 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     );
 
     use winit::platform::android::EventLoopBuilderExtAndroid;
-    let event_loop = EventLoop::builder().with_android_app(app).build().unwrap();
+    let event_loop: EventLoop<cesium_engine::core::app::EngineEvent> = EventLoop::with_user_event().with_android_app(app).build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
+
+    *android_jni::EVENT_LOOP_PROXY.lock().unwrap() = Some(event_loop.create_proxy());
 
     let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
     let current_telemetry = flight_app.current_telemetry.clone();
@@ -80,6 +84,22 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     *android_jni::VIEWER_HANDLE.lock().unwrap() = Some(viewer.handle());
     *android_jni::FLIGHT_HANDLE.lock().unwrap() = Some(flight_handle.clone());
     *android_jni::CURRENT_TELEMETRY.lock().unwrap() = Some(current_telemetry);
+
+    // If a flight was pending before we initialized (e.g. fast user click or process recreation), load it!
+    if let Some(data) = android_jni::FLIGHT_DATA.lock().unwrap().take() {
+        let runways = android_jni::RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
+        flight_handle.load_flight(
+            "primary",
+            data.dep_lon,
+            data.dep_lat,
+            data.arr_lon,
+            data.arr_lat,
+            data.duration_ms,
+            None,
+            None,
+            runways,
+        );
+    }
 
     // The core app loop wrapper
     let mut winit_app = cesium_engine::core::app::App::new(

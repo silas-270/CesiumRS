@@ -238,9 +238,10 @@ pub fn generate(
     departure_lat: f64,
     arrival_lon: f64,
     arrival_lat: f64,
-    total_duration_ms: u64,
+    target_duration_ms: u64,
     dep_heading_deg: Option<f64>,
     arr_heading_deg: Option<f64>,
+    runways: &[crate::flight_handle::RunwayData],
 ) -> Vec<TelemetryPoint> {
     let lat_mid = (departure_lat + arrival_lat).to_radians() / 2.0;
     let m_per_deg_lat = 111320.0;
@@ -255,12 +256,38 @@ pub fn generate(
         departure_lat + p.y / m_per_deg_lat,
     );
 
-    let p_dep = to_2d(departure_lon, departure_lat);
-    let p_arr = to_2d(arrival_lon, arrival_lat);
+    let mut actual_dep_lon = departure_lon;
+    let mut actual_dep_lat = departure_lat;
+    let mut actual_dep_heading = dep_heading_deg;
+    
+    let mut actual_arr_lon = arrival_lon;
+    let mut actual_arr_lat = arrival_lat;
+    let mut actual_arr_heading = arr_heading_deg;
+
+    log::error!("[LUANDA_DEBUG] generator::generate start - target dep: ({}, {})", departure_lon, departure_lat);
+
+    for r in runways {
+        let d_dep = (r.le_lon - departure_lon).hypot(r.le_lat - departure_lat);
+        let d_arr = (r.le_lon - arrival_lon).hypot(r.le_lat - arrival_lat);
+        if d_dep < d_arr {
+            actual_dep_lon = r.le_lon;
+            actual_dep_lat = r.le_lat;
+            actual_dep_heading = Some(r.le_heading as f64);
+        } else {
+            actual_arr_lon = r.le_lon;
+            actual_arr_lat = r.le_lat;
+            actual_arr_heading = Some(r.le_heading as f64);
+        }
+    }
+
+    log::error!("[LUANDA_DEBUG] generator::generate after runway snap - actual dep: ({}, {})", actual_dep_lon, actual_dep_lat);
+
+    let p_dep = to_2d(actual_dep_lon, actual_dep_lat);
+    let p_arr = to_2d(actual_arr_lon, actual_arr_lat);
 
     let direct_heading_rad = (p_arr.x - p_dep.x).atan2(p_arr.y - p_dep.y);
-    let dep_h_rad = dep_heading_deg.map(|d| d.to_radians()).unwrap_or(direct_heading_rad);
-    let arr_h_rad = arr_heading_deg.map(|d| d.to_radians()).unwrap_or(direct_heading_rad);
+    let dep_h_rad = actual_dep_heading.map(|d| d.to_radians()).unwrap_or(direct_heading_rad);
+    let arr_h_rad = actual_arr_heading.map(|d| d.to_radians()).unwrap_or(direct_heading_rad);
 
     let w0 = p_dep;
     let w1 = Point2D { x: w0.x + 10000.0 * dep_h_rad.sin(), y: w0.y + 10000.0 * dep_h_rad.cos() };
@@ -278,25 +305,19 @@ pub fn generate(
 
     let cruise_alt = 10000.0;
     
-    // Distances for takeoff and landing
     let ideal_ground = 3000.0_f64;
     let ideal_landing = 3000.0_f64;
     let ideal_climb = 30000.0;
     let ideal_descent = 50000.0;
     
-    // Safety check: if path is extremely short, shrink the ground distances
-    let ground_dist = ideal_ground.min(s_total * 0.1);
-    let landing_dist = ideal_landing.min(s_total * 0.1);
-    let air_dist = s_total - ground_dist - landing_dist;
-
-    let (climb_dist, desc_dist, cruise_dist) = if air_dist >= ideal_climb + ideal_descent {
-        (ideal_climb, ideal_descent, air_dist - ideal_climb - ideal_descent)
+    let total_non_cruise = ideal_ground + ideal_climb + ideal_descent + ideal_landing;
+    let (s_ground_end, s_climb_end, cruise_dist, desc_dist) = if s_total > total_non_cruise {
+        (ideal_ground, ideal_ground + ideal_climb, s_total - total_non_cruise, ideal_descent)
     } else {
-        (air_dist * (3.0 / 8.0), air_dist * (5.0 / 8.0), 0.0)
+        let f = s_total / total_non_cruise;
+        (ideal_ground * f, (ideal_ground + ideal_climb) * f, 0.0, ideal_descent * f)
     };
-
-    let s_ground_end = ground_dist;
-    let s_climb_end = s_ground_end + climb_dist;
+    
     let s_desc_start = s_climb_end + cruise_dist;
     let s_land_start = s_desc_start + desc_dist;
 
@@ -357,35 +378,59 @@ pub fn generate(
         }
     };
 
-    let get_speed_shape = |s: f64| -> f64 {
-        if s < s_ground_end {
-            lerp(0.05, 0.3, s / s_ground_end)
-        } else if s < s_climb_end {
-            lerp(0.3, 1.0, (s - s_ground_end) / (s_climb_end - s_ground_end))
-        } else if s < s_desc_start {
-            1.0
-        } else if s < s_land_start {
-            lerp(1.0, 0.2, (s - s_desc_start) / (s_land_start - s_desc_start))
+    let target_duration_s = target_duration_ms as f64 / 1000.0;
+    
+    // Evaluate theoretical time for a given cruise speed
+    let evaluate_time = |v_cruise: f64| -> f64 {
+        let t_ground = 2.0 * s_ground_end / 88.88; // Takeoff (0 to 320 kph)
+        let t_climb = (s_climb_end - s_ground_end) / (0.5 * (88.88 + v_cruise));
+        let t_cruise = cruise_dist / v_cruise;
+        let t_descent = desc_dist / (0.5 * (v_cruise + 72.0));
+        let t_landing = 2.0 * (s_total - s_land_start) / 72.0; // Landing (260 kph to 0)
+        t_ground + t_climb + t_cruise + t_descent + t_landing
+    };
+
+    // Binary search for ideal v_cruise
+    let mut min_v = 1.0;
+    let mut max_v = 100_000.0;
+    let mut best_v_cruise = 250.0;
+    for _ in 0..60 {
+        best_v_cruise = (min_v + max_v) / 2.0;
+        let t_test = evaluate_time(best_v_cruise);
+        if t_test > target_duration_s {
+            // Took too long, need higher speed
+            min_v = best_v_cruise;
         } else {
-            lerp(0.2, 0.02, (s - s_land_start) / (s_total - s_land_start))
+            // Too fast, need lower speed
+            max_v = best_v_cruise;
+        }
+    }
+
+    let get_real_speed = |s: f64| -> f64 {
+        if s < s_ground_end {
+            if s <= 0.0 { return 0.0; }
+            let a = (88.88 * 88.88) / (2.0 * s_ground_end);
+            (2.0 * a * s).sqrt()
+        } else if s < s_climb_end {
+            lerp(88.88, best_v_cruise, (s - s_ground_end) / (s_climb_end - s_ground_end))
+        } else if s < s_desc_start {
+            best_v_cruise
+        } else if s < s_land_start {
+            lerp(best_v_cruise, 72.0, (s - s_desc_start) / (s_land_start - s_desc_start))
+        } else {
+            let dist_rem = s_total - s;
+            if dist_rem <= 0.0 { return 0.0; }
+            let a = (72.0 * 72.0) / (2.0 * (s_total - s_land_start));
+            (2.0 * a * dist_rem).sqrt()
         }
     };
 
-    let integration_steps = 1000;
-    let ds = s_total / integration_steps as f64;
-    let mut unscaled_time = 0.0;
-    for i in 0..integration_steps {
-        let s_mid = i as f64 * ds + ds / 2.0;
-        unscaled_time += ds / get_speed_shape(s_mid);
-    }
-
-    let total_s = total_duration_ms as f64 / 1000.0;
     let mut points = Vec::new();
     let mut current_s = 0.0;
     let mut current_t = 0.0;
     let dt = 2.0;
 
-    while current_t <= total_s {
+    while current_s <= s_total {
         let p_prev = path.get_point(f64::max(current_s - 1.0, 0.0));
         let p_now = path.get_point(current_s);
         let p_next = path.get_point(f64::min(current_s + 1.0, s_total));
@@ -395,8 +440,7 @@ pub fn generate(
         let alt = raw_alt + 5.0;
         let intensity = (1.0 - (raw_alt / cruise_alt_m).clamp(0.0, 1.0)) as f32;
         
-        let v_shape = get_speed_shape(current_s);
-        let real_v = v_shape * (unscaled_time / total_s);
+        let real_v = get_real_speed(current_s);
         
         let h_prev = (p_now.x - p_prev.x).atan2(p_now.y - p_prev.y);
         let h_next = (p_next.x - p_now.x).atan2(p_next.y - p_now.y);
@@ -426,13 +470,14 @@ pub fn generate(
             sun_intensity: intensity,
         });
 
-        current_s += real_v * dt;
+        let step_v = f64::max(real_v, 1.0);
+        current_s += step_v * dt;
         current_t += dt;
     }
 
     let (final_lon, final_lat) = to_geo(path.get_point(s_total));
     points.push(TelemetryPoint {
-        time_offset_ms: total_duration_ms,
+        time_offset_ms: (current_t * 1000.0) as u64,
         longitude: final_lon,
         latitude: final_lat,
         altitude: 5.0,

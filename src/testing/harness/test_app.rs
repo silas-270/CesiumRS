@@ -25,7 +25,7 @@ impl<'a> TestApp<'a> {
         let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
             std::sync::Arc::new(std::sync::Mutex::new(0.0)),
         ));
-        flight_app.add_flight_path("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, true, Vec::new());
+        flight_app.add_flight_path("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 10000, true, Vec::new());
         flight_app.reset_viewport = false;
 
         Self {
