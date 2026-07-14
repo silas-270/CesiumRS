@@ -28,7 +28,7 @@ impl Default for GlobeOptions {
             enable_prefetch: true,
             map_saturation: 0.0,
             map_contrast: 0.0,
-            map_brightness: 0.0,
+            map_brightness: 0.5,
         }
     }
 }
