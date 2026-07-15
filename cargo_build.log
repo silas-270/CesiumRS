@@ -25566,3 +25566,2049 @@ warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
 
 warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
     Finished `release` profile [optimized] target(s) in 0.62s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.40s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.61s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.88s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.29s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.79s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.79s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.69s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.95s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.88s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.83s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.09s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.06s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.34s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.48s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.87s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.11s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.42s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.87s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.88s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 1.13s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.88s
+    Building arm64-v8a (aarch64-linux-android)
+warning: unused import: `OrientedBoundingBox`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:6:36
+  |
+6 | pub use bounding_volume::{Frustum, OrientedBoundingBox};
+  |                                    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `QuadtreeNode`
+ --> crates/cesium-engine/src/globe/quadtree/mod.rs:7:37
+  |
+7 | pub use quadtree::{QuadtreeManager, QuadtreeNode};
+  |                                     ^^^^^^^^^^^^
+
+warning: `cesium-engine` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-engine` to apply 2 suggestions)
+warning: unused variable: `cruise_alt`
+   --> crates/cesium-flight/src/telemetry/generator.rs:306:9
+    |
+306 |     let cruise_alt = 10000.0;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cruise_alt`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `path_type` is never read
+   --> crates/cesium-flight/src/telemetry/generator.rs:142:13
+    |
+141 |     pub struct DubinsPath {
+    |                ---------- field in this struct
+142 |         pub path_type: &'static str,
+    |             ^^^^^^^^^
+    |
+    = note: `DubinsPath` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cesium-flight` (lib) generated 2 warnings (run `cargo fix --lib -p cesium-flight` to apply 1 suggestion)
+warning: unused import: `std::sync::Arc`
+ --> src/headless/routes_headless_app.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+ --> src/headless/routes_headless_app.rs:9:5
+  |
+9 |     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
+  |     ----^^^^^^^^^
+  |     |
+  |     help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `visible_tiles`
+  --> src/headless/routes_headless_app.rs:39:13
+   |
+39 |         let visible_tiles = state.update_logic(aspect_ratio, main_view_proj);
+   |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_visible_tiles`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/android_jni.rs:167:5
+    |
+167 |     mut env: JNIEnv,
+    |     ----^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: field `config` is never read
+   --> src/api.rs:184:16
+    |
+181 | pub struct CesiumViewer {
+    |            ------------ field in this struct
+...
+184 |     pub(crate) config: TileEngineConfig,
+    |                ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `extern` fn uses type `AndroidApp`, which is not FFI-safe
+  --> src/lib.rs:63:37
+   |
+63 | pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidApp) {
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not FFI-safe
+   |
+   = help: consider adding a `#[repr(C)]` or `#[repr(transparent)]` attribute to this struct
+   = note: this struct has unspecified layout
+   = note: `#[warn(improper_ctypes_definitions)]` on by default
+
+warning: `cesium_rs` (lib) generated 6 warnings (run `cargo fix --lib -p cesium_rs` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.79s
