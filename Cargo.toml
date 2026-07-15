@@ -2,7 +2,7 @@
 members = [
     "crates/cesium-engine",
     "crates/cesium-flight"
-]
+, "temp_cam_test"]
 resolver = "2"
 
 [package]
