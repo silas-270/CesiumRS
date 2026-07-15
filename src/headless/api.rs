@@ -54,28 +54,22 @@ pub extern "C" fn render_routes_headless(
     let hub_ecef = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(route_slice[0].start.lon, route_slice[0].start.lat, 0.0);
     let target_center = glam::Vec3::new(hub_ecef[0] as f32, hub_ecef[1] as f32, hub_ecef[2] as f32);
 
-    // 1. Reference frame (Frankfurt)
-    let fra_ecef = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(8.5706, 50.0333, 0.0);
-    let fra_pos = glam::Vec3::new(fra_ecef[0] as f32, fra_ecef[1] as f32, fra_ecef[2] as f32);
-    let fra_up = fra_pos.normalize_or_zero();
-    let fra_east = glam::Vec3::new(0.0, 0.0, 1.0).cross(fra_up).normalize_or_zero();
-    let fra_north = fra_up.cross(fra_east).normalize_or_zero();
-    let t_fra = glam::Mat3::from_cols(fra_east, fra_north, fra_up);
-
-    // 2. Target frame (The hub of the routes)
+    // 1. Target frame (The hub of the routes)
     let hub_up = target_center.normalize_or_zero();
-    let hub_east = glam::Vec3::new(0.0, 0.0, 1.0).cross(hub_up).normalize_or_zero();
-    let hub_north = hub_up.cross(hub_east).normalize_or_zero();
-    let t_hub = glam::Mat3::from_cols(hub_east, hub_north, hub_up);
+    
+    // In CesiumRS, global Y is the North Pole.
+    let true_east = glam::Vec3::Y.cross(hub_up).normalize_or_zero();
+    let true_north = hub_up.cross(true_east).normalize_or_zero();
 
-    // 3. Transform to map Frankfurt's ENU to the new hub's ENU
-    let rotation_to_hub = t_hub * t_fra.inverse();
+    // 2. Distance to camera
+    let distance = 16.36;
 
-    // 4. Base camera position for Frankfurt (from UI)
-    let p_cam_base = glam::Vec3::new(7.415, 14.539, 1.184);
-
-    // 5. Final transformed coordinates
-    let eye = rotation_to_hub * p_cam_base;
+    // 3. Tilt camera South by ~15 degrees so airport appears higher on screen (top 1/3 height)
+    // Moving the camera South (along -true_north) makes the airport appear North (up) on the screen.
+    let tilt_angle = f32::to_radians(-15.0);
+    
+    // 4. Final transformed coordinates
+    let eye = (hub_up * tilt_angle.cos() + true_north * tilt_angle.sin()) * distance;
 
     let extension = Box::new(crate::headless::route_builder::RoutesExtension::new(&extension_routes));
     let mut config = TileEngineConfig::default();
