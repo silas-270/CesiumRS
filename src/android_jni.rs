@@ -27,7 +27,7 @@ pub static EVENT_LOOP_PROXY: Mutex<Option<winit::event_loop::EventLoopProxy<cesi
 
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetPendingFlight(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetPendingFlight(
     mut _env: JNIEnv,
     _cls: JClass,
     dep_lon: jdouble,
@@ -47,7 +47,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetProgress(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetProgress(
     mut _env: JNIEnv,
     _cls: JClass,
     progress: jdouble,
@@ -58,7 +58,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetCameraMode(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetCameraMode(
     mut _env: JNIEnv,
     _cls: JClass,
     mode: jint,
@@ -76,7 +76,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
 pub static CURRENT_TELEMETRY: Mutex<Option<std::sync::Arc<std::sync::Mutex<Option<cesium_flight::tracker::FlightTelemetry>>>>> = Mutex::new(None);
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeGetTelemetry(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeGetTelemetry(
     env: JNIEnv,
     _cls: JClass,
 ) -> jni::sys::jdoubleArray {
@@ -99,7 +99,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeGe
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetRenderingEnabled(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRenderingEnabled(
     mut _env: JNIEnv,
     _cls: JClass,
     enabled: jni::sys::jboolean,
@@ -108,7 +108,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetSuspended(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetSuspended(
     mut _env: JNIEnv,
     _cls: JClass,
     suspended: jni::sys::jboolean,
@@ -127,7 +127,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSe
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeDestroyEngine(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeDestroyEngine(
     mut _env: JNIEnv,
     _cls: JClass,
 ) {
@@ -139,7 +139,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeDe
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeLoadPendingFlight(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeLoadPendingFlight(
     mut _env: JNIEnv,
     _cls: JClass,
 ) {
@@ -163,7 +163,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeLo
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_CesiumBridge_nativeSetRunways(
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRunways(
     mut env: JNIEnv,
     _cls: JClass,
     airport_ids: jni::objects::JIntArray,
