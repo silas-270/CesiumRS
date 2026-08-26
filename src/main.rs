@@ -56,6 +56,10 @@ mod inner {
 
         #[arg(long)]
         pub routes_test: bool,
+
+        /// Headless capture of the cockpit and tracking views for visual verification.
+        #[arg(long)]
+        pub cockpit: bool,
     }
 
     pub fn main() {
@@ -101,7 +105,7 @@ mod inner {
             );
             return;
         }
-        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark {
+        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit {
             Some(VerifyConfig {
                 enabled: cli.verify,
                 stress: cli.stress,
@@ -110,6 +114,7 @@ mod inner {
                 monitor: cli.monitor,
                 profile: cli.profile,
                 benchmark: cli.benchmark,
+                cockpit: cli.cockpit,
                 stress_mode: cli.stress_mode,
                 prefetch: cli.prefetch,
                 cache_size: cli.cache_size,

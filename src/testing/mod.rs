@@ -18,6 +18,8 @@ pub struct VerifyConfig {
     pub monitor: bool,
     pub profile: bool,
     pub benchmark: bool,
+    /// Headless capture of cockpit and tracking views, for visual verification.
+    pub cockpit: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,
