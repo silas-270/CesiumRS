@@ -416,6 +416,9 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
 
                 #[cfg(feature = "debug_panel")]
                 let render_result = state.render(None, false, |ctx, s| {
+                    // The sliders/checkboxes window is a desktop dev tool; Android only wants
+                    // the label pills it draws, not the debug chrome on top of the real UI.
+                    #[cfg(not(target_os = "android"))]
                     Self::render_ui(ctx, s);
                     Self::render_label_indicators(ctx, s);
                 });
