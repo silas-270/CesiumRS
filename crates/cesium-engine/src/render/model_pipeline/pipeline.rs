@@ -49,7 +49,44 @@ pub struct ModelPushConstants {
     pub model_matrix_3: [f32; 4],
     pub camera_pos: [f32; 4],
     pub viewport_size: [f32; 2],
-    pub padding: [f32; 2],
+    /// Minimum on-screen size in pixels the model is inflated to. `0.0` disables the
+    /// boost entirely, so the mesh is drawn at its true world scale.
+    pub min_pixel_size: f32,
+    /// Clip-space depth bias applied as `z += depth_bias * w`. `0.0` disables it.
+    pub depth_bias: f32,
+}
+
+/// Per-model knobs for [`ModelRenderer::new_with_options`].
+///
+/// [`ModelOptions::default`] reproduces the behaviour tuned for the A350 exterior:
+/// a mesh normalized to radius 1.0 (so the vertex shader's screen-size boost has a
+/// known baseline), backface culling, and no material rewriting.
+pub struct ModelOptions<'f> {
+    /// Scale the assembled mesh so its farthest vertex sits at radius 1.0. Set to
+    /// `false` to keep the glTF's source units (metres, for a real-scale interior).
+    pub normalize_to_unit_radius: bool,
+    pub cull_mode: Option<wgpu::Face>,
+    /// Primitives whose final base-colour alpha is below this are dropped entirely.
+    /// Useful when the whole model is one unsorted draw call that writes depth, so
+    /// blended geometry would occlude whatever sits behind it.
+    pub skip_alpha_below: f32,
+    /// Per-material colour override, keyed by glTF material name. Applied *before*
+    /// `skip_alpha_below`, so an override returning alpha 0 also removes geometry.
+    pub material_override: Option<&'f dyn Fn(Option<&str>, [f32; 4]) -> [f32; 4]>,
+    /// Label used in the log line emitted once the mesh is assembled.
+    pub label: &'f str,
+}
+
+impl<'f> Default for ModelOptions<'f> {
+    fn default() -> Self {
+        Self {
+            normalize_to_unit_radius: true,
+            cull_mode: Some(wgpu::Face::Back),
+            skip_alpha_below: 0.0,
+            material_override: None,
+            label: "Model",
+        }
+    }
 }
 
 pub struct ModelRenderer {
@@ -68,6 +105,24 @@ impl ModelRenderer {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         glb_bytes: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_options(
+            device,
+            queue,
+            config,
+            camera_bind_group_layout,
+            glb_bytes,
+            ModelOptions::default(),
+        )
+    }
+
+    pub fn new_with_options(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        config: &wgpu::SurfaceConfiguration,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        glb_bytes: &[u8],
+        options: ModelOptions<'_>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Parse the glb using the gltf crate
         let (document, buffers, images) = gltf::import_slice(glb_bytes)?;
 
@@ -80,6 +135,7 @@ impl ModelRenderer {
             buffers: &[gltf::buffer::Data],
             vertices: &mut Vec<ModelVertex>,
             indices: &mut Vec<u32>,
+            options: &ModelOptions<'_>,
         ) {
             let local_transform = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
             let transform = parent_transform * local_transform;
@@ -96,7 +152,13 @@ impl ModelRenderer {
                     }
 
                     let material = primitive.material();
-                    let base_color = material.pbr_metallic_roughness().base_color_factor();
+                    let mut base_color = material.pbr_metallic_roughness().base_color_factor();
+                    if let Some(over) = options.material_override {
+                        base_color = over(material.name(), base_color);
+                    }
+                    if base_color[3] < options.skip_alpha_below {
+                        continue;
+                    }
 
                     let mut vertex_colors: Vec<[f32; 4]> = Vec::new();
                     if let Some(read_colors) = reader.read_colors(0) {
@@ -149,7 +211,7 @@ impl ModelRenderer {
             }
 
             for child in node.children() {
-                process_node(child, transform, buffers, vertices, indices);
+                process_node(child, transform, buffers, vertices, indices, options);
             }
         }
 
@@ -161,25 +223,28 @@ impl ModelRenderer {
                     &buffers,
                     &mut vertices,
                     &mut indices,
+                    &options,
                 );
             }
         }
 
         // Normalize the entire assembled mesh so it has a radius of exactly 1.0
-        let mut max_extent: f32 = 0.0001;
-        for v in &vertices {
-            let len = (v.position[0] * v.position[0]
-                + v.position[1] * v.position[1]
-                + v.position[2] * v.position[2])
-                .sqrt();
-            if len > max_extent {
-                max_extent = len;
+        if options.normalize_to_unit_radius {
+            let mut max_extent: f32 = 0.0001;
+            for v in &vertices {
+                let len = (v.position[0] * v.position[0]
+                    + v.position[1] * v.position[1]
+                    + v.position[2] * v.position[2])
+                    .sqrt();
+                if len > max_extent {
+                    max_extent = len;
+                }
             }
-        }
-        for v in &mut vertices {
-            v.position[0] /= max_extent;
-            v.position[1] /= max_extent;
-            v.position[2] /= max_extent;
+            for v in &mut vertices {
+                v.position[0] /= max_extent;
+                v.position[1] /= max_extent;
+                v.position[2] /= max_extent;
+            }
         }
 
         use wgpu::util::DeviceExt;
@@ -367,7 +432,7 @@ impl ModelRenderer {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back), // Enable backface culling!
+                cull_mode: options.cull_mode,
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
@@ -388,7 +453,7 @@ impl ModelRenderer {
             cache: None,
         });
 
-        println!("A350 mesh has {} indices", indices.len());
+        println!("{} mesh has {} indices", options.label, indices.len());
         Ok(Self {
             pipeline,
             vertex_buffer,

@@ -47,6 +47,18 @@ const INV_B2_F64: f64 =
 const EARTH_RADIUS_A_F64: f64 = 6.378137;
 const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
 
+/// Near plane used in cockpit mode, in Megametres (5 cm).
+///
+/// The cockpit interior is modelled at true scale and wraps around the camera, with the
+/// nearest surfaces only tens of centimetres away, so the distance-derived near plane used
+/// by the other modes would clip the entire cabin. Reverse-Z keeps depth precision usable
+/// at this range.
+const COCKPIT_ZNEAR: f64 = 5e-8;
+
+/// Head-turn limits for [`Camera::look_around`], in radians (±100° yaw, ±34° pitch).
+const LOOK_AROUND_MAX_YAW: f32 = 1.75;
+const LOOK_AROUND_MAX_PITCH: f32 = 0.6;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
     Free,
@@ -235,6 +247,11 @@ impl Camera {
         if delta == 0.0 {
             return;
         }
+        if self.mode == CameraMode::Cockpit {
+            // The seat is fixed to the airframe; pitching is looking up and down.
+            self.look_around(0.0, delta);
+            return;
+        }
         let pitch_angle = delta * self.pitch_sensitivity;
 
         // 1. Find distance to focus point (center of screen)
@@ -282,6 +299,11 @@ impl Camera {
 
     pub fn zoom(&mut self, delta: f32) {
         if delta == 0.0 {
+            return;
+        }
+        if self.mode == CameraMode::Cockpit {
+            // The seat is rigidly attached to the airframe — zooming would slide the
+            // camera out through the cockpit walls.
             return;
         }
 
@@ -379,9 +401,11 @@ impl Camera {
             rel_y += std::f32::consts::PI * 2.0;
         }
 
-        let clamped_rel_y = rel_y.clamp(-std::f32::consts::FRAC_PI_4, std::f32::consts::FRAC_PI_4);
+        // Wide enough to turn and look out of the side windows, but short of spinning
+        // the head all the way round.
+        let clamped_rel_y = rel_y.clamp(-LOOK_AROUND_MAX_YAW, LOOK_AROUND_MAX_YAW);
 
-        let clamped_p = p.clamp(-0.35, 0.35); // roughly +/- 20 deg
+        let clamped_p = p.clamp(-LOOK_AROUND_MAX_PITCH, LOOK_AROUND_MAX_PITCH);
 
         self.local_ori =
             Quat::from_euler(glam::EulerRot::YXZ, clamped_rel_y, clamped_p, 0.0).normalize();
@@ -414,14 +438,15 @@ impl Camera {
         let alt = self.altitude().max(0.000002);
         let znear = match self.mode {
             CameraMode::Free => (alt * 0.1).clamp(0.0000001, 10.0),
-            CameraMode::Tracking | CameraMode::Cockpit => {
-                // In tracking or cockpit mode, the camera is anchored to the aircraft.
-                // The aircraft and its immediate trajectory polyline are very close to the camera.
+            CameraMode::Tracking => {
+                // In tracking mode the camera is anchored to the aircraft, and the aircraft
+                // and its immediate trajectory polyline are very close to the camera.
                 // We must use a small znear to prevent clipping the aircraft or nearby polyline.
                 // We scale znear with the local distance to the aircraft target, but keep it small.
                 let dist = self.local_pos.length();
                 (dist * 0.05).clamp(0.00000001, 0.000005)
             }
+            CameraMode::Cockpit => COCKPIT_ZNEAR as f32,
         };
         let (pos_dvec, _) = self.global_transform();
         let zfar = pos_dvec.length() + 10.0;
@@ -441,10 +466,11 @@ impl Camera {
         let alt = self.altitude().max(0.000002) as f64;
         let znear = match self.mode {
             CameraMode::Free => (alt * 0.1).clamp(0.0000001, 10.0),
-            CameraMode::Tracking | CameraMode::Cockpit => {
+            CameraMode::Tracking => {
                 let dist = self.local_pos.length() as f64;
                 (dist * 0.05).clamp(0.00000001, 0.000005)
             }
+            CameraMode::Cockpit => COCKPIT_ZNEAR,
         };
         let (pos_dvec, _) = self.global_transform_f64();
         let zfar = pos_dvec.length() + 10.0;

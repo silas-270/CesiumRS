@@ -50,11 +50,36 @@ pub struct FlightTelemetry {
     pub roll_rad: f64,
 }
 
+/// Rebuilds the layout the engine uses for its camera uniform.
+///
+/// Structurally identical layouts are interchangeable in wgpu, so renderers created
+/// outside `init()` — where the engine hands us its own layout — can use this instead.
+fn camera_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+        label: Some("camera_bind_group_layout"),
+    })
+}
+
 pub struct FlightTrackerApp {
     pub progress: std::sync::Arc<std::sync::Mutex<f64>>,
     pub pending_flights: Vec<PendingFlight>,
     pub flights: Vec<FlightEntity>,
     pub airplane_renderer: Option<ModelRenderer>,
+    /// Interior drawn in cockpit mode. Loaded lazily the first time the mode is entered,
+    /// since the asset is far larger than the exterior and most sessions never need it.
+    pub cockpit_renderer: Option<ModelRenderer>,
+    /// Set once the load has failed so a missing asset isn't retried every frame.
+    cockpit_load_failed: bool,
     pub last_update_time: std::time::Instant,
     pub is_playing: bool,
     pub play_speed: f64,
@@ -78,6 +103,8 @@ impl FlightTrackerApp {
             pending_flights: Vec::new(),
             flights: Vec::new(),
             airplane_renderer: None,
+            cockpit_renderer: None,
+            cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
             is_playing: false,
             play_speed: 0.1,
@@ -98,6 +125,8 @@ impl FlightTrackerApp {
             pending_flights: Vec::new(),
             flights: Vec::new(),
             airplane_renderer: None,
+            cockpit_renderer: None,
+            cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
             is_playing: false,
             play_speed: 0.1,
@@ -262,6 +291,79 @@ impl FlightTrackerApp {
             is_secondary,
             runways,
         });
+    }
+
+    /// Draws the cockpit interior around the camera, at true world scale.
+    ///
+    /// The model is placed so its eye reference point lands exactly where the camera sits.
+    /// Deriving that from the plane state rather than assuming the camera is already there
+    /// keeps the interior correctly positioned under the debug god-camera too.
+    fn render_cockpit<'res>(
+        &'res self,
+        render_pass: &mut wgpu::RenderPass<'res>,
+        camera_bind_group: &'res wgpu::BindGroup,
+        viewport_size: [f32; 2],
+        camera_pos_f64: [f64; 3],
+        airplane_state: Option<cesium_engine::math::trajectory::TransformState>,
+    ) {
+        let cockpit = match &self.cockpit_renderer {
+            Some(c) => c,
+            None => return,
+        };
+        let state = match airplane_state {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Offset from the aircraft origin to the model origin, rotated into world space.
+        // Differencing in f64 before the cast keeps the ~1.3e-6 Mm result well conditioned.
+        let origin_local = crate::cockpit_model::model_origin_offset_mm();
+        let origin_world = state.position
+            + state.rotation
+                * DVec3::new(
+                    origin_local.x as f64,
+                    origin_local.y as f64,
+                    origin_local.z as f64,
+                );
+        let relative_pos_f64 = origin_world - DVec3::from_slice(&camera_pos_f64);
+        let relative_pos = glam::Vec3::new(
+            relative_pos_f64.x as f32,
+            relative_pos_f64.y as f32,
+            relative_pos_f64.z as f32,
+        );
+
+        let rot_f32 = glam::Quat::from_xyzw(
+            state.rotation.x as f32,
+            state.rotation.y as f32,
+            state.rotation.z as f32,
+            state.rotation.w as f32,
+        )
+        .normalize();
+
+        // No yaw correction: the cockpit GLB is already -Z forward, matching the plane frame.
+        let model_matrix = glam::Mat4::from_translation(relative_pos)
+            * glam::Mat4::from_quat(rot_f32)
+            * glam::Mat4::from_scale(glam::Vec3::splat(crate::cockpit_model::MODEL_SCALE));
+
+        use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
+        let push = ModelPushConstants {
+            model_matrix_0: model_matrix.x_axis.to_array(),
+            model_matrix_1: model_matrix.y_axis.to_array(),
+            model_matrix_2: model_matrix.z_axis.to_array(),
+            model_matrix_3: model_matrix.w_axis.to_array(),
+            camera_pos: [
+                camera_pos_f64[0] as f32,
+                camera_pos_f64[1] as f32,
+                camera_pos_f64[2] as f32,
+                1.0,
+            ],
+            viewport_size,
+            // True world scale, and no depth bias — nothing here needs lifting off terrain.
+            min_pixel_size: 0.0,
+            depth_bias: 0.0,
+        };
+
+        cockpit.draw(render_pass, camera_bind_group, push);
     }
 }
 
@@ -488,19 +590,7 @@ impl GlobeExtension for FlightTrackerApp {
                 // Reset camera back to Tracking default perspective
                 self.reset_viewport = true;
 
-                let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                    label: Some("camera_bind_group_layout"),
-                });
+                let camera_bind_group_layout = camera_bind_group_layout(device);
 
                 for pending in self.pending_flights.drain(..) {
                     let points = generate(
@@ -609,7 +699,19 @@ impl GlobeExtension for FlightTrackerApp {
             self.reset_viewport = false;
         }
 
-
+        // Pull the interior in the first time cockpit mode is entered. This blocks for the
+        // asset read and parse, so it costs one frame on entry and nothing afterwards.
+        if self.view_mode == CameraMode::Cockpit
+            && self.cockpit_renderer.is_none()
+            && !self.cockpit_load_failed
+        {
+            if let Some(config) = self.cached_surface_config.clone() {
+                let layout = camera_bind_group_layout(device);
+                self.cockpit_renderer =
+                    crate::cockpit_model::load(device, queue, &config, &layout);
+                self.cockpit_load_failed = self.cockpit_renderer.is_none();
+            }
+        }
 
         if let Some(state) = self.get_plane_state_at(current_progress) {
             match self.view_mode {
@@ -656,6 +758,20 @@ impl GlobeExtension for FlightTrackerApp {
     ) {
         let current_progress = *self.progress.lock().unwrap();
         let airplane_state = self.get_plane_state_at(current_progress);
+
+        // From inside the aircraft the exterior model surrounds the camera and the
+        // trajectory ribbon runs straight through the windshield, so cockpit mode draws
+        // the interior in place of both.
+        if self.view_mode == CameraMode::Cockpit {
+            self.render_cockpit(
+                render_pass,
+                camera_bind_group,
+                viewport_size,
+                camera_pos_f64,
+                airplane_state,
+            );
+            return;
+        }
 
         for flight in &self.flights {
             let mut config = flight.config.clone();
@@ -766,7 +882,8 @@ impl GlobeExtension for FlightTrackerApp {
                         1.0,
                     ],
                     viewport_size,
-                    padding: [0.0, 0.0],
+                    min_pixel_size: 100.0,
+                    depth_bias: 0.005,
                 };
 
                 airplane.draw(render_pass, camera_bind_group, push);

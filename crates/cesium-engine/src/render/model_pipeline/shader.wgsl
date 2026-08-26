@@ -18,7 +18,10 @@ struct ModelPushConstants {
     model_matrix_3: vec4<f32>,
     camera_pos: vec4<f32>,
     viewport_size: vec2<f32>,
-    padding: vec2<f32>,
+    // Minimum on-screen size in pixels the model is inflated to. 0.0 = true world scale.
+    min_pixel_size: f32,
+    // Clip-space depth bias applied as z += depth_bias * w. 0.0 = none.
+    depth_bias: f32,
 }
 
 var<push_constant> push: ModelPushConstants;
@@ -48,26 +51,31 @@ fn vs_main(model: VertexInput) -> VertexOutput {
         push.model_matrix_3,
     );
 
-    let center_world = model_matrix * vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    let dist_to_cam = max(length(center_world.xyz), 0.000001);
+    // Distant models (the aircraft) are inflated so they stay legible on screen. A model
+    // drawn at true world scale — the cockpit interior, which surrounds the camera —
+    // passes min_pixel_size = 0.0 and skips the boost entirely.
+    var scale_multiplier = 1.0;
+    if (push.min_pixel_size > 0.0) {
+        let center_world = model_matrix * vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        let dist_to_cam = max(length(center_world.xyz), 0.000001);
 
-    // `world_scale` is the size of the mesh in engine units, since the mesh is normalized to radius 1.0
-    let world_scale = length(model_matrix[0].xyz);
-    let physical_size_engine = 2.0 * world_scale; // diameter
+        // `world_scale` is the size of the mesh in engine units, since the mesh is normalized to radius 1.0
+        let world_scale = length(model_matrix[0].xyz);
+        let physical_size_engine = 2.0 * world_scale; // diameter
 
-    let fov_factor = 1.5;
-    let pixels_per_engine_unit = (1.0 / dist_to_cam) * push.viewport_size.y * fov_factor;
-    
-    let size_pixels = max(physical_size_engine * pixels_per_engine_unit, 0.00001);
-    let target_pixels = 100.0;
-    
-    let needed_scale = target_pixels / size_pixels;
-    
-    // We want the plane to never be smaller than 1.0 (its true size)
-    // and never larger than some huge factor (e.g., to prevent it from covering the globe)
-    let max_scale = max(1.0, 4000000.0 / (6378137.0 * max(physical_size_engine, 0.000001)));
-    
-    let scale_multiplier = clamp(needed_scale, 1.0, max_scale);
+        let fov_factor = 1.5;
+        let pixels_per_engine_unit = (1.0 / dist_to_cam) * push.viewport_size.y * fov_factor;
+
+        let size_pixels = max(physical_size_engine * pixels_per_engine_unit, 0.00001);
+
+        let needed_scale = push.min_pixel_size / size_pixels;
+
+        // We want the plane to never be smaller than 1.0 (its true size)
+        // and never larger than some huge factor (e.g., to prevent it from covering the globe)
+        let max_scale = max(1.0, 4000000.0 / (6378137.0 * max(physical_size_engine, 0.000001)));
+
+        scale_multiplier = clamp(needed_scale, 1.0, max_scale);
+    }
 
     // Apply scaling
     let scaled_pos = model.position * scale_multiplier;
@@ -77,7 +85,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
     out.clip_position = camera.view_proj * vec4<f32>(final_world_pos.xyz, 1.0);
     // Apply a slight depth bias to prevent the airplane from clipping into the earth's surface
-    out.clip_position.z = out.clip_position.z + 0.005 * out.clip_position.w;
+    out.clip_position.z = out.clip_position.z + push.depth_bias * out.clip_position.w;
 
     // Transform normal to world space (ignoring non-uniform scaling for now)
     let normal_matrix = mat3x3<f32>(

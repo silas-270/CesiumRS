@@ -39,6 +39,8 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         } else if cfg.profile {
             let mut app = testing::profiling::perf_simulator::PerfSimulatorApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
+        } else if cfg.cockpit {
+            testing::rendering::cockpit_capture::run(cfg);
         } else if cfg.benchmark {
             let mut app = testing::benchmark::BenchmarkApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
@@ -64,6 +66,16 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
+
+    // Large models ship in the APK rather than baked into the .so, so point the asset
+    // lookup at the AssetManager before anything can ask for one. Must happen before
+    // `app` is moved into the event loop.
+    let assets = app.asset_manager();
+    cesium_flight::assets::set_loader(move |name| {
+        let cname = std::ffi::CString::new(name).ok()?;
+        let mut asset = assets.open(&cname)?;
+        asset.buffer().ok().map(|b| b.to_vec())
+    });
 
     use winit::platform::android::EventLoopBuilderExtAndroid;
     let event_loop: EventLoop<cesium_engine::core::app::EngineEvent> = EventLoop::with_user_event().with_android_app(app).build().unwrap();
