@@ -54,6 +54,12 @@ pub struct ModelPushConstants {
     pub min_pixel_size: f32,
     /// Clip-space depth bias applied as `z += depth_bias * w`. `0.0` disables it.
     pub depth_bias: f32,
+    /// Flat lighting floor. `0.5` reproduces the old hardcoded ambient exactly.
+    pub ambient_override: f32,
+    /// Blinn-Phong specular highlight strength. `0.0` disables it entirely.
+    pub specular_strength: f32,
+    /// Triplanar procedural surface-detail strength. `0.0` disables it entirely.
+    pub detail_strength: f32,
 }
 
 /// Per-model knobs for [`ModelRenderer::new_with_options`].
@@ -73,6 +79,16 @@ pub struct ModelOptions<'f> {
     /// Per-material colour override, keyed by glTF material name. Applied *before*
     /// `skip_alpha_below`, so an override returning alpha 0 also removes geometry.
     pub material_override: Option<&'f dyn Fn(Option<&str>, [f32; 4]) -> [f32; 4]>,
+    /// Per-primitive geometric nudge, keyed by `(mesh index, primitive index)`. Pushes
+    /// every vertex of the matched primitive along its own vertex normal by the
+    /// returned distance (model-space metres). Used to separate coincident duplicate
+    /// geometry (e.g. an exported "fake double-sided" pair) without touching materials
+    /// that are used correctly elsewhere. `None` (default) is a no-op.
+    pub primitive_normal_offset: Option<&'f dyn Fn(usize, usize) -> f32>,
+    /// Replacement for the model's baked-in texture (or the 1x1 white fallback):
+    /// `(width, height, RGBA8 pixels, row-major, no padding)`. `None` (default)
+    /// reproduces current behaviour (`images.first()`, else 1x1 white).
+    pub texture_override: Option<(u32, u32, Vec<u8>)>,
     /// Label used in the log line emitted once the mesh is assembled.
     pub label: &'f str,
 }
@@ -84,6 +100,8 @@ impl<'f> Default for ModelOptions<'f> {
             cull_mode: Some(wgpu::Face::Back),
             skip_alpha_below: 0.0,
             material_override: None,
+            primitive_normal_offset: None,
+            texture_override: None,
             label: "Model",
         }
     }
@@ -141,7 +159,12 @@ impl ModelRenderer {
             let transform = parent_transform * local_transform;
 
             if let Some(mesh) = node.mesh() {
+                let mesh_index = mesh.index();
                 for primitive in mesh.primitives() {
+                    let normal_offset = options
+                        .primitive_normal_offset
+                        .map(|f| f(mesh_index, primitive.index()))
+                        .unwrap_or(0.0);
                     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
                     let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
@@ -193,6 +216,8 @@ impl ModelRenderer {
                         let world_norm = (normal_matrix
                             * glam::Vec3::new(norm[0], norm[1], norm[2]))
                         .normalize();
+
+                        let world_pos = world_pos + world_norm.extend(0.0) * normal_offset;
 
                         vertices.push(ModelVertex {
                             position: [world_pos.x, world_pos.y, world_pos.z],
@@ -260,9 +285,38 @@ impl ModelRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // Pads tightly-packed RGBA8 pixels to wgpu's row alignment, for texture upload.
+        fn pad_rgba(width: u32, height: u32, rgba: &[u8]) -> (Vec<u8>, u32) {
+            let bytes_per_pixel = 4;
+            let unpadded_bytes_per_row = width * bytes_per_pixel;
+            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) & !(align - 1);
+
+            let mut padded_data = vec![0; (padded_bytes_per_row * height) as usize];
+            for y in 0..height {
+                let src_offset = (y * unpadded_bytes_per_row) as usize;
+                let dst_offset = (y * padded_bytes_per_row) as usize;
+                padded_data[dst_offset..dst_offset + unpadded_bytes_per_row as usize]
+                    .copy_from_slice(&rgba[src_offset..src_offset + unpadded_bytes_per_row as usize]);
+            }
+            (padded_data, padded_bytes_per_row)
+        }
+
         // Setup Texture
         let (texture_size, padded_data, padded_bytes_per_row, format) =
-            if let Some(image) = images.first() {
+            if let Some((width, height, rgba)) = &options.texture_override {
+                let (padded_data, padded_bytes_per_row) = pad_rgba(*width, *height, rgba);
+                (
+                    wgpu::Extent3d {
+                        width: *width,
+                        height: *height,
+                        depth_or_array_layers: 1,
+                    },
+                    padded_data,
+                    padded_bytes_per_row,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                )
+            } else if let Some(image) = images.first() {
                 let width = image.width;
                 let height = image.height;
                 let rgba = match image.format {
@@ -278,20 +332,7 @@ impl ModelRenderer {
                     _ => vec![255; (width * height * 4) as usize], // Fallback to white
                 };
 
-                let bytes_per_pixel = 4;
-                let unpadded_bytes_per_row = width * bytes_per_pixel;
-                let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-                let padded_bytes_per_row = (unpadded_bytes_per_row + align - 1) & !(align - 1);
-
-                let mut padded_data = vec![0; (padded_bytes_per_row * height) as usize];
-                for y in 0..height {
-                    let src_offset = (y * unpadded_bytes_per_row) as usize;
-                    let dst_offset = (y * padded_bytes_per_row) as usize;
-                    padded_data[dst_offset..dst_offset + unpadded_bytes_per_row as usize]
-                        .copy_from_slice(
-                            &rgba[src_offset..src_offset + unpadded_bytes_per_row as usize],
-                        );
-                }
+                let (padded_data, padded_bytes_per_row) = pad_rgba(width, height, &rgba);
 
                 (
                     wgpu::Extent3d {

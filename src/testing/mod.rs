@@ -20,6 +20,9 @@ pub struct VerifyConfig {
     pub benchmark: bool,
     /// Headless capture of cockpit and tracking views, for visual verification.
     pub cockpit: bool,
+    /// Headless capture of the cockpit view at the Samsung S23's landscape/portrait
+    /// resolutions, for iterating on the interior without an APK build.
+    pub cockpit_s23: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,

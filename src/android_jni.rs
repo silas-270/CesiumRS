@@ -7,7 +7,7 @@ use jni::{
 };
 
 use cesium_flight::flight_handle::{FlightHandle, RunwayData};
-use crate::api::{CameraMode, ViewerHandle};
+use crate::api::{CameraMode, MapStyle, ViewerHandle};
 
 pub struct PendingFlightData {
     pub dep_lon: f64,
@@ -23,6 +23,13 @@ pub static RUNWAY_DATA: Mutex<Option<Vec<RunwayData>>> = Mutex::new(None);
 pub static FLIGHT_HANDLE: Mutex<Option<FlightHandle>> = Mutex::new(None);
 pub static VIEWER_HANDLE: Mutex<Option<ViewerHandle>> = Mutex::new(None);
 pub static EVENT_LOOP_PROXY: Mutex<Option<winit::event_loop::EventLoopProxy<cesium_engine::core::app::EngineEvent>>> = Mutex::new(None);
+
+pub static CURRENT_CAMERA_STATE: Mutex<
+    Option<std::sync::Arc<std::sync::Mutex<Option<(cesium_engine::camera::camera::CameraMode, glam::Vec3, glam::Quat)>>>>,
+> = Mutex::new(None);
+pub static PENDING_CAMERA_RESTORE: Mutex<
+    Option<std::sync::Arc<std::sync::Mutex<Option<(glam::Vec3, glam::Quat)>>>>,
+> = Mutex::new(None);
 
 
 
@@ -73,6 +80,21 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     }
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetMapStyle(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    style: jint,
+) {
+    if let Some(handle) = VIEWER_HANDLE.lock().unwrap().as_ref() {
+        let s = match style {
+            1 => MapStyle::Satellite,
+            _ => MapStyle::Standard,
+        };
+        handle.map_set_style(s);
+    }
+}
+
 pub static CURRENT_TELEMETRY: Mutex<Option<std::sync::Arc<std::sync::Mutex<Option<cesium_flight::tracker::FlightTelemetry>>>>> = Mutex::new(None);
 
 #[no_mangle]
@@ -96,6 +118,67 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     let array = env.new_double_array(8).unwrap();
     env.set_double_array_region(&array, 0, &vals).unwrap();
     array.into_raw()
+}
+
+/// Snapshot of the live camera's mode/position/rotation, for persisting across a flight being
+/// backgrounded and resumed. `[mode (0=Free/1=Tracking/2=Cockpit), pos.x, pos.y, pos.z, ori.x,
+/// ori.y, ori.z, ori.w]`, mirroring `nativeGetTelemetry`'s shape. All zeros if unavailable.
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeGetCameraPose(
+    env: JNIEnv,
+    _cls: JClass,
+) -> jni::sys::jdoubleArray {
+    let state_opt = if let Some(arc) = CURRENT_CAMERA_STATE.lock().unwrap().as_ref() {
+        *arc.lock().unwrap()
+    } else {
+        None
+    };
+
+    let vals = if let Some((mode, pos, ori)) = state_opt {
+        let mode_val = match mode {
+            cesium_engine::camera::camera::CameraMode::Tracking => 1.0,
+            cesium_engine::camera::camera::CameraMode::Cockpit => 2.0,
+            cesium_engine::camera::camera::CameraMode::Free => 0.0,
+        };
+        [
+            mode_val,
+            pos.x as f64,
+            pos.y as f64,
+            pos.z as f64,
+            ori.x as f64,
+            ori.y as f64,
+            ori.z as f64,
+            ori.w as f64,
+        ]
+    } else {
+        [0.0; 8]
+    };
+
+    let array = env.new_double_array(8).unwrap();
+    env.set_double_array_region(&array, 0, &vals).unwrap();
+    array.into_raw()
+}
+
+/// Applies a previously saved camera position/rotation the next time the view resets (mode
+/// switch or a freshly loaded flight). Call `nativeSetCameraMode` first so the mode itself is
+/// already correct when this lands. A no-op for a brand-new flight, which simply never calls it.
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetCameraPose(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    x: jdouble,
+    y: jdouble,
+    z: jdouble,
+    qx: jdouble,
+    qy: jdouble,
+    qz: jdouble,
+    qw: jdouble,
+) {
+    if let Some(arc) = PENDING_CAMERA_RESTORE.lock().unwrap().as_ref() {
+        let pos = glam::Vec3::new(x as f32, y as f32, z as f32);
+        let ori = glam::Quat::from_xyzw(qx as f32, qy as f32, qz as f32, qw as f32);
+        *arc.lock().unwrap() = Some((pos, ori));
+    }
 }
 
 #[no_mangle]

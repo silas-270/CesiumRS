@@ -60,6 +60,11 @@ mod inner {
         /// Headless capture of the cockpit and tracking views for visual verification.
         #[arg(long)]
         pub cockpit: bool,
+
+        /// Headless capture of the cockpit view at the Samsung S23's landscape and
+        /// portrait resolutions, for iterating on the interior without an APK build.
+        #[arg(long)]
+        pub cockpit_s23: bool,
     }
 
     pub fn main() {
@@ -105,7 +110,7 @@ mod inner {
             );
             return;
         }
-        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit {
+        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit || cli.cockpit_s23 {
             Some(VerifyConfig {
                 enabled: cli.verify,
                 stress: cli.stress,
@@ -115,6 +120,7 @@ mod inner {
                 profile: cli.profile,
                 benchmark: cli.benchmark,
                 cockpit: cli.cockpit,
+                cockpit_s23: cli.cockpit_s23,
                 stress_mode: cli.stress_mode,
                 prefetch: cli.prefetch,
                 cache_size: cli.cache_size,

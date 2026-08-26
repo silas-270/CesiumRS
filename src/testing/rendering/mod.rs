@@ -1,4 +1,5 @@
 pub mod cockpit_capture;
+pub mod cockpit_s23;
 #[cfg(test)]
 pub mod test_20_tiles;
 #[cfg(test)]

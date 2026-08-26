@@ -110,6 +110,14 @@ pub fn load(
         // (alpha 0.098) and, via the tint table, the HUD combiners.
         skip_alpha_below: 0.5,
         material_override: Some(&material_tint),
+        // The coincident "fake double-sided" duplicate geometry this once nudged apart is
+        // now removed entirely from the GLB itself (a comprehensive Blender-side cleanup,
+        // not just this one pair), so there's nothing left to offset.
+        primitive_normal_offset: None,
+        // Superseded by the shader's own triplanar surface detail (model_pipeline/shader.wgsl),
+        // which covers every primitive regardless of UVs; this baked grain only ever reached
+        // the ~37% with real UVs.
+        texture_override: None,
         label: "787 cockpit",
     };
 
