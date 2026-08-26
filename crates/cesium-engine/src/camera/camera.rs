@@ -55,6 +55,14 @@ const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
 /// at this range.
 const COCKPIT_ZNEAR: f64 = 5e-8;
 
+/// Vertical FOV used in cockpit mode, in radians (~60°), independent of `focal_length`.
+///
+/// The shared `focal_length` field yields ~46° vertical FOV at its default, which is a
+/// "soda-straw" ~22° horizontal in portrait aspect ratios. A wider fixed FOV frames more
+/// of the interior regardless of orientation, without affecting the debug-panel slider's
+/// effect on Free/Tracking modes.
+const COCKPIT_FOVY_RAD: f32 = 1.0472; // 60 degrees
+
 /// Head-turn limits for [`Camera::look_around`], in radians (±100° yaw, ±34° pitch).
 const LOOK_AROUND_MAX_YAW: f32 = 1.75;
 const LOOK_AROUND_MAX_PITCH: f32 = 0.6;
@@ -452,7 +460,10 @@ impl Camera {
         let zfar = pos_dvec.length() + 10.0;
 
         let sensor_height = 24.0;
-        let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length)).atan();
+        let fovy = match self.mode {
+            CameraMode::Cockpit => COCKPIT_FOVY_RAD,
+            _ => 2.0 * (sensor_height / (2.0 * self.focal_length)).atan(),
+        };
         let proj = Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
 
         // Convert to Reverse-Z: map [0, 1] to [1, 0]
@@ -476,7 +487,10 @@ impl Camera {
         let zfar = pos_dvec.length() + 10.0;
 
         let sensor_height = 24.0;
-        let fovy = 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan();
+        let fovy = match self.mode {
+            CameraMode::Cockpit => COCKPIT_FOVY_RAD as f64,
+            _ => 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan(),
+        };
         let proj = glam::DMat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
 
         // Convert to Reverse-Z: map [0, 1] to [1, 0]

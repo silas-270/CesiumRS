@@ -88,6 +88,16 @@ pub struct FlightTrackerApp {
     pub reset_viewport: bool,
     command_rx: Option<mpsc::Receiver<FlightCommand>>,
     pub current_telemetry: std::sync::Arc<std::sync::Mutex<Option<FlightTelemetry>>>,
+    /// The live camera's mode/position/rotation, refreshed every frame so the Android side
+    /// can snapshot it (e.g. to persist across a flight being backgrounded and resumed).
+    pub current_camera_state: std::sync::Arc<
+        std::sync::Mutex<Option<(cesium_engine::camera::camera::CameraMode, glam::Vec3, glam::Quat)>>,
+    >,
+    /// A camera position/rotation to apply the next time the view resets (mode switch or a
+    /// freshly loaded flight), consumed once. Used to restore a previously saved perspective
+    /// instead of the mode's own default framing; `None` leaves today's default-reset behaviour
+    /// untouched.
+    pub pending_camera_restore: std::sync::Arc<std::sync::Mutex<Option<(glam::Vec3, glam::Quat)>>>,
     /// Cached from `init()` so we can create PolylineRenderers on-demand in `update()`.
     cached_surface_config: Option<wgpu::SurfaceConfiguration>,
 }
@@ -113,6 +123,8 @@ impl FlightTrackerApp {
             reset_viewport: true,
             command_rx: Some(rx),
             current_telemetry,
+            current_camera_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
         };
         (app, FlightHandle::new(tx))
@@ -135,6 +147,8 @@ impl FlightTrackerApp {
             reset_viewport: true,
             command_rx: None,
             current_telemetry: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            current_camera_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
         }
     }
@@ -345,6 +359,13 @@ impl FlightTrackerApp {
             * glam::Mat4::from_quat(rot_f32)
             * glam::Mat4::from_scale(glam::Vec3::splat(crate::cockpit_model::MODEL_SCALE));
 
+        // Dim the cockpit toward night without ever going fully black, reusing the same
+        // flight-progress-driven sun intensity the exterior lighting already derives from.
+        let sun = self
+            .get_sun_intensity_at(*self.progress.lock().unwrap())
+            .unwrap_or(1.0) as f32;
+        let ambient_override = 0.30 * (0.6 + 0.4 * sun);
+
         use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
         let push = ModelPushConstants {
             model_matrix_0: model_matrix.x_axis.to_array(),
@@ -361,6 +382,9 @@ impl FlightTrackerApp {
             // True world scale, and no depth bias — nothing here needs lifting off terrain.
             min_pixel_size: 0.0,
             depth_bias: 0.0,
+            ambient_override,
+            specular_strength: 0.15,
+            detail_strength: 0.13,
         };
 
         cockpit.draw(render_pass, camera_bind_group, push);
@@ -678,6 +702,10 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
 
+        if let Ok(mut lock) = self.current_camera_state.lock() {
+            *lock = Some((camera.mode, camera.local_pos, camera.local_ori));
+        }
+
         if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
             camera.sun_intensity = intensity as f32;
         }
@@ -746,6 +774,16 @@ impl GlobeExtension for FlightTrackerApp {
                 aspect_ratio,
                 mode_switched_or_reset,
             );
+        }
+
+        // Applied after the mode's own default framing above, so it overrides rather than
+        // races it. Only present on the one frame right after a restore was requested; consumed
+        // immediately so later resets during the same session fall back to each mode's default
+        // again, same as today.
+        if mode_switched_or_reset {
+            if let Some((pos, ori)) = self.pending_camera_restore.lock().unwrap().take() {
+                camera.set_local_transform(pos, ori);
+            }
         }
     }
 
@@ -884,6 +922,11 @@ impl GlobeExtension for FlightTrackerApp {
                     viewport_size,
                     min_pixel_size: 100.0,
                     depth_bias: 0.005,
+                    // No-op: reproduces the shader's old hardcoded lighting exactly, so the
+                    // exterior aircraft's look is unaffected by the cockpit's new knobs.
+                    ambient_override: 0.5,
+                    specular_strength: 0.0,
+                    detail_strength: 0.0,
                 };
 
                 airplane.draw(render_pass, camera_bind_group, push);

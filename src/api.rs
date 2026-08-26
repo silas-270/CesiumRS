@@ -35,7 +35,9 @@
 #[cfg(not(target_os = "android"))]
 use cesium_engine::core::app::App;
 use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
-use cesium_engine::globe::tiles::config::TileEngineConfig;
+use cesium_engine::globe::tiles::config::{
+    TileEngineConfig, SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_URL,
+};
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
 #[cfg(not(target_os = "android"))]
@@ -52,6 +54,15 @@ pub enum CameraMode {
     Tracking,
     /// First-person view locked inside the tracked entity.
     Cockpit,
+}
+
+/// Base imagery style for the globe's tile layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapStyle {
+    /// Default dark, label-free vector-style basemap.
+    Standard,
+    /// Satellite aerial imagery.
+    Satellite,
 }
 
 /// A snapshot of the camera's state at the time of the query.
@@ -282,5 +293,18 @@ impl ViewerHandle {
     /// Adjust map brightness live. `-1.0` = black, `0.0` = neutral, `1.0` = white.
     pub fn map_set_brightness(&self, value: f32) {
         let _ = self.tx.try_send(ViewerCommand::MapSetBrightness(value));
+    }
+
+    /// Switch the base map imagery live (e.g. standard vs. satellite). The tile
+    /// texture cache is rebuilt, so already-loaded tiles briefly show the
+    /// fallback color while the new imagery re-fetches.
+    pub fn map_set_style(&self, style: MapStyle) {
+        let url = match style {
+            MapStyle::Standard => STANDARD_IMAGERY_URL,
+            MapStyle::Satellite => SATELLITE_IMAGERY_URL,
+        };
+        let _ = self
+            .tx
+            .try_send(ViewerCommand::MapSetImageryUrl(url.to_string()));
     }
 }

@@ -10,7 +10,7 @@ pub mod testing;
 pub mod android_jni;
 
 // ── Primary public API ────────────────────────────────────────────────────────
-pub use api::{CameraMode, CameraState, CesiumViewer, ViewerHandle};
+pub use api::{CameraMode, CameraState, CesiumViewer, MapStyle, ViewerHandle};
 
 // ── Legacy path (kept for the test harness) ───────────────────────────────────
 #[cfg(not(target_os = "android"))]
@@ -41,6 +41,8 @@ pub fn run(config: Option<testing::VerifyConfig>) {
             event_loop.run_app(&mut app).unwrap();
         } else if cfg.cockpit {
             testing::rendering::cockpit_capture::run(cfg);
+        } else if cfg.cockpit_s23 {
+            testing::rendering::cockpit_s23::run(cfg);
         } else if cfg.benchmark {
             let mut app = testing::benchmark::BenchmarkApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
@@ -85,6 +87,8 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
 
     let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
     let current_telemetry = flight_app.current_telemetry.clone();
+    let current_camera_state = flight_app.current_camera_state.clone();
+    let pending_camera_restore = flight_app.pending_camera_restore.clone();
 
     // Flight data is now loaded on-demand via nativeLoadPendingFlight() JNI call.
     // The engine starts idle and waits for the user to book a flight.
@@ -96,6 +100,8 @@ pub extern "C" fn android_main(app: winit::platform::android::activity::AndroidA
     *android_jni::VIEWER_HANDLE.lock().unwrap() = Some(viewer.handle());
     *android_jni::FLIGHT_HANDLE.lock().unwrap() = Some(flight_handle.clone());
     *android_jni::CURRENT_TELEMETRY.lock().unwrap() = Some(current_telemetry);
+    *android_jni::CURRENT_CAMERA_STATE.lock().unwrap() = Some(current_camera_state);
+    *android_jni::PENDING_CAMERA_RESTORE.lock().unwrap() = Some(pending_camera_restore);
 
     // If a flight was pending before we initialized (e.g. fast user click or process recreation), load it!
     if let Some(data) = android_jni::FLIGHT_DATA.lock().unwrap().take() {

@@ -18,6 +18,10 @@ pub enum ViewerCommand {
     MapSetSaturation(f32),
     MapSetContrast(f32),
     MapSetBrightness(f32),
+    /// Switch the base tile layer to a new XYZ imagery URL (`{z}`/`{x}`/`{y}`
+    /// placeholders). Reconstructs the tile texture cache, so already-loaded
+    /// tiles briefly fall back to the base color while the new imagery loads.
+    MapSetImageryUrl(String),
 }
 
 /// Engine-agnostic camera mode enum, mirroring `camera::CameraMode` without exposing it.

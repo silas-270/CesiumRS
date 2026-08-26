@@ -637,6 +637,15 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                         ViewerCommand::MapSetBrightness(v) => {
                             state.tile_system.config.map_brightness = v
                         }
+                        ViewerCommand::MapSetImageryUrl(url) => {
+                            state.tile_system.config.base_imagery_url = url;
+                            state.tile_system.texture_manager =
+                                crate::globe::tiles::texture_manager::TileTextureManager::new(
+                                    &state.device,
+                                    &state.queue,
+                                    &state.tile_system.config,
+                                );
+                        }
                     }
                 }
             }

@@ -15,6 +15,13 @@ pub const CAMERA_LOCAL_MM: glam::Vec3 = glam::Vec3::new(0.0, 17.0 / 1_000_000.0,
 /// and displays along the bottom edge while keeping the horizon comfortably in view.
 const DEFAULT_PITCH_DOWN: f32 = 0.14;
 
+/// Persistent aft-and-up nudge on top of [`CAMERA_LOCAL_MM`], aircraft-local frame
+/// (+Y up, +Z aft). Applied only to the camera, not the interior model, so it pulls
+/// the eye back from the seat rather than moving the whole cockpit with it. Starting
+/// values — tune visually via `--cockpit-s23`.
+const CAMERA_PULLBACK_MM: glam::Vec3 =
+    glam::Vec3::new(0.0, 0.03 / 1_000_000.0, 0.18 / 1_000_000.0);
+
 pub fn update_cockpit_mode(
     camera: &mut Camera,
     state: &TransformState,
@@ -25,7 +32,7 @@ pub fn update_cockpit_mode(
 
     // Re-applied every frame, not just on entry: the seat is bolted to the airframe, so
     // the interior can never drift out from around the camera.
-    camera.local_pos = CAMERA_LOCAL_MM;
+    camera.local_pos = CAMERA_LOCAL_MM + CAMERA_PULLBACK_MM;
 
     if mode_switched_or_reset {
         // Along the nose, tilted slightly down so the panel is in frame.
