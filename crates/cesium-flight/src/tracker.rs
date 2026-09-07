@@ -695,19 +695,25 @@ impl GlobeExtension for FlightTrackerApp {
 
         let current_progress = *self.progress.lock().unwrap();
 
-        // Update the shared telemetry object
-        if let Some(telemetry) = self.get_telemetry_at(current_progress) {
-            if let Ok(mut lock) = self.current_telemetry.lock() {
-                *lock = Some(telemetry);
+        {
+            // Always-on cost regardless of camera mode — kept separate from the
+            // per-mode spans below so it isn't mistaken for mode-specific overhead.
+            let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.telemetry");
+
+            // Update the shared telemetry object
+            if let Some(telemetry) = self.get_telemetry_at(current_progress) {
+                if let Ok(mut lock) = self.current_telemetry.lock() {
+                    *lock = Some(telemetry);
+                }
             }
-        }
 
-        if let Ok(mut lock) = self.current_camera_state.lock() {
-            *lock = Some((camera.mode, camera.local_pos, camera.local_ori));
-        }
+            if let Ok(mut lock) = self.current_camera_state.lock() {
+                *lock = Some((camera.mode, camera.local_pos, camera.local_ori));
+            }
 
-        if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
-            camera.sun_intensity = intensity as f32;
+            if let Some(intensity) = self.get_sun_intensity_at(current_progress) {
+                camera.sun_intensity = intensity as f32;
+            }
         }
 
         // Camera Mode two-way sync — must happen before the flight loop so that
@@ -733,6 +739,9 @@ impl GlobeExtension for FlightTrackerApp {
             && self.cockpit_renderer.is_none()
             && !self.cockpit_load_failed
         {
+            // One-time cost on cockpit-mode entry (asset read/parse/GPU upload) —
+            // spanned separately since it's expected to be a spike, not steady-state.
+            let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.cockpit_model_prep");
             if let Some(config) = self.cached_surface_config.clone() {
                 let layout = camera_bind_group_layout(device);
                 self.cockpit_renderer =
@@ -744,6 +753,7 @@ impl GlobeExtension for FlightTrackerApp {
         if let Some(state) = self.get_plane_state_at(current_progress) {
             match self.view_mode {
                 CameraMode::Tracking => {
+                    let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.camera_mode.tracking");
                     crate::camera_modes::tracking::update_tracking_mode(
                         camera,
                         &state,
@@ -751,6 +761,7 @@ impl GlobeExtension for FlightTrackerApp {
                     );
                 }
                 CameraMode::Cockpit => {
+                    let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.camera_mode.cockpit");
                     crate::camera_modes::cockpit::update_cockpit_mode(
                         camera,
                         &state,
@@ -758,6 +769,7 @@ impl GlobeExtension for FlightTrackerApp {
                     );
                 }
                 CameraMode::Free => {
+                    let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.camera_mode.free");
                     crate::camera_modes::free::update_free_mode(
                         camera,
                         &self.flights,
@@ -767,6 +779,7 @@ impl GlobeExtension for FlightTrackerApp {
                 }
             }
         } else if self.view_mode == CameraMode::Free {
+            let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.camera_mode.free");
             // Free mode does not require an active plane state
             crate::camera_modes::free::update_free_mode(
                 camera,
@@ -801,6 +814,7 @@ impl GlobeExtension for FlightTrackerApp {
         // trajectory ribbon runs straight through the windshield, so cockpit mode draws
         // the interior in place of both.
         if self.view_mode == CameraMode::Cockpit {
+            let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.cockpit_model");
             self.render_cockpit(
                 render_pass,
                 camera_bind_group,
@@ -811,6 +825,7 @@ impl GlobeExtension for FlightTrackerApp {
             return;
         }
 
+        let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.entities");
         for flight in &self.flights {
             let mut config = flight.config.clone();
             config.physical_half_width = 1.49 / 1_000_000.0;

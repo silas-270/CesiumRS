@@ -21,6 +21,21 @@ pub struct FrameTimings {
     pub render_scene_us: f64,
 }
 
+/// Finer-grained per-subsystem breakdown of `update_logic`/`render_scene`, additive
+/// alongside `FrameTimings` so existing benchmark baselines stay comparable.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct SubsystemTimings {
+    pub extension_update_us: f64,
+    pub quadtree_us: f64,
+    pub tile_streaming_us: f64,
+    pub display_state_us: f64,
+    pub terrain_draw_us: f64,
+    pub sky_us: f64,
+    pub extension_render_us: f64,
+    pub submit_present_us: f64,
+    pub egui_us: f64,
+}
+
 pub struct WgpuState<'a> {
     pub instance: wgpu::Instance,
     pub surface: Option<wgpu::Surface<'a>>,
@@ -72,6 +87,7 @@ pub struct WgpuState<'a> {
     tiles_with_own_texture: LruCache<TileId, ()>,
     pub label_manager: crate::label::LabelManager,
     pub last_timings: FrameTimings,
+    pub last_subsystem_timings: SubsystemTimings,
 }
 
 fn create_depth_texture(
@@ -335,6 +351,7 @@ impl<'a> WgpuState<'a> {
             tiles_with_own_texture: LruCache::new(std::num::NonZeroUsize::new(4096).unwrap()),
             label_manager: crate::label::LabelManager::new(),
             last_timings: FrameTimings::default(),
+            last_subsystem_timings: SubsystemTimings::default(),
         }
     }
 
@@ -436,6 +453,8 @@ impl<'a> WgpuState<'a> {
         let mut frustum = self.camera.calculate_frustum_planes(aspect_ratio);
 
         if let Some(ext) = &mut self.extension {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.update.extension");
+            let extension_start = Instant::now();
             ext.update(
                 &self.device,
                 &self.queue,
@@ -444,6 +463,8 @@ impl<'a> WgpuState<'a> {
                 &mut self.camera,
                 aspect_ratio,
             );
+            self.last_subsystem_timings.extension_update_us =
+                extension_start.elapsed().as_secs_f64() * 1_000_000.0;
             // Recalculate frustum since the extension may have moved the camera!
             frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         }
@@ -479,16 +500,25 @@ impl<'a> WgpuState<'a> {
             camera_ori_dquat.z as f32,
             camera_ori_dquat.w as f32,
         );
-        self.quadtree_manager.update(camera_pos_f32, frustum);
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.update.quadtree");
+            let quadtree_start = Instant::now();
+            self.quadtree_manager.update(camera_pos_f32, frustum);
+            self.last_subsystem_timings.quadtree_us =
+                quadtree_start.elapsed().as_secs_f64() * 1_000_000.0;
+        }
 
         let altitude = self.camera.altitude();
         let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
         let frustum_obj = crate::globe::quadtree::Frustum::from_planes(frustum);
-        
-        let label_start = Instant::now();
-        self.label_manager.update(camera_pos_f32, camera_ori_f32, altitude, zoom, &frustum_obj);
-        self.last_timings.label_manager_us = label_start.elapsed().as_secs_f64() * 1_000_000.0;
-        
+
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.update.label_manager");
+            let label_start = Instant::now();
+            self.label_manager.update(camera_pos_f32, camera_ori_f32, altitude, zoom, &frustum_obj);
+            self.last_timings.label_manager_us = label_start.elapsed().as_secs_f64() * 1_000_000.0;
+        }
+
 
 
         let mut gpu_view_matrix = view_matrix;
@@ -540,24 +570,36 @@ impl<'a> WgpuState<'a> {
                 missing_meshes.push(*id);
             }
         }
-        self.tile_system.update(
-            &self.device,
-            &self.queue,
-            camera_pos_f32,
-            &visible_tiles,
-            &missing_meshes,
-        );
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.update.tile_streaming");
+            let tile_streaming_start = Instant::now();
+            self.tile_system.update(
+                &self.device,
+                &self.queue,
+                camera_pos_f32,
+                &visible_tiles,
+                &missing_meshes,
+            );
 
-        // Promote both mathematically visible tiles and actively rendered fallback parents in the cache.
-        self.update_tile_cache(&visible_tiles);
-        for (id, _, _) in &renderable_tiles {
-            self.tile_cache.get(id); // Keep fallback meshes alive!
+            // Promote both mathematically visible tiles and actively rendered fallback parents in the cache.
+            self.update_tile_cache(&visible_tiles);
+            for (id, _, _) in &renderable_tiles {
+                self.tile_cache.get(id); // Keep fallback meshes alive!
+            }
+            self.last_subsystem_timings.tile_streaming_us =
+                tile_streaming_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
 
         // Update the stable display-state map. This is where texture assignment
         // decisions are made with no-downgrade and sibling-gate rules.
         // We feed it renderable_tiles so that parent fallback meshes get their textures and get drawn.
-        self.update_display_state(&renderable_tiles);
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.update.display_state");
+            let display_state_start = Instant::now();
+            self.update_display_state(&renderable_tiles);
+            self.last_subsystem_timings.display_state_us =
+                display_state_start.elapsed().as_secs_f64() * 1_000_000.0;
+        }
 
         renderable_tiles
     }
@@ -813,46 +855,54 @@ impl<'a> WgpuState<'a> {
 
         // Draw solid — iterate display_state for stable per-tile texture assignments.
         // display_state was built this frame by update_display_state() with no-downgrade rules.
-        render_pass.set_pipeline(&self.solid_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.render.terrain_draw");
+            let terrain_draw_start = Instant::now();
 
-        // Collect display_state entries to avoid borrow conflict with tile_system.
-        let draw_list: Vec<(TileId, TileId, [f32; 4])> = self
-            .display_state
-            .iter()
-            .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.uv_scale_offset))
-            .collect();
+            render_pass.set_pipeline(&self.solid_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-        for (mesh_id, texture_id, uv_scale_offset) in &draw_list {
-            // Get the GPU texture bind group for the assigned texture (LRU-promoting, correct at draw time).
-            if let Some(render_data) = self.tile_system.get_render_data(*texture_id) {
-                if let Some(buffers) = self.tile_cache.peek(mesh_id) {
-                    let center_f64 = buffers.center_f64;
-                    let push = TilePushConstants {
-                        relative_center: [
-                            (center_f64[0] - camera_pos_f64[0]) as f32,
-                            (center_f64[1] - camera_pos_f64[1]) as f32,
-                            (center_f64[2] - camera_pos_f64[2]) as f32,
-                            0.0,
-                        ],
-                        uv_scale_offset: *uv_scale_offset,
-                    };
+            // Collect display_state entries to avoid borrow conflict with tile_system.
+            let draw_list: Vec<(TileId, TileId, [f32; 4])> = self
+                .display_state
+                .iter()
+                .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.uv_scale_offset))
+                .collect();
 
-                    render_pass.set_push_constants(
-                        wgpu::ShaderStages::VERTEX,
-                        0,
-                        bytemuck::cast_slice(&[push]),
-                    );
+            for (mesh_id, texture_id, uv_scale_offset) in &draw_list {
+                // Get the GPU texture bind group for the assigned texture (LRU-promoting, correct at draw time).
+                if let Some(render_data) = self.tile_system.get_render_data(*texture_id) {
+                    if let Some(buffers) = self.tile_cache.peek(mesh_id) {
+                        let center_f64 = buffers.center_f64;
+                        let push = TilePushConstants {
+                            relative_center: [
+                                (center_f64[0] - camera_pos_f64[0]) as f32,
+                                (center_f64[1] - camera_pos_f64[1]) as f32,
+                                (center_f64[2] - camera_pos_f64[2]) as f32,
+                                0.0,
+                            ],
+                            uv_scale_offset: *uv_scale_offset,
+                        };
 
-                    render_pass.set_bind_group(1, render_data.bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        buffers.index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint16,
-                    );
-                    render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
+                        render_pass.set_push_constants(
+                            wgpu::ShaderStages::VERTEX,
+                            0,
+                            bytemuck::cast_slice(&[push]),
+                        );
+
+                        render_pass.set_bind_group(1, render_data.bind_group, &[]);
+                        render_pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                        render_pass.set_index_buffer(
+                            buffers.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint16,
+                        );
+                        render_pass.draw_indexed(0..buffers.num_indices, 0, 0..1);
+                    }
                 }
             }
+
+            self.last_subsystem_timings.terrain_draw_us =
+                terrain_draw_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
 
         // Wireframe overlay rendering removed as per user request
@@ -873,19 +923,26 @@ impl<'a> WgpuState<'a> {
         // Draw the procedural sky perfectly isolated in the background!
         // Uses depth Equal 1.0, so it's perfectly rejected by any terrain already drawn.
         if !self.tile_system.config.transparent_background {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.render.sky");
+            let sky_start = Instant::now();
             render_pass.set_pipeline(&self.sky_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             // Full-screen triangle is drawn with exactly 3 virtual vertices
             render_pass.draw(0..3, 0..1);
+            self.last_subsystem_timings.sky_us = sky_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
 
         if let Some(ext) = &self.extension {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.render.extension");
+            let extension_render_start = Instant::now();
             ext.render(
                 &mut render_pass,
                 &self.camera_bind_group,
                 [self.config.width as f32, self.config.height as f32],
                 camera_pos_f64,
             );
+            self.last_subsystem_timings.extension_render_us =
+                extension_render_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
     }
 
@@ -1014,8 +1071,15 @@ impl<'a> WgpuState<'a> {
         self.render_scene(&mut encoder, &view, &visible_tiles);
         self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
         
-        self.render_egui(&mut encoder, &view, ui_closure);
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.render.egui_debug");
+            let egui_start = Instant::now();
+            self.render_egui(&mut encoder, &view, ui_closure);
+            self.last_subsystem_timings.egui_us = egui_start.elapsed().as_secs_f64() * 1_000_000.0;
+        }
 
+        let _submit_present_span = crate::core::trace::ScopedTrace::new("cesium.render.submit_present");
+        let submit_present_start = Instant::now();
         self.queue.submit(std::iter::once(encoder.finish()));
 
         let mut captured_pixels = None;
@@ -1029,6 +1093,9 @@ impl<'a> WgpuState<'a> {
         if let Some(out) = output {
             out.present();
         }
+        self.last_subsystem_timings.submit_present_us =
+            submit_present_start.elapsed().as_secs_f64() * 1_000_000.0;
+        drop(_submit_present_span);
 
         Ok(captured_pixels)
     }
@@ -1080,6 +1147,8 @@ impl<'a> WgpuState<'a> {
         self.render_scene(&mut encoder, &view, &visible_tiles);
         self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
 
+        let _submit_present_span = crate::core::trace::ScopedTrace::new("cesium.render.submit_present");
+        let submit_present_start = Instant::now();
         self.queue.submit(std::iter::once(encoder.finish()));
 
         let mut captured_pixels = None;
@@ -1093,6 +1162,9 @@ impl<'a> WgpuState<'a> {
         if let Some(out) = output {
             out.present();
         }
+        self.last_subsystem_timings.submit_present_us =
+            submit_present_start.elapsed().as_secs_f64() * 1_000_000.0;
+        drop(_submit_present_span);
 
         Ok(captured_pixels)
     }

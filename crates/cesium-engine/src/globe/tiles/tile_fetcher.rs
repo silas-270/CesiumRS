@@ -5,6 +5,11 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, Notify};
 
+/// A decoded tile image: `(width, height, RGBA8 pixels)`. Dimensions travel
+/// with the pixels because imagery sources differ in tile size — the Carto
+/// basemap serves 512x512 (`@2x`) while Esri satellite serves 256x256.
+pub type TileImage = (u32, u32, Vec<u8>);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TilePriority {
     High, // e.g., visible tile
@@ -62,7 +67,7 @@ pub struct TileFetcher {
 
 impl TileFetcher {
     pub fn new(
-        tx: tokio::sync::mpsc::UnboundedSender<(TileId, Result<Vec<u8>, String>)>,
+        tx: tokio::sync::mpsc::UnboundedSender<(TileId, Result<TileImage, String>)>,
         base_url: String,
         offline_mode: bool,
     ) -> Self {
@@ -120,7 +125,7 @@ impl TileFetcher {
         client: reqwest::Client,
         queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
         notify: Arc<Notify>,
-        tx: mpsc::UnboundedSender<(TileId, Result<Vec<u8>, String>)>,
+        tx: mpsc::UnboundedSender<(TileId, Result<TileImage, String>)>,
         base_url: String,
         offline_mode: bool,
     ) {
@@ -146,7 +151,7 @@ impl TileFetcher {
                 let url_clone = base_url.clone();
                 tokio::spawn(async move {
                     let res = if offline_mode {
-                        Ok(vec![255; 256 * 256 * 4])
+                        Ok((256, 256, vec![255; 256 * 256 * 4]))
                     } else {
                         Self::fetch_and_decode(client_clone, id, url_clone).await
                     };
@@ -163,7 +168,7 @@ impl TileFetcher {
         client: reqwest::Client,
         id: TileId,
         base_url: String,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<TileImage, String> {
         let url = base_url
             .replace("{z}", &id.z.to_string())
             .replace("{x}", &id.x.to_string())
@@ -186,7 +191,10 @@ impl TileFetcher {
 
         let result = tokio::task::spawn_blocking(move || {
             image::load_from_memory(&bytes)
-                .map(|img| img.to_rgba8().into_raw())
+                .map(|img| {
+                    let rgba = img.to_rgba8();
+                    (rgba.width(), rgba.height(), rgba.into_raw())
+                })
                 .map_err(|e| format!("Image decode error: {}", e))
         })
         .await
