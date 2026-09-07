@@ -1,12 +1,12 @@
 use crate::globe::quadtree::TileId;
 use crate::globe::tiles::config::TileEngineConfig;
 use crate::globe::tiles::tile_cache::TileCacheManager;
-use crate::globe::tiles::tile_fetcher::{TileFetcher, TilePriority};
+use crate::globe::tiles::tile_fetcher::{TileFetcher, TileImage, TilePriority};
 use tokio::sync::mpsc;
 
 pub struct TileTextureManager {
     pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
-    rx: mpsc::UnboundedReceiver<(TileId, Result<Vec<u8>, String>)>,
+    rx: mpsc::UnboundedReceiver<(TileId, Result<TileImage, String>)>,
     pub fetcher: TileFetcher,
     pub bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -130,7 +130,7 @@ impl TileTextureManager {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         id: TileId,
-        result: Result<Vec<u8>, String>,
+        result: Result<TileImage, String>,
     ) {
         // Check if we still care about this tile (it hasn't been evicted from LRU)
         let is_still_needed = matches!(
@@ -143,10 +143,10 @@ impl TileTextureManager {
         }
 
         match result {
-            Ok(rgba) => {
+            Ok((width, height, rgba)) => {
                 let size = wgpu::Extent3d {
-                    width: 256,
-                    height: 256,
+                    width,
+                    height,
                     depth_or_array_layers: 1,
                 };
 
@@ -171,8 +171,8 @@ impl TileTextureManager {
                     &rgba,
                     wgpu::ImageDataLayout {
                         offset: 0,
-                        bytes_per_row: Some(4 * 256),
-                        rows_per_image: Some(256),
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
                     },
                     size,
                 );

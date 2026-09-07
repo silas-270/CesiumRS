@@ -22,6 +22,11 @@ pub enum ViewerCommand {
     /// placeholders). Reconstructs the tile texture cache, so already-loaded
     /// tiles briefly fall back to the base color while the new imagery loads.
     MapSetImageryUrl(String),
+    /// Emits an ATrace instant marker ("cesium.scenario.<id>") on the engine
+    /// thread, so a captured Perfetto trace can be auto-sliced by scenario.
+    /// Processed only when built with `--features perf_trace`.
+    #[cfg(feature = "perf_trace")]
+    PerfScenarioMarker(i32),
 }
 
 /// Engine-agnostic camera mode enum, mirroring `camera::CameraMode` without exposing it.

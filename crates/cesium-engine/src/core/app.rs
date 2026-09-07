@@ -414,6 +414,11 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                     return;
                 }
 
+                // Started here (not in `about_to_wait`) because this is where the 60fps
+                // throttle/battery-saver sleep has already happened, so the span reflects
+                // true CPU-busy work per frame rather than wall-clock-including-idle-sleep.
+                let _frame_span = crate::core::trace::ScopedTrace::new("cesium.frame");
+
                 #[cfg(feature = "debug_panel")]
                 let render_result = state.render(None, false, |ctx, s| {
                     // The sliders/checkboxes window is a desktop dev tool; Android only wants
@@ -570,6 +575,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
         #[cfg(target_os = "android")]
         {
             if !RENDERING_ENABLED.load(Ordering::Relaxed) {
+                let _span = crate::core::trace::ScopedTrace::new("cesium.frame.idle_sleep");
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 return;
             }
@@ -580,6 +586,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
             let elapsed = now.duration_since(last);
             let target = std::time::Duration::from_secs_f32(1.0 / 60.0);
             if elapsed < target {
+                let _span = crate::core::trace::ScopedTrace::new("cesium.frame.throttle_sleep");
                 std::thread::sleep(target - elapsed);
             }
             Instant::now().duration_since(last).as_secs_f32()
@@ -639,6 +646,15 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                         }
                         ViewerCommand::MapSetBrightness(v) => {
                             state.tile_system.config.map_brightness = v
+                        }
+                        #[cfg(feature = "perf_trace")]
+                        ViewerCommand::PerfScenarioMarker(scenario_id) => {
+                            // A zero-width begin/end pair, immediately dropped, is
+                            // ATrace's idiomatic stand-in for an instant marker — this
+                            // is what an analysis script slices the trace by.
+                            drop(crate::core::trace::ScopedTrace::new(&format!(
+                                "cesium.scenario.{scenario_id}"
+                            )));
                         }
                         ViewerCommand::MapSetImageryUrl(url) => {
                             state.tile_system.config.base_imagery_url = url;

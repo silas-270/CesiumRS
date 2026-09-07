@@ -245,6 +245,22 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     }
 }
 
+/// Debug-only hook for performance testing (see tools/run_perf_scenario.sh):
+/// tags a captured Perfetto trace with `scenario_id` and switches camera mode
+/// for the steady-state scenarios. Only exported when built with
+/// `--features perf_trace`; never present in a shipped release `.so`.
+#[cfg(feature = "perf_trace")]
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeRunPerfScenario(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    scenario_id: jint,
+) {
+    if let Some(handle) = VIEWER_HANDLE.lock().unwrap().as_ref() {
+        handle.run_perf_scenario(scenario_id);
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRunways(
     mut env: JNIEnv,

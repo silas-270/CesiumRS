@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use cesium_engine::globe::quadtree::TileId;
+    use cesium_engine::globe::tiles::config::STANDARD_IMAGERY_URL;
     use cesium_engine::globe::tiles::tile_fetcher::{TileFetcher, TilePriority};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -14,12 +15,12 @@ mod tests {
     // Since TileFetcher actually makes network requests,
     // we'll just test that it can fetch a known tile,
     // and that invalid URLs correctly return errors.
-    #[tokio::test]
-    async fn test_fetch_valid_tile() {
+    #[test]
+    fn test_fetch_valid_tile() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let fetcher = TileFetcher::new(
             tx,
-            "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png".to_string(),
+            STANDARD_IMAGERY_URL.to_string(),
             false,
         );
 
@@ -28,19 +29,18 @@ mod tests {
 
         // It might take a moment to fetch
         let (id, result) = rx
-            .recv()
-            .await
+            .blocking_recv()
             .expect("Timeout waiting for tile");
         assert_eq!(id, valid_tile);
         assert!(result.is_ok(), "Failed to fetch valid tile");
     }
 
-    #[tokio::test]
-    async fn test_fetch_invalid_tile() {
+    #[test]
+    fn test_fetch_invalid_tile() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let fetcher = TileFetcher::new(
             tx,
-            "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png".to_string(),
+            STANDARD_IMAGERY_URL.to_string(),
             false,
         );
 
@@ -53,8 +53,7 @@ mod tests {
         fetcher.request_tile(invalid_tile, TilePriority::Low);
 
         let (id, result) = rx
-            .recv()
-            .await
+            .blocking_recv()
             .expect("Timeout waiting for tile");
         assert_eq!(id, invalid_tile);
         assert!(result.is_err(), "Invalid tile should return error");

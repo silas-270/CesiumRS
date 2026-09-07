@@ -4,7 +4,7 @@ use cesium_flight::telemetry::generate;
 
 #[test]
 fn test_flight_generation() {
-    let pts = generate(8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, None, None);
+    let pts = generate(8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, None, None, &[]);
     assert!(!pts.is_empty());
     
     let start_pos = pts.first().unwrap();

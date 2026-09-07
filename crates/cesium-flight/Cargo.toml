@@ -13,3 +13,4 @@ wgpu = "22.0"
 
 [features]
 debug_panel = ["cesium-engine/debug_panel", "dep:egui"]
+perf_trace = ["cesium-engine/perf_trace"]

@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use log::{error, info};
-use cesium_engine::globe::tiles::config::TileEngineConfig;
+use cesium_engine::globe::tiles::config::{TileEngineConfig, STANDARD_IMAGERY_URL};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -74,9 +74,7 @@ pub extern "C" fn render_routes_headless(
     let extension = Box::new(crate::headless::route_builder::RoutesExtension::new(&extension_routes));
     let mut config = TileEngineConfig::default();
     config.offline_mode = false;
-    config.base_imagery_url =
-        "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png"
-            .to_string();
+    config.base_imagery_url = STANDARD_IMAGERY_URL.to_string();
     config.transparent_background = true;
     
     // Lowered mesh subdivision to prevent massive VRAM over-allocation on mobile

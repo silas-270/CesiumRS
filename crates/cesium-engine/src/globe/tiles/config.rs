@@ -1,8 +1,11 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-/// Default dark, label-free vector-style basemap.
-pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png";
+/// Default dark, label-free vector-style basemap. The `@2x` suffix requests
+/// 512x512 retina tiles, which carry genuinely twice the detail rather than
+/// an upscale. Tile dimensions are derived from the decoded image, so styles
+/// served at 256x256 (e.g. `SATELLITE_IMAGERY_URL`) still work unchanged.
+pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png?key=cb1_28wa_1_ff42c0a0f313514c2bdb2e7a";
 /// Esri World Imagery - free, no API key required.
 pub const SATELLITE_IMAGERY_URL: &str = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 

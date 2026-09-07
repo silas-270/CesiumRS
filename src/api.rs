@@ -307,4 +307,29 @@ impl ViewerHandle {
             .tx
             .try_send(ViewerCommand::MapSetImageryUrl(url.to_string()));
     }
+
+    // ── Performance testing (debug-only; see tools/run_perf_scenario.sh) ──────
+
+    /// Tags the current point in a captured Perfetto trace with a scenario id
+    /// (via an ATrace instant marker) and, for the three steady-state
+    /// scenarios, switches the camera to the matching mode: `2`=Free,
+    /// `3`=Tracking, `4`=Cockpit. Other ids only emit the marker — sequencing
+    /// (e.g. rapid mode switching) is driven externally by calling this
+    /// repeatedly with a scripted delay between calls. Only built into the
+    /// engine with `--features perf_trace`; a no-op without it.
+    #[cfg(feature = "perf_trace")]
+    pub fn run_perf_scenario(&self, scenario_id: i32) {
+        let mode = match scenario_id {
+            2 => Some(CameraCommandMode::Free),
+            3 => Some(CameraCommandMode::Tracking),
+            4 => Some(CameraCommandMode::Cockpit),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            let _ = self.tx.try_send(ViewerCommand::CameraSetMode(mode));
+        }
+        let _ = self
+            .tx
+            .try_send(ViewerCommand::PerfScenarioMarker(scenario_id));
+    }
 }
