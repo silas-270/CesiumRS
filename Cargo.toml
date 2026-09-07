@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/cesium-engine",
-    "crates/cesium-flight"
-, "temp_cam_test"]
+    "crates/cesium-flight",
+]
 resolver = "2"
 
 [package]
