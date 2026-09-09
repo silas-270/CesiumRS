@@ -131,10 +131,14 @@ impl Camera {
     }
 
     pub fn set_eye(&mut self, eye: Vec3, target: Vec3) {
+        self.set_eye_with_up(eye, target, Vec3::Y);
+    }
+
+    pub fn set_eye_with_up(&mut self, eye: Vec3, target: Vec3, up: Vec3) {
         self.local_pos = eye;
         let dir = (target - eye).normalize_or_zero();
         if dir.length_squared() > 0.0001 {
-            let view = Mat4::look_at_rh(eye, target, Vec3::Y);
+            let view = Mat4::look_at_rh(eye, target, up);
             self.local_ori = Quat::from_mat4(&view.inverse()).normalize();
         }
     }
