@@ -57,6 +57,49 @@ mod inner {
         #[arg(long)]
         pub routes_test: bool,
 
+        /// Render hub routes with custom camera parameters
+        #[arg(long)]
+        pub render_hub: bool,
+
+        #[arg(long, default_value_t = 1080)]
+        pub hub_width: u32,
+
+        #[arg(long, default_value_t = 1670)]
+        pub hub_height: u32,
+
+        #[arg(long, default_value_t = 16.36)]
+        pub hub_distance: f32,
+
+        #[arg(long, default_value_t = -15.0, allow_hyphen_values = true)]
+        pub hub_tilt: f32,
+
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        pub hub_pan: f32,
+
+        #[arg(long, default_value = "horizon")]
+        pub hub_camera: String,
+
+        #[arg(long, default_value_t = 1.5)]
+        pub hub_alt: f32,
+
+        #[arg(long, default_value_t = 12.0, allow_hyphen_values = true)]
+        pub hub_back: f32,
+
+        #[arg(long, default_value_t = 25.0, allow_hyphen_values = true)]
+        pub hub_pitch: f32,
+
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        pub hub_heading: f32,
+
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        pub hub_roll: f32,
+
+        #[arg(long, default_value = "hub_render.png")]
+        pub hub_out: String,
+
+        #[arg(long)]
+        pub hub_routes_file: Option<String>,
+
         /// Headless capture of the cockpit and tracking views for visual verification.
         #[arg(long)]
         pub cockpit: bool,
@@ -79,6 +122,83 @@ mod inner {
 
         let cli = Cli::parse();
         
+        if cli.render_hub {
+            let mut routes = Vec::new();
+            if let Some(ref file_path) = cli.hub_routes_file {
+                if let Ok(content) = std::fs::read_to_string(file_path) {
+                    for line in content.lines() {
+                        let parts: Vec<&str> = line.trim().split(',').collect();
+                        if parts.len() == 4 {
+                            if let (Ok(lat1), Ok(lon1), Ok(lat2), Ok(lon2)) = (
+                                parts[0].trim().parse::<f64>(),
+                                parts[1].trim().parse::<f64>(),
+                                parts[2].trim().parse::<f64>(),
+                                parts[3].trim().parse::<f64>(),
+                            ) {
+                                routes.push(cesium_rs::headless::api::HeadlessRoute {
+                                    start: cesium_rs::headless::api::LatLon { lat: lat1, lon: lon1 },
+                                    end: cesium_rs::headless::api::LatLon { lat: lat2, lon: lon2 },
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            if routes.is_empty() {
+                // Default to GRZ (Graz) routes matching actual app
+                let grz = cesium_rs::headless::api::LatLon { lat: 46.9911, lon: 15.4396 };
+                let dests = [
+                    (50.0267, 8.5584),   // FRA
+                    (48.3538, 11.7861),  // MUC
+                    (48.1103, 16.5697),  // VIE
+                    (47.4581, 8.5481),   // ZRH
+                    (53.6304, 9.9882),   // HAM
+                    (52.3617, 13.5023),  // BER
+                    (51.1487, -0.1857),  // LGW
+                    (51.2895, 6.7668),   // DUS
+                    (36.8987, 30.8005),  // AYT
+                    (27.1768, 33.7967),  // HRG
+                    (36.7945, 27.0912),  // KGS
+                    (39.5517, 2.7388),   // PMI
+                ];
+                for (lat, lon) in dests {
+                    routes.push(cesium_rs::headless::api::HeadlessRoute {
+                        start: grz,
+                        end: cesium_rs::headless::api::LatLon { lat, lon },
+                    });
+                }
+            }
+
+            let path = std::ffi::CString::new(cli.hub_out.as_str()).unwrap();
+            if cli.hub_camera == "horizon" {
+                cesium_rs::headless::api::render_routes_headless_horizon(
+                    cli.hub_width,
+                    cli.hub_height,
+                    routes.as_ptr(),
+                    routes.len(),
+                    path.as_ptr(),
+                    cli.hub_alt,
+                    cli.hub_back,
+                    cli.hub_pitch,
+                    cli.hub_heading,
+                    cli.hub_roll,
+                );
+            } else {
+                cesium_rs::headless::api::render_routes_headless_custom(
+                    cli.hub_width,
+                    cli.hub_height,
+                    routes.as_ptr(),
+                    routes.len(),
+                    path.as_ptr(),
+                    cli.hub_distance,
+                    cli.hub_tilt,
+                    cli.hub_pan,
+                );
+            }
+            return;
+        }
+
         if cli.routes_test {
             let routes = vec![
                 cesium_rs::headless::api::HeadlessRoute {

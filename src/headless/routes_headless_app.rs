@@ -9,6 +9,7 @@ pub async fn run_headless_render(
     mut extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
     initial_cam_pos: glam::Vec3,
     initial_cam_target: glam::Vec3,
+    initial_cam_up: Option<glam::Vec3>,
     out_path: &str,
 ) {
     let mut state = WgpuState::new(
@@ -19,7 +20,11 @@ pub async fn run_headless_render(
     ).await;
 
     // Set up camera
-    state.camera.set_eye(initial_cam_pos, initial_cam_target);
+    if let Some(up) = initial_cam_up {
+        state.camera.set_eye_with_up(initial_cam_pos, initial_cam_target, up);
+    } else {
+        state.camera.set_eye(initial_cam_pos, initial_cam_target);
+    }
 
     // Calculate visible tiles for this camera
     let aspect_ratio = state.size.width as f32 / state.size.height as f32;
