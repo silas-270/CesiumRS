@@ -196,11 +196,16 @@ pub fn climb_tas(altitude_m: f64, field_elevation_m: f64) -> f64 {
 /// True airspeed the descent schedule commands at an altitude.
 pub fn descent_tas(altitude_m: f64) -> f64 {
     use super::atmosphere::{tas_from_cas, tas_from_mach};
-    if altitude_m < SPEED_LIMIT_ALT_M {
-        tas_from_cas(speed_limit_cas(), altitude_m)
+    let cas = if altitude_m < SPEED_LIMIT_ALT_M {
+        speed_limit_cas()
+    } else if altitude_m < SPEED_ACCEL_END_ALT_M {
+        // Smoothly blend from descent CAS down to 250 kt between 12,000 and 10,000 ft
+        let f = (altitude_m - SPEED_LIMIT_ALT_M) / (SPEED_ACCEL_END_ALT_M - SPEED_LIMIT_ALT_M);
+        speed_limit_cas() + (descent_cas() - speed_limit_cas()) * f
     } else {
-        tas_from_cas(descent_cas(), altitude_m).min(tas_from_mach(DESCENT_MACH, altitude_m))
-    }
+        descent_cas()
+    };
+    tas_from_cas(cas, altitude_m).min(tas_from_mach(DESCENT_MACH, altitude_m))
 }
 
 /// True airspeed at cruise, respecting the low-altitude speed limit.
