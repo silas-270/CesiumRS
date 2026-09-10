@@ -197,8 +197,61 @@ impl VerticalProfile {
         }
         let (s0, a0) = self.samples[idx - 1];
         let (s1, a1) = self.samples[idx];
-        let f = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
-        a0 + (a1 - a0) * f
+        let h = s1 - s0;
+        if h <= 0.0 {
+            return a0;
+        }
+
+        // Monotone cubic Hermite (Fritsch-Carlson) rather than a straight line.
+        //
+        // Pitch is the derivative of this function, so linear interpolation makes it a
+        // staircase — and at a phase boundary, where the gradient goes from 3° to zero
+        // inside one table interval, that staircase is a genuine corner. The aircraft
+        // would snap out of the climb rather than level off.
+        //
+        // The monotonicity limiter is not decoration: an unconstrained spline overshoots
+        // at exactly those corners, which would put the aircraft above its cruise level
+        // at the top of climb and below the runway at touchdown.
+        let secant = |i: usize| -> f64 {
+            let (x0, y0) = self.samples[i];
+            let (x1, y1) = self.samples[i + 1];
+            if x1 > x0 {
+                (y1 - y0) / (x1 - x0)
+            } else {
+                0.0
+            }
+        };
+        let d = secant(idx - 1);
+        let tangent = |i: usize| -> f64 {
+            // One-sided at the ends of the table, otherwise the harmonic mean of the
+            // neighbouring secants, which is zero whenever they disagree in sign.
+            if i == 0 || i + 1 >= self.samples.len() {
+                return d;
+            }
+            let prev = secant(i - 1);
+            let next = secant(i);
+            if prev * next <= 0.0 {
+                0.0
+            } else {
+                let (x0, _) = self.samples[i - 1];
+                let (x1, _) = self.samples[i];
+                let (x2, _) = self.samples[i + 1];
+                let w1 = 2.0 * (x2 - x1) + (x1 - x0);
+                let w2 = (x2 - x1) + 2.0 * (x1 - x0);
+                (w1 + w2) / (w1 / prev + w2 / next)
+            }
+        };
+        let m0 = tangent(idx - 1);
+        let m1 = tangent(idx);
+
+        let t = (s - s0) / h;
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+        h00 * a0 + h10 * h * m0 + h01 * a1 + h11 * h * m1
     }
 
     /// Height above the nearer runway, used for the phase-dependent sampling rate and
@@ -214,6 +267,10 @@ impl VerticalProfile {
 
     pub fn is_on_ground(&self, s: f64) -> bool {
         s <= self.s_rotate || s >= self.s_touchdown
+    }
+
+    pub fn samples(&self) -> &[(f64, f64)] {
+        &self.samples
     }
 }
 

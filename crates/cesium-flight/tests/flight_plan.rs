@@ -10,6 +10,7 @@
 use cesium_flight::flight_handle::RunwayData;
 use cesium_flight::telemetry::atmosphere::m_to_feet;
 use cesium_flight::telemetry::geo::{distance_m, LatLon};
+use cesium_flight::telemetry::vertical::{VerticalInputs, VerticalProfile};
 use cesium_flight::telemetry::{
     generate, FlightPlanConfig, FlightRequest, TelemetryPoint, WindModel,
 };
@@ -403,6 +404,131 @@ fn a_short_sector_cruises_lower_than_a_long_one() {
     );
 }
 
+#[test]
+fn the_vertical_profile_is_c1_continuous_at_all_knots() {
+    for (_name, dep_elev, arr_elev, dist, track_rad) in [
+        ("Short FRA-STR", 111.0, 389.0, 160_000.0, 3.14),
+        ("Medium FRA-JFK", 111.0, 4.0, 6_300_000.0, 5.0),
+        ("Long LHR-NRT", 25.0, 43.0, 9_600_000.0, 0.5),
+        ("High dep", 2500.0, 100.0, 1_000_000.0, 1.2),
+        ("High arr", 100.0, 2500.0, 1_000_000.0, 4.0),
+    ] {
+        let inputs = VerticalInputs {
+            s_total: dist,
+            s_dep_threshold: 500.0,
+            s_touchdown: dist - 1500.0,
+            s_rollout_end: dist - 300.0,
+            dep_elevation_m: dep_elev,
+            arr_elevation_m: arr_elev,
+            track_rad,
+            trip_distance_m: dist,
+            cruise_tas_estimate: 240.0,
+        };
+        let profile = VerticalProfile::build(&inputs);
+        let samples = profile.samples();
+        let eps = 1e-4_f64;
+
+        for (i, &(s, _alt)) in samples.iter().enumerate() {
+            if i == 0 || i == samples.len() - 1 {
+                continue;
+            }
+            let prev_s = samples[i - 1].0;
+            let next_s = samples[i + 1].0;
+            let h_prev = s - prev_s;
+            let h_next = next_s - s;
+            if h_prev < 1e-5 || h_next < 1e-5 {
+                continue;
+            }
+            let cur_eps = eps.min(h_prev * 0.1).min(h_next * 0.1);
+            let d_left = (profile.altitude_at(s) - profile.altitude_at(s - cur_eps)) / cur_eps;
+            let d_right = (profile.altitude_at(s + cur_eps) - profile.altitude_at(s)) / cur_eps;
+            let jump = (d_right - d_left).abs();
+            assert!(
+                jump < 1e-3,
+                "C1 discontinuity of {:.6} at knot {} (s={:.1}m)",
+                jump,
+                i,
+                s
+            );
+        }
+    }
+}
+
+#[test]
+fn the_monotone_limiter_prevents_altitude_overshoot() {
+    for (_name, dep_elev, arr_elev, dist, track_rad) in [
+        ("Short FRA-STR", 111.0, 389.0, 160_000.0, 3.14),
+        ("Medium FRA-JFK", 111.0, 4.0, 6_300_000.0, 5.0),
+        ("Long LHR-NRT", 25.0, 43.0, 9_600_000.0, 0.5),
+        ("High dep", 2500.0, 100.0, 1_000_000.0, 1.2),
+        ("High arr", 100.0, 2500.0, 1_000_000.0, 4.0),
+    ] {
+        let inputs = VerticalInputs {
+            s_total: dist,
+            s_dep_threshold: 500.0,
+            s_touchdown: dist - 1500.0,
+            s_rollout_end: dist - 300.0,
+            dep_elevation_m: dep_elev,
+            arr_elevation_m: arr_elev,
+            track_rad,
+            trip_distance_m: dist,
+            cruise_tas_estimate: 240.0,
+        };
+        let profile = VerticalProfile::build(&inputs);
+        let samples = profile.samples();
+
+        // Check monotonicity on every interval
+        for w in samples.windows(2) {
+            let (s0, a0) = w[0];
+            let (s1, a1) = w[1];
+            let min_a = a0.min(a1);
+            let max_a = a0.max(a1);
+
+            for step in 1..20 {
+                let frac = step as f64 / 20.0;
+                let s = s0 + (s1 - s0) * frac;
+                let alt = profile.altitude_at(s);
+                assert!(
+                    alt <= max_a + 1e-6,
+                    "overshoot: alt {:.2}m > interval max {:.2}m at s={:.1}m",
+                    alt,
+                    max_a,
+                    s
+                );
+                assert!(
+                    alt >= min_a - 1e-6,
+                    "undershoot: alt {:.2}m < interval min {:.2}m at s={:.1}m",
+                    alt,
+                    min_a,
+                    s
+                );
+            }
+        }
+
+        // Check global ceiling and floor bounds
+        let floor = dep_elev.min(arr_elev);
+        let ceiling = profile.cruise_altitude_m;
+        for step in 0..=2000 {
+            let s = dist * (step as f64 / 2000.0);
+            let alt = profile.altitude_at(s);
+            assert!(
+                alt <= ceiling + 1e-6,
+                "altitude {:.2}m exceeded cruise ceiling {:.2}m at s={:.1}m",
+                alt,
+                ceiling,
+                s
+            );
+            assert!(
+                alt >= floor - 1e-6,
+                "altitude {:.2}m fell below terrain floor {:.2}m at s={:.1}m",
+                alt,
+                floor,
+                s
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Speeds
 // ---------------------------------------------------------------------------
@@ -565,8 +691,12 @@ fn the_aircraft_is_level_before_rotation() {
             "banked {:.3}° on the ground",
             p.roll_rad.to_degrees()
         );
+        // Not exactly zero: rotation is now a smooth pitch-up rather than a step, so the
+        // first few centimetres of the climb still fall inside the "at ground level"
+        // band this filters on. A regression of the kind this guards against would be
+        // degrees, not hundredths of one.
         assert!(
-            p.pitch_rad.abs().to_degrees() < 0.01,
+            p.pitch_rad.abs().to_degrees() < 0.1,
             "pitched {:.3}° before rotation",
             p.pitch_rad.to_degrees()
         );
