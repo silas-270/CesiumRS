@@ -8,3 +8,5 @@ pub mod test_trajectory_alignment;
 pub mod test_sin_lhr_derivatives;
 #[cfg(test)]
 pub mod test_sin_lhr_transitions;
+#[cfg(test)]
+pub mod test_full_experience_audit;
