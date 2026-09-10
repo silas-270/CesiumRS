@@ -108,6 +108,10 @@ mod inner {
         /// portrait resolutions, for iterating on the interior without an APK build.
         #[arg(long)]
         pub cockpit_s23: bool,
+
+        /// Headless capture of routes in Free camera mode at laptop native resolution.
+        #[arg(long)]
+        pub free_routes: bool,
     }
 
     pub fn main() {
@@ -230,7 +234,7 @@ mod inner {
             );
             return;
         }
-        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit || cli.cockpit_s23 {
+        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit || cli.cockpit_s23 || cli.free_routes {
             Some(VerifyConfig {
                 enabled: cli.verify,
                 stress: cli.stress,
@@ -241,6 +245,7 @@ mod inner {
                 benchmark: cli.benchmark,
                 cockpit: cli.cockpit,
                 cockpit_s23: cli.cockpit_s23,
+                free_routes: cli.free_routes,
                 stress_mode: cli.stress_mode,
                 prefetch: cli.prefetch,
                 cache_size: cli.cache_size,
