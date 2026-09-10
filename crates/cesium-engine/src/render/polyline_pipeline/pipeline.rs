@@ -1,11 +1,10 @@
 use crate::render::polyline_pipeline::builder::ControlPoint;
 
-// ── Push-constant layout (unchanged from previous design) ─────────────────────
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PolylinePushConstants {
-    pub reference_point: [f32; 4],  // offset   0 (16 bytes)
-    pub camera_pos: [f32; 4],       // offset  16 (16 bytes)
+    pub cam_hi: [f32; 4],           // offset   0 (16 bytes)
+    pub cam_lo: [f32; 4],           // offset  16 (16 bytes)
     pub color_start: [f32; 4],      // offset  32 (16 bytes)
     pub color_end: [f32; 4],        // offset  48 (16 bytes)
     pub viewport_size: [f32; 2],    // offset  64 ( 8 bytes)
@@ -14,7 +13,7 @@ pub struct PolylinePushConstants {
     pub physical_half_width: f32,   // offset  80 ( 4 bytes)
     pub physical_half_height: f32,  // offset  84 ( 4 bytes)
     pub _padding: [f32; 2],         // offset  88 ( 8 bytes) — align to 16
-    pub airplane_pos: [f32; 4],     // offset  96 (16 bytes)
+    pub airplane_rel_cam: [f32; 4], // offset  96 (16 bytes)
     pub airplane_forward: [f32; 4], // offset 112 (16 bytes)
     // Total: 128 bytes — exactly at the guaranteed minimum device limit.
 }
@@ -224,7 +223,7 @@ impl PolylineRenderer {
             camera_bind_group,
             viewport_size,
             camera_pos_f64,
-            reference_point,
+            reference_point: _,
             config,
         } = params;
 
@@ -235,21 +234,22 @@ impl PolylineRenderer {
             return;
         }
 
-        let rel_cam = [
-            (camera_pos_f64[0] - reference_point[0]) as f32,
-            (camera_pos_f64[1] - reference_point[1]) as f32,
-            (camera_pos_f64[2] - reference_point[2]) as f32,
+        let cam_hi = [
+            camera_pos_f64[0] as f32,
+            camera_pos_f64[1] as f32,
+            camera_pos_f64[2] as f32,
+            1.0,
+        ];
+        let cam_lo = [
+            (camera_pos_f64[0] - cam_hi[0] as f64) as f32,
+            (camera_pos_f64[1] - cam_hi[1] as f64) as f32,
+            (camera_pos_f64[2] - cam_hi[2] as f64) as f32,
             0.0,
         ];
 
         let push = PolylinePushConstants {
-            reference_point: [
-                reference_point[0] as f32,
-                reference_point[1] as f32,
-                reference_point[2] as f32,
-                0.0,
-            ],
-            camera_pos: rel_cam,
+            cam_hi,
+            cam_lo,
             color_start: config.color_start,
             color_end: config.color_end,
             viewport_size,
@@ -258,7 +258,7 @@ impl PolylineRenderer {
             physical_half_width: config.physical_half_width,
             physical_half_height: config.physical_half_height,
             _padding: [0.0; 2],
-            airplane_pos: config.airplane_pos,
+            airplane_rel_cam: config.airplane_pos,
             airplane_forward: config.airplane_forward,
         };
 
