@@ -120,12 +120,24 @@ const DT_LOW_S: f64 = 1.0;
 const DT_MID_S: f64 = 2.5;
 const DT_TURN_S: f64 = 3.0;
 const DT_CRUISE_S: f64 = 8.0;
-const MIN_SAMPLE_STEP_M: f64 = 5.0;
+/// Floor on the sampling interval, expressed in time rather than distance — the
+/// distance between samples is free to be small, but a vanishing time interval is what
+/// would make the consumer's spline ill-conditioned.
+const MIN_STEP_S: f64 = 0.25;
 const MAX_SAMPLE_STEP_M: f64 = 2_500.0;
+/// How many steps from the end the sampler starts dividing the remainder evenly.
+const TAIL_STEPS: f64 = 4.0;
 const LOW_AGL_M: f64 = 1_500.0;
 const MID_AGL_M: f64 = 6_000.0;
 /// Bank beyond which the sampler tightens up so a turn is not chorded.
 const TURN_BANK_RAD: f64 = 0.03;
+
+/// Most the sampling interval may change between one sample and the next.
+///
+/// This bounds the velocity discontinuity the consumer's spline sees — see the comment
+/// at the step calculation. It costs about twenty samples to migrate between the taxi
+/// and cruise rates, which is a few seconds of flight.
+const MAX_STEP_RATIO: f64 = 1.12;
 
 pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
     let wind = match request.config.wind {
@@ -398,7 +410,7 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
         }
 
         let agl = profile.height_above_field(s);
-        let dt = if profile.is_on_ground(s) && ground_speed < 15.0 {
+        let target_dt = if profile.is_on_ground(s) && ground_speed < 15.0 {
             DT_TAXI_S
         } else if agl < LOW_AGL_M {
             DT_LOW_S
@@ -409,9 +421,38 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
         } else {
             DT_CRUISE_S
         };
-        let step = (ground_speed * dt)
-            .clamp(MIN_SAMPLE_STEP_M, MAX_SAMPLE_STEP_M)
-            .min(total - s);
+        // The consumer interpolates these samples with a *uniform* Catmull-Rom spline,
+        // whose tangent at a knot is the same vector from either side but is divided by
+        // the local time interval to get a velocity. So a step change in the sampling
+        // interval is a step change in the rendered aircraft's speed, in exactly that
+        // ratio — and the rendered attitude is derived from that motion, not from the
+        // angles in this struct. Easing between rates keeps the discontinuity bounded
+        // and small; a phase-dependent interval applied directly reached 12x.
+        let dt = if last_dt > 0.0 {
+            target_dt.clamp(last_dt / MAX_STEP_RATIO, last_dt * MAX_STEP_RATIO)
+        } else {
+            target_dt
+        }
+        .max(MIN_STEP_S);
+
+        let mut step = (ground_speed * dt).min(MAX_SAMPLE_STEP_M);
+        // Re-imposed after the distance cap, because the time spacing is the thing the
+        // spline is parameterised by and so has to take precedence. A distance floor
+        // applied last is what let taxi samples drift to a 4.2 s interval while the
+        // schedule was still asking for 2 s.
+        if last_dt > 0.0 {
+            step = step.clamp(
+                ground_speed * last_dt / MAX_STEP_RATIO,
+                ground_speed * last_dt * MAX_STEP_RATIO,
+            );
+        }
+        // Spread the tail over a whole number of equal steps, so the flight lands
+        // exactly on its final knot without a stub interval next to a full-length one.
+        let remaining = total - s;
+        if remaining <= step * TAIL_STEPS {
+            let n = (remaining / step).round().max(1.0);
+            step = remaining / n;
+        }
         if step <= 0.0 {
             break;
         }
