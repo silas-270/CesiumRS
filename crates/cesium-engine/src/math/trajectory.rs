@@ -30,16 +30,21 @@ impl<'a> TrajectoryEvaluator<'a> {
         let delta_seconds = 0.2;
         let next_time = SimulationTime::new(time.seconds + delta_seconds);
 
-        let forward = if let Some(next_pos) = self.property.evaluate(next_time) {
-            let dir = next_pos - pos;
-            if dir.length_squared() > 1e-20 {
-                let d = dir.normalize();
-                Vec3::new(d.x as f32, d.y as f32, d.z as f32)
+        let stop_seconds = self.property.stop_time().map(|t| t.seconds).unwrap_or(time.seconds);
+        let forward = if time.seconds < stop_seconds - delta_seconds {
+            if let Some(next_pos) = self.property.evaluate(next_time) {
+                let dir = next_pos - pos;
+                if dir.length_squared() > 1e-20 {
+                    let d = dir.normalize();
+                    Vec3::new(d.x as f32, d.y as f32, d.z as f32)
+                } else {
+                    Vec3::new(0.0, 1.0, 0.0)
+                }
             } else {
-                Vec3::new(0.0, 1.0, 0.0) // Fallback if no movement
+                Vec3::new(0.0, 1.0, 0.0)
             }
         } else {
-            // Fallback for the very end of the flight path: look backward instead
+            // Near or at the very end of the flight path: look backward
             let prev_time = SimulationTime::new(time.seconds - delta_seconds);
             if let Some(prev_pos) = self.property.evaluate(prev_time) {
                 let dir = pos - prev_pos;
