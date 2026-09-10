@@ -15,9 +15,31 @@
 //! of the planner can ask "where am I at 4,182 km along" without solving any spherical
 //! geometry.
 
+use super::airspace::AirspaceRestrictions;
 use super::geo::{
     angular_distance, initial_bearing, interpolate, LatLon, LocalFrame, EARTH_RADIUS_M,
 };
+
+/// High-level parameters defining a complete end-to-end flight track.
+pub struct FlightTrackInputs<'a> {
+    pub dep_threshold: LatLon,
+    pub dep_leg_end: LatLon,
+    pub departure_turn_r: f64,
+    pub enroute: &'a [LatLon],
+    pub final_start: LatLon,
+    pub final_turn_r: f64,
+    pub arr_threshold: LatLon,
+    pub touchdown: LatLon,
+    pub rollout_end: LatLon,
+    pub airspace: Option<&'a AirspaceRestrictions>,
+}
+
+/// Cumulative track distances where key flight plan events are placed.
+pub struct FlightTrackPlaced {
+    pub s_dep_threshold: f64,
+    pub s_touchdown: f64,
+    pub s_rollout_end: f64,
+}
 
 /// A point the route is planned through.
 #[derive(Debug, Clone, Copy)]
@@ -160,6 +182,134 @@ impl GroundTrack {
         }
 
         (Self { points, cumulative }, original)
+    }
+
+    /// Builds the flight track using a C¹ continuous spherical spline for the enroute portion
+    /// and exact straight legs for runway departure, final approach, and rollout.
+    pub fn build_flight_track(inputs: &FlightTrackInputs) -> (Self, FlightTrackPlaced) {
+        let mut raw_wps = Vec::with_capacity(inputs.enroute.len() + 6);
+        raw_wps.push(Waypoint::sharp(inputs.dep_threshold));
+        raw_wps.push(Waypoint::new(inputs.dep_leg_end, inputs.departure_turn_r));
+        if inputs.enroute.len() > 2 {
+            for p in &inputs.enroute[1..inputs.enroute.len() - 1] {
+                raw_wps.push(Waypoint::new(*p, 120_000.0));
+            }
+        }
+        let orig_idx_final_start = raw_wps.len();
+        raw_wps.push(Waypoint::new(inputs.final_start, inputs.final_turn_r));
+        let orig_idx_arr_thresh = raw_wps.len();
+        raw_wps.push(Waypoint::sharp(inputs.arr_threshold));
+        raw_wps.push(Waypoint::sharp(inputs.touchdown));
+        raw_wps.push(Waypoint::sharp(inputs.rollout_end));
+
+        let expanded = split_sharp_turns(&raw_wps);
+
+        let mut points: Vec<LatLon> = Vec::new();
+        let mut cumulative: Vec<f64> = Vec::new();
+
+        push_point(&mut points, &mut cumulative, inputs.dep_threshold);
+        let s_dep_threshold = 0.0;
+
+        let exp_arr_start = expanded
+            .iter()
+            .position(|e| e.original_index == Some(orig_idx_final_start))
+            .unwrap();
+        let exp_arr_thresh = expanded
+            .iter()
+            .position(|e| e.original_index == Some(orig_idx_arr_thresh))
+            .unwrap();
+        let exp_enroute_start = if inputs.enroute.len() > 2 {
+            expanded
+                .iter()
+                .position(|e| e.original_index == Some(2))
+                .unwrap_or(exp_arr_start)
+        } else {
+            exp_arr_start
+        };
+
+        // 1. Departure turn(s)
+        let mut leg_start = inputs.dep_threshold;
+        for i in 1..exp_enroute_start {
+            if let Some(arc) = build_corner(
+                expanded[i - 1].waypoint.position,
+                expanded[i].waypoint,
+                expanded[i + 1].waypoint.position,
+            ) {
+                densify_leg(&mut points, &mut cumulative, leg_start, arc.start);
+                for p in arc.samples {
+                    push_point(&mut points, &mut cumulative, p);
+                }
+                leg_start = arc.end;
+            }
+        }
+        let enroute_start = leg_start;
+
+        // 2. Pre-calculate arrival turn(s)
+        let mut arr_arcs = Vec::new();
+        for i in exp_arr_start..exp_arr_thresh {
+            let prev = expanded[i - 1].waypoint.position;
+            let next = expanded[i + 1].waypoint.position;
+            let arc = build_corner(prev, expanded[i].waypoint, next);
+            arr_arcs.push(arc);
+        }
+
+        let enroute_end = match arr_arcs.first() {
+            Some(Some(arc)) => arc.start,
+            _ => inputs.final_start,
+        };
+
+        // 3. Enroute path
+        if inputs.enroute.len() <= 2 {
+            densify_leg(&mut points, &mut cumulative, enroute_start, enroute_end);
+        } else {
+            let mut guide: Vec<LatLon> = Vec::with_capacity(inputs.enroute.len());
+            guide.push(enroute_start);
+            for p in &inputs.enroute[1..inputs.enroute.len() - 1] {
+                guide.push(*p);
+            }
+            guide.push(enroute_end);
+            densify_spherical_spline(&mut points, &mut cumulative, &guide, inputs.airspace);
+        }
+
+        // 4. Arrival turn(s)
+        let mut arr_leg_start = enroute_end;
+        for (idx, arc_opt) in arr_arcs.into_iter().enumerate() {
+            let i = exp_arr_start + idx;
+            match arc_opt {
+                Some(arc) => {
+                    densify_leg(&mut points, &mut cumulative, arr_leg_start, arc.start);
+                    for p in arc.samples {
+                        push_point(&mut points, &mut cumulative, p);
+                    }
+                    arr_leg_start = arc.end;
+                }
+                None => {
+                    densify_leg(
+                        &mut points,
+                        &mut cumulative,
+                        arr_leg_start,
+                        expanded[i].waypoint.position,
+                    );
+                    arr_leg_start = expanded[i].waypoint.position;
+                }
+            }
+        }
+
+        // 5. Final approach, touchdown & rollout
+        densify_leg(&mut points, &mut cumulative, arr_leg_start, inputs.arr_threshold);
+        densify_leg(&mut points, &mut cumulative, inputs.arr_threshold, inputs.touchdown);
+        let s_touchdown = *cumulative.last().unwrap_or(&0.0);
+        densify_leg(&mut points, &mut cumulative, inputs.touchdown, inputs.rollout_end);
+        let s_rollout_end = *cumulative.last().unwrap_or(&0.0);
+
+        (
+            Self { points, cumulative },
+            FlightTrackPlaced {
+                s_dep_threshold,
+                s_touchdown,
+                s_rollout_end,
+            },
+        )
     }
 
     pub fn total_length(&self) -> f64 {
@@ -365,6 +515,75 @@ fn densify_leg(points: &mut Vec<LatLon>, cumulative: &mut Vec<f64>, from: LatLon
             cumulative,
             LatLon::from_unit(interpolate(v1, v2, f)),
         );
+    }
+}
+
+/// Dense C¹ spherical Catmull-Rom spline interpolation through a list of guide waypoints.
+fn densify_spherical_spline(
+    points: &mut Vec<LatLon>,
+    cumulative: &mut Vec<f64>,
+    guide: &[LatLon],
+    airspace: Option<&AirspaceRestrictions>,
+) {
+    let n = guide.len();
+    if n < 2 {
+        if n == 1 {
+            push_point(points, cumulative, guide[0]);
+        }
+        return;
+    }
+    if n == 2 {
+        densify_leg(points, cumulative, guide[0], guide[1]);
+        return;
+    }
+
+    let units: Vec<glam::DVec3> = guide.iter().map(|p| p.to_unit()).collect();
+
+    for i in 0..n - 1 {
+        let p0 = if i > 0 {
+            units[i - 1]
+        } else {
+            (units[0] * 2.0 - units[1]).normalize()
+        };
+        let p1 = units[i];
+        let p2 = units[i + 1];
+        let p3 = if i + 2 < n {
+            units[i + 2]
+        } else {
+            (units[n - 1] * 2.0 - units[n - 2]).normalize()
+        };
+
+        let dt01 = (p1 - p0).length().max(1e-6);
+        let dt12 = (p2 - p1).length().max(1e-6);
+        let dt23 = (p3 - p2).length().max(1e-6);
+
+        let leg_m = super::geo::distance_m(guide[i], guide[i + 1]);
+        const TARGET_STEP_M: f64 = 600.0;
+        let steps = ((leg_m / TARGET_STEP_M).ceil() as usize).clamp(12, 500);
+
+        for s in 1..=steps {
+            let t = s as f64 / steps as f64;
+            let mut pt_unit = cesium_engine::math::interpolation::catmull_rom_timed_dvec3(
+                p0, p1, p2, p3, dt01, dt12, dt23, t,
+            )
+            .normalize();
+
+            if let Some(airspace) = airspace {
+                let mut geo = LatLon::from_unit(pt_unit);
+                if airspace.blocks(geo) {
+                    let chord = interpolate(p1, p2, t);
+                    for pull in [0.25, 0.5, 0.75, 1.0] {
+                        pt_unit = pt_unit.lerp(chord, pull).normalize();
+                        geo = LatLon::from_unit(pt_unit);
+                        if !airspace.blocks(geo) {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            push_point(points, cumulative, LatLon::from_unit(pt_unit));
+        }
     }
 }
 

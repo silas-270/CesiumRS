@@ -61,12 +61,11 @@ const DIRECT_PROBE_SAMPLES: usize = 240;
 /// How many offset steps the route may move between adjacent stages.
 const MAX_OFFSET_STEP: i32 = 2;
 
-/// A small cost for changing offset to discourage chattering.
-const TURN_PENALTY_FRACTION: f64 = 0.001;
+/// A cost for changing offset to discourage chattering and weaving.
+const TURN_PENALTY_FRACTION: f64 = 0.02;
 
-/// Interior samples per leg for the airspace test. Node-only testing lets a leg clip a
-/// corner of a region that neither of its endpoints is inside.
-const LEG_AIRSPACE_SAMPLES: usize = 3;
+/// Interior samples per leg for the airspace test.
+const LEG_AIRSPACE_SAMPLES: usize = 24;
 
 pub struct EnrouteOptions<'a> {
     pub wind: &'a WindField,
@@ -222,7 +221,7 @@ pub fn plan_enroute(from: LatLon, to: LatLon, opts: &EnrouteOptions) -> Vec<LatL
         .collect();
 
     // Multi-pass binomial filter to smooth the offset profile and eliminate grid chatter
-    for _ in 0..4 {
+    for _ in 0..6 {
         let mut smoothed = dists.clone();
         for s in 1..stages {
             let candidate = 0.25 * dists[s - 1] + 0.5 * dists[s] + 0.25 * dists[s + 1];
@@ -233,7 +232,24 @@ pub fn plan_enroute(from: LatLon, to: LatLon, opts: &EnrouteOptions) -> Vec<LatL
                 pole,
                 candidate / EARTH_RADIUS_M,
             ));
-            if !opts.airspace.blocks(test_pos) {
+            let mut ok = !opts.airspace.blocks(test_pos);
+            if ok && !opts.airspace.is_empty() {
+                let v_cand = test_pos.to_unit();
+                let f_prev = (s - 1) as f64 / stages as f64;
+                let v_prev = offset_toward_pole(interpolate(v_from, v_to, f_prev), pole, dists[s - 1] / EARTH_RADIUS_M);
+                let f_next = (s + 1) as f64 / stages as f64;
+                let v_next = offset_toward_pole(interpolate(v_from, v_to, f_next), pole, dists[s + 1] / EARTH_RADIUS_M);
+                for k in 1..=20 {
+                    let f_sub = k as f64 / 21.0;
+                    if opts.airspace.blocks(LatLon::from_unit(interpolate(v_prev, v_cand, f_sub)))
+                        || opts.airspace.blocks(LatLon::from_unit(interpolate(v_cand, v_next, f_sub)))
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
                 smoothed[s] = candidate;
             }
         }
@@ -260,8 +276,8 @@ pub fn plan_enroute(from: LatLon, to: LatLon, opts: &EnrouteOptions) -> Vec<LatL
     if opts.oceanic_tracks {
         chain = apply_oceanic_grid(&chain);
     } else {
-        // Simplify collinear waypoints to prevent segmentation along gentle curves
-        chain = simplify_waypoints(&chain, 6_000.0, opts.airspace);
+        // Simplify collinear waypoints while retaining fine resolution along curves
+        chain = simplify_waypoints(&chain, 2_000.0, opts.airspace);
     }
     chain
 }
@@ -295,8 +311,8 @@ fn simplify_waypoints(
     }
 
     let direct_blocked = !airspace.is_empty()
-        && (1..=12).any(|k| {
-            let f = k as f64 / 13.0;
+        && (1..=24).any(|k| {
+            let f = k as f64 / 25.0;
             airspace.blocks(LatLon::from_unit(interpolate(v_first, v_last, f)))
         });
 

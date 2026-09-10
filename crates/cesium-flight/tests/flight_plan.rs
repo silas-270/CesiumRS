@@ -21,7 +21,6 @@ const JFK: (f64, f64) = (40.6413, -73.7781);
 const MEL: (f64, f64) = (-37.6733, 144.8433);
 const FRA: (f64, f64) = (50.0333, 8.5706);
 const STR: (f64, f64) = (48.6899, 9.2219);
-const LAX: (f64, f64) = (33.9425, -118.4081);
 const SVO: (f64, f64) = (55.9726, 37.4146);
 const LED: (f64, f64) = (59.8003, 30.2625);
 
@@ -960,4 +959,72 @@ fn test_ground_roll_straight_and_bank_zero_on_ground() {
             "route {route_id} must have 0 bank angle while rolling on ground"
         );
     }
+}
+
+#[test]
+fn test_print_sin_lhr() {
+    use cesium_flight::preset::parse_route;
+    let def = parse_route("SIN-LHR").unwrap();
+    let req = FlightRequest {
+        departure: LatLon::new(def.departure_lat, def.departure_lon),
+        arrival: LatLon::new(def.arrival_lat, def.arrival_lon),
+        target_duration_ms: def.total_duration_ms,
+        dep_heading_deg: def.dep_heading_deg,
+        arr_heading_deg: def.arr_heading_deg,
+        runways: Vec::new(),
+        config: FlightPlanConfig::default(),
+    };
+    let wind = cesium_flight::telemetry::wind::WindField::annual_mean();
+    let airspace = cesium_flight::telemetry::airspace::AirspaceRestrictions::for_route(req.departure, req.arrival);
+    let enroute = cesium_flight::telemetry::lateral::plan_enroute(
+        req.departure,
+        req.arrival,
+        &cesium_flight::telemetry::lateral::EnrouteOptions {
+            wind: &wind,
+            airspace: &airspace,
+            cruise_altitude_m: 11_000.0,
+            cruise_tas: 240.0,
+            oceanic_tracks: false,
+        },
+    );
+    println!("=== SIN-LHR enroute waypoints ({}) ===", enroute.len());
+    for (i, p) in enroute.iter().enumerate() {
+        if i > 0 {
+            let prev = enroute[i - 1];
+            let d = cesium_flight::telemetry::geo::distance_m(prev, *p);
+            let b = cesium_flight::telemetry::geo::initial_bearing(prev, *p).to_degrees();
+            println!("  wp[{:2}]: lat={:8.4}, lon={:8.4} | leg: {:.1} km, bearing: {:.1}°", i, p.lat_deg, p.lon_deg, d / 1000.0, b);
+        } else {
+            println!("  wp[{:2}]: lat={:8.4}, lon={:8.4}", i, p.lat_deg, p.lon_deg);
+        }
+    }
+
+    let pts = cesium_flight::telemetry::generator::generate(&req);
+    println!("=== Telemetry generated: {} points ===", pts.len());
+
+    let mut tel_violations = 0;
+    for (i, p) in pts.iter().enumerate() {
+        let geo = LatLon::new(p.latitude, p.longitude);
+        if airspace.blocks(geo) {
+            tel_violations += 1;
+            println!("  Telemetry point {} blocked: lat={:.4}, lon={:.4}", i, p.latitude, p.longitude);
+        }
+    }
+    println!("=== Telemetry violations: {} ===", tel_violations);
+    assert_eq!(tel_violations, 0, "telemetry points must not penetrate restricted airspace");
+
+    use cesium_engine::property::Property;
+    let mut prop = cesium_engine::property::sampled::SampledPositionProperty::new()
+        .with_algorithm(cesium_engine::property::sampled::InterpolationAlgorithm::CatmullRom);
+    for pt in &pts {
+        let ecef = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+        let pos = glam::DVec3::from_array(ecef);
+        let t = cesium_engine::time::SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
+        prop.add_sample(t, pos);
+    }
+    let builder = cesium_engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder::new(1e-7);
+    let start_t = prop.start_time().unwrap();
+    let ref_pt = prop.evaluate(start_t).unwrap();
+    let cps = builder.build(&prop, ref_pt);
+    println!("=== Control points generated: {} cps ===", cps.len());
 }

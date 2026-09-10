@@ -22,7 +22,7 @@ use super::airspace::AirspaceRestrictions;
 use super::atmosphere::tas_from_mach;
 use super::geo::{destination, distance_m, initial_bearing, LatLon};
 use super::lateral::{plan_enroute, EnrouteOptions};
-use super::path::{GroundTrack, Waypoint};
+use super::path::{FlightTrackInputs, GroundTrack};
 use super::runway;
 use super::schedule::{self, ground_speed_at, SpeedSchedule, TimeContext};
 use super::vertical::{semicircular_level, VerticalInputs, VerticalProfile};
@@ -106,8 +106,7 @@ const ROTATION_DISTANCE_M: f64 = 400.0;
 /// turn happens. Used only to size that turn.
 const DEPARTURE_TURN_HEIGHT_M: f64 = 1_400.0;
 
-/// Half-window for the curvature probe that produces bank.
-const CURVATURE_PROBE_M: f64 = 300.0;
+
 
 /// Sampling intervals by phase. Ground manoeuvres need resolving; a cruise leg does not.
 const DT_TAXI_S: f64 = 4.0;
@@ -233,30 +232,23 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
         aircraft::climb_tas(dep_elev + DEPARTURE_TURN_HEIGHT_M, dep_elev),
         dep_elev + DEPARTURE_TURN_HEIGHT_M,
     );
-    // Smooth, wide enroute turn radius (sized for ~2.5° bank at cruise)
-    let cruise_turn_r = 120_000.0;
     let final_turn_r = aircraft::turn_radius(
         aircraft::descent_tas(arr_elev + 1_000.0),
         arr_elev + 1_000.0,
     );
 
-    let mut waypoints = Vec::with_capacity(enroute.len() + 6);
-    let idx_dep_threshold = waypoints.len();
-    waypoints.push(Waypoint::sharp(dep_runway.threshold));
-    waypoints.push(Waypoint::new(dep_leg_end, departure_turn_r));
-    if enroute.len() > 2 {
-        for p in &enroute[1..enroute.len() - 1] {
-            waypoints.push(Waypoint::new(*p, cruise_turn_r));
-        }
-    }
-    waypoints.push(Waypoint::new(final_start, final_turn_r));
-    waypoints.push(Waypoint::sharp(arr_runway.threshold));
-    let idx_touchdown = waypoints.len();
-    waypoints.push(Waypoint::sharp(touchdown));
-    let idx_rollout_end = waypoints.len();
-    waypoints.push(Waypoint::sharp(rollout_end));
-
-    let (track, placed) = GroundTrack::build(&waypoints);
+    let (track, placed) = GroundTrack::build_flight_track(&FlightTrackInputs {
+        dep_threshold: dep_runway.threshold,
+        dep_leg_end,
+        departure_turn_r,
+        enroute: &enroute,
+        final_start,
+        final_turn_r,
+        arr_threshold: arr_runway.threshold,
+        touchdown,
+        rollout_end,
+        airspace: Some(&airspace),
+    });
     let s_total = track.total_length();
     if s_total <= 0.0 {
         return Vec::new();
@@ -264,9 +256,9 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
 
     let profile = VerticalProfile::build(&VerticalInputs {
         s_total,
-        s_dep_threshold: placed[idx_dep_threshold],
-        s_touchdown: placed[idx_touchdown],
-        s_rollout_end: placed[idx_rollout_end],
+        s_dep_threshold: placed.s_dep_threshold,
+        s_touchdown: placed.s_touchdown,
+        s_rollout_end: placed.s_rollout_end,
         dep_elevation_m: dep_elev,
         arr_elevation_m: arr_elev,
         track_rad: direct_bearing,
@@ -362,9 +354,10 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
         let target_bank = if on_ground {
             0.0
         } else {
+            let probe_m = (ground_speed * 4.0).clamp(300.0, 2_000.0);
             let arc =
-                ((s + CURVATURE_PROBE_M).min(total) - (s - CURVATURE_PROBE_M).max(0.0)).max(1.0);
-            let turn_rate = track.turn_angle_at(s, CURVATURE_PROBE_M) / arc * ground_speed;
+                ((s + probe_m).min(total) - (s - probe_m).max(0.0)).max(1.0);
+            let turn_rate = track.turn_angle_at(s, probe_m) / arc * ground_speed;
             let limit = aircraft::max_bank(altitude);
             (ground_speed * turn_rate / 9.806_65)
                 .atan()

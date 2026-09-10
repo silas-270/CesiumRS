@@ -150,6 +150,16 @@ pub fn run(_config: VerifyConfig) {
             duration_ms: 50_400_000,
             out_filename: "route_long_dxb_syd.png",
         },
+        RouteShot {
+            id: "flight_SIN_LHR",
+            name: "Singapore to London (Long, ~11000km)",
+            dep_lon: 103.9915,
+            dep_lat: 1.3644,
+            arr_lon: -0.4619,
+            arr_lat: 51.4706,
+            duration_ms: 46_800_000,
+            out_filename: "route_long_sin_lhr.png",
+        },
     ];
 
     for shot in &routes {
