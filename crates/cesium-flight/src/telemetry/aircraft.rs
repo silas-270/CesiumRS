@@ -29,6 +29,7 @@ pub const MAX_CRUISE_MACH: f64 = 0.86;
 /// Climb speed schedule: an initial segment at climb-out speed, then 250 kt below
 /// 10,000 ft, then 300 kt CAS, then Mach.
 pub const SPEED_LIMIT_ALT_M: f64 = 3_048.0; // 10,000 ft
+pub const SPEED_ACCEL_END_ALT_M: f64 = 3_657.6; // 12,000 ft
 pub fn speed_limit_cas() -> f64 {
     knots_to_mps(250.0)
 }
@@ -180,6 +181,10 @@ pub fn climb_tas(altitude_m: f64, field_elevation_m: f64) -> f64 {
         initial_climb_cas() + (speed_limit_cas() - initial_climb_cas()) * f
     } else if altitude_m < SPEED_LIMIT_ALT_M {
         speed_limit_cas()
+    } else if altitude_m < SPEED_ACCEL_END_ALT_M {
+        // Smoothly accelerate from 250 kt to climb CAS across 10,000 - 12,000 ft
+        let f = (altitude_m - SPEED_LIMIT_ALT_M) / (SPEED_ACCEL_END_ALT_M - SPEED_LIMIT_ALT_M);
+        speed_limit_cas() + (climb_cas() - speed_limit_cas()) * f
     } else {
         climb_cas()
     };
