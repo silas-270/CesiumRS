@@ -1,4 +1,5 @@
 use cesium_engine::core::extension::GlobeExtension;
+use cesium_flight::telemetry::{FlightPlanConfig, FlightRequest, LatLon};
 use cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64;
 use cesium_engine::render::polyline_pipeline::{
     builder::ControlPoint,
@@ -30,17 +31,19 @@ impl RoutesExtension {
             let start = route.start;
             let end = route.end;
 
-            // Use the new telemetry generator
-            let points = cesium_flight::telemetry::generate(
-                start.lon,
-                start.lat,
-                end.lon,
-                end.lat,
-                3600_000, // Dummy duration, headless doesn't care about time
-                None,
-                None,
-                &[],
-            );
+            // The headless renderer only draws the ribbon, so the duration is arbitrary
+            // and the terminal-area detail is invisible at map scale. What it does need
+            // is a true great circle, because the shape of the route across the globe is
+            // the entire point of the image.
+            let points = cesium_flight::telemetry::generate(&FlightRequest {
+                departure: LatLon::new(start.lat, start.lon),
+                arrival: LatLon::new(end.lat, end.lon),
+                target_duration_ms: 3_600_000,
+                dep_heading_deg: None,
+                arr_heading_deg: None,
+                runways: Vec::new(),
+                config: FlightPlanConfig::default(),
+            });
 
             // Compute the average reference point for precision
             let mut p_sum = DVec3::ZERO;

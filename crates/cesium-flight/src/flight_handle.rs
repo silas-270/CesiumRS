@@ -28,6 +28,12 @@ pub enum FlightCommand {
         is_secondary: bool,
         runways: Vec<RunwayData>,
     },
+    /// Replace the planning options applied to every flight loaded afterwards.
+    ///
+    /// Sent separately from `LoadFlight` so that adding a planning option does not
+    /// change the signature every caller of `load_flight` uses. Commands are handled in
+    /// order, so setting this immediately before a load applies to that load.
+    SetPlanConfig(crate::telemetry::FlightPlanConfig),
     /// Set the playback progress (0.0 – 1.0) of the primary flight.
     SetProgress(f64),
     /// Set playback speed multiplier.
@@ -101,6 +107,14 @@ impl FlightHandle {
             is_secondary: true,
             runways: Vec::new(),
         });
+    }
+
+    /// Set the planning options used by subsequent `load_flight` calls. Non-blocking.
+    ///
+    /// The main use is field elevation, which stays off until the globe renders
+    /// terrain — see `FlightPlanConfig::terrain_elevation`.
+    pub fn set_plan_config(&self, config: crate::telemetry::FlightPlanConfig) {
+        let _ = self.tx.try_send(FlightCommand::SetPlanConfig(config));
     }
 
     /// Set the flight playback progress (0.0 – 1.0). Non-blocking.

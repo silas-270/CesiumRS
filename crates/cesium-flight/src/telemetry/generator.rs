@@ -1,4 +1,33 @@
-use std::f64::consts::PI;
+//! Assembles a flight plan and samples it into telemetry.
+//!
+//! The pipeline, in order, with each stage in its own module:
+//!
+//! 1. [`runway`] picks which end of which runway each airport is using, from the wind.
+//! 2. [`lateral`] plans the enroute track — a great circle, bent by wind and by closed
+//!    airspace, and gridded onto the oceanic track system where one applies.
+//! 3. [`path`] joins the terminal geometry and the enroute waypoints into a ground
+//!    track with fly-by turns and an arc length.
+//! 4. [`vertical`] hangs an altitude profile on that arc length: climb, flight levels,
+//!    step climbs, descent, flare.
+//! 5. [`schedule`] works out the speeds, and fits the whole thing into the session.
+//! 6. This module walks the result and emits samples.
+//!
+//! Attitude is derived rather than assumed. Bank comes from the turn the track is
+//! actually making, and pitch is the flight path angle *plus the angle of attack* —
+//! which is why the aircraft sits nose-up on a 3° approach, as a real one does, rather
+//! than pointing at the runway.
+
+use super::aircraft;
+use super::airspace::AirspaceRestrictions;
+use super::atmosphere::tas_from_mach;
+use super::geo::{destination, distance_m, initial_bearing, LatLon};
+use super::lateral::{plan_enroute, EnrouteOptions};
+use super::path::{GroundTrack, Waypoint};
+use super::runway;
+use super::schedule::{self, ground_speed_at, SpeedSchedule, TimeContext};
+use super::vertical::{semicircular_level, VerticalInputs, VerticalProfile};
+use super::wind::WindField;
+use crate::flight_handle::RunwayData;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TelemetryPoint {
@@ -13,484 +42,383 @@ pub struct TelemetryPoint {
     pub sun_intensity: f32,
 }
 
+/// Which wind field the plan is built against.
 #[derive(Debug, Clone, Copy)]
-struct Point2D {
-    x: f64,
-    y: f64,
+pub enum WindModel {
+    /// No wind. Routes come out as great circles, which is what the geometry tests want.
+    Calm,
+    /// The annual-mean jet. The default, because a focus session has no date attached.
+    AnnualMean,
+    /// A specific day of the year, 1–365.
+    DayOfYear(f64),
 }
 
-trait Segment2D {
-    fn length(&self) -> f64;
-    fn get_point(&self, s: f64) -> Point2D;
+#[derive(Debug, Clone, Copy)]
+pub struct FlightPlanConfig {
+    /// Whether runways sit at their true elevation.
+    ///
+    /// Off by default, and deliberately so: the globe currently renders without terrain,
+    /// so an aircraft starting at Bogotá's 2,548 m would hang visibly above a sea-level
+    /// surface. Everything downstream already handles real elevations — the ground roll
+    /// lengthens in thin air, cruise levels are checked against the field below them —
+    /// so turning this on is the only change needed once terrain exists.
+    pub terrain_elevation: bool,
+    pub dep_elevation_m: f64,
+    pub arr_elevation_m: f64,
+    /// Whether to route around airspace civil traffic currently avoids.
+    pub avoid_closed_airspace: bool,
+    /// Whether ocean crossings snap to the organised track grid.
+    pub oceanic_tracks: bool,
+    pub wind: WindModel,
 }
 
-struct LineSegment {
-    p1: Point2D,
-    p2: Point2D,
-    length: f64,
-}
-
-impl LineSegment {
-    fn new(p1: Point2D, p2: Point2D) -> Self {
-        let length = (p2.x - p1.x).hypot(p2.y - p1.y);
-        Self { p1, p2, length }
-    }
-}
-
-impl Segment2D for LineSegment {
-    fn length(&self) -> f64 { self.length }
-    fn get_point(&self, s: f64) -> Point2D {
-        let frac = if self.length > 0.0 { (s / self.length).clamp(0.0, 1.0) } else { 0.0 };
-        Point2D {
-            x: self.p1.x + (self.p2.x - self.p1.x) * frac,
-            y: self.p1.y + (self.p2.y - self.p1.y) * frac,
+impl Default for FlightPlanConfig {
+    fn default() -> Self {
+        Self {
+            terrain_elevation: false,
+            dep_elevation_m: 0.0,
+            arr_elevation_m: 0.0,
+            avoid_closed_airspace: true,
+            oceanic_tracks: true,
+            wind: WindModel::AnnualMean,
         }
     }
 }
 
-struct ArcSegment {
-    center: Point2D,
-    radius: f64,
-    start_angle: f64,
-    sweep_angle: f64,
-    length: f64,
+pub struct FlightRequest {
+    pub departure: LatLon,
+    pub arrival: LatLon,
+    pub target_duration_ms: u64,
+    /// Used only when the airport has no runway data at all.
+    pub dep_heading_deg: Option<f64>,
+    pub arr_heading_deg: Option<f64>,
+    pub runways: Vec<RunwayData>,
+    pub config: FlightPlanConfig,
 }
 
-impl ArcSegment {
-    fn new(center: Point2D, radius: f64, start_angle: f64, sweep_angle: f64) -> Self {
-        let length = radius * sweep_angle.abs();
-        Self { center, radius, start_angle, sweep_angle, length }
-    }
-}
+/// Lifts the rendered path clear of the globe surface so it does not z-fight with it.
+const RENDER_LIFT_M: f64 = 5.0;
 
-impl Segment2D for ArcSegment {
-    fn length(&self) -> f64 { self.length }
-    fn get_point(&self, s: f64) -> Point2D {
-        let frac = if self.length > 0.0 { (s / self.length).clamp(0.0, 1.0) } else { 0.0 };
-        let angle = self.start_angle + self.sweep_angle * frac;
-        Point2D {
-            x: self.center.x + self.radius * angle.cos(),
-            y: self.center.y + self.radius * angle.sin(),
-        }
-    }
-}
+/// Angle the taxi legs leave the runway centreline at, so they read as a parallel
+/// taxiway rather than as an extension of the runway.
+const TAXIWAY_SPLAY_DEG: f64 = 6.0;
 
-struct Path2D {
-    segments: Vec<Box<dyn Segment2D>>,
-}
+/// Distance over which the nose comes up at rotation, and back down after touchdown.
+const ROTATION_DISTANCE_M: f64 = 400.0;
 
-impl Path2D {
-    fn new() -> Self {
-        Self { segments: Vec::new() }
-    }
+/// Roughly how high the aircraft is at the end of the departure leg, where the first
+/// turn happens. Used only to size that turn.
+const DEPARTURE_TURN_HEIGHT_M: f64 = 1_400.0;
 
-    fn total_length(&self) -> f64 {
-        self.segments.iter().map(|s| s.length()).sum()
-    }
+/// Half-window for the finite differences that produce pitch and bank.
+const ATTITUDE_PROBE_M: f64 = 60.0;
+const CURVATURE_PROBE_M: f64 = 300.0;
 
-    fn add_dubins_path(&mut self, p1: Point2D, h1: f64, p2: Point2D, h2: f64, radius: f64) {
-        let path = dubins_solver::solve(p1, h1, p2, h2, radius);
-        
-        let mut sweep1 = (path.t1.y - path.c1.y).atan2(path.t1.x - path.c1.x) - (p1.y - path.c1.y).atan2(p1.x - path.c1.x);
-        while sweep1 < -PI { sweep1 += 2.0 * PI; }
-        while sweep1 > PI { sweep1 -= 2.0 * PI; }
-        if path.dir1 == dubins_solver::TurnDir::L && sweep1 < 0.0 { sweep1 += 2.0 * PI; }
-        if path.dir1 == dubins_solver::TurnDir::R && sweep1 > 0.0 { sweep1 -= 2.0 * PI; }
-        
-        if sweep1.abs() > 1e-6 {
-            self.segments.push(Box::new(ArcSegment::new(path.c1, radius, (p1.y - path.c1.y).atan2(p1.x - path.c1.x), sweep1)));
-        }
-        
-        self.segments.push(Box::new(LineSegment::new(path.t1, path.t2)));
-        
-        let mut sweep2 = (p2.y - path.c2.y).atan2(p2.x - path.c2.x) - (path.t2.y - path.c2.y).atan2(path.t2.x - path.c2.x);
-        while sweep2 < -PI { sweep2 += 2.0 * PI; }
-        while sweep2 > PI { sweep2 -= 2.0 * PI; }
-        if path.dir2 == dubins_solver::TurnDir::L && sweep2 < 0.0 { sweep2 += 2.0 * PI; }
-        if path.dir2 == dubins_solver::TurnDir::R && sweep2 > 0.0 { sweep2 -= 2.0 * PI; }
-        
-        if sweep2.abs() > 1e-6 {
-            self.segments.push(Box::new(ArcSegment::new(path.c2, radius, (path.t2.y - path.c2.y).atan2(path.t2.x - path.c2.x), sweep2)));
-        }
-    }
+/// Sampling intervals by phase. Ground manoeuvres need resolving; a cruise leg does not.
+const DT_TAXI_S: f64 = 4.0;
+const DT_LOW_S: f64 = 1.0;
+const DT_MID_S: f64 = 2.5;
+const DT_TURN_S: f64 = 3.0;
+const DT_CRUISE_S: f64 = 8.0;
+const MIN_SAMPLE_STEP_M: f64 = 5.0;
+const MAX_SAMPLE_STEP_M: f64 = 2_500.0;
+const LOW_AGL_M: f64 = 1_500.0;
+const MID_AGL_M: f64 = 6_000.0;
+/// Bank beyond which the sampler tightens up so a turn is not chorded.
+const TURN_BANK_RAD: f64 = 0.03;
 
-    fn get_point(&self, s: f64) -> Point2D {
-        let mut remaining = s.clamp(0.0, self.total_length());
-        for seg in &self.segments {
-            if remaining <= seg.length() + 1e-6 {
-                return seg.get_point(remaining);
-            }
-            remaining -= seg.length();
-        }
-        if let Some(last) = self.segments.last() {
-            last.get_point(last.length())
-        } else {
-            Point2D { x: 0.0, y: 0.0 }
-        }
-    }
-}
-
-mod dubins_solver {
-    use super::Point2D;
-    use std::f64::consts::PI;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum TurnDir { L, R }
-
-    #[derive(Debug, Clone)]
-    pub struct DubinsPath {
-        pub path_type: &'static str,
-        pub length: f64,
-        pub c1: Point2D,
-        pub dir1: TurnDir,
-        pub t1: Point2D,
-        pub t2: Point2D,
-        pub c2: Point2D,
-        pub dir2: TurnDir,
-    }
-
-    pub fn solve(p1: Point2D, h1: f64, p2: Point2D, h2: f64, r: f64) -> DubinsPath {
-        let mut paths = Vec::new();
-
-        let r1 = Point2D { x: h1.cos(), y: -h1.sin() };
-        let l1 = Point2D { x: -h1.cos(), y: h1.sin() };
-        let r2 = Point2D { x: h2.cos(), y: -h2.sin() };
-        let l2 = Point2D { x: -h2.cos(), y: h2.sin() };
-
-        let c_r1 = Point2D { x: p1.x + r * r1.x, y: p1.y + r * r1.y };
-        let c_l1 = Point2D { x: p1.x + r * l1.x, y: p1.y + r * l1.y };
-        let c_r2 = Point2D { x: p2.x + r * r2.x, y: p2.y + r * r2.y };
-        let c_l2 = Point2D { x: p2.x + r * l2.x, y: p2.y + r * l2.y };
-
-        let mut evaluate = |path_type: &'static str, c1: Point2D, dir1: TurnDir, c2: Point2D, dir2: TurnDir, t1: Point2D, t2: Point2D| {
-            let mut sweep1 = (t1.y - c1.y).atan2(t1.x - c1.x) - (p1.y - c1.y).atan2(p1.x - c1.x);
-            while sweep1 < -PI { sweep1 += 2.0 * PI; }
-            while sweep1 > PI { sweep1 -= 2.0 * PI; }
-            if dir1 == TurnDir::L && sweep1 < 0.0 { sweep1 += 2.0 * PI; }
-            if dir1 == TurnDir::R && sweep1 > 0.0 { sweep1 -= 2.0 * PI; }
-
-            let mut sweep2 = (p2.y - c2.y).atan2(p2.x - c2.x) - (t2.y - c2.y).atan2(t2.x - c2.x);
-            while sweep2 < -PI { sweep2 += 2.0 * PI; }
-            while sweep2 > PI { sweep2 -= 2.0 * PI; }
-            if dir2 == TurnDir::L && sweep2 < 0.0 { sweep2 += 2.0 * PI; }
-            if dir2 == TurnDir::R && sweep2 > 0.0 { sweep2 -= 2.0 * PI; }
-
-            let len = r * sweep1.abs() + (t2.x - t1.x).hypot(t2.y - t1.y) + r * sweep2.abs();
-            paths.push(DubinsPath { path_type, length: len, c1, dir1, t1, t2, c2, dir2 });
-        };
-
-        // LSL
-        let mut v = Point2D { x: c_l2.x - c_l1.x, y: c_l2.y - c_l1.y };
-        let mut d = v.x.hypot(v.y);
-        if d > 1e-6 {
-            let gamma = v.x.atan2(v.y);
-            let nx = gamma.cos();
-            let ny = -gamma.sin();
-            let t1 = Point2D { x: c_l1.x + r * nx, y: c_l1.y + r * ny };
-            let t2 = Point2D { x: c_l2.x + r * nx, y: c_l2.y + r * ny };
-            evaluate("LSL", c_l1, TurnDir::L, c_l2, TurnDir::L, t1, t2);
-        }
-
-        // RSR
-        v = Point2D { x: c_r2.x - c_r1.x, y: c_r2.y - c_r1.y };
-        d = v.x.hypot(v.y);
-        if d > 1e-6 {
-            let gamma = v.x.atan2(v.y);
-            let nx = -gamma.cos();
-            let ny = gamma.sin();
-            let t1 = Point2D { x: c_r1.x + r * nx, y: c_r1.y + r * ny };
-            let t2 = Point2D { x: c_r2.x + r * nx, y: c_r2.y + r * ny };
-            evaluate("RSR", c_r1, TurnDir::R, c_r2, TurnDir::R, t1, t2);
-        }
-
-        // RSL
-        v = Point2D { x: c_l2.x - c_r1.x, y: c_l2.y - c_r1.y };
-        d = v.x.hypot(v.y);
-        if d >= 2.0 * r {
-            let gamma = v.x.atan2(v.y);
-            let beta = (2.0 * r / d).asin();
-            let path_heading = gamma + beta;
-            let t1 = Point2D { x: c_r1.x + r * (-path_heading.cos()), y: c_r1.y + r * path_heading.sin() };
-            let t2 = Point2D { x: c_l2.x + r * path_heading.cos(), y: c_l2.y + r * (-path_heading.sin()) };
-            evaluate("RSL", c_r1, TurnDir::R, c_l2, TurnDir::L, t1, t2);
-        }
-
-        // LSR
-        v = Point2D { x: c_r2.x - c_l1.x, y: c_r2.y - c_l1.y };
-        d = v.x.hypot(v.y);
-        if d >= 2.0 * r {
-            let gamma = v.x.atan2(v.y);
-            let beta = (2.0 * r / d).asin();
-            let path_heading = gamma - beta;
-            let t1 = Point2D { x: c_l1.x + r * path_heading.cos(), y: c_l1.y + r * (-path_heading.sin()) };
-            let t2 = Point2D { x: c_r2.x + r * (-path_heading.cos()), y: c_r2.y + r * path_heading.sin() };
-            evaluate("LSR", c_l1, TurnDir::L, c_r2, TurnDir::R, t1, t2);
-        }
-
-        paths.into_iter()
-            .min_by(|a, b| a.length.partial_cmp(&b.length).unwrap())
-            .expect("No valid Dubins path found")
-    }
-}
-
-pub fn generate(
-    departure_lon: f64,
-    departure_lat: f64,
-    arrival_lon: f64,
-    arrival_lat: f64,
-    target_duration_ms: u64,
-    dep_heading_deg: Option<f64>,
-    arr_heading_deg: Option<f64>,
-    runways: &[crate::flight_handle::RunwayData],
-) -> Vec<TelemetryPoint> {
-    let lat_mid = (departure_lat + arrival_lat).to_radians() / 2.0;
-    let m_per_deg_lat = 111320.0;
-    let m_per_deg_lon = 111320.0 * lat_mid.cos();
-
-    let to_2d = |lon: f64, lat: f64| Point2D {
-        x: (lon - departure_lon) * m_per_deg_lon,
-        y: (lat - departure_lat) * m_per_deg_lat,
+pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
+    let wind = match request.config.wind {
+        WindModel::Calm => WindField::calm(),
+        WindModel::AnnualMean => WindField::annual_mean(),
+        WindModel::DayOfYear(d) => WindField::for_day_of_year(d),
     };
-    let to_geo = |p: Point2D| (
-        departure_lon + p.x / m_per_deg_lon,
-        departure_lat + p.y / m_per_deg_lat,
+
+    let direct_bearing = initial_bearing(request.departure, request.arrival);
+    let dep_runway = runway::select(
+        request.departure,
+        &request.runways,
+        &wind,
+        request
+            .dep_heading_deg
+            .map(|d| d.to_radians())
+            .unwrap_or(direct_bearing),
+    );
+    let arr_runway = runway::select(
+        request.arrival,
+        &request.runways,
+        &wind,
+        request
+            .arr_heading_deg
+            .map(|d| d.to_radians())
+            .unwrap_or(direct_bearing),
     );
 
-    let mut actual_dep_lon = departure_lon;
-    let mut actual_dep_lat = departure_lat;
-    let mut actual_dep_heading = dep_heading_deg;
-    
-    let mut actual_arr_lon = arrival_lon;
-    let mut actual_arr_lat = arrival_lat;
-    let mut actual_arr_heading = arr_heading_deg;
-
-    log::error!("[LUANDA_DEBUG] generator::generate start - target dep: ({}, {})", departure_lon, departure_lat);
-
-    for r in runways {
-        let d_dep = (r.le_lon - departure_lon).hypot(r.le_lat - departure_lat);
-        let d_arr = (r.le_lon - arrival_lon).hypot(r.le_lat - arrival_lat);
-        if d_dep < d_arr {
-            actual_dep_lon = r.le_lon;
-            actual_dep_lat = r.le_lat;
-            actual_dep_heading = Some(r.le_heading as f64);
-        } else {
-            actual_arr_lon = r.le_lon;
-            actual_arr_lat = r.le_lat;
-            actual_arr_heading = Some(r.le_heading as f64);
-        }
-    }
-
-    log::error!("[LUANDA_DEBUG] generator::generate after runway snap - actual dep: ({}, {})", actual_dep_lon, actual_dep_lat);
-
-    let p_dep = to_2d(actual_dep_lon, actual_dep_lat);
-    let p_arr = to_2d(actual_arr_lon, actual_arr_lat);
-
-    let direct_heading_rad = (p_arr.x - p_dep.x).atan2(p_arr.y - p_dep.y);
-    let dep_h_rad = actual_dep_heading.map(|d| d.to_radians()).unwrap_or(direct_heading_rad);
-    let arr_h_rad = actual_arr_heading.map(|d| d.to_radians()).unwrap_or(direct_heading_rad);
-
-    let w0 = p_dep;
-    let w1 = Point2D { x: w0.x + 10000.0 * dep_h_rad.sin(), y: w0.y + 10000.0 * dep_h_rad.cos() };
-    let w2 = Point2D { x: p_arr.x - 15000.0 * arr_h_rad.sin(), y: p_arr.y - 15000.0 * arr_h_rad.cos() };
-    let w3 = p_arr;
-
-    let mut path = Path2D::new();
-    let turn_radius = 4000.0;
-    
-    path.segments.push(Box::new(LineSegment::new(w0, w1)));
-    path.add_dubins_path(w1, dep_h_rad, w2, arr_h_rad, turn_radius);
-    path.segments.push(Box::new(LineSegment::new(w2, w3)));
-
-    let s_total = path.total_length();
-
-    let cruise_alt = 10000.0;
-    
-    let ideal_ground = 3000.0_f64;
-    let ideal_landing = 3000.0_f64;
-    let ideal_climb = 30000.0;
-    let ideal_descent = 50000.0;
-    
-    let total_non_cruise = ideal_ground + ideal_climb + ideal_descent + ideal_landing;
-    let (s_ground_end, s_climb_end, cruise_dist, desc_dist) = if s_total > total_non_cruise {
-        (ideal_ground, ideal_ground + ideal_climb, s_total - total_non_cruise, ideal_descent)
+    let (dep_elev, arr_elev) = if request.config.terrain_elevation {
+        (
+            request.config.dep_elevation_m,
+            request.config.arr_elevation_m,
+        )
     } else {
-        let f = s_total / total_non_cruise;
-        (ideal_ground * f, (ideal_ground + ideal_climb) * f, 0.0, ideal_descent * f)
+        (0.0, 0.0)
     };
-    
-    let s_desc_start = s_climb_end + cruise_dist;
-    let s_land_start = s_desc_start + desc_dist;
 
-    let km = s_total / 1000.0;
-    let cruise_alt_m = if km < 300.0 {
-        lerp(6000.0, 7000.0, km / 300.0)
-    } else if km < 800.0 {
-        lerp(7000.0, 10000.0, (km - 300.0) / 500.0)
-    } else if km < 3000.0 {
-        lerp(10000.0, 11500.0, (km - 800.0) / 2200.0)
+    // Terminal geometry, laid out along each runway's centreline.
+    let splay = TAXIWAY_SPLAY_DEG.to_radians();
+    let apron_out = destination(
+        dep_runway.threshold,
+        dep_runway.heading_rad + std::f64::consts::PI + splay,
+        aircraft::TAXI_OUT_DISTANCE_M,
+    );
+    let dep_leg_end = destination(
+        dep_runway.threshold,
+        dep_runway.heading_rad,
+        aircraft::DEPARTURE_LEG_M,
+    );
+    let final_start = destination(
+        arr_runway.threshold,
+        arr_runway.heading_rad + std::f64::consts::PI,
+        aircraft::FINAL_APPROACH_M,
+    );
+    let touchdown = destination(
+        arr_runway.threshold,
+        arr_runway.heading_rad,
+        aircraft::TOUCHDOWN_OFFSET_M,
+    );
+    let rollout_m = aircraft::rollout_distance(arr_elev);
+    let rollout_end = destination(
+        arr_runway.threshold,
+        arr_runway.heading_rad,
+        aircraft::TOUCHDOWN_OFFSET_M + rollout_m,
+    );
+    let apron_in = destination(
+        rollout_end,
+        arr_runway.heading_rad + splay,
+        aircraft::TAXI_IN_DISTANCE_M,
+    );
+
+    // A first estimate of the cruise level, needed before the route exists because the
+    // wind is sampled at cruise altitude. One pass is enough — the level depends on
+    // distance only weakly, and the route length barely moves between the estimate and
+    // the plan.
+    let straight_m = distance_m(dep_leg_end, final_start);
+    let est_level = semicircular_level(
+        aircraft::optimum_cruise_altitude_m(straight_m),
+        direct_bearing,
+    );
+    let est_altitude = super::atmosphere::feet_to_m(est_level as f64 * 100.0);
+    let est_tas = tas_from_mach(aircraft::NOMINAL_CRUISE_MACH, est_altitude);
+
+    let airspace = if request.config.avoid_closed_airspace {
+        AirspaceRestrictions::for_route(request.departure, request.arrival)
     } else {
-        lerp(11500.0, 13000.0, ((km - 3000.0) / 10000.0).min(1.0))
+        AirspaceRestrictions::none()
     };
 
-    let get_altitude = |s: f64| -> f64 {
-        if s <= s_ground_end {
-            0.0
-        } else if s <= s_climb_end {
-            let climb_dist_actual = s_climb_end - s_ground_end;
-            let sigma = s - s_ground_end;
-            let d_rot = climb_dist_actual * 0.1;
-            let d_lvl = climb_dist_actual * 0.2;
-            let d_lin = climb_dist_actual - d_rot - d_lvl;
-            let max_slope = cruise_alt_m / (climb_dist_actual - 0.5 * (d_rot + d_lvl));
-            
-            if sigma <= d_rot {
-                0.5 * max_slope * (sigma * sigma / d_rot)
-            } else if sigma <= d_rot + d_lin {
-                let z_rot_end = 0.5 * max_slope * d_rot;
-                z_rot_end + max_slope * (sigma - d_rot)
-            } else {
-                let s_lvl = sigma - (d_rot + d_lin);
-                let z_lin_end = 0.5 * max_slope * d_rot + max_slope * d_lin;
-                z_lin_end + max_slope * s_lvl - 0.5 * max_slope * (s_lvl * s_lvl / d_lvl)
-            }
-        } else if s <= s_desc_start {
-            cruise_alt_m
-        } else if s <= s_land_start {
-            let desc_dist_actual = s_land_start - s_desc_start;
-            let sigma = s - s_desc_start;
-            let d_tod = desc_dist_actual * 0.2;
-            let d_flare = desc_dist_actual * 0.1;
-            let d_lin = desc_dist_actual - d_tod - d_flare;
-            let max_slope = cruise_alt_m / (desc_dist_actual - 0.5 * (d_tod + d_flare));
-            
-            if sigma <= d_tod {
-                cruise_alt_m - 0.5 * max_slope * (sigma * sigma / d_tod)
-            } else if sigma <= d_tod + d_lin {
-                let z_tod_end = cruise_alt_m - 0.5 * max_slope * d_tod;
-                z_tod_end - max_slope * (sigma - d_tod)
-            } else {
-                let s_flare = sigma - (d_tod + d_lin);
-                let z_lin_end = cruise_alt_m - 0.5 * max_slope * d_tod - max_slope * d_lin;
-                z_lin_end - (max_slope * s_flare - 0.5 * max_slope * (s_flare * s_flare / d_flare))
-            }
-        } else {
-            0.0
-        }
-    };
+    let enroute = plan_enroute(
+        dep_leg_end,
+        final_start,
+        &EnrouteOptions {
+            wind: &wind,
+            airspace: &airspace,
+            cruise_altitude_m: est_altitude,
+            cruise_tas: est_tas,
+            oceanic_tracks: request.config.oceanic_tracks,
+        },
+    );
 
-    let target_duration_s = target_duration_ms as f64 / 1000.0;
-    
-    // Evaluate theoretical time for a given cruise speed
-    let evaluate_time = |v_cruise: f64| -> f64 {
-        let t_ground = 2.0 * s_ground_end / 88.88; // Takeoff (0 to 320 kph)
-        let t_climb = (s_climb_end - s_ground_end) / (0.5 * (88.88 + v_cruise));
-        let t_cruise = cruise_dist / v_cruise;
-        let t_descent = desc_dist / (0.5 * (v_cruise + 72.0));
-        let t_landing = 2.0 * (s_total - s_land_start) / 72.0; // Landing (260 kph to 0)
-        t_ground + t_climb + t_cruise + t_descent + t_landing
-    };
+    // Turn radii follow the speed at each corner, which is the whole point of deriving
+    // them rather than fixing one.
+    // Sized for the speed at the *end* of the departure leg, not at the acceleration
+    // altitude: by the time the aircraft reaches the first turn it has cleaned up and
+    // is doing 250 kt, and a radius sized for the climb-out speed would put it at 47°
+    // of bank.
+    let departure_turn_r = aircraft::turn_radius(
+        aircraft::climb_tas(dep_elev + DEPARTURE_TURN_HEIGHT_M, dep_elev),
+        dep_elev + DEPARTURE_TURN_HEIGHT_M,
+    );
+    let cruise_turn_r = aircraft::turn_radius(est_tas, est_altitude);
+    let final_turn_r = aircraft::turn_radius(
+        aircraft::descent_tas(arr_elev + 1_000.0),
+        arr_elev + 1_000.0,
+    );
 
-    // Binary search for ideal v_cruise
-    let mut min_v = 1.0;
-    let mut max_v = 100_000.0;
-    let mut best_v_cruise = 250.0;
-    for _ in 0..60 {
-        best_v_cruise = (min_v + max_v) / 2.0;
-        let t_test = evaluate_time(best_v_cruise);
-        if t_test > target_duration_s {
-            // Took too long, need higher speed
-            min_v = best_v_cruise;
-        } else {
-            // Too fast, need lower speed
-            max_v = best_v_cruise;
+    let mut waypoints = Vec::with_capacity(enroute.len() + 8);
+    waypoints.push(Waypoint::sharp(apron_out));
+    let idx_dep_threshold = waypoints.len();
+    waypoints.push(Waypoint::sharp(dep_runway.threshold));
+    waypoints.push(Waypoint::new(dep_leg_end, departure_turn_r));
+    if enroute.len() > 2 {
+        for p in &enroute[1..enroute.len() - 1] {
+            waypoints.push(Waypoint::new(*p, cruise_turn_r));
         }
     }
+    waypoints.push(Waypoint::new(final_start, final_turn_r));
+    waypoints.push(Waypoint::sharp(arr_runway.threshold));
+    let idx_touchdown = waypoints.len();
+    waypoints.push(Waypoint::sharp(touchdown));
+    let idx_rollout_end = waypoints.len();
+    waypoints.push(Waypoint::sharp(rollout_end));
+    waypoints.push(Waypoint::sharp(apron_in));
 
-    let get_real_speed = |s: f64| -> f64 {
-        if s < s_ground_end {
-            if s <= 0.0 { return 0.0; }
-            let a = (88.88 * 88.88) / (2.0 * s_ground_end);
-            (2.0 * a * s).sqrt()
-        } else if s < s_climb_end {
-            lerp(88.88, best_v_cruise, (s - s_ground_end) / (s_climb_end - s_ground_end))
-        } else if s < s_desc_start {
-            best_v_cruise
-        } else if s < s_land_start {
-            lerp(best_v_cruise, 72.0, (s - s_desc_start) / (s_land_start - s_desc_start))
-        } else {
-            let dist_rem = s_total - s;
-            if dist_rem <= 0.0 { return 0.0; }
-            let a = (72.0 * 72.0) / (2.0 * (s_total - s_land_start));
-            (2.0 * a * dist_rem).sqrt()
-        }
-    };
-
-    let mut points = Vec::new();
-    let mut current_s = 0.0;
-    let mut current_t = 0.0;
-    let dt = 2.0;
-
-    while current_s <= s_total {
-        let p_prev = path.get_point(f64::max(current_s - 1.0, 0.0));
-        let p_now = path.get_point(current_s);
-        let p_next = path.get_point(f64::min(current_s + 1.0, s_total));
-        
-        let (lon, lat) = to_geo(p_now);
-        let raw_alt = get_altitude(current_s);
-        let alt = raw_alt + 5.0;
-        let intensity = (1.0 - (raw_alt / cruise_alt_m).clamp(0.0, 1.0)) as f32;
-        
-        let real_v = get_real_speed(current_s);
-        
-        let h_prev = (p_now.x - p_prev.x).atan2(p_now.y - p_prev.y);
-        let h_next = (p_next.x - p_now.x).atan2(p_next.y - p_now.y);
-        let heading_rad = h_next;
-        
-        let mut d_heading = h_next - h_prev;
-        if d_heading > std::f64::consts::PI { d_heading -= 2.0 * std::f64::consts::PI; }
-        if d_heading < -std::f64::consts::PI { d_heading += 2.0 * std::f64::consts::PI; }
-        
-        let dist = (p_next.x - p_prev.x).hypot(p_next.y - p_prev.y);
-        let turn_rate_rad_per_sec = if dist > 0.0 { (d_heading / dist) * real_v } else { 0.0 };
-        let roll_rad = ((real_v * turn_rate_rad_per_sec) / 9.81).atan();
-        
-        let alt_prev = get_altitude(f64::max(current_s - 1.0, 0.0));
-        let alt_next = get_altitude(f64::min(current_s + 1.0, s_total));
-        let pitch_rad = if dist > 0.0 { (alt_next - alt_prev).atan2(dist) } else { 0.0 };
-        
-        points.push(TelemetryPoint {
-            time_offset_ms: (current_t * 1000.0) as u64,
-            longitude: lon,
-            latitude: lat,
-            altitude: alt,
-            velocity_m_s: real_v,
-            heading_rad,
-            pitch_rad,
-            roll_rad,
-            sun_intensity: intensity,
-        });
-
-        let step_v = f64::max(real_v, 1.0);
-        current_s += step_v * dt;
-        current_t += dt;
+    let (track, placed) = GroundTrack::build(&waypoints);
+    let s_total = track.total_length();
+    if s_total <= 0.0 {
+        return Vec::new();
     }
 
-    let (final_lon, final_lat) = to_geo(path.get_point(s_total));
-    points.push(TelemetryPoint {
-        time_offset_ms: (current_t * 1000.0) as u64,
-        longitude: final_lon,
-        latitude: final_lat,
-        altitude: 5.0,
-        velocity_m_s: 0.0,
-        heading_rad: 0.0,
-        pitch_rad: 0.0,
-        roll_rad: 0.0,
-        sun_intensity: 1.0,
+    let profile = VerticalProfile::build(&VerticalInputs {
+        s_total,
+        s_dep_threshold: placed[idx_dep_threshold],
+        s_touchdown: placed[idx_touchdown],
+        s_rollout_end: placed[idx_rollout_end],
+        dep_elevation_m: dep_elev,
+        arr_elevation_m: arr_elev,
+        track_rad: direct_bearing,
+        trip_distance_m: straight_m,
+        cruise_tas_estimate: est_tas,
     });
 
+    let ctx = TimeContext {
+        track: &track,
+        profile: &profile,
+        wind: &wind,
+    };
+    let fitted = schedule::fit(&ctx, request.target_duration_ms as f64 / 1000.0);
+
+    log::info!(
+        "flight plan: {:.0} km track, FL{} ({} step climbs), M{:.3}, {:.0} min physical \
+         vs {:.0} min session (scale {:.2})",
+        s_total / 1000.0,
+        profile.cruise_flight_level,
+        profile.step_count,
+        fitted.schedule.cruise_mach,
+        fitted.physical_duration_s / 60.0,
+        request.target_duration_ms as f64 / 60_000.0,
+        fitted.time_scale,
+    );
+
+    let mut points = sample(&ctx, &fitted.schedule);
+
+    // The fit works from a coarse integration of the profile; the sampler walks it at
+    // its own phase-dependent step and so lands a fraction of a percent away. Rescaling
+    // against what was actually sampled makes the arrival exact, which matters because
+    // playback maps session progress onto the last timestamp.
+    if let Some(last) = points.last() {
+        if last.time_offset_ms > 0 {
+            let scale = request.target_duration_ms as f64 / last.time_offset_ms as f64;
+            for p in &mut points {
+                p.time_offset_ms = (p.time_offset_ms as f64 * scale).round() as u64;
+            }
+        }
+    }
     points
 }
 
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + (b - a) * t
+fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
+    let track = ctx.track;
+    let profile = ctx.profile;
+    let total = track.total_length();
+
+    // Ground level is whichever field is nearer, so the sun curve reads 1.0 on the
+    // ground whether or not real elevations are in use.
+    let ground_ref = profile.dep_elevation_m.min(profile.arr_elevation_m);
+    let sun_span = (profile.cruise_altitude_m - ground_ref).max(1.0);
+
+    let mut points: Vec<TelemetryPoint> = Vec::new();
+    let mut s = 0.0_f64;
+    let mut t = 0.0_f64;
+    let mut bank = 0.0_f64;
+    let mut last_dt = 0.0_f64;
+
+    loop {
+        let position = track.position_at(s);
+        let altitude = profile.altitude_at(s);
+        let tas = schedule.tas_at(s, profile);
+        let (ground_speed, heading_offset, _) = ground_speed_at(ctx, s, tas);
+        let bearing = track.bearing_at(s);
+
+        // Flight path angle from the profile, then body attitude on top of it.
+        let lo = (s - ATTITUDE_PROBE_M).max(0.0);
+        let hi = (s + ATTITUDE_PROBE_M).min(total);
+        let span = (hi - lo).max(1.0);
+        let fpa = ((profile.altitude_at(hi) - profile.altitude_at(lo)) / span).atan();
+        let mut pitch = fpa + aircraft::angle_of_attack(tas, altitude);
+
+        // The nose is on the ground until rotation and back down after landing, and
+        // moves between the two over a few hundred metres rather than instantly.
+        if s <= profile.s_rotate {
+            pitch = 0.0;
+        } else if s < profile.s_rotate + ROTATION_DISTANCE_M {
+            pitch *= (s - profile.s_rotate) / ROTATION_DISTANCE_M;
+        }
+        if s >= profile.s_touchdown {
+            let f = ((s - profile.s_touchdown) / ROTATION_DISTANCE_M).clamp(0.0, 1.0);
+            pitch *= 1.0 - f;
+        }
+
+        // Bank from the curvature of the track the aircraft is actually flying. On the
+        // ground the landing gear settles the question, so the roll dynamics below are
+        // bypassed entirely rather than left to decay toward zero.
+        let on_ground = profile.is_on_ground(s);
+        let target_bank = if on_ground {
+            0.0
+        } else {
+            let arc =
+                ((s + CURVATURE_PROBE_M).min(total) - (s - CURVATURE_PROBE_M).max(0.0)).max(1.0);
+            let turn_rate = track.turn_angle_at(s, CURVATURE_PROBE_M) / arc * ground_speed;
+            let limit = aircraft::max_bank(altitude);
+            (ground_speed * turn_rate / 9.806_65)
+                .atan()
+                .clamp(-limit, limit)
+        };
+        // Rolling into a turn takes a few seconds; without this the bank steps at every
+        // waypoint even though the track through it is smooth.
+        if on_ground {
+            bank = 0.0;
+        } else {
+            let max_delta = aircraft::ROLL_RATE_RAD_PER_S * last_dt;
+            bank += (target_bank - bank).clamp(-max_delta, max_delta);
+        }
+
+        points.push(TelemetryPoint {
+            time_offset_ms: (t * 1000.0) as u64,
+            longitude: position.lon_deg,
+            latitude: position.lat_deg,
+            altitude: altitude + RENDER_LIFT_M,
+            velocity_m_s: ground_speed,
+            heading_rad: bearing + heading_offset,
+            pitch_rad: pitch,
+            roll_rad: bank,
+            sun_intensity: (1.0 - ((altitude - ground_ref) / sun_span).clamp(0.0, 1.0)) as f32,
+        });
+
+        if s >= total {
+            break;
+        }
+
+        let agl = profile.height_above_field(s);
+        let dt = if profile.is_on_ground(s) && ground_speed < 15.0 {
+            DT_TAXI_S
+        } else if agl < LOW_AGL_M {
+            DT_LOW_S
+        } else if agl < MID_AGL_M {
+            DT_MID_S
+        } else if bank.abs() > TURN_BANK_RAD {
+            DT_TURN_S
+        } else {
+            DT_CRUISE_S
+        };
+        let step = (ground_speed * dt)
+            .clamp(MIN_SAMPLE_STEP_M, MAX_SAMPLE_STEP_M)
+            .min(total - s);
+        if step <= 0.0 {
+            break;
+        }
+        last_dt = step / ground_speed.max(0.3);
+        t += last_dt;
+        s += step;
+    }
+
+    points
 }
