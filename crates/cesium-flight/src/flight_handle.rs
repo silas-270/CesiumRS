@@ -83,6 +83,21 @@ impl FlightHandle {
         });
     }
 
+    /// Load a flight path from a pre-defined or parsed route definition. Non-blocking.
+    pub fn load_route_def(&self, route: &crate::preset::FlightRouteDef) {
+        self.load_flight(
+            &route.id,
+            route.departure_lon,
+            route.departure_lat,
+            route.arrival_lon,
+            route.arrival_lat,
+            route.total_duration_ms,
+            route.dep_heading_deg,
+            route.arr_heading_deg,
+            Vec::new(),
+        );
+    }
+
     /// Load a secondary (reference) flight path. Non-blocking.
     pub fn load_secondary_flight(
         &self, 
