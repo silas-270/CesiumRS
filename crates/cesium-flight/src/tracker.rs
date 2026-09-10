@@ -12,7 +12,7 @@ use cesium_engine::time::SimulationTime;
 
 use crate::flight_handle::{FlightCommand, FlightHandle};
 
-use crate::telemetry::generate;
+use crate::telemetry::{generate, FlightPlanConfig, FlightRequest, LatLon};
 
 pub struct PendingFlight {
     pub id: String,
@@ -25,6 +25,22 @@ pub struct PendingFlight {
     pub arr_heading_deg: Option<f64>,
     pub is_secondary: bool,
     pub runways: Vec<crate::flight_handle::RunwayData>,
+    /// Captured from the app's current config when the load command is handled.
+    pub config: FlightPlanConfig,
+}
+
+impl PendingFlight {
+    fn to_request(&self) -> FlightRequest {
+        FlightRequest {
+            departure: LatLon::new(self.departure_lat, self.departure_lon),
+            arrival: LatLon::new(self.arrival_lat, self.arrival_lon),
+            target_duration_ms: self.total_duration_ms,
+            dep_heading_deg: self.dep_heading_deg,
+            arr_heading_deg: self.arr_heading_deg,
+            runways: self.runways.clone(),
+            config: self.config,
+        }
+    }
 }
 
 pub struct FlightEntity {
@@ -100,6 +116,8 @@ pub struct FlightTrackerApp {
     pub pending_camera_restore: std::sync::Arc<std::sync::Mutex<Option<(glam::Vec3, glam::Quat)>>>,
     /// Cached from `init()` so we can create PolylineRenderers on-demand in `update()`.
     cached_surface_config: Option<wgpu::SurfaceConfiguration>,
+    /// Planning options applied to flights loaded from here on.
+    pub plan_config: FlightPlanConfig,
 }
 
 impl FlightTrackerApp {
@@ -126,6 +144,7 @@ impl FlightTrackerApp {
             current_camera_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
+            plan_config: FlightPlanConfig::default(),
         };
         (app, FlightHandle::new(tx))
     }
@@ -150,6 +169,7 @@ impl FlightTrackerApp {
             current_camera_state: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
+            plan_config: FlightPlanConfig::default(),
         }
     }
 
@@ -304,6 +324,7 @@ impl FlightTrackerApp {
             arr_heading_deg: None,
             is_secondary,
             runways,
+            config: self.plan_config,
         });
     }
 
@@ -431,7 +452,11 @@ impl GlobeExtension for FlightTrackerApp {
                             arr_heading_deg,
                             is_secondary,
                             runways,
+                            config: self.plan_config,
                         });
+                    }
+                    FlightCommand::SetPlanConfig(c) => {
+                        self.plan_config = c;
                     }
                     FlightCommand::SetProgress(p) => {
                         *self.progress.lock().unwrap() = p.clamp(0.0, 1.0);
@@ -462,16 +487,7 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         for pending in self.pending_flights.drain(..) {
-            let points = generate(
-                pending.departure_lon,
-                pending.departure_lat,
-                pending.arrival_lon,
-                pending.arrival_lat,
-                pending.total_duration_ms,
-                pending.dep_heading_deg,
-                pending.arr_heading_deg,
-                &pending.runways,
-            );
+            let points = generate(&pending.to_request());
 
             let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
 
@@ -493,26 +509,6 @@ impl GlobeExtension for FlightTrackerApp {
                 let control_points = builder.build(&property, reference_point);
                 
                 println!("Flight path loaded: {} ({} control points)", pending.id, control_points.len());
-                if let Some(first_point) = control_points.first() {
-                    let pos = first_point.position;
-                    log::error!("[LUANDA_DEBUG] tracker::update Polyline control points - first point ECEF: ({}, {}, {})", pos[0], pos[1], pos[2]);
-                    // Also convert back to lat/lon for easy reading
-                    let a = 6378137.0_f64;
-                    let b = 6356752.314245_f64;
-                    let e2 = 1.0 - (b * b) / (a * a);
-                    
-                    let x = pos[0] as f64;
-                    let y = pos[1] as f64;
-                    let z = pos[2] as f64;
-                    
-                    let p = (x * x + y * y).sqrt();
-                    let theta = (z * a).atan2(p * b);
-                    let st = theta.sin();
-                    let ct = theta.cos();
-                    let lon = y.atan2(x);
-                    let lat = (z + e2 * e2 / (1.0 - e2) * b * st * st * st).atan2(p - e2 * a * ct * ct * ct);
-                    log::error!("[LUANDA_DEBUG] tracker::update Polyline control points - first point LatLon: ({}, {})", lon.to_degrees(), lat.to_degrees());
-                }
 
                 let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
                 // Upload geometry statically once
@@ -587,7 +583,11 @@ impl GlobeExtension for FlightTrackerApp {
                             arr_heading_deg,
                             is_secondary,
                             runways,
+                            config: self.plan_config,
                         });
+                    }
+                    FlightCommand::SetPlanConfig(c) => {
+                        self.plan_config = c;
                     }
                     FlightCommand::SetProgress(p) => {
                         *self.progress.lock().unwrap() = p.clamp(0.0, 1.0);
@@ -617,16 +617,7 @@ impl GlobeExtension for FlightTrackerApp {
                 let camera_bind_group_layout = camera_bind_group_layout(device);
 
                 for pending in self.pending_flights.drain(..) {
-                    let points = generate(
-                        pending.departure_lon,
-                        pending.departure_lat,
-                        pending.arrival_lon,
-                        pending.arrival_lat,
-                        pending.total_duration_ms,
-                        pending.dep_heading_deg,
-                        pending.arr_heading_deg,
-                        &pending.runways,
-                    );
+                    let points = generate(&pending.to_request());
                     
                     let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
 
@@ -904,7 +895,8 @@ impl GlobeExtension for FlightTrackerApp {
                 let desired_length_mm = distance * 0.008325;
 
                 let min_length_mm = 33.5 / 1_000_000.0; // 33.5 meters (half of A350 length)
-                let max_length_mm = 1000.0 * 1000.0 / 1_000_000.0; // 1000 km
+                let max_length_m = 1000.0 * 1000.0; // 1000 km
+                let max_length_mm = max_length_m / 1_000_000.0;
 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
 

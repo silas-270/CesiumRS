@@ -18,6 +18,13 @@ pub struct PendingFlightData {
 }
 
 // Global state to bridge Kotlin and the android_main thread
+/// Field elevations for the next flight, in metres.
+///
+/// Separate from `FLIGHT_DATA` so that supplying them stays optional: when nothing has
+/// been set, flights are planned at sea level, which is what the globe currently
+/// renders. See `FlightPlanConfig::terrain_elevation`.
+pub static FIELD_ELEVATIONS: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+
 pub static FLIGHT_DATA: Mutex<Option<PendingFlightData>> = Mutex::new(None);
 pub static RUNWAY_DATA: Mutex<Option<Vec<RunwayData>>> = Mutex::new(None);
 pub static FLIGHT_HANDLE: Mutex<Option<FlightHandle>> = Mutex::new(None);
@@ -43,7 +50,6 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     arr_lat: jdouble,
     duration_ms: jlong,
 ) {
-    log::error!("[LUANDA_DEBUG] JNI nativeSetPendingFlight - Kotlin passed dep: ({}, {})", dep_lon, dep_lat);
     *FLIGHT_DATA.lock().unwrap() = Some(PendingFlightData {
         dep_lon,
         dep_lat,
@@ -230,6 +236,13 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     if let Some(handle) = handle_lock.as_ref() {
         if let Some(data) = FLIGHT_DATA.lock().unwrap().take() {
             let runways = RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
+            let mut config = cesium_flight::telemetry::FlightPlanConfig::default();
+            if let Some((dep_m, arr_m)) = FIELD_ELEVATIONS.lock().unwrap().take() {
+                config.terrain_elevation = true;
+                config.dep_elevation_m = dep_m;
+                config.arr_elevation_m = arr_m;
+            }
+            handle.set_plan_config(config);
             handle.load_flight(
                 "primary",
                 data.dep_lon,
@@ -259,6 +272,24 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     if let Some(handle) = VIEWER_HANDLE.lock().unwrap().as_ref() {
         handle.run_perf_scenario(scenario_id);
     }
+}
+
+/// Supplies the elevations of the two airports for the next flight, and by doing so
+/// turns terrain-aware planning on for it.
+///
+/// Optional, and currently uncalled: the globe renders no terrain, so a flight starting
+/// at a real field elevation would visibly float above a sea-level surface. The planner
+/// handles elevation correctly either way — the takeoff roll lengthens in thin air, and
+/// cruise levels are checked against the ground beneath them — so the Kotlin side only
+/// needs to declare and call this once the globe has terrain to sit on.
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetFieldElevations(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    dep_elevation_m: jdouble,
+    arr_elevation_m: jdouble,
+) {
+    *FIELD_ELEVATIONS.lock().unwrap() = Some((dep_elevation_m, arr_elevation_m));
 }
 
 #[no_mangle]

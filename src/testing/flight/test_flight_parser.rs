@@ -1,18 +1,28 @@
-use cesium_engine::property::Property;
-use cesium_engine::time::SimulationTime;
-use cesium_flight::telemetry::generate;
+use cesium_flight::telemetry::geo::{distance_m, LatLon};
+use cesium_flight::telemetry::{generate, FlightPlanConfig, FlightRequest};
 
 #[test]
 fn test_flight_generation() {
-    let pts = generate(8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, None, None, &[]);
+    let departure = LatLon::new(50.0333, 8.5706);
+    let arrival = LatLon::new(48.6899, 9.2219);
+    let pts = generate(&FlightRequest {
+        departure,
+        arrival,
+        target_duration_ms: 1_800_000,
+        dep_heading_deg: None,
+        arr_heading_deg: None,
+        runways: Vec::new(),
+        config: FlightPlanConfig::default(),
+    });
     assert!(!pts.is_empty());
-    
-    let start_pos = pts.first().unwrap();
-    let end_pos = pts.last().unwrap();
-    
-    assert!((start_pos.latitude - 50.0333).abs() < 1e-4);
-    assert!((start_pos.longitude - 8.5706).abs() < 1e-4);
-    
-    assert!((end_pos.latitude - 48.6899).abs() < 1e-4);
-    assert!((end_pos.longitude - 9.2219).abs() < 1e-4);
+
+    let start = pts.first().unwrap();
+    let end = pts.last().unwrap();
+
+    // Near the airports rather than exactly on them: a flight now begins on an apron a
+    // couple of kilometres back from the runway threshold and ends on another after the
+    // landing rollout, instead of starting and stopping on the airport reference point.
+    let tolerance_m = 6_000.0;
+    assert!(distance_m(LatLon::new(start.latitude, start.longitude), departure) < tolerance_m);
+    assert!(distance_m(LatLon::new(end.latitude, end.longitude), arrival) < tolerance_m);
 }

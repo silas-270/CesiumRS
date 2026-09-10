@@ -9,6 +9,7 @@ This project implements a unified architecture designed to act as a robust back-
 - **WGS84 Ellipsoid Rendering**: Geographically accurate rendering of the Earth, accounting for equatorial bulging and precise coordinate transformations.
 - **High-Performance Tile System**: Quadtree-based tile streaming, speculative prefetching, and strict caching to maintain 60FPS at high zoom levels.
 - **Flight Tracking Module (`cesium-flight`)**: Includes advanced 6-DOF camera tracking modes, flight path interpolation via Catmull-Rom splines, and polyline BVH rendering for massive flight routes.
+- **Offline Flight Planning**: Builds a realistic route and vertical profile from two airports and a duration, with no navigation data and no network — great-circle routing, wind-optimised tracks against a jet stream climatology, closed-airspace avoidance, oceanic track grids, flight levels with step climbs, and attitude derived from the path. See [docs/flight-plan.md](docs/flight-plan.md).
 - **Unified Public API**: Provides a thread-safe, clean, non-blocking interface (`CesiumViewer` and `ViewerHandle`) ideal for FFI / JNI integration (e.g. Kotlin/Android).
 
 ## Architecture
@@ -72,6 +73,17 @@ cargo run --release -- --stress
 # Tile Monitor (Diagnostic view for tile fetching)
 cargo run --release -- --monitor
 ```
+
+Flight planning is pure computation with no GPU or device involved, so it is covered by
+ordinary unit tests rather than a visual harness:
+
+```bash
+cargo test -p cesium-flight
+```
+
+Those tests pin the shape of a flight plan — great-circle routing, airliner climb and
+bank angles, flight-level parity, physical cruise speeds. See
+[docs/flight-plan.md](docs/flight-plan.md#testing) for which of them are load-bearing.
 
 ## Naming & Style Conventions
 The codebase strictly adheres to standard Rust naming conventions (`snake_case` variables, `UpperCamelCase` types, `SCREAMING_SNAKE_CASE` constants). Ensure `cargo clippy` and `cargo fmt` are run before committing.
