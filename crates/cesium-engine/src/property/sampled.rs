@@ -116,19 +116,24 @@ impl Property<DVec3> for SampledPositionProperty {
                 match self.algorithm {
                     InterpolationAlgorithm::Linear => Some(interpolation::linear_dvec3(p1, p2, t)),
                     InterpolationAlgorithm::CatmullRom => {
-                        // We need 4 points for Catmull-Rom (p0, p1, p2, p3)
-                        let p0 = if idx1 > 0 {
-                            self.samples[idx1 - 1].1
+                        let (t0, p0) = if idx1 > 0 {
+                            self.samples[idx1 - 1]
                         } else {
-                            p1
+                            (crate::time::SimulationTime::new(t1.seconds - dt), p1)
                         };
-                        let p3 = if idx2 + 1 < self.samples.len() {
-                            self.samples[idx2 + 1].1
+                        let (t3, p3) = if idx2 + 1 < self.samples.len() {
+                            self.samples[idx2 + 1]
                         } else {
-                            p2
+                            (crate::time::SimulationTime::new(t2.seconds + dt), p2)
                         };
 
-                        Some(interpolation::catmull_rom_dvec3(p0, p1, p2, p3, t))
+                        let dt01 = t1.seconds - t0.seconds;
+                        let dt12 = dt;
+                        let dt23 = t3.seconds - t2.seconds;
+
+                        Some(interpolation::catmull_rom_timed_dvec3(
+                            p0, p1, p2, p3, dt01, dt12, dt23, t,
+                        ))
                     }
                 }
             }
@@ -208,18 +213,24 @@ impl Property<f64> for SampledScalarProperty {
                 match self.algorithm {
                     InterpolationAlgorithm::Linear => Some(interpolation::linear_f64(p1, p2, t)),
                     InterpolationAlgorithm::CatmullRom => {
-                        let p0 = if idx1 > 0 {
-                            self.samples[idx1 - 1].1
+                        let (t0, p0) = if idx1 > 0 {
+                            self.samples[idx1 - 1]
                         } else {
-                            p1
+                            (crate::time::SimulationTime::new(t1.seconds - dt), p1)
                         };
-                        let p3 = if idx2 + 1 < self.samples.len() {
-                            self.samples[idx2 + 1].1
+                        let (t3, p3) = if idx2 + 1 < self.samples.len() {
+                            self.samples[idx2 + 1]
                         } else {
-                            p2
+                            (crate::time::SimulationTime::new(t2.seconds + dt), p2)
                         };
 
-                        Some(interpolation::catmull_rom_f64(p0, p1, p2, p3, t))
+                        let dt01 = t1.seconds - t0.seconds;
+                        let dt12 = dt;
+                        let dt23 = t3.seconds - t2.seconds;
+
+                        Some(interpolation::catmull_rom_timed_f64(
+                            p0, p1, p2, p3, dt01, dt12, dt23, t,
+                        ))
                     }
                 }
             }

@@ -33,11 +33,6 @@ const MAX_STEPS: usize = 3;
 /// parity intact.
 const STEP_FL: i32 = 20;
 
-/// Deceleration shelf on the way down: a shallower segment where the aircraft slows to
-/// the 250 kt limit before descending below 10,000 ft.
-const SHELF_TOP_AGL_M: f64 = 3_500.0;
-const SHELF_BOTTOM_AGL_M: f64 = 3_000.0;
-const SHELF_ANGLE_RAD: f64 = 0.021; // 1.2 degrees
 
 /// Where the profile is anchored on the ground track, and what it has to fit between.
 pub struct VerticalInputs {
@@ -57,6 +52,7 @@ pub struct VerticalInputs {
 pub struct VerticalProfile {
     /// Monotonic in distance; altitude is linearly interpolated between entries.
     samples: Vec<(f64, f64)>,
+    tangents: Vec<f64>,
     pub s_rotate: f64,
     pub s_top_of_climb: f64,
     pub s_top_of_descent: f64,
@@ -100,6 +96,7 @@ impl VerticalProfile {
             plan.initial_altitude_m,
             inputs.dep_elevation_m,
         );
+
         for (ds, alt) in &climb.points {
             samples.push((s_rotate + ds * plan.compression, *alt));
         }
@@ -122,17 +119,28 @@ impl VerticalProfile {
         let mut s = s_top_of_climb;
         let mut alt = plan.initial_altitude_m;
         for (k, step_ds) in plan.step_distances.iter().enumerate() {
+            // Densify level cruise if long
+            let seg_steps = ((level_each / 50_000.0).ceil() as usize).max(1);
+            for st in 1..=seg_steps {
+                samples.push((s + level_each * (st as f64 / seg_steps as f64), alt));
+            }
             s += level_each;
-            samples.push((s, alt));
             let next = plan.step_altitudes_m[k];
             let step_len = step_ds * plan.compression;
-            // The step itself is a short climb, not an instant jump — it takes a few
-            // minutes and twenty-odd kilometres.
-            for (ds, a) in &integrate_climb(alt, next, inputs.dep_elevation_m).points {
+            let step_climb = integrate_climb(alt, next, inputs.dep_elevation_m);
+            for (ds, a) in &step_climb.points {
                 samples.push((s + ds * plan.compression, *a));
             }
             s += step_len;
             alt = next;
+        }
+
+        // Densify remaining cruise to top of descent
+        if level_each > 0.0 {
+            let seg_steps = ((level_each / 50_000.0).ceil() as usize).max(1);
+            for st in 1..seg_steps {
+                samples.push((s + level_each * (st as f64 / seg_steps as f64), alt));
+            }
         }
         samples.push((s_top_of_descent, plan.top_altitude_m));
 
@@ -141,25 +149,28 @@ impl VerticalProfile {
         }
         samples.push((s_flare_start, flare_entry_alt));
 
-        // Flare: the sink rate is arrested rather than the aircraft simply arriving at
-        // the ground on the glideslope.
-        const FLARE_SAMPLES: usize = 12;
-        for k in 1..=FLARE_SAMPLES {
+        // Flare: smooth quintic transition from glideslope to touchdown
+        const FLARE_SAMPLES: usize = 16;
+        for k in 1..FLARE_SAMPLES {
             let f = k as f64 / FLARE_SAMPLES as f64;
-            let height = aircraft::FLARE_HEIGHT_M * (1.0 - f).powf(1.8);
+            let u = 1.0 - f;
+            let ease = u * u * u * (10.0 - 15.0 * u + 6.0 * u * u);
+            let height = aircraft::FLARE_HEIGHT_M * ease;
             samples.push((s_flare_start + flare_m * f, inputs.arr_elevation_m + height));
         }
         samples.push((inputs.s_touchdown, inputs.arr_elevation_m));
         samples.push((inputs.s_total, inputs.arr_elevation_m));
 
-        // The construction above can emit slightly out-of-order or duplicate distances
-        // where two segments meet; the lookup relies on monotonicity.
+        // Ensure strictly sorted and deduplicated distances
         samples.retain(|(s, a)| s.is_finite() && a.is_finite());
         samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         samples.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
 
+        let tangents = compute_tangents(&samples, s_rotate, inputs.s_touchdown);
+
         Self {
             samples,
+            tangents,
             s_rotate,
             s_top_of_climb,
             s_top_of_descent,
@@ -202,47 +213,8 @@ impl VerticalProfile {
             return a0;
         }
 
-        // Monotone cubic Hermite (Fritsch-Carlson) rather than a straight line.
-        //
-        // Pitch is the derivative of this function, so linear interpolation makes it a
-        // staircase — and at a phase boundary, where the gradient goes from 3° to zero
-        // inside one table interval, that staircase is a genuine corner. The aircraft
-        // would snap out of the climb rather than level off.
-        //
-        // The monotonicity limiter is not decoration: an unconstrained spline overshoots
-        // at exactly those corners, which would put the aircraft above its cruise level
-        // at the top of climb and below the runway at touchdown.
-        let secant = |i: usize| -> f64 {
-            let (x0, y0) = self.samples[i];
-            let (x1, y1) = self.samples[i + 1];
-            if x1 > x0 {
-                (y1 - y0) / (x1 - x0)
-            } else {
-                0.0
-            }
-        };
-        let d = secant(idx - 1);
-        let tangent = |i: usize| -> f64 {
-            // One-sided at the ends of the table, otherwise the harmonic mean of the
-            // neighbouring secants, which is zero whenever they disagree in sign.
-            if i == 0 || i + 1 >= self.samples.len() {
-                return d;
-            }
-            let prev = secant(i - 1);
-            let next = secant(i);
-            if prev * next <= 0.0 {
-                0.0
-            } else {
-                let (x0, _) = self.samples[i - 1];
-                let (x1, _) = self.samples[i];
-                let (x2, _) = self.samples[i + 1];
-                let w1 = 2.0 * (x2 - x1) + (x1 - x0);
-                let w2 = (x2 - x1) + 2.0 * (x1 - x0);
-                (w1 + w2) / (w1 / prev + w2 / next)
-            }
-        };
-        let m0 = tangent(idx - 1);
-        let m1 = tangent(idx);
+        let m0 = self.tangents[idx - 1];
+        let m1 = self.tangents[idx];
 
         let t = (s - s0) / h;
         let t2 = t * t;
@@ -252,6 +224,40 @@ impl VerticalProfile {
         let h01 = -2.0 * t3 + 3.0 * t2;
         let h11 = t3 - t2;
         h00 * a0 + h10 * h * m0 + h01 * a1 + h11 * h * m1
+    }
+
+    /// Exact analytic gradient (dh/ds) of the altitude profile.
+    pub fn gradient_at(&self, s: f64) -> f64 {
+        if self.samples.len() < 2 {
+            return 0.0;
+        }
+        if s <= self.s_rotate || s >= self.s_touchdown {
+            return 0.0;
+        }
+        let idx = match self
+            .samples
+            .binary_search_by(|(x, _)| x.partial_cmp(&s).unwrap())
+        {
+            Ok(i) => return self.tangents[i],
+            Err(i) => i,
+        };
+        if idx == 0 {
+            return self.tangents[0];
+        }
+        if idx >= self.samples.len() {
+            return self.tangents[self.samples.len() - 1];
+        }
+        let (s0, a0) = self.samples[idx - 1];
+        let (s1, a1) = self.samples[idx];
+        let h = s1 - s0;
+        if h <= 0.0 {
+            return 0.0;
+        }
+        let m0 = self.tangents[idx - 1];
+        let m1 = self.tangents[idx];
+        let d = (a1 - a0) / h;
+        let t = (s - s0) / h;
+        6.0 * t * (1.0 - t) * d + (1.0 - t) * (1.0 - 3.0 * t) * m0 + t * (3.0 * t - 2.0) * m1
     }
 
     /// Height above the nearer runway, used for the phase-dependent sampling rate and
@@ -272,6 +278,49 @@ impl VerticalProfile {
     pub fn samples(&self) -> &[(f64, f64)] {
         &self.samples
     }
+}
+
+fn compute_tangents(samples: &[(f64, f64)], s_rotate: f64, s_touchdown: f64) -> Vec<f64> {
+    let n = samples.len();
+    if n < 2 {
+        return vec![0.0; n];
+    }
+    let secant = |i: usize| -> f64 {
+        let (x0, y0) = samples[i];
+        let (x1, y1) = samples[i + 1];
+        if x1 > x0 {
+            (y1 - y0) / (x1 - x0)
+        } else {
+            0.0
+        }
+    };
+    let mut tangents = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = samples[i].0;
+        if s <= s_rotate || s >= s_touchdown {
+            tangents.push(0.0);
+            continue;
+        }
+        if i == 0 {
+            tangents.push(secant(0));
+        } else if i == n - 1 {
+            tangents.push(secant(n - 2));
+        } else {
+            let prev = secant(i - 1);
+            let next = secant(i);
+            if prev * next <= 0.0 {
+                tangents.push(0.0);
+            } else {
+                let (x0, _) = samples[i - 1];
+                let (x1, _) = samples[i];
+                let (x2, _) = samples[i + 1];
+                let w1 = 2.0 * (x2 - x1) + (x1 - x0);
+                let w2 = (x2 - x1) + 2.0 * (x1 - x0);
+                tangents.push((w1 + w2) / (w1 / prev + w2 / next));
+            }
+        }
+    }
+    tangents
 }
 
 struct LevelPlan {
@@ -445,7 +494,7 @@ fn integrate_climb(from_alt: f64, to_alt: f64, field_elevation_m: f64) -> Integr
 }
 
 /// Integrates a descent from cruise down to the flare entry height.
-fn integrate_descent(from_alt: f64, to_alt: f64, field_elevation: f64) -> Integrated {
+fn integrate_descent(from_alt: f64, to_alt: f64, _field_elevation: f64) -> Integrated {
     let mut points = Vec::new();
     let mut s = 0.0;
     let mut alt = from_alt;
@@ -456,16 +505,10 @@ fn integrate_descent(from_alt: f64, to_alt: f64, field_elevation: f64) -> Integr
             distance_m: 0.0,
         };
     }
+    let cot = 1.0 / aircraft::DESCENT_ANGLE_RAD.tan();
     while alt > to_alt {
         let dh = INTEGRATION_STEP_M.min(alt - to_alt);
-        let mid = alt - dh * 0.5;
-        let agl = mid - field_elevation;
-        let angle = if (SHELF_BOTTOM_AGL_M..=SHELF_TOP_AGL_M).contains(&agl) {
-            SHELF_ANGLE_RAD
-        } else {
-            aircraft::DESCENT_ANGLE_RAD
-        };
-        s += dh / angle.tan();
+        s += dh * cot;
         alt -= dh;
         points.push((s, alt));
     }

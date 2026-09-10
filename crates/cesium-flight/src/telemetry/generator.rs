@@ -79,7 +79,7 @@ impl Default for FlightPlanConfig {
             dep_elevation_m: 0.0,
             arr_elevation_m: 0.0,
             avoid_closed_airspace: true,
-            oceanic_tracks: true,
+            oceanic_tracks: false,
             wind: WindModel::AnnualMean,
         }
     }
@@ -99,10 +99,6 @@ pub struct FlightRequest {
 /// Lifts the rendered path clear of the globe surface so it does not z-fight with it.
 const RENDER_LIFT_M: f64 = 5.0;
 
-/// Angle the taxi legs leave the runway centreline at, so they read as a parallel
-/// taxiway rather than as an extension of the runway.
-const TAXIWAY_SPLAY_DEG: f64 = 6.0;
-
 /// Distance over which the nose comes up at rotation, and back down after touchdown.
 const ROTATION_DISTANCE_M: f64 = 400.0;
 
@@ -110,8 +106,7 @@ const ROTATION_DISTANCE_M: f64 = 400.0;
 /// turn happens. Used only to size that turn.
 const DEPARTURE_TURN_HEIGHT_M: f64 = 1_400.0;
 
-/// Half-window for the finite differences that produce pitch and bank.
-const ATTITUDE_PROBE_M: f64 = 60.0;
+/// Half-window for the curvature probe that produces bank.
 const CURVATURE_PROBE_M: f64 = 300.0;
 
 /// Sampling intervals by phase. Ground manoeuvres need resolving; a cruise leg does not.
@@ -176,12 +171,6 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
     };
 
     // Terminal geometry, laid out along each runway's centreline.
-    let splay = TAXIWAY_SPLAY_DEG.to_radians();
-    let apron_out = destination(
-        dep_runway.threshold,
-        dep_runway.heading_rad + std::f64::consts::PI + splay,
-        aircraft::TAXI_OUT_DISTANCE_M,
-    );
     let dep_leg_end = destination(
         dep_runway.threshold,
         dep_runway.heading_rad,
@@ -202,11 +191,6 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
         arr_runway.threshold,
         arr_runway.heading_rad,
         aircraft::TOUCHDOWN_OFFSET_M + rollout_m,
-    );
-    let apron_in = destination(
-        rollout_end,
-        arr_runway.heading_rad + splay,
-        aircraft::TAXI_IN_DISTANCE_M,
     );
 
     // A first estimate of the cruise level, needed before the route exists because the
@@ -249,14 +233,14 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
         aircraft::climb_tas(dep_elev + DEPARTURE_TURN_HEIGHT_M, dep_elev),
         dep_elev + DEPARTURE_TURN_HEIGHT_M,
     );
-    let cruise_turn_r = aircraft::turn_radius(est_tas, est_altitude);
+    // Smooth, wide enroute turn radius (sized for ~2.5° bank at cruise)
+    let cruise_turn_r = 120_000.0;
     let final_turn_r = aircraft::turn_radius(
         aircraft::descent_tas(arr_elev + 1_000.0),
         arr_elev + 1_000.0,
     );
 
-    let mut waypoints = Vec::with_capacity(enroute.len() + 8);
-    waypoints.push(Waypoint::sharp(apron_out));
+    let mut waypoints = Vec::with_capacity(enroute.len() + 6);
     let idx_dep_threshold = waypoints.len();
     waypoints.push(Waypoint::sharp(dep_runway.threshold));
     waypoints.push(Waypoint::new(dep_leg_end, departure_turn_r));
@@ -271,7 +255,6 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
     waypoints.push(Waypoint::sharp(touchdown));
     let idx_rollout_end = waypoints.len();
     waypoints.push(Waypoint::sharp(rollout_end));
-    waypoints.push(Waypoint::sharp(apron_in));
 
     let (track, placed) = GroundTrack::build(&waypoints);
     let s_total = track.total_length();
@@ -351,28 +334,31 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
         let bearing = track.bearing_at(s);
 
         // Flight path angle from the profile, then body attitude on top of it.
-        let lo = (s - ATTITUDE_PROBE_M).max(0.0);
-        let hi = (s + ATTITUDE_PROBE_M).min(total);
-        let span = (hi - lo).max(1.0);
-        let fpa = ((profile.altitude_at(hi) - profile.altitude_at(lo)) / span).atan();
-        let mut pitch = fpa + aircraft::angle_of_attack(tas, altitude);
+        let on_ground = profile.is_on_ground(s);
+        let fpa = profile.gradient_at(s).atan();
+        let alpha = if on_ground {
+            0.0
+        } else {
+            aircraft::angle_of_attack(tas, altitude)
+        };
+        let mut pitch = fpa + alpha;
 
         // The nose is on the ground until rotation and back down after landing, and
-        // moves between the two over a few hundred metres rather than instantly.
+        // moves between the two smoothly over a few hundred metres.
         if s <= profile.s_rotate {
             pitch = 0.0;
         } else if s < profile.s_rotate + ROTATION_DISTANCE_M {
-            pitch *= (s - profile.s_rotate) / ROTATION_DISTANCE_M;
+            let u = ((s - profile.s_rotate) / ROTATION_DISTANCE_M).clamp(0.0, 1.0);
+            pitch *= u * u * (3.0 - 2.0 * u);
         }
         if s >= profile.s_touchdown {
-            let f = ((s - profile.s_touchdown) / ROTATION_DISTANCE_M).clamp(0.0, 1.0);
-            pitch *= 1.0 - f;
+            let u = ((s - profile.s_touchdown) / ROTATION_DISTANCE_M).clamp(0.0, 1.0);
+            pitch *= 1.0 - u * u * (3.0 - 2.0 * u);
         }
 
         // Bank from the curvature of the track the aircraft is actually flying. On the
         // ground the landing gear settles the question, so the roll dynamics below are
         // bypassed entirely rather than left to decay toward zero.
-        let on_ground = profile.is_on_ground(s);
         let target_bank = if on_ground {
             0.0
         } else {
@@ -393,13 +379,29 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
             bank += (target_bank - bank).clamp(-max_delta, max_delta);
         }
 
+        // Smoothly ease the crab angle (crosswind heading offset) in after liftoff
+        // and out before touchdown, so heading transitions continuously without stepping.
+        const CRAB_TRANSITION_M: f64 = 1_500.0;
+        let crab_factor = if s <= profile.s_rotate {
+            0.0
+        } else if s < profile.s_rotate + CRAB_TRANSITION_M {
+            let u = ((s - profile.s_rotate) / CRAB_TRANSITION_M).clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u)
+        } else if s > profile.s_touchdown - CRAB_TRANSITION_M {
+            let u = ((profile.s_touchdown - s) / CRAB_TRANSITION_M).clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u)
+        } else {
+            1.0
+        };
+        let effective_heading_offset = heading_offset * crab_factor;
+
         points.push(TelemetryPoint {
             time_offset_ms: (t * 1000.0) as u64,
             longitude: position.lon_deg,
             latitude: position.lat_deg,
             altitude: altitude + RENDER_LIFT_M,
             velocity_m_s: ground_speed,
-            heading_rad: bearing + heading_offset,
+            heading_rad: bearing + effective_heading_offset,
             pitch_rad: pitch,
             roll_rad: bank,
             sun_intensity: (1.0 - ((altitude - ground_ref) / sun_span).clamp(0.0, 1.0)) as f32,

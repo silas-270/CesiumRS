@@ -26,7 +26,7 @@ use super::wind::{solve_wind_triangle, WindField};
 
 /// Below this, routes go essentially direct. Short sectors have no room to trade
 /// distance for wind, and real short-haul flight plans reflect that.
-const MIN_OPTIMISE_DISTANCE_M: f64 = 500_000.0;
+const MIN_OPTIMISE_DISTANCE_M: f64 = 650_000.0;
 
 /// Target spacing between grid stages. Roughly the spacing between enroute fixes.
 const STAGE_SPACING_M: f64 = 250_000.0;
@@ -58,15 +58,11 @@ const MAX_OFFSET_NODES: usize = 81;
 /// Samples used to decide whether the direct route is obstructed at all.
 const DIRECT_PROBE_SAMPLES: usize = 240;
 
-/// How many offset steps the route may move between adjacent stages. This is a
-/// turn-angle limit in disguise: without it the search would happily produce a track
-/// that changes direction by 60° at a waypoint to catch a slightly better wind.
+/// How many offset steps the route may move between adjacent stages.
 const MAX_OFFSET_STEP: i32 = 2;
 
-/// A small cost for changing offset, on top of the extra distance a change already
-/// costs. Without it the search chatters between equal-cost neighbours in a uniform
-/// wind field, producing a sawtooth that no flight plan would contain.
-const TURN_PENALTY_FRACTION: f64 = 0.0008;
+/// A small cost for changing offset to discourage chattering.
+const TURN_PENALTY_FRACTION: f64 = 0.001;
 
 /// Interior samples per leg for the airspace test. Node-only testing lets a leg clip a
 /// corner of a region that neither of its endpoints is inside.
@@ -94,23 +90,21 @@ pub fn plan_enroute(from: LatLon, to: LatLon, opts: &EnrouteOptions) -> Vec<LatL
     };
 
     let route_m = angular_distance(v_from, v_to) * EARTH_RADIUS_M;
-    let needs_avoidance = !opts.airspace.is_empty();
 
-    if route_m < MIN_OPTIMISE_DISTANCE_M && !needs_avoidance {
-        return direct_waypoints(v_from, v_to, route_m);
-    }
-
-    let stages = ((route_m / STAGE_SPACING_M).round() as usize).clamp(MIN_STAGES, MAX_STAGES);
-
-    // Only widen the search when the direct track is actually obstructed. Wind alone
-    // never justifies a detour of that size, so probing first keeps the common case
-    // small and fast.
-    let direct_blocked = needs_avoidance
+    // Only consider avoidance when the direct route between from and to is actually blocked.
+    let direct_blocked = !opts.airspace.is_empty()
         && (0..=DIRECT_PROBE_SAMPLES).any(|k| {
             let f = k as f64 / DIRECT_PROBE_SAMPLES as f64;
             opts.airspace
                 .blocks(LatLon::from_unit(interpolate(v_from, v_to, f)))
         });
+
+    if route_m < MIN_OPTIMISE_DISTANCE_M && !direct_blocked {
+        return direct_waypoints(v_from, v_to, route_m);
+    }
+
+    let stages = ((route_m / STAGE_SPACING_M).round() as usize).clamp(MIN_STAGES, MAX_STAGES);
+
     let max_offset_m = if direct_blocked {
         (AVOIDANCE_OFFSET_FRACTION * route_m).clamp(MIN_AVOIDANCE_OFFSET_M, MAX_AVOIDANCE_OFFSET_M)
     } else {
@@ -183,7 +177,8 @@ pub fn plan_enroute(from: LatLon, to: LatLon, opts: &EnrouteOptions) -> Vec<LatL
                     Some(c) => c,
                     None => continue,
                 };
-                let penalty = 1.0 + TURN_PENALTY_FRACTION * (j - i).abs() as f64;
+                let step_diff = (j - i).abs() as f64;
+                let penalty = 1.0 + TURN_PENALTY_FRACTION * step_diff;
                 let total = base + leg * penalty;
                 if total < cost[to_idx] {
                     cost[to_idx] = total;
@@ -206,20 +201,114 @@ pub fn plan_enroute(from: LatLon, to: LatLon, opts: &EnrouteOptions) -> Vec<LatL
         return direct_waypoints(v_from, v_to, route_m);
     }
 
-    let mut chain = Vec::with_capacity(stages + 1);
+    let mut offsets = Vec::with_capacity(stages + 1);
     let mut idx = end_idx;
     while idx != usize::MAX {
         let stage = idx / offset_nodes;
         let offset = (idx % offset_nodes) as i32;
-        chain.push(node(stage, offset));
+        offsets.push((stage, offset));
         idx = prev[idx];
     }
-    chain.reverse();
+    offsets.reverse();
+
+    // If every stage stayed on the centreline and not using oceanic tracks, fly purely direct.
+    if !opts.oceanic_tracks && offsets.iter().all(|&(_, o)| o == centre) {
+        return direct_waypoints(v_from, v_to, route_m);
+    }
+
+    let mut dists: Vec<f64> = offsets
+        .iter()
+        .map(|&(_, o)| (o - centre) as f64 * offset_step_m)
+        .collect();
+
+    // Multi-pass binomial filter to smooth the offset profile and eliminate grid chatter
+    for _ in 0..4 {
+        let mut smoothed = dists.clone();
+        for s in 1..stages {
+            let candidate = 0.25 * dists[s - 1] + 0.5 * dists[s] + 0.25 * dists[s + 1];
+            let f = s as f64 / stages as f64;
+            let on_route = interpolate(v_from, v_to, f);
+            let test_pos = LatLon::from_unit(offset_toward_pole(
+                on_route,
+                pole,
+                candidate / EARTH_RADIUS_M,
+            ));
+            if !opts.airspace.blocks(test_pos) {
+                smoothed[s] = candidate;
+            }
+        }
+        dists = smoothed;
+    }
+
+    let mut chain = Vec::with_capacity(stages + 1);
+    for (s, &delta_m) in dists.iter().enumerate() {
+        if s == 0 {
+            chain.push(from);
+        } else if s == stages {
+            chain.push(to);
+        } else {
+            let f = s as f64 / stages as f64;
+            let on_route = interpolate(v_from, v_to, f);
+            chain.push(LatLon::from_unit(offset_toward_pole(
+                on_route,
+                pole,
+                delta_m / EARTH_RADIUS_M,
+            )));
+        }
+    }
 
     if opts.oceanic_tracks {
         chain = apply_oceanic_grid(&chain);
+    } else {
+        // Simplify collinear waypoints to prevent segmentation along gentle curves
+        chain = simplify_waypoints(&chain, 6_000.0, opts.airspace);
     }
     chain
+}
+
+/// Simplifies a sequence of waypoints using recursive cross-track error thresholding,
+/// ensuring that direct segments do not cross into restricted airspace.
+fn simplify_waypoints(
+    pts: &[LatLon],
+    tolerance_m: f64,
+    airspace: &AirspaceRestrictions,
+) -> Vec<LatLon> {
+    if pts.len() <= 2 {
+        return pts.to_vec();
+    }
+    let v_first = pts[0].to_unit();
+    let v_last = pts[pts.len() - 1].to_unit();
+    let pole = match great_circle_pole(v_first, v_last) {
+        Some(p) => p,
+        None => return pts.to_vec(),
+    };
+
+    let mut max_dist = 0.0_f64;
+    let mut max_idx = 0;
+    for i in 1..pts.len() - 1 {
+        let v_pt = pts[i].to_unit();
+        let dist = (v_pt.dot(pole).abs()).clamp(0.0, 1.0).asin() * EARTH_RADIUS_M;
+        if dist > max_dist {
+            max_dist = dist;
+            max_idx = i;
+        }
+    }
+
+    let direct_blocked = !airspace.is_empty()
+        && (1..=12).any(|k| {
+            let f = k as f64 / 13.0;
+            airspace.blocks(LatLon::from_unit(interpolate(v_first, v_last, f)))
+        });
+
+    if max_dist > tolerance_m || direct_blocked {
+        let mut left = simplify_waypoints(&pts[..=max_idx], tolerance_m, airspace);
+        let right = simplify_waypoints(&pts[max_idx..], tolerance_m, airspace);
+        left.pop();
+        left.extend(right);
+        left
+    } else {
+        vec![pts[0], *pts.last().unwrap()]
+    }
 }
 
 /// Cost of a leg, in seconds of flight time.
@@ -250,13 +339,9 @@ fn leg_cost(p1: LatLon, p2: LatLon, opts: &EnrouteOptions) -> Option<f64> {
     Some(dist / triangle.ground_speed)
 }
 
-/// A direct great-circle route, split into legs of about the usual fix spacing so the
-/// sampler has something to follow around the curve.
-fn direct_waypoints(v_from: glam::DVec3, v_to: glam::DVec3, route_m: f64) -> Vec<LatLon> {
-    let n = ((route_m / STAGE_SPACING_M).round() as usize).clamp(1, MAX_STAGES);
-    (0..=n)
-        .map(|k| LatLon::from_unit(interpolate(v_from, v_to, k as f64 / n as f64)))
-        .collect()
+/// A direct great-circle route defined by its endpoints.
+fn direct_waypoints(v_from: glam::DVec3, v_to: glam::DVec3, _route_m: f64) -> Vec<LatLon> {
+    vec![LatLon::from_unit(v_from), LatLon::from_unit(v_to)]
 }
 
 /// Latitude/longitude bounds of an organised track system.
