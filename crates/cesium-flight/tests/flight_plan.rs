@@ -876,3 +876,46 @@ fn a_high_field_needs_a_longer_ground_roll() {
         "field elevation should lengthen the takeoff roll"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Route Presets & Coordinate Parsing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_preset_lookup_and_case_insensitivity() {
+    use cesium_flight::preset::parse_route;
+
+    let fra_str = parse_route("FRA-STR").expect("FRA-STR should parse");
+    assert_eq!(fra_str.id, "FRA-STR");
+    assert!((fra_str.departure_lon - 8.5706).abs() < 0.001);
+    assert!((fra_str.departure_lat - 50.0333).abs() < 0.001);
+
+    // Case insensitive and supports underscore
+    let lhr_nrt = parse_route("lhr_nrt").expect("lhr_nrt should parse");
+    assert_eq!(lhr_nrt.id, "LHR-NRT");
+
+    let jfk_lhr = parse_route("jfk-lhr").expect("jfk-lhr should parse");
+    assert_eq!(jfk_lhr.id, "JFK-LHR");
+}
+
+#[test]
+fn test_coordinate_parsing_lat_lon_and_duration() {
+    use cesium_flight::preset::parse_route;
+
+    // Lat, Lon, Lat, Lon format
+    let res = parse_route("50.0333, 8.5706, 48.6899, 9.2219").expect("coords should parse");
+    assert!((res.departure_lat - 50.0333).abs() < 1e-4);
+    assert!((res.departure_lon - 8.5706).abs() < 1e-4);
+    assert!((res.arrival_lat - 48.6899).abs() < 1e-4);
+    assert!((res.arrival_lon - 9.2219).abs() < 1e-4);
+    assert!(res.total_duration_ms >= 1_800_000); // at least 30 mins
+
+    // Lon, Lat, Lon, Lat format (detected by abs(lon) > 90)
+    let res2 = parse_route("-122.3790, 37.6213, -157.9224, 21.3187").expect("lon-first coords should parse");
+    assert!((res2.departure_lon - -122.3790).abs() < 1e-4);
+    assert!((res2.departure_lat - 37.6213).abs() < 1e-4);
+
+    // Custom duration in minutes (5th parameter)
+    let res3 = parse_route("50.0, 8.5, 48.6, 9.2, 45").expect("coords with duration should parse");
+    assert_eq!(res3.total_duration_ms, 45 * 60 * 1000);
+}

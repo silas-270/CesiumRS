@@ -118,6 +118,10 @@ pub struct FlightTrackerApp {
     cached_surface_config: Option<wgpu::SurfaceConfiguration>,
     /// Planning options applied to flights loaded from here on.
     pub plan_config: FlightPlanConfig,
+    /// Text input buffer for custom route coordinates or preset in UI
+    pub custom_route_input: String,
+    /// Status or error message for route loading in UI
+    pub route_status_msg: Option<(String, bool)>,
 }
 
 impl FlightTrackerApp {
@@ -145,6 +149,8 @@ impl FlightTrackerApp {
             pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
             plan_config: FlightPlanConfig::default(),
+            custom_route_input: String::new(),
+            route_status_msg: None,
         };
         (app, FlightHandle::new(tx))
     }
@@ -170,6 +176,8 @@ impl FlightTrackerApp {
             pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
             plan_config: FlightPlanConfig::default(),
+            custom_route_input: String::new(),
+            route_status_msg: None,
         }
     }
 
@@ -324,6 +332,23 @@ impl FlightTrackerApp {
             arr_heading_deg: None,
             is_secondary,
             runways,
+            config: self.plan_config,
+        });
+    }
+
+    /// Load a route from a pre-defined or parsed `FlightRouteDef`.
+    pub fn load_route(&mut self, route: crate::preset::FlightRouteDef) {
+        self.pending_flights.push(PendingFlight {
+            id: route.id,
+            departure_lon: route.departure_lon,
+            departure_lat: route.departure_lat,
+            arrival_lon: route.arrival_lon,
+            arrival_lat: route.arrival_lat,
+            total_duration_ms: route.total_duration_ms,
+            dep_heading_deg: route.dep_heading_deg,
+            arr_heading_deg: route.arr_heading_deg,
+            is_secondary: false,
+            runways: Vec::new(),
             config: self.plan_config,
         });
     }
@@ -974,5 +999,46 @@ impl GlobeExtension for FlightTrackerApp {
                 self.reset_viewport = true;
             }
         });
+
+        ui.separator();
+        ui.label("Load Route Preset");
+        ui.horizontal_wrapped(|ui| {
+            for preset in crate::preset::PRESETS {
+                if ui.button(preset.id).on_hover_text(preset.label).clicked() {
+                    self.load_route(preset.to_route_def());
+                    self.route_status_msg = Some((format!("Loaded {}", preset.id), false));
+                }
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Custom Route:");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.custom_route_input)
+                    .hint_text("preset or lat1,lon1,lat2,lon2")
+                    .desired_width(180.0),
+            );
+            let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Load").clicked() || enter_pressed {
+                match crate::preset::parse_route(&self.custom_route_input) {
+                    Ok(route_def) => {
+                        let id = route_def.id.clone();
+                        self.load_route(route_def);
+                        self.route_status_msg = Some((format!("Loaded {}", id), false));
+                    }
+                    Err(e) => {
+                        self.route_status_msg = Some((e, true));
+                    }
+                }
+            }
+        });
+
+        if let Some((msg, is_error)) = &self.route_status_msg {
+            if *is_error {
+                ui.colored_label(egui::Color32::RED, msg);
+            } else {
+                ui.colored_label(egui::Color32::GREEN, msg);
+            }
+        }
     }
 }

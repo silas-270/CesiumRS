@@ -112,6 +112,11 @@ mod inner {
         /// Headless capture of routes in Free camera mode at laptop native resolution.
         #[arg(long)]
         pub free_routes: bool,
+
+        /// Initial flight route to load on startup: preset name (e.g. 'FRA-STR', 'LHR-NRT', 'JFK-LHR')
+        /// or coordinates 'lat1,lon1,lat2,lon2'.
+        #[arg(long, default_value = "FRA-STR")]
+        pub route: String,
     }
 
     pub fn main() {
@@ -264,16 +269,13 @@ mod inner {
         } else {
             let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
 
-            // Load a flight path before starting
-            flight_handle.load_flight(
-                "flight_FRA_STR", 
-                8.5706, 50.0333, // FRA
-                9.2219, 48.6899, // STR
-                1_800_000,       // 30 mins
-                Some(249.0),     // FRA Runway 25C heading
-                Some(73.0),      // STR Runway 07 heading
-                Vec::new()
-            );
+            let route_def = cesium_flight::preset::parse_route(&cli.route)
+                .unwrap_or_else(|e| {
+                    eprintln!("Warning: Failed to parse route '{}': {}. Falling back to FRA-STR.", cli.route, e);
+                    cesium_flight::preset::parse_route("FRA-STR").unwrap()
+                });
+
+            flight_handle.load_route_def(&route_def);
 
             let viewer = cesium_rs::CesiumViewer::builder()
                 .tile_cache_size(2048)
@@ -308,16 +310,8 @@ fn main() {
 
     let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
 
-    // Load a flight path before starting
-    flight_handle.load_flight(
-        "flight_FRA_STR", 
-        8.5706, 50.0333, // FRA
-        9.2219, 48.6899, // STR
-        1_800_000,       // 30 mins
-        Some(249.0),     // FRA Runway 25C heading
-        Some(73.0),      // STR Runway 07 heading
-        Vec::new()
-    );
+    let default_route = cesium_flight::preset::parse_route("FRA-STR").unwrap();
+    flight_handle.load_route_def(&default_route);
 
     let viewer = cesium_rs::CesiumViewer::builder()
         .tile_cache_size(2048)
