@@ -59,12 +59,8 @@ impl RoutesExtension {
             for (i, pt) in points.iter().enumerate() {
                 let ecef = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
                 let pos = DVec3::from_array(ecef);
-                let rel = pos - reference_point;
                 let t = i as f32 / (points.len() - 1) as f32;
-                control_points.push(ControlPoint {
-                    position: [rel.x as f32, rel.y as f32, rel.z as f32],
-                    progress: t,
-                });
+                control_points.push(ControlPoint::from_dvec3(pos, t));
             }
 
             let config = PolylineConfig {
