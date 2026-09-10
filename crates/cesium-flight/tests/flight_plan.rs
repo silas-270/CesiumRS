@@ -919,3 +919,45 @@ fn test_coordinate_parsing_lat_lon_and_duration() {
     let res3 = parse_route("50.0, 8.5, 48.6, 9.2, 45").expect("coords with duration should parse");
     assert_eq!(res3.total_duration_ms, 45 * 60 * 1000);
 }
+
+#[test]
+fn test_ground_roll_straight_and_bank_zero_on_ground() {
+    use cesium_flight::preset::parse_route;
+
+    for route_id in &["ZRH-GVA", "FRA-STR"] {
+        let def = parse_route(route_id).unwrap();
+        let req = FlightRequest {
+            departure: LatLon::new(def.departure_lat, def.departure_lon),
+            arrival: LatLon::new(def.arrival_lat, def.arrival_lon),
+            target_duration_ms: def.total_duration_ms,
+            dep_heading_deg: def.dep_heading_deg,
+            arr_heading_deg: def.arr_heading_deg,
+            runways: Vec::new(),
+            config: FlightPlanConfig::default(),
+        };
+        let points = generate(&req);
+        let mut ground_heading_changes = 0;
+        let mut max_ground_bank = 0.0_f64;
+        let ground_pts: Vec<&TelemetryPoint> =
+            points.iter().filter(|p| p.altitude <= 5.001).collect();
+        for w in ground_pts.windows(2) {
+            if (w[1].time_offset_ms - w[0].time_offset_ms) < 30_000 {
+                let diff = (w[1].heading_rad - w[0].heading_rad).abs();
+                if diff > 1e-4 {
+                    ground_heading_changes += 1;
+                }
+            }
+        }
+        for p in &ground_pts {
+            max_ground_bank = max_ground_bank.max(p.roll_rad.abs());
+        }
+        assert_eq!(
+            ground_heading_changes, 0,
+            "route {route_id} must have 0 heading changes while rolling on ground"
+        );
+        assert_eq!(
+            max_ground_bank, 0.0,
+            "route {route_id} must have 0 bank angle while rolling on ground"
+        );
+    }
+}
