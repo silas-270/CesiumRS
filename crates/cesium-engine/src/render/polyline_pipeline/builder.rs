@@ -2,14 +2,34 @@ use glam::DVec3;
 
 /// A single raw control point uploaded to the GPU.
 /// The vertex shader reads these from a storage buffer and expands them
-/// into thick-ribbon quads — no CPU-side geometry expansion needed.
+/// into thick-ribbon quads with double-single RTC high/low precision — eliminating jitter.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ControlPoint {
-    /// World-space position relative to the flight's `reference_point` (f32 precision).
-    pub position: [f32; 3],
+    /// High part of world-space ECEF position (Megameters).
+    pub pos_hi: [f32; 3],
+    pub _pad0: f32,
+    /// Low part of world-space ECEF position (Megameters).
+    pub pos_lo: [f32; 3],
     /// Normalised progress along the full flight path (0.0 – 1.0).
     pub progress: f32,
+}
+
+impl ControlPoint {
+    pub fn from_dvec3(pos: DVec3, progress: f32) -> Self {
+        let hi = [pos.x as f32, pos.y as f32, pos.z as f32];
+        let lo = [
+            (pos.x - hi[0] as f64) as f32,
+            (pos.y - hi[1] as f64) as f32,
+            (pos.z - hi[2] as f64) as f32,
+        ];
+        Self {
+            pos_hi: hi,
+            _pad0: 0.0,
+            pos_lo: lo,
+            progress,
+        }
+    }
 }
 
 /// Builds an adaptive set of control points from a `SampledPositionProperty`.
@@ -31,11 +51,11 @@ impl AdaptiveSubdivisionBuilder {
     }
 
     /// Build a flat list of control points from the position property.
-    /// `reference_point` is subtracted from each position so values fit in f32.
+    /// Double precision is preserved via emulated high/low floating-point representation.
     pub fn build(
         &self,
         property: &crate::property::sampled::SampledPositionProperty,
-        reference_point: DVec3,
+        _reference_point: DVec3,
     ) -> Vec<ControlPoint> {
         use crate::property::Property;
         use crate::time::SimulationTime;
@@ -62,11 +82,7 @@ impl AdaptiveSubdivisionBuilder {
                 .map(|(t, p)| {
                     let progress =
                         ((t.seconds - start_time.seconds) / total_duration).clamp(0.0, 1.0) as f32;
-                    let rel = *p - reference_point;
-                    ControlPoint {
-                        position: [rel.x as f32, rel.y as f32, rel.z as f32],
-                        progress,
-                    }
+                    ControlPoint::from_dvec3(*p, progress)
                 })
                 .collect();
         }
@@ -97,11 +113,7 @@ impl AdaptiveSubdivisionBuilder {
             .into_iter()
             .map(|(p, t)| {
                 let progress = ((t - start_time.seconds) / total_duration).clamp(0.0, 1.0) as f32;
-                let rel = p - reference_point;
-                ControlPoint {
-                    position: [rel.x as f32, rel.y as f32, rel.z as f32],
-                    progress,
-                }
+                ControlPoint::from_dvec3(p, progress)
             })
             .collect()
     }

@@ -847,12 +847,12 @@ impl GlobeExtension for FlightTrackerApp {
             config.physical_half_width = 1.49 / 1_000_000.0;
             config.split_progress = current_progress as f32;
 
-            // Compute airplane position relative to reference_point for world-space split.
-            // We use the smoothed plane state to guarantee perfect alignment with the rendered model.
+            // Compute airplane position relative to camera in f64, then cast to f32.
             let airplane_ecef: Option<glam::DVec3> = airplane_state.map(|s| s.position);
+            let cam_pos = glam::DVec3::from_slice(&camera_pos_f64);
             config.airplane_pos = if let Some(ecef) = airplane_ecef {
-                let rel = ecef - flight.reference_point;
-                [rel.x as f32, rel.y as f32, rel.z as f32, 1.0_f32] // w=1 activates world-space split
+                let rel = ecef - cam_pos;
+                [rel.x as f32, rel.y as f32, rel.z as f32, 1.0_f32] // w=1 activates camera-relative split
             } else {
                 [0.0, 0.0, 0.0, 0.0] // w=0 falls back to legacy progress comparison
             };
@@ -953,7 +953,7 @@ impl GlobeExtension for FlightTrackerApp {
                     ],
                     viewport_size,
                     min_pixel_size: 100.0,
-                    depth_bias: 0.005,
+                    depth_bias: 0.0,
                     // No-op: reproduces the shader's old hardcoded lighting exactly, so the
                     // exterior aircraft's look is unaffected by the cockpit's new knobs.
                     ambient_override: 0.5,

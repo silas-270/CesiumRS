@@ -1028,3 +1028,105 @@ fn test_print_sin_lhr() {
     let cps = builder.build(&prop, ref_pt);
     println!("=== Control points generated: {} cps ===", cps.len());
 }
+
+#[test]
+fn test_measure_polyline_jitter() {
+    use cesium_engine::property::Property;
+    use cesium_engine::time::SimulationTime;
+    use glam::DVec3;
+
+    // Test both FRA-STR (short, 150 km) and SIN-LHR (long, 10,000 km)
+    for (name, dep, arr, dur_ms) in [
+        ("FRA-STR", LatLon::new(50.0333, 8.5706), LatLon::new(48.6899, 9.2219), 1_800_000u64),
+        ("SIN-LHR", LatLon::new(1.3644, 103.9915), LatLon::new(51.4700, -0.4543), 46_800_000u64),
+    ] {
+        let req = FlightRequest {
+            departure: dep,
+            arrival: arr,
+            target_duration_ms: dur_ms,
+            dep_heading_deg: None,
+            arr_heading_deg: None,
+            runways: Vec::new(),
+            config: FlightPlanConfig::default(),
+        };
+        let pts = cesium_flight::telemetry::generator::generate(&req);
+        let mut prop = cesium_engine::property::sampled::SampledPositionProperty::new()
+            .with_algorithm(cesium_engine::property::sampled::InterpolationAlgorithm::CatmullRom);
+        for pt in &pts {
+            let ecef = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+            let pos = DVec3::from_array(ecef);
+            let t = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
+            prop.add_sample(t, pos);
+        }
+        let start_t = prop.start_time().unwrap();
+        let stop_t = prop.stop_time().unwrap();
+        let ref_pt = prop.evaluate(start_t).unwrap();
+        let builder = cesium_engine::render::polyline_pipeline::builder::AdaptiveSubdivisionBuilder::new(1e-7);
+        let cps = builder.build(&prop, ref_pt);
+
+        // Evaluate at progress = 0.5 (mid-flight)
+        let total_dur = stop_t.seconds - start_t.seconds;
+        let mid_time = start_t.seconds + 0.5 * total_dur;
+
+        // Find control point closest to mid_time
+        let target_prog = 0.5_f32;
+        let nearest_cp = cps.iter().min_by(|a, b| {
+            (a.progress - target_prog).abs().partial_cmp(&(b.progress - target_prog).abs()).unwrap()
+        }).unwrap();
+
+        // The true 3D position of that CP in world space
+        let cp_world_true = DVec3::new(
+            nearest_cp.pos_hi[0] as f64 + nearest_cp.pos_lo[0] as f64,
+            nearest_cp.pos_hi[1] as f64 + nearest_cp.pos_lo[1] as f64,
+            nearest_cp.pos_hi[2] as f64 + nearest_cp.pos_lo[2] as f64,
+        );
+
+        println!("\n=== JITTER MEASUREMENT: {} ===", name);
+        println!("Distance of nearest CP from ref_pt: {:.2} km", (cp_world_true - ref_pt).length() * 1000.0);
+
+        // Simulate 10 frames at 60 FPS (dt = 0.016667s) with play_speed = 1.0 (or 0.1)
+        let dt = 1.0 / 60.0;
+        let mut max_jitter_m = 0.0_f64;
+        let mut prev_gpu_rel_world: Option<DVec3> = None;
+        let mut prev_true_rel_world: Option<DVec3> = None;
+
+        for frame in 0..10 {
+            let t = mid_time + frame as f64 * dt;
+            let plane_pos = prop.evaluate(SimulationTime::new(t)).unwrap();
+            // Camera in Tracking mode is ~250m behind/above plane
+            let cam_offset = plane_pos.normalize() * (100.0 / 1_000_000.0) + DVec3::new(150.0 / 1_000_000.0, 0.0, 0.0);
+            let cam_pos_f64 = plane_pos + cam_offset;
+
+            // True relative vector from camera to CP in world space
+            let true_rel_cam = cp_world_true - cam_pos_f64;
+
+            // GPU High-Low RTC computation:
+            let cam_hi = [cam_pos_f64.x as f32, cam_pos_f64.y as f32, cam_pos_f64.z as f32];
+            let cam_lo = [
+                (cam_pos_f64.x - cam_hi[0] as f64) as f32,
+                (cam_pos_f64.y - cam_hi[1] as f64) as f32,
+                (cam_pos_f64.z - cam_hi[2] as f64) as f32,
+            ];
+            let rtc_rel = [
+                (nearest_cp.pos_hi[0] - cam_hi[0]) + (nearest_cp.pos_lo[0] - cam_lo[0]),
+                (nearest_cp.pos_hi[1] - cam_hi[1]) + (nearest_cp.pos_lo[1] - cam_lo[1]),
+                (nearest_cp.pos_hi[2] - cam_hi[2]) + (nearest_cp.pos_lo[2] - cam_lo[2]),
+            ];
+            let gpu_rel_cam = DVec3::new(rtc_rel[0] as f64, rtc_rel[1] as f64, rtc_rel[2] as f64);
+            let error_m = (gpu_rel_cam - true_rel_cam).length() * 1_000_000.0;
+
+            if let (Some(prev_gpu), Some(prev_true)) = (prev_gpu_rel_world, prev_true_rel_world) {
+                let delta_true_m = (true_rel_cam - prev_true).length() * 1_000_000.0;
+                let delta_gpu_m = (gpu_rel_cam - prev_gpu).length() * 1_000_000.0;
+                let frame_jitter_m = (delta_gpu_m - delta_true_m).abs();
+                max_jitter_m = max_jitter_m.max(frame_jitter_m);
+                println!("  frame {}: RTC error={:.6} m, delta_true={:.4} m, delta_gpu={:.4} m, jitter={:.6} m",
+                    frame, error_m, delta_true_m, delta_gpu_m, frame_jitter_m);
+            }
+            prev_gpu_rel_world = Some(gpu_rel_cam);
+            prev_true_rel_world = Some(true_rel_cam);
+        }
+        println!("MAX RTC JITTER PER FRAME FOR {}: {:.6} meters", name, max_jitter_m);
+        assert!(max_jitter_m < 0.001, "Polyline jitter must be sub-millimeter!");
+    }
+}
