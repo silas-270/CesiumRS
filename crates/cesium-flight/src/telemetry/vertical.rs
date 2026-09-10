@@ -149,14 +149,22 @@ impl VerticalProfile {
         }
         samples.push((s_flare_start, flare_entry_alt));
 
-        // Flare: smooth quintic transition from glideslope to touchdown
+        // Flare: smooth C1 cubic transition matching glideslope slope at entry and touchdown sink rate
+        let m0 = -aircraft::DESCENT_ANGLE_RAD.tan();
+        let m1 = -(aircraft::TOUCHDOWN_SINK_MPS / v_touchdown.max(20.0)).clamp(0.001, 0.05);
+        let h0 = aircraft::FLARE_HEIGHT_M;
+        let h1 = 0.0;
         const FLARE_SAMPLES: usize = 16;
         for k in 1..FLARE_SAMPLES {
-            let f = k as f64 / FLARE_SAMPLES as f64;
-            let u = 1.0 - f;
-            let ease = u * u * u * (10.0 - 15.0 * u + 6.0 * u * u);
-            let height = aircraft::FLARE_HEIGHT_M * ease;
-            samples.push((s_flare_start + flare_m * f, inputs.arr_elevation_m + height));
+            let t = k as f64 / FLARE_SAMPLES as f64;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+            let h10 = t3 - 2.0 * t2 + t;
+            let h01 = -2.0 * t3 + 3.0 * t2;
+            let h11 = t3 - t2;
+            let height = h0 * h00 + flare_m * m0 * h10 + h1 * h01 + flare_m * m1 * h11;
+            samples.push((s_flare_start + flare_m * t, inputs.arr_elevation_m + height.max(0.0)));
         }
         samples.push((inputs.s_touchdown, inputs.arr_elevation_m));
         samples.push((inputs.s_total, inputs.arr_elevation_m));
