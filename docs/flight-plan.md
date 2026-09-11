@@ -72,6 +72,21 @@ in turn leaves runway selection with nothing to work from.
 The meridional component is deliberately zero. Climatologically it very nearly is, and
 inventing one would put lateral structure into routes with no basis for it.
 
+**The search has to be allowed to win.** A tie-breaker discourages the route from
+chattering between adjacent offsets, charged as a fraction of each leg's time per node
+stepped. At 2% it was not a tie-breaker but a veto: an excursion out to the offset limit
+and back crosses forty nodes, which costs more than any tailwind reachable within that
+limit could ever save. The search therefore returned the great circle in *every* wind
+condition — calm, annual mean, January, July — and eastbound and westbound crossings came
+out on identical tracks, which is the one thing the wind model exists to prevent. At 0.2%
+a full excursion costs well under a minute against the two to three a North Atlantic
+crossing actually gains. JFK–LHR now bows 3.2° south into the jet core eastbound and 2.3°
+north out of it westbound.
+
+Worth knowing when reading a track: the east/west *time* difference comes from the wind
+triangle, not from the lateral search. Flight times were already right while the tracks
+were still identical, so a plausible duration is not evidence the optimiser is working.
+
 ### Closed airspace
 
 A hard constraint rather than a cost. `airspace.rs` holds coarse national outlines for
@@ -84,6 +99,13 @@ Two details matter more than the outlines themselves:
   89.9°N. Without it a Europe–Asia route hops over the top of the landmass polygon at
   88°N and carries on, which is both far shorter than the real re-route and not
   something anyone is permitted to do.
+- **The Pacific edge follows the seaward boundary, not the mainland coast.** Sakhalin,
+  the Kuril chain, Kamchatka and the whole Sea of Okhotsk are Russian airspace, and an
+  outline drawn along the coast leaves a corridor through all of them. A polar re-route to
+  Japan will cut the corner through it — London–Tokyo did, passing over Kamchatka within a
+  few kilometres of Petropavlovsk while the containment test reported the route clear. The
+  southern end has to stay north of Hokkaido: Sōya and Nemuro sit within fifty miles of
+  Russian territory, and swallowing either would close Japan's northern approaches.
 - **A region containing either endpoint is dropped.** The closure is against foreign
   operators, not against physics; an airline based inside it overflies it perfectly
   happily, and without this a Moscow–St Petersburg flight would have no legal path.
@@ -91,9 +113,13 @@ Two details matter more than the outlines themselves:
 Because these encode a political situation rather than a physical one, they date.
 `FlightPlanConfig::avoid_closed_airspace` turns the whole mechanism off.
 
-The effect is large and correct: London–Tokyo comes out 20% longer than its great circle
-and crosses the Arctic at 88°N, descending through Alaska. That is the real post-2022
-re-route, and it is why that flight gained roughly three hours.
+The effect is large and correct: London–Tokyo comes out about 19% longer than its great
+circle, crossing the Arctic at 88°N — up the Greenwich meridian, over the pole and down
+the Alaskan side — then descending over open Pacific east of the Kurils. That is a real
+post-2022 routing, and it is why that flight gained roughly three hours. Note that the
+polar crossing is legitimate: the Arctic sector polygon covers 30°E–180°E, and the western
+Arctic is Canadian and Danish airspace. The pole is therefore a permanently open gate for
+any Europe–Asia pair whose detour happens to favour it.
 
 ### Oceanic tracks
 
@@ -101,6 +127,23 @@ Where a route crosses the North Atlantic or North Pacific, the crossing is snapp
 the organised track grid: whole degrees of latitude on every tenth meridian, which is how
 tracks are published. A crossing therefore looks stepped and angular where the rest of a
 route looks smooth — a distinctive and recognisable shape.
+
+This is **on by default** (`FlightPlanConfig::oceanic_tracks`). Two things had to be right
+first:
+
+- **Track points are ten degrees apart**, a thousand kilometres or more at these latitudes,
+  against the two-hundred-odd of the enroute fixes either side. Handing that ratio to the
+  spline that draws the enroute path makes it overshoot where the two meet — violently on a
+  route where only *part* of the crossing is gridded, which is how London–Tokyo reached 35
+  m/s² of lateral acceleration. The legs between track points are straight lines, so they
+  are filled in at the route's own fix spacing: geometrically free, and the spline then has
+  something it can resolve.
+- **A westbound crossing walks the meridians in descending order** within a densified
+  segment, so the order they are found in is not the order they are flown in. The gridded
+  points are sorted before the waypoints they replace are identified.
+
+The cost is 0.2–0.7% extra distance — the price of flying an assigned track instead of
+your own optimum, which is exactly what airlines pay.
 
 ### Why the route is a polyline
 
@@ -136,6 +179,20 @@ Three consequences worth knowing:
   either side; past about 100° the departure leg runs out, and the arc would otherwise
   tighten until the bank exceeded what the aircraft may use. A departure that reverses
   course really is flown as two turns joined by a short leg.
+- **Turns are entered over a roll-in, not instantly.** An aeroplane rolls into a bank over
+  several seconds, so its curvature comes up from zero rather than switching on. Joining a
+  straight leg to a circular arc leaves a step in curvature, and the consumer's spline
+  reads a curvature step as the whole lateral acceleration arriving at once — about half as
+  much again as the turn is actually pulling. The arc is built from a curvature profile
+  that ramps up, holds, and ramps down, and the corner is entered earlier to make room.
+- **Radius follows ground speed, not airspeed.** The same 25° of bank in a 30 kt tailwind
+  traces a noticeably wider circle, and an FMS sizes the turn accordingly.
+- **Split turns bulge onto the side that is free to move.** A split needs a leg between its
+  two halves, taken out of one of the two the waypoint already joins. Either is fine at an
+  enroute fix; it is not fine at the ends of the flight, where the departure leg and the
+  final approach *are* the runway centreline extended. Inserting it after the final
+  approach fix threw the approach 19° off the centreline and left the aircraft to swerve
+  onto the runway at the threshold.
 - **Arcs are sampled by angle, not just by length.** They must stay finer than the
   telemetry sampler's own step, which gets down to about 100 m near the ground.
   Otherwise consecutive samples straddle facet junctions and read the turn as happening
@@ -231,9 +288,53 @@ kt, then Mach — with the crossover between the last two falling naturally arou
 Descent mirrors it. The low-altitude speed limit applies to cruise too, which matters for
 short sectors: without it an aircraft levelling at FL040 cruises at nearly 400 knots.
 
+**Where two schedules meet, they hand over gradually.** The fitted cruise Mach can sit a
+long way either side of the 0.84 the climb ends at and the 0.82 the descent begins at, so
+reading straight across from one to the other stepped the commanded speed by ten or twenty
+knots at a stroke. Each handover is eased over a stretch of track instead — which is what
+it physically is, an aircraft levelling off and letting the speed come up to its cruise
+number over half a minute.
+
 This schedule is also why the initial climb looks right. Climbing out at 250 kt puts the
 pitch attitude around 7°; at 170 kt on takeoff flap it is 12–13°, which is what an
 airliner actually rotates to before lowering the nose a minute later to accelerate.
+
+## Smoothness
+
+The consumer interpolates the sampled positions with a time-parameterised Catmull-Rom
+spline and derives the aircraft's motion from it, so **any corner in the plan is read as
+an acceleration** of `v² · dγ/ds`. At cruise speed a gradient change that looks negligible
+on a chart is several g on screen.
+
+`src/testing/flight/test_multi_route_suite.rs` measures exactly that across fifteen routes
+— tangential, lateral and vertical acceleration taken from the spline itself — and holds
+them inside what a passenger would not call a jolt. Getting there meant removing every
+place the plan had a corner in it. Vertical acceleration ran to 19 m/s² before; it is now
+under 1.5.
+
+- **Rotation is an arc, not a join.** The runway is flat and the climb is not, so the
+  flight path angle is brought up from zero along a smoothstep. The length falls straight
+  out of the budget: a smoothstep is steepest at its midpoint, where `dγ/ds` is
+  `1.5 · Δγ / L`, and the acceleration that produces is `v² dγ/ds`.
+- **Every other corner is rounded the same way** — top of climb, both ends of each step
+  climb, top of descent — each over a distance sized from its own size and the speed
+  through it. The rounding keeps the altitude at both ends of its window exactly, because
+  a smoothstep gains precisely the height the corner it replaces did, so it is a local
+  operation that cannot move the cruise level.
+- **The descent is stretched onto the distance actually left.** A minimum level band is
+  held between top of climb and top of descent, and on a short sector that band pushes the
+  top of descent later. A descent then laid out at its own length ran past the flare and
+  folded the profile back on itself — the cause of a 9 m/s² spike a few hundred feet above
+  the runway.
+- **Wind is eased in and out over the first and last mile of flight.** A rolling aeroplane
+  is not carried along by the air; a flying one is. Switching between the two at the
+  instant of rotation stepped the ground speed by the entire headwind component — up to 19
+  m/s², twice per flight. The crab angle rides the same ramp.
+
+One fix belongs to the interpolator rather than the plan. Off the ends of the sample list
+it duplicated the endpoint to stand in for the missing neighbour, which gives a zero secant
+and halves the tangent there — so every flight left its first knot and arrived at its last
+at half speed. It reflects the neighbour instead, which makes the end segments straight.
 
 ## Attitude
 
@@ -307,6 +408,12 @@ What they guard is, deliberately, the set of things that were once wrong:
 - The aircraft is nose-up on final and level before rotation.
 - Touchdown is past the threshold, not short of it.
 
+Two suites sit outside that file. `test_multi_route_suite.rs` is the acceleration audit
+described under **Smoothness**, over fifteen routes from 150 km to 11,000 km.
+`test_route_window.rs` guards the arc length the windowed route line depends on — in
+particular that distance and progress are genuinely different axes, measured on a short
+sector where climb and descent dominate.
+
 Two are worth understanding before weakening them:
 
 **`the_track_never_demands_more_bank_than_the_aircraft_may_use`** measures the curvature
@@ -330,3 +437,11 @@ does would silently break avoidance rather than fail loudly.
 - ETOPS is not modelled. For an A350-900, certified to ETOPS-370, it would bend almost
   nothing outside the South Pacific.
 - The semicircular rule uses true rather than magnetic track, as above.
+- The debug route presets pass **no runway data**, so both terminal areas are synthetic:
+  `runway::select` falls back to the route's own bearing and invents a centreline. Narita
+  comes out on 31° against a real 160/340°. Production is unaffected — `tracker.rs` takes
+  runways from the Android database — but no conclusion about approach or departure
+  geometry should be drawn from a preset.
+- The acceleration audit samples 3,000 points over the whole flight, which on a long route
+  is a step of fourteen seconds. It can miss a spike that a finer sweep finds; when
+  investigating one, sweep locally rather than trusting the summary.
