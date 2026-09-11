@@ -95,6 +95,15 @@ impl ClosedRegion {
 /// The southern border is the part that has to be right, because that is where the
 /// re-routes go. Kazakhstan, Mongolia and northern China are all open, and a polygon
 /// that swallowed them would push routes somewhere real traffic does not go.
+///
+/// The Pacific edge matters for the same reason and in the same way. It follows the
+/// seaward boundary rather than the mainland coast, so Sakhalin, the Kuril chain,
+/// Kamchatka and the whole Sea of Okhotsk are inside it — they are Russian airspace, and
+/// a polygon drawn along the mainland leaves a corridor through them that a polar
+/// re-route to Japan will happily cut the corner through. The Sea of Japan is left
+/// outside via the notch at the Tatar Strait, and the southern end stays north of
+/// Hokkaido: Sōya and Nemuro are within fifty miles of Russian territory there, and
+/// swallowing either would close the approach to Japan from the north.
 const RUSSIA: &[(f64, f64)] = &[
     (45.2, 37.5),
     (43.4, 47.0),
@@ -110,11 +119,17 @@ const RUSSIA: &[(f64, f64)] = &[
     (49.5, 120.0),
     (44.0, 131.2),
     (43.0, 132.0),
-    (48.5, 140.0),
-    (54.3, 142.5),
-    (59.0, 143.0),
-    (62.5, 160.0),
-    (60.0, 170.0),
+    (47.3, 138.7),
+    (49.0, 140.4),
+    (46.5, 141.7),
+    (45.8, 142.3),
+    (44.5, 146.6),
+    (47.0, 152.5),
+    (50.7, 156.5),
+    (51.2, 158.5),
+    (56.0, 163.5),
+    (60.0, 166.5),
+    (62.0, 170.0),
     (66.0, 179.9),
     (70.5, 179.9),
     (73.5, 140.0),

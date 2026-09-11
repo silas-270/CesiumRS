@@ -61,8 +61,16 @@ const DIRECT_PROBE_SAMPLES: usize = 240;
 /// How many offset steps the route may move between adjacent stages.
 const MAX_OFFSET_STEP: i32 = 2;
 
-/// A cost for changing offset to discourage chattering and weaving.
-const TURN_PENALTY_FRACTION: f64 = 0.02;
+/// A tie-breaker against changing offset, as a fraction of the leg's time per node
+/// stepped, so that two routes of equal time resolve to the straighter one.
+///
+/// It has to stay small enough to be exactly that. At 2% it was not a tie-breaker but a
+/// veto: an excursion out to the offset limit and back crosses forty nodes, which cost
+/// more than any tailwind reachable within that limit could save, so the wind search
+/// below always returned the great circle and eastbound and westbound crossings came out
+/// on identical tracks. At a fifth of a percent a full excursion costs well under a
+/// minute, against the two to three a North Atlantic crossing actually gains.
+const TURN_PENALTY_FRACTION: f64 = 0.002;
 
 /// Interior samples per leg for the airspace test.
 const LEG_AIRSPACE_SAMPLES: usize = 24;
@@ -475,6 +483,32 @@ fn apply_oceanic_grid(waypoints: &[LatLon]) -> Vec<LatLon> {
     if gridded.len() < 2 {
         return waypoints.to_vec();
     }
+    // A westbound crossing walks the meridians in descending order within a segment, so
+    // the order they were found in is not the order they are flown in.
+    gridded.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    // Track points are ten degrees apart, which is a thousand kilometres or more at
+    // these latitudes, against the two-hundred-odd of the enroute fixes either side.
+    // Handing that ratio to the spline that draws the enroute path makes it overshoot
+    // where the two meet. The legs between track points are straight, so filling them in
+    // costs nothing geometrically and gives the spline something it can resolve.
+    let mut filled: Vec<(f64, LatLon)> = Vec::with_capacity(gridded.len() * 4);
+    for w in gridded.windows(2) {
+        let (t0, p0) = w[0];
+        let (t1, p1) = w[1];
+        filled.push((t0, p0));
+        let leg = super::geo::distance_m(p0, p1);
+        let parts = (leg / STAGE_SPACING_M).ceil() as usize;
+        if parts > 1 {
+            let (v0, v1) = (p0.to_unit(), p1.to_unit());
+            for k in 1..parts {
+                let f = k as f64 / parts as f64;
+                filled.push((t0 + (t1 - t0) * f, LatLon::from_unit(interpolate(v0, v1, f))));
+            }
+        }
+    }
+    filled.push(gridded[gridded.len() - 1]);
+    let gridded = filled;
 
     let first_t = gridded[0].0;
     let last_t = gridded[gridded.len() - 1].0;

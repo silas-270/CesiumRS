@@ -675,9 +675,12 @@ fn the_aircraft_is_level_before_rotation() {
     // which is what a landing looks like.
     let points = plan(FRA, STR, 55);
     let ground_altitude = points[0].altitude;
+    // Still at runway height to the metre, rather than within half a metre of it: the
+    // rotation arc leaves the ground gently, so the first few centimetres of the climb
+    // are already part of the pull-up and the nose is already coming up through them.
     let before_rotation: Vec<&TelemetryPoint> = points
         .iter()
-        .take_while(|p| (p.altitude - ground_altitude).abs() < 0.5)
+        .take_while(|p| p.altitude <= ground_altitude)
         .collect();
     assert!(
         before_rotation.len() > 10,
@@ -690,13 +693,25 @@ fn the_aircraft_is_level_before_rotation() {
             "banked {:.3}° on the ground",
             p.roll_rad.to_degrees()
         );
-        // Not exactly zero: rotation is now a smooth pitch-up rather than a step, so the
-        // first few centimetres of the climb still fall inside the "at ground level"
-        // band this filters on. A regression of the kind this guards against would be
-        // degrees, not hundredths of one.
         assert!(
-            p.pitch_rad.abs().to_degrees() < 0.1,
+            p.pitch_rad.abs().to_degrees() < 0.01,
             "pitched {:.3}° before rotation",
+            p.pitch_rad.to_degrees()
+        );
+    }
+
+    // And the pull-up is a rotation rather than a jump. The nose leads the flight path
+    // — that is what angle of attack is — so it is already up by a degree or so in the
+    // first half metre of climb; what this catches is it arriving at the full climb-out
+    // attitude of four and a half degrees in a single sample.
+    for p in points
+        .iter()
+        .skip_while(|p| p.altitude <= ground_altitude)
+        .take_while(|p| p.altitude - ground_altitude < 0.5)
+    {
+        assert!(
+            p.pitch_rad.to_degrees() < 3.0,
+            "pitched {:.3}° in the first half metre of the climb",
             p.pitch_rad.to_degrees()
         );
     }

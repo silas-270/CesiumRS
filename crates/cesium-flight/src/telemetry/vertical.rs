@@ -33,6 +33,34 @@ const MAX_STEPS: usize = 3;
 /// parity intact.
 const STEP_FL: i32 = 20;
 
+/// Minimum flat cruise band held between top-of-climb and top-of-descent, so that even
+/// the shortest sector levels off rather than meeting climb and descent at a point.
+const MIN_CRUISE_BAND_M: f64 = 5_000.0;
+
+/// Vertical acceleration this profile is shaped to stay under, in m/s².
+///
+/// The consumer interpolates the sampled positions with a spline and takes the
+/// aircraft's motion from it, so a change of flight path angle is read as an
+/// acceleration of `v² dγ/ds`. Every corner in the profile — rotation, levelling off,
+/// starting down — is therefore spread over enough distance to keep that below this
+/// figure. It sits well under the 3.5 m/s² a passenger would call a jolt because the
+/// session's time scale can stretch or compress the clock the spline is walked along,
+/// and that scales the acceleration by its square.
+const VERTICAL_ACCEL_BUDGET: f64 = 1.6;
+
+/// Speeds are known here only to the accuracy of the schedule; the wind and the time
+/// scale move the speed the spline actually sees. Transitions are sized for a speed
+/// this much higher than planned so that margin is not spent by surprise.
+const TRANSITION_SPEED_MARGIN: f64 = 1.3;
+
+/// Shortest transition worth building, and how many knots each one gets.
+const MIN_TRANSITION_M: f64 = 200.0;
+const TRANSITION_KNOTS: usize = 20;
+
+/// Track distance reserved for the rotation arc when the flight levels are planned.
+/// The arc gains height more slowly than the climb it replaces, so it costs a little
+/// extra ground; this is a generous allowance for that.
+const ROTATION_RESERVE_M: f64 = 2_000.0;
 
 /// Where the profile is anchored on the ground track, and what it has to fit between.
 pub struct VerticalInputs {
@@ -82,7 +110,15 @@ impl VerticalProfile {
         let v_touchdown = tas_from_cas(aircraft::approach_speed(), inputs.arr_elevation_m);
 
         let s_rotate = inputs.s_dep_threshold + ground_roll_m;
-        let available = (inputs.s_touchdown - s_rotate).max(1_000.0);
+        let flare_entry_alt = inputs.arr_elevation_m + aircraft::FLARE_HEIGHT_M;
+        let flare_m = flare_distance(v_touchdown);
+        let s_flare_start = inputs.s_touchdown - flare_m;
+
+        // What the climb, the cruise and the descent have to share. The flare, the
+        // rotation arc and the level band between top of climb and top of descent are
+        // all taken off the top, so that a level the plan accepts really does fit.
+        let available =
+            (s_flare_start - s_rotate - ROTATION_RESERVE_M - MIN_CRUISE_BAND_M).max(1_000.0);
 
         let plan = plan_levels(inputs, available);
 
@@ -90,27 +126,59 @@ impl VerticalProfile {
         samples.push((0.0, inputs.dep_elevation_m));
         samples.push((s_rotate, inputs.dep_elevation_m));
 
-        // Climb to the initial cruise level.
-        let climb = integrate_climb(
+        // Rotation. The runway is flat and the climb is not, so the two cannot simply
+        // be joined: the flight path angle has to be brought up from zero over a
+        // distance long enough that the pull-up is not felt as a corner. The gradient
+        // follows a smoothstep, which is what a rotation looks like — the nose comes up
+        // over several seconds, not instantly.
+        let gamma_climb = climb_gradient(inputs.dep_elevation_m, inputs.dep_elevation_m)
+            / plan.compression;
+        let v_lift = aircraft::climb_tas(
+            inputs.dep_elevation_m + aircraft::LIFTOFF_HEIGHT_M,
             inputs.dep_elevation_m,
+        );
+        let rotation_m = transition_length(gamma_climb, v_lift).min(available * 0.25);
+        // A smoothstep gradient covers half the height a constant one would.
+        let rotation_gain = 0.5 * gamma_climb * rotation_m;
+        for k in 1..=TRANSITION_KNOTS {
+            let w = k as f64 / TRANSITION_KNOTS as f64;
+            samples.push((
+                s_rotate + rotation_m * w,
+                inputs.dep_elevation_m + gamma_climb * rotation_m * smoothstep_integral(w),
+            ));
+        }
+
+        // Climb to the initial cruise level, picked up from where the rotation arc left
+        // off so the two meet at the same gradient as well as the same height.
+        let s_climb_start = s_rotate + rotation_m;
+        let climb = integrate_climb(
+            inputs.dep_elevation_m + rotation_gain,
             plan.initial_altitude_m,
             inputs.dep_elevation_m,
         );
 
         for (ds, alt) in &climb.points {
-            samples.push((s_rotate + ds * plan.compression, *alt));
+            samples.push((s_climb_start + ds * plan.compression, *alt));
         }
-        let s_top_of_climb = s_rotate + climb.distance_m * plan.compression;
+
+        let s_top_of_climb = s_climb_start + climb.distance_m * plan.compression;
 
         // Descent, measured back from the flare so the geometry lands on the runway.
-        let flare_entry_alt = inputs.arr_elevation_m + aircraft::FLARE_HEIGHT_M;
         let descent =
             integrate_descent(plan.top_altitude_m, flare_entry_alt, inputs.arr_elevation_m);
-        let flare_m = flare_distance(v_touchdown);
-        let s_flare_start = inputs.s_touchdown - flare_m;
-        let s_top_of_descent = s_flare_start - descent.distance_m * plan.compression;
+        let s_top_of_descent = (s_flare_start - descent.distance_m * plan.compression)
+            .max(s_top_of_climb + MIN_CRUISE_BAND_M);
 
-        // Cruise, with the step climbs spread through it.
+        // Corners in the profile, collected as they are laid out and rounded off once
+        // the whole thing is assembled.
+        let mut corners: Vec<Corner> = Vec::new();
+        corners.push(Corner {
+            s: s_top_of_climb,
+            delta: climb_gradient(plan.initial_altitude_m, inputs.dep_elevation_m)
+                / plan.compression,
+            speed: aircraft::climb_tas(plan.initial_altitude_m, inputs.dep_elevation_m),
+        });
+
         let cruise_span = (s_top_of_descent - s_top_of_climb).max(0.0);
         let step_total: f64 = plan.step_distances.iter().sum::<f64>() * plan.compression;
         let level_total = (cruise_span - step_total).max(0.0);
@@ -131,6 +199,18 @@ impl VerticalProfile {
             for (ds, a) in &step_climb.points {
                 samples.push((s + ds * plan.compression, *a));
             }
+            // A step climb has a corner at each end, both the same size.
+            let delta = climb_gradient(alt, inputs.dep_elevation_m) / plan.compression;
+            corners.push(Corner {
+                s,
+                delta,
+                speed: aircraft::cruise_tas(aircraft::NOMINAL_CRUISE_MACH, alt),
+            });
+            corners.push(Corner {
+                s: s + step_len,
+                delta,
+                speed: aircraft::cruise_tas(aircraft::NOMINAL_CRUISE_MACH, next),
+            });
             s += step_len;
             alt = next;
         }
@@ -144,10 +224,20 @@ impl VerticalProfile {
         }
         samples.push((s_top_of_descent, plan.top_altitude_m));
 
+        // Stretched onto the distance actually left rather than laid out at the planned
+        // compression: the level band above can push the top of descent later, and a
+        // descent laid out from there at its own length would run past the flare and
+        // fold the profile back on itself.
+        let descent_scale = (s_flare_start - s_top_of_descent) / descent.distance_m.max(1.0);
         for (ds, a) in &descent.points {
-            samples.push((s_top_of_descent + ds * plan.compression, *a));
+            samples.push((s_top_of_descent + ds * descent_scale, *a));
         }
         samples.push((s_flare_start, flare_entry_alt));
+        corners.push(Corner {
+            s: s_top_of_descent,
+            delta: aircraft::DESCENT_ANGLE_RAD.tan() * descent_scale.max(1e-6).recip(),
+            speed: aircraft::descent_tas(plan.top_altitude_m),
+        });
 
         // Flare: smooth C1 cubic transition matching glideslope slope at entry and touchdown sink rate
         let m0 = -aircraft::DESCENT_ANGLE_RAD.tan();
@@ -171,8 +261,14 @@ impl VerticalProfile {
 
         // Ensure strictly sorted and deduplicated distances
         samples.retain(|(s, a)| s.is_finite() && a.is_finite());
-        samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        samples.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
+        sort_samples(&mut samples);
+
+        round_corners(
+            &mut samples,
+            &mut corners,
+            s_climb_start,
+            s_flare_start,
+        );
 
         let tangents = compute_tangents(&samples, s_rotate, inputs.s_touchdown);
 
@@ -288,6 +384,118 @@ impl VerticalProfile {
     }
 }
 
+/// A place where the profile's gradient changes abruptly, and what it takes to round
+/// it off: how much the gradient moves, and how fast the aircraft is going through it.
+struct Corner {
+    s: f64,
+    delta: f64,
+    speed: f64,
+}
+
+/// The flight path angle, as a gradient, that the climb schedule holds at an altitude.
+fn climb_gradient(altitude_m: f64, field_elevation_m: f64) -> f64 {
+    let roc = aircraft::rate_of_climb(altitude_m);
+    let tas = aircraft::climb_tas(altitude_m, field_elevation_m);
+    let horizontal = (tas * tas - roc * roc).max(1.0).sqrt();
+    roc / horizontal
+}
+
+/// Distance a gradient change of `delta` has to be spread over to stay inside the
+/// vertical acceleration budget at `speed`.
+///
+/// The gradient is moved by a smoothstep, which is steepest at its midpoint, where
+/// `dγ/ds` is `1.5 delta / L`. The acceleration that produces is `v² dγ/ds`, so the
+/// length falls straight out of the budget.
+fn transition_length(delta: f64, speed: f64) -> f64 {
+    let v = speed * TRANSITION_SPEED_MARGIN;
+    (1.5 * delta.abs() * v * v / VERTICAL_ACCEL_BUDGET).max(MIN_TRANSITION_M)
+}
+
+/// `∫₀^w 3u² - 2u³ du`, the height gained by a gradient following a smoothstep.
+fn smoothstep_integral(w: f64) -> f64 {
+    w * w * w * (1.0 - 0.5 * w)
+}
+
+fn sort_samples(samples: &mut Vec<(f64, f64)>) {
+    samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    samples.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
+}
+
+/// Altitude of the assembled profile read off its knots, before any tangents exist.
+fn linear_altitude(samples: &[(f64, f64)], s: f64) -> f64 {
+    match samples.binary_search_by(|(x, _)| x.partial_cmp(&s).unwrap()) {
+        Ok(i) => samples[i].1,
+        Err(0) => samples[0].1,
+        Err(i) if i >= samples.len() => samples[samples.len() - 1].1,
+        Err(i) => {
+            let (s0, a0) = samples[i - 1];
+            let (s1, a1) = samples[i];
+            if s1 <= s0 {
+                a0
+            } else {
+                a0 + (a1 - a0) * (s - s0) / (s1 - s0)
+            }
+        }
+    }
+}
+
+/// Rounds off every corner in the profile, each over as much distance as its own size
+/// and speed call for, without letting two of them run into each other or into the
+/// rotation arc and the flare at either end.
+fn round_corners(
+    samples: &mut Vec<(f64, f64)>,
+    corners: &mut Vec<Corner>,
+    s_first: f64,
+    s_last: f64,
+) {
+    corners.retain(|c| c.s > s_first && c.s < s_last && c.delta.abs() > 1e-6);
+    corners.sort_by(|a, b| a.s.partial_cmp(&b.s).unwrap());
+    for i in 0..corners.len() {
+        let lo = if i == 0 {
+            s_first
+        } else {
+            0.5 * (corners[i - 1].s + corners[i].s)
+        };
+        let hi = if i + 1 == corners.len() {
+            s_last
+        } else {
+            0.5 * (corners[i].s + corners[i + 1].s)
+        };
+        let want = 0.5 * transition_length(corners[i].delta, corners[i].speed);
+        let half = want.min(corners[i].s - lo).min(hi - corners[i].s);
+        if half > 1.0 {
+            round_corner(samples, corners[i].s, half);
+        }
+    }
+}
+
+/// Replaces the knots within `half` of `s_c` with a curve whose gradient moves between
+/// the two half-window secants along a smoothstep.
+///
+/// The window's two ends keep the altitude they already had — a smoothstep gains
+/// exactly the height the corner it replaces did — so this is a local operation: the
+/// profile either side of it, and the altitude the aircraft reaches, are untouched.
+fn round_corner(samples: &mut Vec<(f64, f64)>, s_c: f64, half: f64) {
+    let s0 = s_c - half;
+    let s1 = s_c + half;
+    let h0 = linear_altitude(samples, s0);
+    let hc = linear_altitude(samples, s_c);
+    let h1 = linear_altitude(samples, s1);
+    let g0 = (hc - h0) / half;
+    let g1 = (h1 - hc) / half;
+
+    samples.retain(|(s, _)| *s <= s0 || *s >= s1);
+    let length = 2.0 * half;
+    samples.push((s0, h0));
+    samples.push((s1, h1));
+    for k in 1..TRANSITION_KNOTS {
+        let w = k as f64 / TRANSITION_KNOTS as f64;
+        let h = h0 + g0 * length * w + (g1 - g0) * length * smoothstep_integral(w);
+        samples.push((s0 + length * w, h));
+    }
+    sort_samples(samples);
+}
+
 fn compute_tangents(samples: &[(f64, f64)], s_rotate: f64, s_touchdown: f64) -> Vec<f64> {
     let n = samples.len();
     if n < 2 {
@@ -330,6 +538,7 @@ fn compute_tangents(samples: &[(f64, f64)], s_rotate: f64, s_touchdown: f64) -> 
     }
     tangents
 }
+
 
 struct LevelPlan {
     top_fl: i32,
