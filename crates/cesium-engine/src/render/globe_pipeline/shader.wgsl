@@ -2,7 +2,10 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
-    sun_params: vec4<f32>,
+    sun_params: vec4<f32>,   // [altitude_scalar, saturation, contrast, brightness]
+    sun_dir: vec4<f32>,      // xyz toward the sun, w = sin(elevation)
+    moon_dir: vec4<f32>,     // xyz toward the moon, w = lit fraction
+    light_color: vec4<f32>,  // rgb key light hue, w = strength
 };
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
@@ -47,13 +50,26 @@ var s_diffuse: sampler;
 
 @fragment
 fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
-    let sun_intensity = camera.sun_params.x;
-    let light_dir = normalize(vec3<f32>(1.0, 1.0, 1.0));
-    
-    // When sun_intensity is 0.0 (Night Mode): Ambient is 1.0 (show the dark map naturally), Diffuse is 0.0.
-    // When sun_intensity is 1.0 (Day Mode): Ambient is 0.8, Diffuse is 0.4 (brightly lit).
-    let ambient = mix(1.0, 0.8, sun_intensity); 
-    let diffuse = max(dot(in.normal, light_dir), 0.0) * mix(0.0, 0.4, sun_intensity);
+    // This is the flight's depth, not daylight: 1 on the runway, 0 at cruise. It flattens
+    // the terrain out as the aircraft climbs — all ambient and no shading — which is the
+    // deliberate "deep focus" look. Daylight is a separate axis entirely, below.
+    let altitude_scalar = camera.sun_params.x;
+
+    let key_color = camera.light_color.rgb;
+    let key_strength = camera.light_color.a;
+
+    // Sun and moon summed with smooth weights, never switched between — see the note in
+    // model_pipeline/shader.wgsl. The moon is exactly opposite the sun, so a threshold
+    // here would swing the terrain's shading right round in a single frame.
+    let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
+    let from_sun = max(dot(in.normal, camera.sun_dir.xyz), 0.0) * (1.0 - night_key);
+    let from_moon = max(dot(in.normal, camera.moon_dir.xyz), 0.0) * night_key;
+
+    let ambient = mix(1.0, 0.8, altitude_scalar);
+    let diffuse = (from_sun + from_moon) * mix(0.0, 0.4, altitude_scalar) * key_strength;
+    // Tinting only the directional term keeps a shaded slope neutral while a sunlit one
+    // goes warm — the ground then agrees with the sky instead of fighting it.
+    let key_tint = mix(vec3<f32>(1.0, 1.0, 1.0), key_color, diffuse);
     
     let tex_color_raw = textureSample(t_diffuse, s_diffuse, in.uv);
     
@@ -91,7 +107,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
         tex_color_rgb = clamp(tex_color_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     
-    let shaded_color = tex_color_rgb * (ambient + diffuse);
+    let shaded_color = tex_color_rgb * (ambient + diffuse) * key_tint;
     
     let pixel_dist = length(in.world_pos);
     let dist_dx = dpdx(pixel_dist);
@@ -113,9 +129,22 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let r_cam = max(length(camera.camera_pos.xyz), earth_radius);
     let altitude = max(r_cam - earth_radius, 0.0);
     
-    let day_horizon_color = vec3<f32>(0.65, 0.75, 0.85); 
-    let night_horizon_color = vec3<f32>(0.02, 0.02, 0.03);
-    let horizon_color = mix(night_horizon_color, day_horizon_color, sun_intensity);
+    // The haze at the limb has to agree with the sky drawn behind it, so it follows the
+    // sun's elevation on the same ramp rather than the altitude scalar.
+    let sun_elevation = camera.sun_dir.w;
+    // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT.
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation);
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
+    let day_horizon_color = vec3<f32>(0.65, 0.75, 0.85);
+    let dusk_horizon_color = vec3<f32>(0.92, 0.44, 0.22);
+    let night_horizon_color = vec3<f32>(0.055, 0.057, 0.062);
+    var horizon_color = mix(dusk_horizon_color, day_horizon_color, day_amount);
+    horizon_color = mix(horizon_color, night_horizon_color, night_amount);
+    // MUST match sky.wgsl exactly. The terrain's limb haze and the sky behind it meet at
+    // the horizon, so any difference between them shows up as a hard line across the
+    // whole view. They used to agree for free by both keying off the altitude scalar;
+    // once the sky moved to a time-of-day ramp, this had to be dimmed the same way.
+    horizon_color = mix(horizon_color * 0.25, horizon_color, altitude_scalar);
     
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
     let space_fade = clamp((altitude - 0.05) / 0.45, 0.0, 1.0);

@@ -56,11 +56,19 @@ impl RoutesExtension {
             let reference_point = p_sum / count as f64;
 
             let mut control_points = Vec::with_capacity(points.len());
+            let mut travelled = 0.0_f64;
+            let mut prev: Option<DVec3> = None;
             for (i, pt) in points.iter().enumerate() {
                 let ecef = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
                 let pos = DVec3::from_array(ecef);
+                if let Some(prev) = prev {
+                    travelled += (pos - prev).length();
+                }
+                prev = Some(pos);
                 let t = i as f32 / (points.len() - 1) as f32;
-                control_points.push(ControlPoint::from_dvec3(pos, t));
+                let mut cp = ControlPoint::from_dvec3(pos, t);
+                cp.distance = travelled as f32;
+                control_points.push(cp);
             }
 
             let config = PolylineConfig {

@@ -6,7 +6,7 @@ use jni::{
     JNIEnv,
 };
 
-use cesium_flight::flight_handle::{FlightHandle, RunwayData};
+use cesium_flight::flight_handle::{FlightHandle, RouteLineMode, RunwayData};
 use crate::api::{CameraMode, MapStyle, ViewerHandle};
 
 pub struct PendingFlightData {
@@ -67,6 +67,35 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 ) {
     if let Some(handle) = FLIGHT_HANDLE.lock().unwrap().as_ref() {
         handle.set_progress(progress);
+    }
+}
+
+/// How much of the route line to draw: 0 = the whole route, 1 = a window around the
+/// aircraft, 2 = nothing.
+///
+/// The two distances are in nautical miles and are only read for mode 1. They are the
+/// app's to choose rather than the user's, so there is no expectation that they change
+/// often — but they cross here rather than being fixed in Rust so that a change of taste
+/// does not need a new engine build.
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRouteLineMode(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    mode: jint,
+    behind_nm: jdouble,
+    ahead_nm: jdouble,
+) {
+    if let Some(handle) = FLIGHT_HANDLE.lock().unwrap().as_ref() {
+        const NM: f64 = cesium_flight::telemetry::geo::NAUTICAL_MILE_M;
+        let m = match mode {
+            1 => RouteLineMode::Window {
+                behind_m: behind_nm.max(0.0) * NM,
+                ahead_m: ahead_nm.max(0.0) * NM,
+            },
+            2 => RouteLineMode::Hidden,
+            _ => RouteLineMode::Full,
+        };
+        handle.set_route_line_mode(m);
     }
 }
 

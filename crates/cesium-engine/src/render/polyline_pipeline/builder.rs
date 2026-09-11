@@ -8,7 +8,12 @@ use glam::DVec3;
 pub struct ControlPoint {
     /// High part of world-space ECEF position (Megameters).
     pub pos_hi: [f32; 3],
-    pub _pad0: f32,
+    /// Distance travelled along the path to reach this point (Megameters).
+    ///
+    /// `progress` below is normalised *time*, and a flight spends its time very
+    /// unevenly along its length — the climb and the descent are slow. Anything that
+    /// needs to talk about the route in miles rather than in minutes needs this instead.
+    pub distance: f32,
     /// Low part of world-space ECEF position (Megameters).
     pub pos_lo: [f32; 3],
     /// Normalised progress along the full flight path (0.0 – 1.0).
@@ -25,7 +30,7 @@ impl ControlPoint {
         ];
         Self {
             pos_hi: hi,
-            _pad0: 0.0,
+            distance: 0.0,
             pos_lo: lo,
             progress,
         }
@@ -76,15 +81,16 @@ impl AdaptiveSubdivisionBuilder {
         let total_duration = stop_time.seconds - start_time.seconds;
 
         if self.force_all_samples {
-            return property
+            let points: Vec<(DVec3, f32)> = property
                 .samples()
                 .iter()
                 .map(|(t, p)| {
                     let progress =
                         ((t.seconds - start_time.seconds) / total_duration).clamp(0.0, 1.0) as f32;
-                    ControlPoint::from_dvec3(*p, progress)
+                    (*p, progress)
                 })
                 .collect();
+            return with_arc_length(&points);
         }
 
         let mut path_points: Vec<(DVec3, f64)> = Vec::new(); // (position, time)
@@ -109,13 +115,14 @@ impl AdaptiveSubdivisionBuilder {
             last_p = p_end;
         }
 
-        path_points
+        let points: Vec<(DVec3, f32)> = path_points
             .into_iter()
             .map(|(p, t)| {
                 let progress = ((t - start_time.seconds) / total_duration).clamp(0.0, 1.0) as f32;
-                ControlPoint::from_dvec3(p, progress)
+                (p, progress)
             })
-            .collect()
+            .collect();
+        with_arc_length(&points)
     }
 
     fn subdivide(
@@ -154,4 +161,24 @@ impl AdaptiveSubdivisionBuilder {
             self.subdivide(property, t_mid, t_end, p_mid_true, p_end, points);
         }
     }
+}
+
+/// Turns positions and progresses into control points, measuring how far along the path
+/// each one lies.
+///
+/// The length is summed over the chords between consecutive points rather than along the
+/// true curve. The points are placed by a chord-deviation test with a tolerance measured
+/// in centimetres, so the two agree to far better than anything drawn from this could show.
+fn with_arc_length(points: &[(DVec3, f32)]) -> Vec<ControlPoint> {
+    let mut out = Vec::with_capacity(points.len());
+    let mut travelled = 0.0_f64;
+    for (i, (pos, progress)) in points.iter().enumerate() {
+        if i > 0 {
+            travelled += (*pos - points[i - 1].0).length();
+        }
+        let mut cp = ControlPoint::from_dvec3(*pos, *progress);
+        cp.distance = travelled as f32;
+        out.push(cp);
+    }
+    out
 }

@@ -52,6 +52,38 @@ pub struct FlightEntity {
     pub telemetry_points: Vec<crate::telemetry::generator::TelemetryPoint>,
     pub total_duration_ms: u64,
     pub reference_point: glam::DVec3,
+    /// Progress and the distance along the route it corresponds to, in Megametres, taken
+    /// from the control points the ribbon is drawn from.
+    ///
+    /// Progress is a fraction of the *flight time*, and a flight covers ground very
+    /// unevenly against the clock, so this is what turns "fifty miles ahead of the
+    /// aircraft" into something the shader can compare against. Sorted by progress.
+    pub route_distances: Vec<(f32, f32)>,
+}
+
+impl FlightEntity {
+    /// How far along the route the aircraft is at `progress`, in Megametres.
+    fn distance_at(&self, progress: f64) -> f32 {
+        let table = &self.route_distances;
+        if table.is_empty() {
+            return 0.0;
+        }
+        let p = (progress as f32).clamp(0.0, 1.0);
+        match table.binary_search_by(|(q, _)| q.partial_cmp(&p).unwrap()) {
+            Ok(i) => table[i].1,
+            Err(0) => table[0].1,
+            Err(i) if i >= table.len() => table[table.len() - 1].1,
+            Err(i) => {
+                let (p0, d0) = table[i - 1];
+                let (p1, d1) = table[i];
+                if p1 <= p0 {
+                    d0
+                } else {
+                    d0 + (d1 - d0) * (p - p0) / (p1 - p0)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +150,13 @@ pub struct FlightTrackerApp {
     cached_surface_config: Option<wgpu::SurfaceConfiguration>,
     /// Planning options applied to flights loaded from here on.
     pub plan_config: FlightPlanConfig,
+    /// How much of the route line is drawn. Applies to every loaded flight at once.
+    pub route_line_mode: crate::flight_handle::RouteLineMode,
+    /// Window extents the debug panel last set, in nautical miles, kept so the numbers
+    /// survive a trip through Full or Hidden. FocusFlight sets its own over the FFI and
+    /// never sees these.
+    #[cfg(feature = "debug_panel")]
+    debug_route_window_nm: (f64, f64),
     /// Text input buffer for custom route coordinates or preset in UI
     pub custom_route_input: String,
     /// Status or error message for route loading in UI
@@ -149,6 +188,9 @@ impl FlightTrackerApp {
             pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
             plan_config: FlightPlanConfig::default(),
+            route_line_mode: crate::flight_handle::RouteLineMode::default(),
+            #[cfg(feature = "debug_panel")]
+            debug_route_window_nm: (40.0, 150.0),
             custom_route_input: String::new(),
             route_status_msg: None,
         };
@@ -176,6 +218,9 @@ impl FlightTrackerApp {
             pending_camera_restore: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cached_surface_config: None,
             plan_config: FlightPlanConfig::default(),
+            route_line_mode: crate::flight_handle::RouteLineMode::default(),
+            #[cfg(feature = "debug_panel")]
+            debug_route_window_nm: (40.0, 150.0),
             custom_route_input: String::new(),
             route_status_msg: None,
         }
@@ -410,7 +455,14 @@ impl FlightTrackerApp {
         let sun = self
             .get_sun_intensity_at(*self.progress.lock().unwrap())
             .unwrap_or(1.0) as f32;
-        let ambient_override = 0.30 * (0.6 + 0.4 * sun);
+        // Ambient is the *floor* the key light fills up from, not a term added to it, so
+        // this is the darkest the interior ever gets. Kept low deliberately: an airliner
+        // flight deck in daylight is mostly shadow with a few brilliantly lit surfaces.
+        // Tuned against captures rather than by eye: at 0.42 the interior sat about 20%
+        // brighter than it used to, which is the wrong direction for a frame that was
+        // already too bright. This lands the window posts back at their previous value
+        // while leaving the panel deeper in shadow than before.
+        let ambient_override = 0.34 * (0.6 + 0.4 * sun);
 
         use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
         let push = ModelPushConstants {
@@ -431,6 +483,14 @@ impl FlightTrackerApp {
             ambient_override,
             specular_strength: 0.15,
             detail_strength: 0.13,
+            // No rim light indoors. It is an edge term that stands for light wrapping
+            // round a silhouette against open sky, and inside a flight deck there is no
+            // sky behind the window posts — it just added a flat 0.10 to every surface at
+            // a grazing angle to the eye, which is precisely the frames, and made them
+            // glow. Measured: the posts carried +0.102 of it while the panel carried 0.
+            rim_strength: 0.0,
+            // An interior is lit by what comes in through the windows, not by a bare sun.
+            diffuse_weight: 0.35,
         };
 
         cockpit.draw(render_pass, camera_bind_group, push);
@@ -479,6 +539,9 @@ impl GlobeExtension for FlightTrackerApp {
                             runways,
                             config: self.plan_config,
                         });
+                    }
+                    FlightCommand::SetRouteLineMode(m) => {
+                        self.route_line_mode = m;
                     }
                     FlightCommand::SetPlanConfig(c) => {
                         self.plan_config = c;
@@ -532,6 +595,8 @@ impl GlobeExtension for FlightTrackerApp {
                 let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
                 let builder = AdaptiveSubdivisionBuilder::new(1e-7); // High precision tolerance
                 let control_points = builder.build(&property, reference_point);
+        let route_distances: Vec<(f32, f32)> =
+            control_points.iter().map(|cp| (cp.progress, cp.distance)).collect();
                 
                 println!("Flight path loaded: {} ({} control points)", pending.id, control_points.len());
 
@@ -557,6 +622,7 @@ impl GlobeExtension for FlightTrackerApp {
                     telemetry_points: points,
                     total_duration_ms: calculated_duration_ms,
                     reference_point,
+                    route_distances,
                 });
             }
         }
@@ -611,6 +677,9 @@ impl GlobeExtension for FlightTrackerApp {
                             config: self.plan_config,
                         });
                     }
+                    FlightCommand::SetRouteLineMode(m) => {
+                        self.route_line_mode = m;
+                    }
                     FlightCommand::SetPlanConfig(c) => {
                         self.plan_config = c;
                     }
@@ -662,6 +731,8 @@ impl GlobeExtension for FlightTrackerApp {
                         let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
                         let builder = AdaptiveSubdivisionBuilder::new(1e-7);
                         let control_points = builder.build(&property, reference_point);
+        let route_distances: Vec<(f32, f32)> =
+            control_points.iter().map(|cp| (cp.progress, cp.distance)).collect();
                         
                         println!("Flight path dynamically loaded: {} ({} control points)", pending.id, control_points.len());
                         
@@ -686,6 +757,7 @@ impl GlobeExtension for FlightTrackerApp {
                             telemetry_points: points,
                             total_duration_ms: calculated_duration_ms,
                             reference_point,
+                            route_distances,
                         });
                     }
                 }
@@ -842,10 +914,39 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.entities");
-        for flight in &self.flights {
+        // Hiding the route skips the ribbon entirely rather than drawing it transparent,
+        // so it costs nothing. The aircraft below is drawn either way — it is the route
+        // line that is hidden, not the flight.
+        let ribbons: &[FlightEntity] =
+            if self.route_line_mode == crate::flight_handle::RouteLineMode::Hidden {
+                &[]
+            } else {
+                &self.flights
+            };
+        for flight in ribbons {
             let mut config = flight.config.clone();
             config.physical_half_width = 1.49 / 1_000_000.0;
             config.split_progress = current_progress as f32;
+
+            // The window is handed to the shader as two absolute distances along the
+            // route rather than as a radius, because that is what the ribbon's own
+            // vertices carry and it costs two floats instead of three — and two is all
+            // the 128-byte push-constant block has left.
+            match self.route_line_mode {
+                crate::flight_handle::RouteLineMode::Window { behind_m, ahead_m } => {
+                    const M_TO_MM: f64 = 1.0 / 1_000_000.0;
+                    let here = flight.distance_at(current_progress) as f64;
+                    // Deliberately not clamped to the route's own start: letting the
+                    // window hang off the front keeps the ribbon solid at the departure
+                    // airport instead of fading it out over the first few miles.
+                    config.window_start = (here - behind_m * M_TO_MM) as f32;
+                    config.window_end = (here + ahead_m * M_TO_MM) as f32;
+                }
+                _ => {
+                    config.window_start = -1.0;
+                    config.window_end = -1.0;
+                }
+            }
 
             // Compute airplane position relative to camera in f64, then cast to f32.
             let airplane_ecef: Option<glam::DVec3> = airplane_state.map(|s| s.position);
@@ -954,11 +1055,17 @@ impl GlobeExtension for FlightTrackerApp {
                     viewport_size,
                     min_pixel_size: 100.0,
                     depth_bias: 0.0,
-                    // No-op: reproduces the shader's old hardcoded lighting exactly, so the
-                    // exterior aircraft's look is unaffected by the cockpit's new knobs.
-                    ambient_override: 0.5,
-                    specular_strength: 0.0,
+                    // Was 0.5, which with the old additive shading summed to 1.2 and
+                    // clipped — the aircraft could never be darker than mid-grey and its
+                    // lit side burned out flat. As a floor, this is a lightly sunlit
+                    // fuselage against sky.
+                    ambient_override: 0.22,
+                    specular_strength: 0.20,
                     detail_strength: 0.0,
+                    // The aircraft is nearly always seen against the sky, so the edge
+                    // light is what separates it from the background at a low sun.
+                    rim_strength: 0.30,
+                    diffuse_weight: 1.0,
                 };
 
                 airplane.draw(render_pass, camera_bind_group, push);
@@ -1038,6 +1145,59 @@ impl GlobeExtension for FlightTrackerApp {
                 ui.colored_label(egui::Color32::RED, msg);
             } else {
                 ui.colored_label(egui::Color32::GREEN, msg);
+            }
+        }
+
+        ui.separator();
+        ui.label("Route Line");
+        {
+            use crate::flight_handle::RouteLineMode;
+            const NM: f64 = crate::telemetry::geo::NAUTICAL_MILE_M;
+            let (behind_nm, ahead_nm) = self.debug_route_window_nm;
+            let windowed = |b: f64, a: f64| RouteLineMode::Window {
+                behind_m: b * NM,
+                ahead_m: a * NM,
+            };
+            let mode = self.route_line_mode;
+            ui.horizontal(|ui| {
+                if ui.radio(matches!(mode, RouteLineMode::Full), "Full").clicked() {
+                    self.route_line_mode = RouteLineMode::Full;
+                }
+                if ui
+                    .radio(matches!(mode, RouteLineMode::Window { .. }), "Window")
+                    .clicked()
+                {
+                    self.route_line_mode = windowed(behind_nm, ahead_nm);
+                }
+                if ui.radio(matches!(mode, RouteLineMode::Hidden), "Hidden").clicked() {
+                    self.route_line_mode = RouteLineMode::Hidden;
+                }
+            });
+            if matches!(self.route_line_mode, RouteLineMode::Window { .. }) {
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    ui.label("behind");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.debug_route_window_nm.0)
+                                .speed(1.0)
+                                .range(0.0..=5000.0),
+                        )
+                        .changed();
+                    ui.label("ahead");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.debug_route_window_nm.1)
+                                .speed(1.0)
+                                .range(0.0..=5000.0),
+                        )
+                        .changed();
+                    ui.label("NM");
+                });
+                if changed {
+                    let (b, a) = self.debug_route_window_nm;
+                    self.route_line_mode = windowed(b, a);
+                }
             }
         }
     }

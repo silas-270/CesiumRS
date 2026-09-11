@@ -2,7 +2,10 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
-    sun_params: vec4<f32>,
+    sun_params: vec4<f32>,   // [altitude_scalar, saturation, contrast, brightness]
+    sun_dir: vec4<f32>,      // xyz toward the sun, w = sin(elevation)
+    moon_dir: vec4<f32>,     // xyz toward the moon, w = lit fraction
+    light_color: vec4<f32>,  // rgb key light hue, w = strength
 };
 
 @group(0) @binding(0)
@@ -28,6 +31,10 @@ struct ModelPushConstants {
     specular_strength: f32,
     // Triplanar procedural surface-detail strength. 0.0 disables it entirely.
     detail_strength: f32,
+    // Fresnel-style edge light from the key light. 0.0 disables it entirely.
+    rim_strength: f32,
+    // How much of the key light's direction this model feels. Low for interiors.
+    diffuse_weight: f32,
 }
 
 var<push_constant> push: ModelPushConstants;
@@ -172,11 +179,29 @@ fn triplanar_detail(local_pos: vec3<f32>, local_normal: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
     let normal = normalize(in.normal);
+    // `view_pos` is camera-relative world space, so this is the direction back to the eye
+    // and `normal` is already in the same frame the sun direction is given in.
+    let view_dir = normalize(-in.view_pos);
 
-    let diffuse = max(dot(normal, light_dir), 0.0);
-    let light_intensity = diffuse * 0.7 + push.ambient_override;
+    let key_color = camera.light_color.rgb;
+    let key_strength = camera.light_color.a;
+
+    // Two lights, weighted, rather than one that switches between them. The moon sits
+    // exactly opposite the sun, so picking whichever is higher on a threshold teleports
+    // the light through 180° the instant the sun crosses it, and the lit side of the
+    // aircraft swaps between one frame and the next. Summing both contributions is what a
+    // pair of light sources actually does, and it has no edge to fall off. The weights run
+    // on the same dusk-to-night ramp as the sky.
+    let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
+    let from_sun = max(dot(normal, camera.sun_dir.xyz), 0.0) * (1.0 - night_key);
+    let from_moon = max(dot(normal, camera.moon_dir.xyz), 0.0) * night_key;
+    let lit = (from_sun + from_moon) * key_strength * push.diffuse_weight;
+    // Ambient is a floor the key light fills up to, so the two always sum to exactly 1.
+    // Adding them instead ran to 1.2 and clipped: nothing could be darker than the floor,
+    // and every surface facing the light blew out to flat white. That is what made the
+    // cockpit window frames glow.
+    let light_intensity = push.ambient_override + (1.0 - push.ambient_override) * lit;
 
     // Sample texture
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv).rgb;
@@ -186,12 +211,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let detail_noise = triplanar_detail(in.local_pos, normalize(in.local_normal));
     let detail = 1.0 + (detail_noise - 0.5) * push.detail_strength;
 
-    // Soft Blinn-Phong catch-light (push.specular_strength = 0.0 disables it).
-    let view_dir = normalize(-in.view_pos);
-    let half_dir = normalize(light_dir + view_dir);
-    let spec = pow(max(dot(normal, half_dir), 0.0), 28.0) * push.specular_strength;
+    // Soft Blinn-Phong catch-light (push.specular_strength = 0.0 disables it), blended
+    // across the same two lights so the highlight does not jump either.
+    let half_sun = normalize(camera.sun_dir.xyz + view_dir);
+    let half_moon = normalize(camera.moon_dir.xyz + view_dir);
+    let spec = (pow(max(dot(normal, half_sun), 0.0), 28.0) * (1.0 - night_key)
+        + pow(max(dot(normal, half_moon), 0.0), 28.0) * night_key)
+        * push.specular_strength * key_strength;
 
-    let color = tex_color * in.color.rgb * light_intensity * detail + vec3<f32>(spec, spec, spec);
+    // Rim light: surfaces turning away from the eye catch the sky behind them. Costs one
+    // dot product and is most of what makes an aircraft read as lit from outside rather
+    // than painted, especially with a low sun.
+    let rim = pow(1.0 - max(dot(normal, view_dir), 0.0), 3.0) * push.rim_strength * key_strength;
+
+    // Everything is tinted by the key light, which is near-white by day, amber at sunset
+    // and blue by moonlight. The hue is normalised so it never adds brightness of its own.
+    let color = tex_color * in.color.rgb * light_intensity * detail * key_color
+        + key_color * (spec + rim);
 
     return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), in.color.a);
 }

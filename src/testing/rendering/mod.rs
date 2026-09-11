@@ -13,3 +13,5 @@ pub mod test_point;
 pub mod test_tile_monitor;
 #[cfg(test)]
 pub mod test_headless;
+#[cfg(test)]
+pub mod light_audit;

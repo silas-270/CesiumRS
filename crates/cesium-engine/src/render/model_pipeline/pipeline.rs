@@ -60,6 +60,15 @@ pub struct ModelPushConstants {
     pub specular_strength: f32,
     /// Triplanar procedural surface-detail strength. `0.0` disables it entirely.
     pub detail_strength: f32,
+    /// Fresnel-style edge light picked up from the key light. `0.0` disables it entirely.
+    pub rim_strength: f32,
+    /// How much of the key light's *direction* this model feels, against its ambient.
+    ///
+    /// An interior wants this low. The key light has no occlusion, so inside a cockpit it
+    /// happily lights the roof lining — which faces the sky and is, in reality, under a
+    /// fuselage. What actually lights a flight deck is light bounced in through the
+    /// windows, which is ambient. `1.0` is an object in the open.
+    pub diffuse_weight: f32,
 }
 
 /// Per-model knobs for [`ModelRenderer::new_with_options`].
