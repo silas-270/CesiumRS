@@ -116,15 +116,28 @@ impl Property<DVec3> for SampledPositionProperty {
                 match self.algorithm {
                     InterpolationAlgorithm::Linear => Some(interpolation::linear_dvec3(p1, p2, t)),
                     InterpolationAlgorithm::CatmullRom => {
+                        // Off the ends of the sample list, the missing neighbour is
+                        // reflected through the segment rather than duplicated. A
+                        // duplicate has a zero secant, which halves the tangent at the
+                        // first and last knot — so the value would leave its start and
+                        // reach its end at half speed, a visible lurch at both ends of
+                        // a flight. Reflecting makes the end segments straight, which is
+                        // what "no information beyond here" should mean.
                         let (t0, p0) = if idx1 > 0 {
                             self.samples[idx1 - 1]
                         } else {
-                            (crate::time::SimulationTime::new(t1.seconds - dt), p1)
+                            (
+                                crate::time::SimulationTime::new(t1.seconds - dt),
+                                p1 - (p2 - p1),
+                            )
                         };
                         let (t3, p3) = if idx2 + 1 < self.samples.len() {
                             self.samples[idx2 + 1]
                         } else {
-                            (crate::time::SimulationTime::new(t2.seconds + dt), p2)
+                            (
+                                crate::time::SimulationTime::new(t2.seconds + dt),
+                                p2 + (p2 - p1),
+                            )
                         };
 
                         let dt01 = t1.seconds - t0.seconds;
@@ -213,15 +226,28 @@ impl Property<f64> for SampledScalarProperty {
                 match self.algorithm {
                     InterpolationAlgorithm::Linear => Some(interpolation::linear_f64(p1, p2, t)),
                     InterpolationAlgorithm::CatmullRom => {
+                        // Off the ends of the sample list, the missing neighbour is
+                        // reflected through the segment rather than duplicated. A
+                        // duplicate has a zero secant, which halves the tangent at the
+                        // first and last knot — so the value would leave its start and
+                        // reach its end at half speed, a visible lurch at both ends of
+                        // a flight. Reflecting makes the end segments straight, which is
+                        // what "no information beyond here" should mean.
                         let (t0, p0) = if idx1 > 0 {
                             self.samples[idx1 - 1]
                         } else {
-                            (crate::time::SimulationTime::new(t1.seconds - dt), p1)
+                            (
+                                crate::time::SimulationTime::new(t1.seconds - dt),
+                                p1 - (p2 - p1),
+                            )
                         };
                         let (t3, p3) = if idx2 + 1 < self.samples.len() {
                             self.samples[idx2 + 1]
                         } else {
-                            (crate::time::SimulationTime::new(t2.seconds + dt), p2)
+                            (
+                                crate::time::SimulationTime::new(t2.seconds + dt),
+                                p2 + (p2 - p1),
+                            )
                         };
 
                         let dt01 = t1.seconds - t0.seconds;

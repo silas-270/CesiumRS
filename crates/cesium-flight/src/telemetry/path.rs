@@ -25,9 +25,11 @@ pub struct FlightTrackInputs<'a> {
     pub dep_threshold: LatLon,
     pub dep_leg_end: LatLon,
     pub departure_turn_r: f64,
+    pub departure_roll_in: f64,
     pub enroute: &'a [LatLon],
     pub final_start: LatLon,
     pub final_turn_r: f64,
+    pub final_roll_in: f64,
     pub arr_threshold: LatLon,
     pub touchdown: LatLon,
     pub rollout_end: LatLon,
@@ -48,6 +50,17 @@ pub struct Waypoint {
     /// Radius of the fly-by turn here. Zero leaves the corner sharp, which is what the
     /// runway waypoints want — they are collinear anyway.
     pub turn_radius_m: f64,
+    /// Distance flown rolling into the turn, over which the curvature is brought up
+    /// from zero rather than switched on. Zero gives a plain circular arc.
+    pub roll_in_m: f64,
+    /// Which side of this waypoint the extra leg of a split turn is allowed to go.
+    ///
+    /// A split turn needs a leg between its two halves, and that leg has to come out of
+    /// one of the two the waypoint already joins. Either is fine at an enroute fix. It
+    /// is not fine at the two ends of the flight: the departure leg and the final
+    /// approach are the runway centreline extended, and an aeroplane that lands off the
+    /// centreline and swerves onto it at the threshold is not landing.
+    pub split_before: bool,
 }
 
 impl Waypoint {
@@ -55,6 +68,25 @@ impl Waypoint {
         Self {
             position,
             turn_radius_m,
+            roll_in_m: 0.0,
+            split_before: false,
+        }
+    }
+
+    /// The same turn, entered and left over `roll_in_m` of track instead of instantly.
+    pub fn rolling(mut self, roll_in_m: f64) -> Self {
+        self.roll_in_m = roll_in_m;
+        self
+    }
+
+    /// A waypoint whose *outbound* leg is fixed, so a split has to reach back along the
+    /// inbound one instead.
+    pub fn new_split_before(position: LatLon, turn_radius_m: f64) -> Self {
+        Self {
+            position,
+            turn_radius_m,
+            roll_in_m: 0.0,
+            split_before: true,
         }
     }
 
@@ -62,6 +94,8 @@ impl Waypoint {
         Self {
             position,
             turn_radius_m: 0.0,
+            roll_in_m: 0.0,
+            split_before: false,
         }
     }
 }
@@ -189,14 +223,20 @@ impl GroundTrack {
     pub fn build_flight_track(inputs: &FlightTrackInputs) -> (Self, FlightTrackPlaced) {
         let mut raw_wps = Vec::with_capacity(inputs.enroute.len() + 6);
         raw_wps.push(Waypoint::sharp(inputs.dep_threshold));
-        raw_wps.push(Waypoint::new(inputs.dep_leg_end, inputs.departure_turn_r));
+        raw_wps.push(
+            Waypoint::new(inputs.dep_leg_end, inputs.departure_turn_r)
+                .rolling(inputs.departure_roll_in),
+        );
         if inputs.enroute.len() > 2 {
             for p in &inputs.enroute[1..inputs.enroute.len() - 1] {
                 raw_wps.push(Waypoint::new(*p, 120_000.0));
             }
         }
         let orig_idx_final_start = raw_wps.len();
-        raw_wps.push(Waypoint::new(inputs.final_start, inputs.final_turn_r));
+        raw_wps.push(
+            Waypoint::new_split_before(inputs.final_start, inputs.final_turn_r)
+                .rolling(inputs.final_roll_in),
+        );
         let orig_idx_arr_thresh = raw_wps.len();
         raw_wps.push(Waypoint::sharp(inputs.arr_threshold));
         raw_wps.push(Waypoint::sharp(inputs.touchdown));
@@ -210,9 +250,12 @@ impl GroundTrack {
         push_point(&mut points, &mut cumulative, inputs.dep_threshold);
         let s_dep_threshold = 0.0;
 
+        // The arrival corner may be one waypoint or two, and the split can sit on
+        // either side of the one the caller asked for, so the group is found by what
+        // each entry belongs to rather than by the caller's index.
         let exp_arr_start = expanded
             .iter()
-            .position(|e| e.original_index == Some(orig_idx_final_start))
+            .position(|e| e.belongs_to == orig_idx_final_start)
             .unwrap();
         let exp_arr_thresh = expanded
             .iter()
@@ -221,7 +264,7 @@ impl GroundTrack {
         let exp_enroute_start = if inputs.enroute.len() > 2 {
             expanded
                 .iter()
-                .position(|e| e.original_index == Some(2))
+                .position(|e| e.belongs_to == 2)
                 .unwrap_or(exp_arr_start)
         } else {
             exp_arr_start
@@ -403,6 +446,12 @@ struct Corner {
 /// neighbouring waypoints onto that plane instead would work over a short leg and fail
 /// badly over a long one — and fail worst near the poles, where a plane anchored at one
 /// latitude says nothing useful about a point 300 km away.
+///
+/// The arc is not a circle. An aeroplane rolls into a bank over several seconds, so its
+/// curvature comes up from zero rather than switching on, and the corner is entered
+/// earlier to make room for that. Joining a straight leg to a circle instead leaves a
+/// step in curvature, which the consumer's spline reads as the lateral acceleration
+/// arriving all at once — around half as much again as the turn actually pulls.
 fn build_corner(prev: LatLon, waypoint: Waypoint, next: LatLon) -> Option<Corner> {
     if waypoint.turn_radius_m <= 0.0 {
         return None;
@@ -422,59 +471,118 @@ fn build_corner(prev: LatLon, waypoint: Waypoint, next: LatLon) -> Option<Corner
     if turn.abs() < 1e-4 {
         return None;
     }
-    let theta = -turn;
+
+    let shape = CornerShape::new(waypoint.turn_radius_m, waypoint.roll_in_m, turn.abs());
+    let (offsets, tangent_m) = shape.trace(bearing_in, turn.signum());
+    if tangent_m < 1.0 {
+        return None;
+    }
+
+    // Tightening the turn is what a real aircraft does when the corner is sharper than
+    // the leg length allows: it slows down and banks harder. Scaling the whole shape
+    // about the waypoint keeps its form and shortens every length in it alike.
+    let limit = MAX_TURN_LEG_FRACTION * in_len.min(out_len);
+    let squeeze = (limit / tangent_m).min(1.0);
+    let d = tangent_m * squeeze;
 
     let frame = LocalFrame::new(waypoint.position);
     let (ax, ay) = (bearing_in.sin(), bearing_in.cos());
     let (bx, by) = (bearing_out.sin(), bearing_out.cos());
-
-    let half = (theta.abs() / 2.0).tan();
-    if half <= 1e-9 {
-        return None;
-    }
-    let wanted = waypoint.turn_radius_m * half;
-    let limit = MAX_TURN_LEG_FRACTION * in_len.min(out_len);
-    let d = wanted.min(limit);
-    if d < 1.0 {
-        return None;
-    }
-    // Tightening the radius is what a real aircraft does when the turn is sharper than
-    // the leg length allows: it slows down and banks harder.
-    let radius = d / half;
-
     let start = (-ax * d, -ay * d);
-    let end = (bx * d, by * d);
-    // Centre lies perpendicular to the inbound track, on the inside of the turn.
-    let sign = theta.signum();
-    let centre = (start.0 - ay * radius * sign, start.1 + ax * radius * sign);
 
-    let start_angle = (start.1 - centre.1).atan2(start.0 - centre.0);
-    // Sampled by *angle* as well as by length. A turn resolved only by arc length
-    // becomes a polygon when the radius is small, and the sampler downstream then reads
-    // each facet junction as an instantaneous heading change — which looks like a turn
-    // far tighter than the one actually being flown.
-    let arc_len = radius * theta.abs();
-    let by_angle = (theta.abs() / ARC_SAMPLE_ANGLE_RAD).ceil() as usize;
-    let by_length = (arc_len / ARC_SAMPLE_SPACING_M).ceil() as usize;
-    let steps = by_angle
-        .max(by_length)
-        .clamp(MIN_ARC_SAMPLES, MAX_ARC_SAMPLES);
-
-    let mut samples = Vec::with_capacity(steps + 1);
-    for k in 0..=steps {
-        let f = k as f64 / steps as f64;
-        let angle = start_angle + theta * f;
-        samples.push(frame.to_geo(
-            centre.0 + radius * angle.cos(),
-            centre.1 + radius * angle.sin(),
-        ));
-    }
+    let samples = offsets
+        .iter()
+        .map(|(ox, oy)| frame.to_geo(start.0 + ox * squeeze, start.1 + oy * squeeze))
+        .collect();
 
     Some(Corner {
         start: frame.to_geo(start.0, start.1),
-        end: frame.to_geo(end.0, end.1),
+        end: frame.to_geo(bx * d, by * d),
         samples,
     })
+}
+
+/// The shape of one fly-by turn, as a curvature that ramps up, holds, and ramps down.
+struct CornerShape {
+    /// Total length of the turn, and the length of each ramp within it.
+    length_m: f64,
+    ramp_m: f64,
+    /// Curvature held between the ramps.
+    curvature: f64,
+    turn_rad: f64,
+}
+
+impl CornerShape {
+    fn new(radius_m: f64, roll_in_m: f64, turn_rad: f64) -> Self {
+        // A smoothstep ramp turns through half of what the held curvature would over
+        // the same distance, so the two ramps together cost one ramp length of turning.
+        let length_m = (roll_in_m + radius_m * turn_rad).max(2.0 * roll_in_m);
+        let ramp_m = roll_in_m.min(0.5 * length_m);
+        Self {
+            length_m,
+            ramp_m,
+            curvature: turn_rad / (length_m - ramp_m).max(1e-9),
+            turn_rad,
+        }
+    }
+
+    /// Turn accumulated over the first `s` metres of the shape.
+    fn turned(&self, s: f64) -> f64 {
+        let ramp = self.ramp_m;
+        let held = (self.length_m - 2.0 * ramp).max(0.0);
+        let smooth = |w: f64| w * w * w * (1.0 - 0.5 * w); // ∫₀^w 3u² - 2u³ du
+        if s <= ramp {
+            self.curvature * ramp * smooth(s / ramp.max(1e-9))
+        } else if s <= ramp + held {
+            self.curvature * (0.5 * ramp + (s - ramp))
+        } else {
+            let w = ((self.length_m - s) / ramp.max(1e-9)).clamp(0.0, 1.0);
+            self.turn_rad - self.curvature * ramp * smooth(w)
+        }
+    }
+
+    /// Walks the shape out from its start, returning offsets from that start and the
+    /// distance from it back to where the two legs would have met.
+    ///
+    /// The curvature profile is symmetric, so the curve leaves on the outbound track
+    /// the same distance beyond the corner as it left the inbound one before it, and
+    /// that one distance places the whole thing.
+    fn trace(&self, bearing_in: f64, sign: f64) -> (Vec<(f64, f64)>, f64) {
+        // Resolved by turn as well as by length: a corner sampled only by arc length
+        // becomes a polygon when the radius is small, and the sampler downstream then
+        // reads each facet junction as an instantaneous heading change — which looks
+        // like a turn far tighter than the one actually being flown.
+        let by_angle = (self.turn_rad / ARC_SAMPLE_ANGLE_RAD).ceil() as usize;
+        let by_length = (self.length_m / ARC_SAMPLE_SPACING_M).ceil() as usize;
+        let steps = by_angle
+            .max(by_length)
+            .clamp(MIN_ARC_SAMPLES, MAX_ARC_SAMPLES);
+        let ds = self.length_m / steps as f64;
+
+        let mut offsets = Vec::with_capacity(steps + 1);
+        let (mut x, mut y) = (0.0_f64, 0.0_f64);
+        offsets.push((x, y));
+        for k in 0..steps {
+            // Midpoint of each step, so a constant-curvature stretch integrates to its
+            // circle rather than to a polygon inscribed in it.
+            let heading = bearing_in + sign * self.turned((k as f64 + 0.5) * ds);
+            x += heading.sin() * ds;
+            y += heading.cos() * ds;
+            offsets.push((x, y));
+        }
+
+        // Where the inbound and outbound tracks would have crossed: run back along the
+        // outbound one from the far end until it meets the inbound one from the start.
+        let (ax, ay) = (bearing_in.sin(), bearing_in.cos());
+        let out = bearing_in + sign * self.turn_rad;
+        let (bx, by) = (out.sin(), out.cos());
+        let det = ax * (-by) - ay * (-bx);
+        if det.abs() < 1e-12 {
+            return (offsets, 0.0);
+        }
+        let tangent_m = (x * -by - y * -bx) / det;
+        (offsets, tangent_m)
+    }
 }
 
 /// Appends a point, keeping the cumulative distances in step. Points closer than a
@@ -591,43 +699,76 @@ struct Expanded {
     waypoint: Waypoint,
     /// Index into the caller's list, or `None` for a waypoint inserted to split a turn.
     original_index: Option<usize>,
+    /// The caller's waypoint this entry belongs to — itself, or the sharp turn it was
+    /// inserted to split. A split can land on either side of its waypoint, so this is
+    /// what finds the whole group of a corner rather than just its centre.
+    belongs_to: usize,
 }
 
 /// Splits any corner sharper than the threshold into two gentler ones.
 fn split_sharp_turns(waypoints: &[Waypoint]) -> Vec<Expanded> {
     let mut out: Vec<Expanded> = Vec::with_capacity(waypoints.len());
     for (i, wp) in waypoints.iter().enumerate() {
+        let extra = split_waypoint(waypoints, i);
+        // The extra waypoint carries the half of the turn the fixed leg cannot: after
+        // the corner when the inbound leg is the runway, before it when the outbound
+        // one is.
+        if let (Some(extra), true) = (extra, wp.split_before) {
+            out.push(Expanded {
+                waypoint: extra,
+                original_index: None,
+                belongs_to: i,
+            });
+        }
         out.push(Expanded {
             waypoint: *wp,
             original_index: Some(i),
+            belongs_to: i,
         });
-        // Look ahead: a split inserts a waypoint *after* the sharp one.
-        if i == 0 || i + 1 >= waypoints.len() || wp.turn_radius_m <= 0.0 {
-            continue;
+        if let (Some(extra), false) = (extra, wp.split_before) {
+            out.push(Expanded {
+                waypoint: extra,
+                original_index: None,
+                belongs_to: i,
+            });
         }
-        let prev = waypoints[i - 1].position;
-        let next = waypoints[i + 1].position;
-        let in_len = super::geo::distance_m(prev, wp.position);
-        let out_len = super::geo::distance_m(wp.position, next);
-        if in_len < 1.0 || out_len < 1.0 {
-            continue;
-        }
-        let bearing_in = initial_bearing(wp.position, prev) + std::f64::consts::PI;
-        let bearing_out = initial_bearing(wp.position, next);
-        let turn = super::geo::wrap_pi(bearing_out - bearing_in);
-        if turn.abs() <= SPLIT_TURN_THRESHOLD_RAD {
-            continue;
-        }
-        // Fly out on the bisected heading far enough for both halves to be flyable,
-        // then turn again onto the outbound leg.
-        let reach = (4.0 * wp.turn_radius_m).min(0.35 * out_len);
-        out.push(Expanded {
-            waypoint: Waypoint::new(
-                super::geo::destination(wp.position, bearing_in + turn / 2.0, reach),
-                wp.turn_radius_m,
-            ),
-            original_index: None,
-        });
     }
     out
+}
+
+/// The waypoint that splits the corner at `i` in two, if it is sharp enough to need
+/// one.
+///
+/// Both halves are flown on the bisected heading, joined by a leg long enough for each
+/// to be a turn in its own right. The leg is taken out of whichever of the two legs the
+/// waypoint's `split_before` says is free to move.
+fn split_waypoint(waypoints: &[Waypoint], i: usize) -> Option<Waypoint> {
+    let wp = waypoints[i];
+    if i == 0 || i + 1 >= waypoints.len() || wp.turn_radius_m <= 0.0 {
+        return None;
+    }
+    let prev = waypoints[i - 1].position;
+    let next = waypoints[i + 1].position;
+    let in_len = super::geo::distance_m(prev, wp.position);
+    let out_len = super::geo::distance_m(wp.position, next);
+    if in_len < 1.0 || out_len < 1.0 {
+        return None;
+    }
+    let bearing_in = initial_bearing(wp.position, prev) + std::f64::consts::PI;
+    let bearing_out = initial_bearing(wp.position, next);
+    let turn = super::geo::wrap_pi(bearing_out - bearing_in);
+    if turn.abs() <= SPLIT_TURN_THRESHOLD_RAD {
+        return None;
+    }
+    let bisector = bearing_in + turn / 2.0;
+    let free_leg = if wp.split_before { in_len } else { out_len };
+    let reach = (4.0 * wp.turn_radius_m).min(0.35 * free_leg);
+    let position = if wp.split_before {
+        // Back up along the bisector, so the corner is *reached* on the bisected
+        // heading and left on the outbound one.
+        super::geo::destination(wp.position, bisector + std::f64::consts::PI, reach)
+    } else {
+        super::geo::destination(wp.position, bisector, reach)
+    };
+    Some(Waypoint::new(position, wp.turn_radius_m).rolling(wp.roll_in_m))
 }

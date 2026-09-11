@@ -46,6 +46,9 @@ const TERMINAL_STEP_M: f64 = 200.0;
 const ENROUTE_STEP_M: f64 = 2_000.0;
 const TERMINAL_AGL_M: f64 = 3_000.0;
 
+/// Track distance over which one speed schedule hands over to the next.
+const SPEED_HANDOVER_M: f64 = 8_000.0;
+
 /// Bisection iterations for the Mach fit. Twenty halvings resolve the band to well
 /// under a thousandth of a Mach number.
 const MACH_FIT_ITERATIONS: usize = 20;
@@ -86,17 +89,33 @@ impl SpeedSchedule {
         }
 
         let alt = profile.altitude_at(s);
-        if s < profile.s_top_of_climb {
-            return aircraft::climb_tas(alt, profile.dep_elevation_m);
-        }
-        if s < profile.s_top_of_descent {
-            return aircraft::cruise_tas(self.cruise_mach, alt);
+        let band = SPEED_HANDOVER_M.min((profile.s_top_of_descent - profile.s_top_of_climb).max(1.0));
+
+        // Climb, cruise and descent are three different speed schedules, and where two
+        // of them meet they rarely agree: the fitted cruise Mach can be a long way
+        // either side of the 0.84 the climb ends at and the 0.82 the descent begins at,
+        // and reading straight across from one to the other steps the speed by ten or
+        // twenty knots at a stroke. Each handover is eased over a stretch of track
+        // instead — which is what it is, an aircraft levelling off and letting the speed
+        // come up to its cruise number over half a minute.
+        if s < 0.5 * (profile.s_top_of_climb + profile.s_top_of_descent) {
+            let climb = aircraft::climb_tas(alt, profile.dep_elevation_m);
+            let cruise = aircraft::cruise_tas(self.cruise_mach, alt);
+            let w = handover(s, profile.s_top_of_climb, band);
+            return climb + (cruise - climb) * w;
         }
 
-        // Descending: the schedule speed until the aircraft starts configuring, then a
-        // blend down to the approach speed. Slowing from 250 kt to 140 kt takes several
-        // thousand feet of descent, which is why the shelf in the vertical profile
-        // exists at all.
+        let cruise = aircraft::cruise_tas(self.cruise_mach, alt);
+        let w = handover(s, profile.s_top_of_descent, band);
+        cruise + (self.descent_speed(alt, profile) - cruise) * w
+    }
+
+    /// Speed flown on the way down at an altitude.
+    ///
+    /// The schedule speed until the aircraft starts configuring, then a blend down to
+    /// the approach speed. Slowing from 250 kt to 140 kt takes several thousand feet of
+    /// descent, which is why the shelf in the vertical profile exists at all.
+    fn descent_speed(&self, alt: f64, profile: &VerticalProfile) -> f64 {
         let agl = (alt - profile.arr_elevation_m).max(0.0);
         let approach = tas_from_cas(aircraft::approach_speed(), alt);
         if agl <= APPROACH_SPEED_AGL_M {
@@ -109,6 +128,12 @@ impl SpeedSchedule {
         let f = (agl - APPROACH_SPEED_AGL_M) / (DECELERATION_START_AGL_M - APPROACH_SPEED_AGL_M);
         approach + (clean - approach) * f
     }
+}
+
+/// Weight of the later of two speed schedules at `s`, handing over across `centre`.
+fn handover(s: f64, centre: f64, length: f64) -> f64 {
+    let u = ((s - centre) / length + 0.5).clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
 }
 
 /// A schedule that fits the requested duration, and how far off physical time it left.
@@ -128,12 +153,36 @@ pub struct TimeContext<'a> {
     pub wind: &'a WindField,
 }
 
+/// Distance over which the wind is eased in after liftoff and out before touchdown.
+const WIND_TRANSITION_M: f64 = 3_000.0;
+
+/// How much of the wind triangle applies at a point on the route.
+///
+/// On the runway the aircraft's speed over the ground is its own — a rolling aeroplane
+/// is not carried along by the air — while in flight the whole triangle applies. Taking
+/// the aircraft from one to the other at the instant of rotation steps its ground speed
+/// by the entire headwind component, which the consumer's spline reads as an
+/// acceleration of several g, and does the same in reverse at touchdown. What happens
+/// in reality is that the wheels take the weight over a few seconds; easing the wind in
+/// and out over the first and last mile of flight is that, and it also removes the
+/// matching step in the crab angle.
+fn wind_blend(ctx: &TimeContext, s: f64) -> f64 {
+    if ctx.profile.is_on_ground(s) {
+        return 0.0;
+    }
+    let after_rotate = (s - ctx.profile.s_rotate) / WIND_TRANSITION_M;
+    let before_touchdown = (ctx.profile.s_touchdown - s) / WIND_TRANSITION_M;
+    let u = after_rotate.min(before_touchdown).clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
 /// Ground speed at a point, given a commanded airspeed.
 pub fn ground_speed_at(ctx: &TimeContext, s: f64, tas: f64) -> (f64, f64, LatLon) {
     let position = ctx.track.position_at(s);
     let altitude = ctx.profile.altitude_at(s);
 
-    if ctx.profile.is_on_ground(s) {
+    let blend = wind_blend(ctx, s);
+    if blend <= 0.0 {
         // On the ground the commanded value already is a ground speed, and taxiing into
         // a headwind does not take longer.
         return (tas.max(0.3), 0.0, position);
@@ -144,7 +193,11 @@ pub fn ground_speed_at(ctx: &TimeContext, s: f64, tas: f64) -> (f64, f64, LatLon
         .wind
         .sample(position.lat_deg, position.lon_deg, altitude);
     match solve_wind_triangle(bearing, tas, u, v) {
-        Some(t) => (t.ground_speed, t.heading_offset_rad, position),
+        Some(t) => (
+            (tas + (t.ground_speed - tas) * blend).max(0.3),
+            t.heading_offset_rad * blend,
+            position,
+        ),
         None => (tas.max(0.3), 0.0, position),
     }
 }

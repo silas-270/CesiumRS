@@ -12,3 +12,5 @@ pub mod test_sin_lhr_transitions;
 pub mod test_full_experience_audit;
 #[cfg(test)]
 pub mod test_coordinate_axes_smoothness;
+#[cfg(test)]
+pub mod test_multi_route_suite;

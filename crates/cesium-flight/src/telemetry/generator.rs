@@ -79,7 +79,7 @@ impl Default for FlightPlanConfig {
             dep_elevation_m: 0.0,
             arr_elevation_m: 0.0,
             avoid_closed_airspace: true,
-            oceanic_tracks: false,
+            oceanic_tracks: true,
             wind: WindModel::AnnualMean,
         }
     }
@@ -228,22 +228,40 @@ pub fn generate(request: &FlightRequest) -> Vec<TelemetryPoint> {
     // altitude: by the time the aircraft reaches the first turn it has cleaned up and
     // is doing 250 kt, and a radius sized for the climb-out speed would put it at 47°
     // of bank.
-    let departure_turn_r = aircraft::turn_radius(
-        aircraft::climb_tas(dep_elev + DEPARTURE_TURN_HEIGHT_M, dep_elev),
-        dep_elev + DEPARTURE_TURN_HEIGHT_M,
+    // A turn is flown over the ground, so its radius follows the ground speed, not the
+    // airspeed: the same 25° of bank in a 30 kt tailwind traces a noticeably wider
+    // circle. Which way the wind lies at the corner is not known until the track exists,
+    // so the whole of it is allowed for.
+    let ground_speed_allowance = |at: LatLon, altitude: f64, tas: f64| {
+        let (u, v) = wind.sample(at.lat_deg, at.lon_deg, altitude);
+        tas + u.hypot(v)
+    };
+    let departure_turn_alt = dep_elev + DEPARTURE_TURN_HEIGHT_M;
+    let departure_turn_gs = ground_speed_allowance(
+        dep_leg_end,
+        departure_turn_alt,
+        aircraft::climb_tas(departure_turn_alt, dep_elev),
     );
-    let final_turn_r = aircraft::turn_radius(
-        aircraft::descent_tas(arr_elev + 1_000.0),
-        arr_elev + 1_000.0,
+    let departure_turn_r = aircraft::turn_radius(departure_turn_gs, departure_turn_alt);
+    let departure_roll_in = aircraft::roll_in_distance(departure_turn_gs, departure_turn_alt);
+    let final_turn_alt = arr_elev + 1_000.0;
+    let final_turn_gs = ground_speed_allowance(
+        final_start,
+        final_turn_alt,
+        aircraft::descent_tas(final_turn_alt),
     );
+    let final_turn_r = aircraft::turn_radius(final_turn_gs, final_turn_alt);
+    let final_roll_in = aircraft::roll_in_distance(final_turn_gs, final_turn_alt);
 
     let (track, placed) = GroundTrack::build_flight_track(&FlightTrackInputs {
         dep_threshold: dep_runway.threshold,
         dep_leg_end,
         departure_turn_r,
+        departure_roll_in,
         enroute: &enroute,
         final_start,
         final_turn_r,
+        final_roll_in,
         arr_threshold: arr_runway.threshold,
         touchdown,
         rollout_end,
@@ -321,6 +339,7 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
     loop {
         let position = track.position_at(s);
         let altitude = profile.altitude_at(s);
+
         let tas = schedule.tas_at(s, profile);
         let (ground_speed, heading_offset, _) = ground_speed_at(ctx, s, tas);
         let bearing = track.bearing_at(s);
@@ -372,29 +391,13 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
             bank += (target_bank - bank).clamp(-max_delta, max_delta);
         }
 
-        // Smoothly ease the crab angle (crosswind heading offset) in after liftoff
-        // and out before touchdown, so heading transitions continuously without stepping.
-        const CRAB_TRANSITION_M: f64 = 1_500.0;
-        let crab_factor = if s <= profile.s_rotate {
-            0.0
-        } else if s < profile.s_rotate + CRAB_TRANSITION_M {
-            let u = ((s - profile.s_rotate) / CRAB_TRANSITION_M).clamp(0.0, 1.0);
-            u * u * (3.0 - 2.0 * u)
-        } else if s > profile.s_touchdown - CRAB_TRANSITION_M {
-            let u = ((profile.s_touchdown - s) / CRAB_TRANSITION_M).clamp(0.0, 1.0);
-            u * u * (3.0 - 2.0 * u)
-        } else {
-            1.0
-        };
-        let effective_heading_offset = heading_offset * crab_factor;
-
         points.push(TelemetryPoint {
             time_offset_ms: (t * 1000.0) as u64,
             longitude: position.lon_deg,
             latitude: position.lat_deg,
             altitude: altitude + RENDER_LIFT_M,
             velocity_m_s: ground_speed,
-            heading_rad: bearing + effective_heading_offset,
+            heading_rad: bearing + heading_offset,
             pitch_rad: pitch,
             roll_rad: bank,
             sun_intensity: (1.0 - ((altitude - ground_ref) / sun_span).clamp(0.0, 1.0)) as f32,
@@ -405,7 +408,17 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
         }
 
         let agl = profile.height_above_field(s);
-        let target_dt = if profile.is_on_ground(s) && ground_speed < 15.0 {
+        // DT_TAXI_S applies only during true slow manoeuvring (taxiing). The takeoff
+        // roll is a high-acceleration airborne-like phase and must use DT_LOW_S from
+        // the start; otherwise the 4s → 1s interval jump at 15 m/s is seen by the
+        // Catmull-Rom spline as a spurious velocity change.
+        let is_slow_taxi = profile.is_on_ground(s)
+            && ground_speed < 15.0
+            && s < profile.s_dep_threshold + 500.0 // only during true taxi-out
+            || (profile.is_on_ground(s)
+                && ground_speed < 15.0
+                && s > profile.s_rollout_end - 500.0); // or taxi-in after rollout
+        let target_dt = if is_slow_taxi {
             DT_TAXI_S
         } else if agl < LOW_AGL_M {
             DT_LOW_S
@@ -416,6 +429,7 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
         } else {
             DT_CRUISE_S
         };
+
         // The consumer interpolates these samples with a *uniform* Catmull-Rom spline,
         // whose tangent at a knot is the same vector from either side but is divided by
         // the local time interval to get a velocity. So a step change in the sampling

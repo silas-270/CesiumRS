@@ -48,8 +48,9 @@ pub const CLIMB_MACH: f64 = 0.84;
 pub fn initial_climb_cas() -> f64 {
     knots_to_mps(170.0)
 }
+pub const LIFTOFF_HEIGHT_M: f64 = 100.0; // ~300 ft transition from rotation to initial climb
 pub const ACCELERATION_HEIGHT_M: f64 = 460.0; // 1,500 ft
-pub const CLEAN_UP_HEIGHT_M: f64 = 915.0; // 3,000 ft
+pub const CLEAN_UP_HEIGHT_M: f64 = 1_220.0; // 4,000 ft
 
 /// Descent is flown slightly slower than the climb, then the same CAS schedule.
 pub const DESCENT_MACH: f64 = 0.82;
@@ -156,6 +157,18 @@ pub fn optimum_cruise_altitude_m(trip_distance_m: f64) -> f64 {
     feet_to_m(ft)
 }
 
+/// Moves between two speeds across a band of height, on a smoothstep.
+///
+/// Every segment of the speed schedule hands over to the next somewhere, and a ramp
+/// that is linear in height leaves a corner in the acceleration at both of its ends.
+/// The consumer's spline shows a corner in acceleration as an overshoot, so the
+/// schedule is written without any: the aircraft eases into each acceleration and eases
+/// out of it, which is also how one is flown.
+fn blend_speed(from: f64, to: f64, height: f64, start: f64, end: f64) -> f64 {
+    let u = ((height - start) / (end - start)).clamp(0.0, 1.0);
+    from + (to - from) * u * u * (3.0 - 2.0 * u)
+}
+
 /// Rate of climb at an altitude, in metres per second.
 pub fn rate_of_climb(altitude_m: f64) -> f64 {
     let frac = (altitude_m / SERVICE_CEILING_M).clamp(0.0, 0.999);
@@ -174,19 +187,32 @@ pub fn climb_tas(altitude_m: f64, field_elevation_m: f64) -> f64 {
     use super::atmosphere::{tas_from_cas, tas_from_mach};
     let height = altitude_m - field_elevation_m;
     let cas = if height < ACCELERATION_HEIGHT_M {
-        initial_climb_cas()
-    } else if height < CLEAN_UP_HEIGHT_M {
-        // Accelerating and retracting flap.
-        let f = (height - ACCELERATION_HEIGHT_M) / (CLEAN_UP_HEIGHT_M - ACCELERATION_HEIGHT_M);
-        initial_climb_cas() + (speed_limit_cas() - initial_climb_cas()) * f
+        // Off the runway and onto the initial climb speed.
+        blend_speed(
+            rotation_speed(),
+            initial_climb_cas(),
+            height,
+            0.0,
+            LIFTOFF_HEIGHT_M,
+        )
     } else if altitude_m < SPEED_LIMIT_ALT_M {
-        speed_limit_cas()
-    } else if altitude_m < SPEED_ACCEL_END_ALT_M {
-        // Smoothly accelerate from 250 kt to climb CAS across 10,000 - 12,000 ft
-        let f = (altitude_m - SPEED_LIMIT_ALT_M) / (SPEED_ACCEL_END_ALT_M - SPEED_LIMIT_ALT_M);
-        speed_limit_cas() + (climb_cas() - speed_limit_cas()) * f
+        // Accelerating and retracting flap, up to the low-altitude speed limit.
+        blend_speed(
+            initial_climb_cas(),
+            speed_limit_cas(),
+            height,
+            ACCELERATION_HEIGHT_M,
+            CLEAN_UP_HEIGHT_M,
+        )
     } else {
-        climb_cas()
+        // Above the limit, on up to the climb speed.
+        blend_speed(
+            speed_limit_cas(),
+            climb_cas(),
+            altitude_m,
+            SPEED_LIMIT_ALT_M,
+            SPEED_ACCEL_END_ALT_M,
+        )
     };
     // Whichever of the CAS and Mach schedules is currently limiting — the crossover
     // between them happens naturally around FL300.
@@ -196,15 +222,13 @@ pub fn climb_tas(altitude_m: f64, field_elevation_m: f64) -> f64 {
 /// True airspeed the descent schedule commands at an altitude.
 pub fn descent_tas(altitude_m: f64) -> f64 {
     use super::atmosphere::{tas_from_cas, tas_from_mach};
-    let cas = if altitude_m < SPEED_LIMIT_ALT_M {
-        speed_limit_cas()
-    } else if altitude_m < SPEED_ACCEL_END_ALT_M {
-        // Smoothly blend from descent CAS down to 250 kt between 12,000 and 10,000 ft
-        let f = (altitude_m - SPEED_LIMIT_ALT_M) / (SPEED_ACCEL_END_ALT_M - SPEED_LIMIT_ALT_M);
-        speed_limit_cas() + (descent_cas() - speed_limit_cas()) * f
-    } else {
-        descent_cas()
-    };
+    let cas = blend_speed(
+        speed_limit_cas(),
+        descent_cas(),
+        altitude_m,
+        SPEED_LIMIT_ALT_M,
+        SPEED_ACCEL_END_ALT_M,
+    );
     tas_from_cas(cas, altitude_m).min(tas_from_mach(DESCENT_MACH, altitude_m))
 }
 
@@ -216,11 +240,14 @@ pub fn descent_tas(altitude_m: f64) -> f64 {
 pub fn cruise_tas(mach: f64, altitude_m: f64) -> f64 {
     use super::atmosphere::{tas_from_cas, tas_from_mach};
     let by_mach = tas_from_mach(mach, altitude_m);
-    if altitude_m < SPEED_LIMIT_ALT_M {
-        by_mach.min(tas_from_cas(speed_limit_cas(), altitude_m))
-    } else {
-        by_mach
-    }
+    let cas = blend_speed(
+        speed_limit_cas(),
+        climb_cas(),
+        altitude_m,
+        SPEED_LIMIT_ALT_M,
+        SPEED_ACCEL_END_ALT_M,
+    );
+    by_mach.min(tas_from_cas(cas, altitude_m))
 }
 
 /// Bank limit at an altitude.
@@ -230,6 +257,15 @@ pub fn max_bank(altitude_m: f64) -> f64 {
     } else {
         MAX_BANK_RAD
     }
+}
+
+/// Track distance covered rolling into a turn at the bank limit.
+///
+/// A turn does not start at full bank, so its curvature is not there at the first
+/// waypoint either: the aircraft rolls in over `bank / roll rate` seconds, and covers
+/// this much ground doing it. The fly-by turn is entered that much earlier to make room.
+pub fn roll_in_distance(tas: f64, altitude_m: f64) -> f64 {
+    tas * max_bank(altitude_m) / ROLL_RATE_RAD_PER_S
 }
 
 /// Radius of a coordinated turn at the bank limit.
