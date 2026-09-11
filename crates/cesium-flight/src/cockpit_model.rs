@@ -57,7 +57,10 @@ const COCKPIT_TINTS: &[(&str, [f32; 4])] = &[
     ("pedestal_main", [0.62, 0.62, 0.63, 1.0]),
     ("pedestal_01", [0.62, 0.62, 0.63, 1.0]),
     ("DreamLiner_LOGO1", [0.55, 0.55, 0.56, 1.0]),
-    ("Interior_White", [0.80, 0.80, 0.80, 1.0]),
+    // The window surrounds and upper structure. At 0.80 this was the brightest thing in
+    // the model and read as self-illuminated against the sky beyond it; a flight deck
+    // interior is painted a mid grey, not white.
+    ("Interior_White", [0.38, 0.38, 0.39, 1.0]),
     ("Pedestal_White", [0.78, 0.78, 0.78, 1.0]),
     // The HUD combiners are flagged as blended but their factor is opaque, so they would
     // render as solid rectangles 0.30 m in front of the eyes. Alpha 0 drops them.
@@ -67,6 +70,12 @@ const COCKPIT_TINTS: &[(&str, [f32; 4])] = &[
 const FALLBACK_TINT: [f32; 4] = [0.62, 0.62, 0.63, 1.0];
 
 /// Anything below this stays as authored.
+///
+/// Worth knowing: as of the current GLB *nothing* clears this bar — every material is
+/// authored between 0.02 and 0.22 — so `COCKPIT_TINTS` is inert and the interior renders
+/// at its authored colours. The table is kept because it is the right mechanism if the
+/// model is ever replaced with one whose materials are white placeholders again, which is
+/// what it was written for.
 const WHITE_THRESHOLD: f32 = 0.99;
 
 fn material_tint(name: Option<&str>, base: [f32; 4]) -> [f32; 4] {

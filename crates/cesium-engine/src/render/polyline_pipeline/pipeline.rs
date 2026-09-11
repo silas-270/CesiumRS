@@ -12,7 +12,8 @@ pub struct PolylinePushConstants {
     pub split_progress: f32,        // offset  76 ( 4 bytes)
     pub physical_half_width: f32,   // offset  80 ( 4 bytes)
     pub physical_half_height: f32,  // offset  84 ( 4 bytes)
-    pub _padding: [f32; 2],         // offset  88 ( 8 bytes) — align to 16
+    pub window_start: f32,          // offset  88 ( 4 bytes)
+    pub window_end: f32,            // offset  92 ( 4 bytes)
     pub airplane_rel_cam: [f32; 4], // offset  96 (16 bytes)
     pub airplane_forward: [f32; 4], // offset 112 (16 bytes)
     // Total: 128 bytes — exactly at the guaranteed minimum device limit.
@@ -30,6 +31,13 @@ pub struct PolylineConfig {
     pub split_progress: f32,
     pub airplane_pos: [f32; 4],
     pub airplane_forward: [f32; 4],
+    /// The stretch of the route to draw, as distances along it in Megametres.
+    ///
+    /// Outside this the ribbon is transparent, fading in over the last part of each end
+    /// rather than stopping at a hard edge. A negative `window_start` disables the whole
+    /// mechanism and draws the route entire, matching how `split_progress` reads.
+    pub window_start: f32,
+    pub window_end: f32,
 }
 
 impl Default for PolylineConfig {
@@ -43,6 +51,8 @@ impl Default for PolylineConfig {
             split_progress: -1.0,
             airplane_pos: [0.0; 4],
             airplane_forward: [0.0; 4],
+            window_start: -1.0,
+            window_end: -1.0,
         }
     }
 }
@@ -257,7 +267,8 @@ impl PolylineRenderer {
             split_progress: config.split_progress,
             physical_half_width: config.physical_half_width,
             physical_half_height: config.physical_half_height,
-            _padding: [0.0; 2],
+            window_start: config.window_start,
+            window_end: config.window_end,
             airplane_rel_cam: config.airplane_pos,
             airplane_forward: config.airplane_forward,
         };

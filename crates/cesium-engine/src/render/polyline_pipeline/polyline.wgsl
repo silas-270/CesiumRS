@@ -3,8 +3,11 @@
 struct CameraUniform {
     view_proj:     mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
-    camera_pos:    vec4<f32>,
-    sun_params:    vec4<f32>,
+    camera_pos: vec4<f32>,
+    sun_params: vec4<f32>,   // [altitude_scalar, saturation, contrast, brightness]
+    sun_dir: vec4<f32>,      // xyz toward the sun, w = sin(elevation)
+    moon_dir: vec4<f32>,     // xyz toward the moon, w = lit fraction
+    light_color: vec4<f32>,  // rgb key light hue, w = strength
 };
 
 @group(0) @binding(0)
@@ -21,7 +24,8 @@ struct PushConstants {
     split_progress:     f32,        // offset  76
     physical_half_width:  f32,      // offset  80
     physical_half_height: f32,      // offset  84
-    _padding:           vec2<f32>,  // offset  88
+    window_start:       f32,        // offset  88
+    window_end:         f32,        // offset  92
     airplane_rel_cam:   vec4<f32>,  // offset  96
     airplane_forward:   vec4<f32>,  // offset 112
     // Total: 128 bytes
@@ -32,7 +36,8 @@ var<push_constant> pc: PushConstants;
 
 struct ControlPoint {
     pos_hi:   vec3<f32>, // offset 0
-    _pad0:    f32,       // offset 12
+    distance: f32,       // offset 12  — travelled along the path, in Megametres
+
     pos_lo:   vec3<f32>, // offset 16
     progress: f32,       // offset 28
 };
@@ -49,6 +54,7 @@ struct VertexOutput {
     @location(2) progress:     f32,
     @location(3) cam_rel_pos:  vec3<f32>,
     @location(4) tangent:      vec3<f32>,
+    @location(5) distance:     f32,
 };
 
 // ── Vertex shader ─────────────────────────────────────────────────────────────
@@ -142,6 +148,7 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
     out.clip_position = camera.view_proj * vec4<f32>(extruded, 1.0);
     out.uv         = vec2<f32>(side, 0.0);
     out.progress   = cp.progress;
+    out.distance   = cp.distance;
     out.cam_rel_pos = extruded;
     out.tangent    = tangent;
     out.face_shade = 1.0; // ribbon is always top-face
@@ -183,5 +190,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return vec4<f32>(base_color * in.face_shade, pc.color_start.a);
+    // Only a stretch of the route around the aircraft is drawn when a window is set.
+    // It fades rather than stopping, over a quarter of each side, so the ends of the
+    // ribbon do not read as places the route actually finishes.
+    var alpha = pc.color_start.a;
+    // An empty range is how "no window, draw it all" is spelled; both ends are set to
+    // the same negative number, so the window can still legitimately begin before the
+    // start of the route when the aircraft has only just left.
+    if pc.window_end > pc.window_start {
+        let fade = (pc.window_end - pc.window_start) * 0.25;
+        // Both written low-edge-first: smoothstep is undefined the other way round.
+        let into_start = smoothstep(pc.window_start, pc.window_start + fade, in.distance);
+        let out_of_end = smoothstep(pc.window_end - fade, pc.window_end, in.distance);
+        alpha = alpha * into_start * (1.0 - out_of_end);
+        // Below this the ribbon is invisible anyway, and discarding keeps it out of the
+        // depth buffer, where an all-but-transparent fragment would still occlude.
+        if alpha < 0.01 {
+            discard;
+        }
+    }
+
+    return vec4<f32>(base_color * in.face_shade, alpha);
 }

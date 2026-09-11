@@ -13,6 +13,31 @@ pub struct RunwayData {
     pub he_lon: f64,
 }
 
+/// How much of the route line is drawn.
+///
+/// Showing the whole route from the first second of a long-haul flight both gives the
+/// route away and fills the screen with a line that is nowhere near the aircraft. The
+/// windowed mode keeps only the part being flown, which is the part worth looking at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RouteLineMode {
+    /// The whole route, departure to arrival.
+    Full,
+    /// Only the stretch around the aircraft, fading out at both ends.
+    Window {
+        /// Distance behind and ahead of the aircraft, in metres.
+        behind_m: f64,
+        ahead_m: f64,
+    },
+    /// No route line at all.
+    Hidden,
+}
+
+impl Default for RouteLineMode {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
 /// Commands that can be sent to a `FlightTrackerApp` from another thread.
 pub enum FlightCommand {
     /// Load a new flight path from runway coordinates.
@@ -34,6 +59,9 @@ pub enum FlightCommand {
     /// change the signature every caller of `load_flight` uses. Commands are handled in
     /// order, so setting this immediately before a load applies to that load.
     SetPlanConfig(crate::telemetry::FlightPlanConfig),
+    /// Replace how much of the route line is drawn. Applies immediately, to every
+    /// flight currently loaded.
+    SetRouteLineMode(RouteLineMode),
     /// Set the playback progress (0.0 – 1.0) of the primary flight.
     SetProgress(f64),
     /// Set playback speed multiplier.
@@ -130,6 +158,14 @@ impl FlightHandle {
     /// terrain — see `FlightPlanConfig::terrain_elevation`.
     pub fn set_plan_config(&self, config: crate::telemetry::FlightPlanConfig) {
         let _ = self.tx.try_send(FlightCommand::SetPlanConfig(config));
+    }
+
+    /// Set how much of the route line is drawn. Non-blocking.
+    ///
+    /// Unlike `set_plan_config` this takes effect at once — it changes what is drawn,
+    /// not how the next flight is planned.
+    pub fn set_route_line_mode(&self, mode: RouteLineMode) {
+        let _ = self.tx.try_send(FlightCommand::SetRouteLineMode(mode));
     }
 
     /// Set the flight playback progress (0.0 – 1.0). Non-blocking.

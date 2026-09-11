@@ -17,6 +17,13 @@ use glam::DVec3;
 /// surface area matches the ellipsoid, which is the right choice for distances.
 pub const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
+/// A nautical mile, in metres.
+///
+/// One minute of latitude, which is why aviation measures distance in them. Nothing
+/// inside the planner works in these — the constant exists so that the few places
+/// talking to the outside world can convert once and go back to metres.
+pub const NAUTICAL_MILE_M: f64 = 1_852.0;
+
 /// A geographic position in degrees.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatLon {

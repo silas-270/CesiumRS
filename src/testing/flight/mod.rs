@@ -14,3 +14,5 @@ pub mod test_full_experience_audit;
 pub mod test_coordinate_axes_smoothness;
 #[cfg(test)]
 pub mod test_multi_route_suite;
+#[cfg(test)]
+pub mod test_route_window;
