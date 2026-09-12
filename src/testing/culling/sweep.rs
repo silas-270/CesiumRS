@@ -11,8 +11,10 @@
 //! * **False positive (FP)** — a tile in the visible set into which **no visible
 //!   sample point falls**, i.e. the tile is entirely off-screen or entirely
 //!   back-facing but was still scheduled. This is wasted work, not a visual bug.
-//!   Bounding volumes are conservative by construction, so a non-zero FP rate is
-//!   expected and is measured as a *rate*, never asserted to be zero.
+//!   Bounding volumes are conservative by construction, so a non-zero FP count is
+//!   expected; it is budgeted (as a count of wasted tiles, or as a whole-sweep
+//!   rate) and never asserted to be zero. FP is also an **upper bound**, not an
+//!   exact figure — see [`TILE_SAMPLE_STEPS`] for why, and in which direction.
 //!
 //! * **Marginal** — a sample within the oracle's numeric no-man's-land (see
 //!   [`super::oracle`]). Excluded from both tallies, counted and reported.
@@ -119,7 +121,50 @@ pub const NDC_GRID_ROWS: u32 = 145;
 pub const GEO_GRID_STEP_DEG: f64 = 0.5;
 
 /// Per-tile sample grid used by the FP metric (`(N+1)²` points per tile).
-pub const TILE_SAMPLE_STEPS: u32 = 4;
+///
+/// # Why 32 and not 4
+///
+/// A tile is scored a false positive when **no** sample point inside it is
+/// unambiguously visible. That makes the metric one-sided in N: adding sample
+/// points can only ever *discover* visible surface that a coarser grid stepped
+/// over, never hide surface a coarser grid found. So for any tile, raising N can
+/// only move it from FP to not-FP — **the reported FP count is a monotonically
+/// non-increasing function of N, and therefore an upper bound on the true FP
+/// count at every N**. It is never an understatement, which is the direction a
+/// waste budget must err in.
+///
+/// The FN side is already dense — a 257 × 145 NDC grid plus a 0.5°-step geodetic
+/// grid, ~300 000 points per cell — while N = 4 gave the FP side just
+/// (4+1)² = 25 points per tile. That asymmetry systematically *overstated* FP: a
+/// tile whose visible part is a strip thinner than the sample spacing (the
+/// ordinary case for a tile straddling the limb or a screen edge) has genuinely
+/// visible surface but no sample landing on it, and was scored as pure waste.
+///
+/// Measured on `15114a9`, total over the nine scoring sweeps:
+///
+/// | N  | points/tile | FP total | FP %   | wall |
+/// |----|-------------|----------|--------|------|
+/// | 4  | 25          | 27 103   | 2.054% | 36 s |
+/// | 8  | 81          | 14 622   | 1.108% | 48 s |
+/// | 16 | 289         | 7 422    | 0.563% | 42 s |
+/// | 32 | 1089        | 3 264    | 0.247% | 42 s |
+///
+/// FP halves with every doubling of N. That is the signature of a **boundary
+/// artifact** — tiles resolved one dimension at a time as the spacing shrinks —
+/// not of real over-culling, which would converge to a non-zero floor. The
+/// engine did not change across those four rows; only the instrument's ability
+/// to see the thin visible strips did.
+///
+/// The cost is close to free because the FN grids dominate the runtime: a 44×
+/// increase in FP sample points moves whole-gate wall clock by a few seconds of
+/// noise, since the per-tile loop short-circuits on the first `Visible` verdict
+/// and most tiles hit it on an early sample.
+///
+/// 32 is the point where the remaining FP is small enough that the thresholds it
+/// calibrates are dominated by real conservatism rather than by grid spacing.
+/// Raising it further would keep lowering the number — as the monotonicity
+/// argument above guarantees it must — without changing any conclusion.
+pub const TILE_SAMPLE_STEPS: u32 = 32;
 
 /// Hard cap on retained per-cell false-negative records.
 ///
