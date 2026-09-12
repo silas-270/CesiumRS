@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub mod culling_visual;
 pub mod cockpit_capture;
 pub mod cockpit_s23;
 pub mod free_routes;
