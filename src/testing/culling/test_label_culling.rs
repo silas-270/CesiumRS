@@ -5,27 +5,16 @@
 //! All three functions there are pure, so they can be pinned against exact f64
 //! ground truth with no globe, no GPU and no quadtree.
 
-use cesium_engine::globe::quadtree::Frustum;
+use cesium_engine::globe::quadtree::{Frustum, HorizonCamera};
 use cesium_engine::label::culling::{intersects_sphere, is_behind_horizon, is_in_frustum};
 use glam::{DVec3, Vec3};
 
 use super::cameras::{build_camera, ViewParams};
-use super::geodesy::{ellipsoid_normal, lon_lat_alt_to_ecef, A, B};
+use super::geodesy::{ellipsoid_normal, lon_lat_alt_to_ecef};
 use super::oracle::VisibilityOracle;
 
 fn to_f32(v: DVec3) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
-}
-
-/// Scaled (unit-sphere) camera position and `|cv|² − 1`, the two pre-computed
-/// inputs `is_behind_horizon` expects.
-fn scaled_camera(cam_pos: DVec3) -> (Vec3, f32) {
-    let cv = Vec3::new(
-        (cam_pos.x / A) as f32,
-        (cam_pos.y / B) as f32,
-        (cam_pos.z / A) as f32,
-    );
-    (cv, cv.length_squared() - 1.0)
 }
 
 /// `is_behind_horizon` works in the space where the ellipsoid becomes a unit
@@ -67,7 +56,7 @@ fn test_is_behind_horizon_matches_exact_convexity() {
     for cam_alt_m in [1.0, 100.0, 10_000.0, 400_000.0, 5_000_000.0, 30_000_000.0] {
         for cam_lat in [-89.0, -45.0, 0.0, 37.5, 80.0] {
             let cam_pos = lon_lat_alt_to_ecef(11.0, cam_lat, cam_alt_m);
-            let (cv, vh_mag_sq) = scaled_camera(cam_pos);
+            let horizon = HorizonCamera::new(cam_pos);
 
             for lat_i in -90..=90 {
                 for lon_i in (-180..180).step_by(3) {
@@ -79,7 +68,7 @@ fn test_is_behind_horizon_matches_exact_convexity() {
                     let cos_limb = ellipsoid_normal(p).dot(to_eye);
                     let truth_hidden = cos_limb < 0.0;
 
-                    let engine_hidden = is_behind_horizon(cv, vh_mag_sq, to_f32(p));
+                    let engine_hidden = is_behind_horizon(&horizon, to_f32(p));
                     samples += 1;
 
                     if engine_hidden != truth_hidden {
@@ -137,18 +126,31 @@ fn test_is_behind_horizon_disabled_below_surface() {
     // 300 km below the surface: the engine's own comment says culling is allowed
     // down to ~300 km, so go well past it.
     let deep = lon_lat_alt_to_ecef(0.0, 0.0, -1_000_000.0);
-    let (cv, vh) = scaled_camera(deep);
+    let horizon = HorizonCamera::new(deep);
     assert!(
-        vh <= -0.1,
-        "expected vh_mag_sq <= -0.1 for a camera 1000 km below the surface, got {vh}"
+        !horizon.active,
+        "a camera 1000 km below the surface must have C^2 <= 1, got {}",
+        horizon.c2
     );
 
     // The antipode is unambiguously occluded for any sane camera, yet the
     // early-out must report "not behind the horizon".
     let antipode = lon_lat_alt_to_ecef(180.0, 0.0, 0.0);
     assert!(
-        !is_behind_horizon(cv, vh, to_f32(antipode)),
+        !is_behind_horizon(&horizon, to_f32(antipode)),
         "the sub-surface early-out should disable horizon culling entirely"
+    );
+
+    // And the branch must be exactly `C^2 > 1`, with no band: one metre below the
+    // surface the test is off, one metre above it is on. The old code allowed it
+    // down to ~327 km below, where it reports everything occluded.
+    let just_under = HorizonCamera::new(lon_lat_alt_to_ecef(0.0, 0.0, -1.0));
+    let just_over = HorizonCamera::new(lon_lat_alt_to_ecef(0.0, 0.0, 1.0));
+    assert!(!just_under.active, "horizon test must be off 1 m below the surface");
+    assert!(just_over.active, "horizon test must be on 1 m above the surface");
+    assert!(
+        is_behind_horizon(&just_over, to_f32(antipode)),
+        "the antipode must be occluded from 1 m above the surface"
     );
 }
 
@@ -166,7 +168,8 @@ fn test_intersects_sphere_degenerates_and_is_monotone() {
         ..Default::default()
     };
     let cam = build_camera(&params);
-    let frustum = Frustum::from_planes(cam.calculate_frustum_planes(params.aspect() as f32));
+    let (eye, _) = cam.global_transform_f64();
+    let frustum = Frustum::new(cam.calculate_frustum_planes(params.aspect() as f32), eye);
     let oracle = VisibilityOracle::new(&cam, params.aspect());
 
     let mut checked = 0usize;

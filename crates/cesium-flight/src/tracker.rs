@@ -626,7 +626,7 @@ impl GlobeExtension for FlightTrackerApp {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _camera_pos_dvec3: DVec3,
-        _frustum: &[(DVec3, f64); 6],
+        _frustum: &[DVec3; 4],
         camera: &mut cesium_engine::camera::camera::Camera,
         aspect_ratio: f32,
     ) {

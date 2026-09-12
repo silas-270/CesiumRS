@@ -36,7 +36,7 @@
 //! faster for this workload and the probes are sized for a many-core machine.
 
 use cesium_engine::camera::camera::CameraMode;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use super::cameras::{build_camera, ViewParams};
 use super::cells;
@@ -87,12 +87,12 @@ fn test_update_iterations_reach_fixed_point() {
         let cam = build_camera(&p);
         let planes = cam.calculate_frustum_planes(p.aspect() as f32);
         let (gp, _) = cam.global_transform_f64();
-        let pos = Vec3::new(gp.x as f32, gp.y as f32, gp.z as f32);
+        let frustum = cesium_engine::globe::quadtree::Frustum::new(planes, gp);
 
         let collect = |iters: usize| -> HashSet<TileId> {
             let mut qt = QuadtreeManager::new();
             for _ in 0..iters {
-                qt.update(pos, planes);
+                qt.update(&frustum);
             }
             qt.get_visible_tiles().into_iter().map(|(id, _, _)| id).collect()
         };
