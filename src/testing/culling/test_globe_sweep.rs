@@ -87,7 +87,8 @@ fn test_update_iterations_reach_fixed_point() {
         let cam = build_camera(&p);
         let planes = cam.calculate_frustum_planes(p.aspect() as f32);
         let (gp, _) = cam.global_transform_f64();
-        let frustum = cesium_engine::globe::quadtree::Frustum::new(planes, gp);
+        let frustum = cesium_engine::globe::quadtree::Frustum::new(planes, gp)
+            .with_corners(cam.frustum_corners_relative(p.aspect() as f32));
 
         let collect = |iters: usize| -> HashSet<TileId> {
             let mut qt = QuadtreeManager::new();
