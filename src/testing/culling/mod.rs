@@ -87,6 +87,8 @@ pub mod sat;
 pub mod sweep;
 
 #[cfg(test)]
+pub mod bench_update;
+#[cfg(test)]
 pub mod test_analytic_planes;
 #[cfg(test)]
 pub mod test_globe_sweep;
