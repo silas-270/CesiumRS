@@ -509,32 +509,94 @@ impl Camera {
         glam::DMat4::from_rotation_translation(ori_dquat, pos_dvec).inverse()
     }
 
-    pub fn calculate_frustum_planes(&self, aspect_ratio: f32) -> [(glam::DVec3, f64); 6] {
+    /// The four **side** planes of the view frustum, as inward-pointing f64 unit
+    /// normals in the order `[Left, Right, Bottom, Top]`.
+    ///
+    /// No plane offsets are returned, because there are none to return: all four
+    /// side planes pass through the eye, so in the camera-relative frame the culling
+    /// code works in, `d ≡ 0` by construction. See
+    /// `globe::quadtree::bounding_volume` and `docs/culling-math.md` §2.5.
+    ///
+    /// # Why the depth planes are gone
+    ///
+    /// The wgpu clip volume is `−w ≤ x,y ≤ w`, `0 ≤ z ≤ w`, so under the reverse-Z
+    /// remap the depth constraints extract as `r3 − r2` (**near**) and `r2`
+    /// (**far**) — *not* the OpenGL `r3 ± r2` pair this function used to emit. The
+    /// old index 5 ("Far") was really the near plane, the old index 4 ("Near") was a
+    /// plane sitting `≈ znear` **behind** the eye that bounded nothing (it cleared
+    /// the frustum hull by 2.86 Mm on the harness's reference camera), and the real
+    /// far plane was never extracted at all.
+    ///
+    /// Rather than fix the pair, tile culling drops both, because both are vacuous
+    /// for the globe and the near plane is actively harmful:
+    ///
+    /// * far — `zfar = ‖cam‖ + 10 Mm` exceeds `‖cam‖ + a`, so no ellipsoid point is
+    ///   ever beyond it (invariant **I-3**: tighten `zfar` and `π_far = r2` must
+    ///   come back);
+    /// * near — vacuous whenever `znear < altitude`, and below that it is what
+    ///   blanked the globe in Tracking mode at 5 m, rejecting a z=17 tile on
+    ///   0.058 m of true clearance computed from 6.378 Mm operands in f32;
+    /// * nothing behind the eye survives regardless: `πL + πR = −2·z_eye ≥ 0`.
+    ///
+    /// `render::debug_geometry::get_frustum_corners` still draws all six faces of
+    /// the frustum; it works from the inverse view-projection, not from here.
+    pub fn calculate_frustum_planes(&self, aspect_ratio: f32) -> [glam::DVec3; 4] {
         let vp = self.get_projection_matrix_f64(aspect_ratio as f64) * self.get_view_matrix_f64();
         let r0 = vp.row(0);
         let r1 = vp.row(1);
-        let r2 = vp.row(2);
         let r3 = vp.row(3);
 
         let planes = [
-            r3 + r0, // Left
-            r3 - r0, // Right
-            r3 + r1, // Bottom
-            r3 - r1, // Top
-            r3 + r2, // Near
-            r3 - r2, // Far
+            r3 + r0, // Left    (x_c ≥ −w_c)
+            r3 - r0, // Right   (x_c ≤ +w_c)
+            r3 + r1, // Bottom  (y_c ≥ −w_c)
+            r3 - r1, // Top     (y_c ≤ +w_c)
         ];
 
-        let mut result = [(glam::DVec3::ZERO, 0.0); 6];
-        for i in 0..6 {
+        let mut result = [glam::DVec3::ZERO; 4];
+        for i in 0..4 {
             let n = glam::DVec3::new(planes[i].x, planes[i].y, planes[i].z);
             let len = n.length();
             if len > 0.000001 {
-                let norm = n / len;
-                result[i] = (norm, planes[i].w / len);
+                result[i] = n / len;
             }
         }
         result
+    }
+
+    /// The eight frustum corners, expressed **relative to the eye**.
+    ///
+    /// Order: near quad `(-1,-1), (1,-1), (1,1), (-1,1)` then the far quad, matching
+    /// `render::debug_geometry::get_frustum_corners`. Reverse-Z, so `ndc.z = 1` is
+    /// near and `ndc.z = 0` is far.
+    ///
+    /// Only the optional box-slab stage (`globe::quadtree::slab`) needs these; the
+    /// four-plane test does not. The unprojection is f64 and the subtraction of the
+    /// eye happens before the downcast.
+    pub fn frustum_corners_relative(&self, aspect_ratio: f32) -> [Vec3; 8] {
+        let vp = self.get_projection_matrix_f64(aspect_ratio as f64) * self.get_view_matrix_f64();
+        let inv = vp.inverse();
+        let (eye, _) = self.global_transform_f64();
+
+        let ndc = [
+            glam::DVec3::new(-1.0, -1.0, 1.0),
+            glam::DVec3::new(1.0, -1.0, 1.0),
+            glam::DVec3::new(1.0, 1.0, 1.0),
+            glam::DVec3::new(-1.0, 1.0, 1.0),
+            glam::DVec3::new(-1.0, -1.0, 0.0),
+            glam::DVec3::new(1.0, -1.0, 0.0),
+            glam::DVec3::new(1.0, 1.0, 0.0),
+            glam::DVec3::new(-1.0, 1.0, 0.0),
+        ];
+
+        let mut out = [Vec3::ZERO; 8];
+        for i in 0..8 {
+            let h = inv * ndc[i].extend(1.0);
+            let p = h.truncate() / h.w;
+            let d = p - eye;
+            out[i] = Vec3::new(d.x as f32, d.y as f32, d.z as f32);
+        }
+        out
     }
 
     // --- RAYCASTING & DRAGGING (Earth Free Mode) ---

@@ -87,27 +87,33 @@ pub struct TileMesh {
 }
 
 impl TileMesh {
+    /// # Invariant I-1 — zero relief
+    ///
+    /// Every non-skirt vertex below is placed at **altitude exactly 0** on the
+    /// ellipsoid, and every skirt vertex at a *negative* altitude (radially
+    /// inward). Nothing this function emits is ever above the surface.
+    ///
+    /// The tile horizon test (`QuadtreeNode::horizon_cull`) is licensed by exactly
+    /// that fact: for a point *on* the ellipsoid, occlusion collapses to the single
+    /// linear inequality `q·c ≤ 1`, and interior skirt points are occluded whenever
+    /// their surface neighbours are. The moment terrain relief is applied here,
+    /// that collapse becomes **unsound** and the horizon test must be replaced by
+    /// the scaled-space cone test (`docs/culling-math.md` §3.7, Theorem 3.7).
+    ///
+    /// `testing::culling::test_tile_bounds::test_generated_mesh_has_no_positive_altitude`
+    /// asserts this, so whoever turns relief on gets a failing test rather than
+    /// silent holes at the limb.
     pub fn generate(id: &TileId, segments: u32) -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        let z_pow = (1_u32 << id.z) as f32;
-
-        let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
-        let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
-
-        let mut center_lat_max =
-            crate::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z) as f64;
-        let mut center_lat_min =
-            crate::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z) as f64;
-        if id.y == 0 {
-            center_lat_max = 90.0;
-        }
-        if id.y == (1_u32 << id.z) - 1 {
-            center_lat_min = -90.0;
-        }
-        let center_lon = ((lon_min + lon_max) * 0.5) as f64;
-        let center_lat = (center_lat_min + center_lat_max) * 0.5;
+        // I-5: the one shared bounds function. The culling rectangle and the drawn
+        // rectangle are the same four numbers, pole stretch included.
+        let bounds = crate::globe::quadtree::tile_bounds(id);
+        let lon_min = bounds.lon_min;
+        let lon_max = bounds.lon_max;
+        let center_lon = bounds.center_lon();
+        let center_lat = bounds.center_lat();
         let center_f64 = lon_lat_to_ecef_f64(center_lon, center_lat);
 
         // Base skirt height in megameters (approx 500km at z=0, scaled down)
@@ -120,8 +126,14 @@ impl TileMesh {
             let logical_row = (row.max(1) - 1).min(segments);
             let v = logical_row as f32 / segments as f32;
 
-            let global_y = id.y as f32 + v;
-            let mut lat = crate::globe::quadtree::web_mercator_y_to_lat(global_y, id.z);
+            // Interior rows come from the same f64 Mercator definition the shared
+            // bounds are built from, so `v = 0` and `v = 1` reproduce `lat_max` and
+            // `lat_min` bit-for-bit and every interior row is monotonically between
+            // them. Mixing an f32 row latitude into an f64 rectangle would let the
+            // mesh poke a few tenths of a metre outside the culling rectangle —
+            // exactly the sliver invariant I-5 exists to prevent.
+            let global_y = id.y as f64 + v as f64;
+            let mut lat = crate::globe::quadtree::web_mercator_y_to_lat_f64(global_y, id.z);
 
             let is_north_pole_cap = id.y == 0 && row == 0;
             let is_south_pole_cap = id.y == (1_u32 << id.z) - 1 && row == grid_size - 1;
@@ -132,7 +144,7 @@ impl TileMesh {
                 lat = -90.0;
             }
 
-            let phi = (lat as f64).to_radians();
+            let phi = lat.to_radians();
             let cos_phi = phi.cos();
             let sin_phi = phi.sin();
 
@@ -140,7 +152,13 @@ impl TileMesh {
                 let is_skirt_col = col == 0 || col == grid_size - 1;
                 let logical_col = (col.max(1) - 1).min(segments);
                 let u = logical_col as f32 / segments as f32;
-                let lon = lon_min + u * (lon_max - lon_min);
+                // Interpolated in f64 from the shared f64 bounds. `lon_max −
+                // lon_min` is exact in f64 (both operands carry ≤ 24 significant
+                // bits), so `u = 1` lands on `lon_max` exactly and every vertex
+                // longitude is inside `[lon_min, lon_max]`. Doing this lerp in f32
+                // could overshoot the rectangle by an ulp — ~1.7 m of ground — and
+                // that sliver is an FN at the limb. See I-5.
+                let lon = lon_min + (u as f64) * (lon_max - lon_min);
 
                 let is_skirt = is_skirt_row || is_skirt_col;
                 let is_pole_cap = is_north_pole_cap || is_south_pole_cap;
@@ -150,7 +168,7 @@ impl TileMesh {
                     0.0
                 };
 
-                let theta = (lon as f64).to_radians();
+                let theta = lon.to_radians();
                 let cos_theta = theta.cos();
                 let sin_theta = theta.sin();
 

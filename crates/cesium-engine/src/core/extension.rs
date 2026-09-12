@@ -15,7 +15,10 @@ pub trait GlobeExtension {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         camera_pos_dvec3: DVec3,
-        frustum: &[(DVec3, f64); 6],
+        // The four side-plane inward unit normals, [Left, Right, Bottom, Top],
+        // from `Camera::calculate_frustum_planes`. Camera-relative: all four pass
+        // through the eye, so there are no offsets. See `docs/culling-math.md` §2.
+        frustum: &[DVec3; 4],
         camera: &mut crate::camera::camera::Camera,
         aspect_ratio: f32,
     );

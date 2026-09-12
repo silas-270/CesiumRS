@@ -46,8 +46,10 @@ fn evaluate_camera(
         global_pos_dvec.y as f32,
         global_pos_dvec.z as f32,
     );
+    let frustum =
+        cesium_engine::globe::quadtree::Frustum::new(frustum_planes, global_pos_dvec);
     for _ in 0..30 {
-        quadtree.update(global_pos_f32, frustum_planes);
+        quadtree.update(&frustum);
     }
     let visible_tiles_data = quadtree.get_visible_tiles();
     let visible_tiles: Vec<TileId> = visible_tiles_data.iter().map(|(id, _, _)| *id).collect();

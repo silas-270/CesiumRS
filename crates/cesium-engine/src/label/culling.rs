@@ -1,22 +1,26 @@
-use glam::Vec3;
-use crate::globe::quadtree::Frustum;
+//! Per-label visibility: horizon occlusion and frustum containment.
+//!
+//! Labels are *points*, and they are not necessarily on the ellipsoid, so this path
+//! cannot use the tile path's collapse to `q·c ≤ 1` (which is licensed only for
+//! surface points — `docs/culling-math.md` §3.3b). It uses the full two-condition
+//! exact test, Theorem 3.1, instead.
 
-/// Returns true if the label's ECEF position is behind the Earth's horizon relative to the camera.
-/// Uses pre-scaled unit-sphere camera position cv and vh_mag_sq to avoid redundant calculations.
-pub fn is_behind_horizon(cv: Vec3, vh_mag_sq: f32, label_pos: Vec3) -> bool {
-    if vh_mag_sq <= -0.1 {
-        return false; // Camera is too close or inside the ellipsoid surface
-    }
-    
-    let a = 6.378137_f32;
-    let b = 6.356_752_4_f32;
-    
-    let hcp = Vec3::new(label_pos.x / a, label_pos.y / b, label_pos.z / a);
-    
-    let vt = hcp - cv;
-    let vt_dot_vc = -vt.dot(cv);
-    
-    vt_dot_vc > vh_mag_sq && (vt_dot_vc * vt_dot_vc) / vt.length_squared() > vh_mag_sq
+use crate::globe::quadtree::{point_is_occluded, Frustum, HorizonCamera};
+use glam::{DVec3, Vec3};
+
+/// Is this label behind the Earth's limb?
+///
+/// Exact (Theorem 3.1), f64, division-free, and with **no guard band**. The old
+/// f32 version carried `if vh_mag_sq <= -0.1 { return false }`, which let the test
+/// run with the camera up to ~327 km *below* the surface — a regime where `h² < 0`
+/// makes the squared-cone condition vacuously true and every label reports as
+/// occluded. The correct branch is `C² > 1` or nothing, and it now lives inside
+/// [`HorizonCamera`]: build one per frame and pass it in.
+pub fn is_behind_horizon(cam: &HorizonCamera, label_pos: Vec3) -> bool {
+    point_is_occluded(
+        cam,
+        DVec3::new(label_pos.x as f64, label_pos.y as f64, label_pos.z as f64),
+    )
 }
 
 /// Returns true if the label is inside the camera's viewing frustum.
@@ -26,10 +30,5 @@ pub fn is_in_frustum(frustum: &Frustum, label_pos: Vec3) -> bool {
 
 /// Returns true if the sphere intersects the frustum.
 pub fn intersects_sphere(frustum: &Frustum, center: Vec3, radius: f32) -> bool {
-    for (normal, distance) in &frustum.planes {
-        if normal.dot(center) + *distance < -radius {
-            return false;
-        }
-    }
-    true
+    frustum.intersects_sphere(center, radius)
 }

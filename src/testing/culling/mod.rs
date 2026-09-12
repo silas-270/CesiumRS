@@ -25,9 +25,18 @@
 //! # regression guards — all green, this is the gate
 //! cargo test --release --lib culling:: -- --test-threads=1 --nocapture
 //!
-//! # defect probes — all red by design, this is the to-do list
-//! cargo test --release --lib culling:: -- --ignored --test-threads=1 --nocapture
+//! # the update-latency benchmark (measures, does not assert)
+//! cargo test --release --lib culling::bench -- --ignored --nocapture
 //! ```
+//!
+//! The harness originally shipped five `#[ignore]`d **defect probes** — tests that
+//! were red by design, each naming a real culling defect with its measured number,
+//! as a to-do list rather than a weakened threshold. All five were closed by the
+//! rework in `docs/culling-math.md` and are now ordinary guards, running in the
+//! default gate. That is why the gate went from 1.9 s to ~37 s: it now includes the
+//! 128-cell limb band and the 100 000-cell fuzz sweep, 1.7 G oracle classifications
+//! between them. They are the two most informative things here and they are not
+//! optional. [`bench_update`] is the only `#[ignore]`d test left.
 //!
 //! Per-cell CSVs land in `$TMPDIR/cesium_culling_harness/`, never in the repo,
 //! along with a `<sweep>_false_negatives.csv` holding one row per miss. On failure
@@ -52,18 +61,53 @@
 //!
 //! | run | debug | release |
 //! |-----|-------|---------|
-//! | regression guards (18 tests, ~40 M visible samples) | 4.6 s | 1.9 s |
-//! | defect probes (5 tests, ~1.8 G visible samples) | 2 min 30 s | 48 s |
+//! | the gate, before the rework (~40 M visible samples) | 4.6 s | 1.9 s |
+//! | the gate, now (~1.8 G visible samples) | ~2 min 30 s | ~37-50 s |
+//!
+//! Raising [`sweep::TILE_SAMPLE_STEPS`] from 4 to 32 — a 44x increase in
+//! false-positive sample points — cost **nothing** measurable: 53.6 s at N = 4
+//! against 50.3 s at N = 32, measured back to back on the same box, i.e. inside
+//! the run-to-run spread. The FN grids dominate, and the per-tile FP loop
+//! short-circuits on its first `Visible` verdict.
 //!
 //! The heaviest probe — the 100 000-cell fuzz sweep, 1.08 billion oracle
 //! classifications — takes 27 s of wall clock and 47 minutes of CPU in release,
 //! i.e. it keeps ~59 of the 128 cores genuinely busy end to end. The full debug
 //! probe run burns 229 minutes of CPU in 2.5 minutes of wall clock (~92x).
 //!
-//! Adding `[profile.test] opt-level = 2` to the workspace `Cargo.toml` would give
-//! the ~8x without needing `--release`, but it would change build behaviour for
-//! every test in the repo, so it is deliberately **not** done here — raise it
-//! with the repo owner rather than assuming.
+//! `[profile.test] opt-level = 2` is now set in the workspace `Cargo.toml`, which
+//! gives most of that ~8x without `--release`; `--release` is still recommended for
+//! the heavy sweeps.
+//!
+//! ## Does it still have teeth?
+//!
+//! A suite that goes green after a rewrite is worth exactly as much as its ability to
+//! go red. The instrument was re-validated after the culling rework by perturbing the
+//! *engine* one line at a time and checking that the guards notice. Each perturbation
+//! was applied, measured and reverted; the fast subset (everything except the four
+//! heaviest sweeps, 25 tests, 4.2 s) was used throughout.
+//!
+//! | perturbation | guards that went red |
+//! |---|---|
+//! | control (unperturbed) | 0 of 25 |
+//! | negate the **y** component of every frustum plane normal | **12** |
+//! | flip a sign in the horizon closed form `A(λ)` | 6 |
+//! | swap `a` and `b` in the scaled-space map `T` | 9 |
+//! | drop the **Top** plane from the frustum test | 5 |
+//! | flip the frustum tolerance to the *unsafe* direction (`< +ε`) | 1 |
+//!
+//! The first row is the one that matters historically: the harness was once **blind**
+//! to a y-sign flip, because an axis-aligned reference frustum is mirror-symmetric in
+//! y and such a flip maps the plane set onto itself. `test_analytic_planes` fixed that
+//! by making its reference camera deliberately oblique, and the rework has not
+//! reopened it — a y-flip now trips every analytic test and seven globe sweeps.
+//!
+//! The last row is a genuine limit worth stating: the frustum rounding tolerance is
+//! ~4.8e-7 relative, so flipping its sign moves the decision boundary by ~1e-6 of a
+//! tile. Only `test_degenerate_obb_matches_contains_point` resolves that, and the
+//! sweeps cannot — the oracle's own marginal band (2e-3 of half-screen) is three
+//! orders wider, by design. A tolerance regression has to be caught by construction
+//! and by reading the code, not by the sweeps.
 //!
 //! ## Units
 //!
@@ -87,8 +131,12 @@ pub mod sat;
 pub mod sweep;
 
 #[cfg(test)]
+pub mod bench_update;
+#[cfg(test)]
 pub mod test_analytic_planes;
 #[cfg(test)]
 pub mod test_globe_sweep;
+#[cfg(test)]
+pub mod test_tile_bounds;
 #[cfg(test)]
 pub mod test_label_culling;

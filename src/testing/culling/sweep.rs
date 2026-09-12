@@ -11,8 +11,10 @@
 //! * **False positive (FP)** — a tile in the visible set into which **no visible
 //!   sample point falls**, i.e. the tile is entirely off-screen or entirely
 //!   back-facing but was still scheduled. This is wasted work, not a visual bug.
-//!   Bounding volumes are conservative by construction, so a non-zero FP rate is
-//!   expected and is measured as a *rate*, never asserted to be zero.
+//!   Bounding volumes are conservative by construction, so a non-zero FP count is
+//!   expected; it is budgeted (as a count of wasted tiles, or as a whole-sweep
+//!   rate) and never asserted to be zero. FP is also an **upper bound**, not an
+//!   exact figure — see [`TILE_SAMPLE_STEPS`] for why, and in which direction.
 //!
 //! * **Marginal** — a sample within the oracle's numeric no-man's-land (see
 //!   [`super::oracle`]). Excluded from both tallies, counted and reported.
@@ -41,8 +43,8 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use cesium_engine::globe::quadtree::{QuadtreeManager, TileId};
-use glam::{DVec3, Vec3};
+use cesium_engine::globe::quadtree::{Frustum, QuadtreeManager, TileId};
+use glam::DVec3;
 use rayon::prelude::*;
 
 use super::cameras::{build_camera, ViewParams};
@@ -119,7 +121,50 @@ pub const NDC_GRID_ROWS: u32 = 145;
 pub const GEO_GRID_STEP_DEG: f64 = 0.5;
 
 /// Per-tile sample grid used by the FP metric (`(N+1)²` points per tile).
-pub const TILE_SAMPLE_STEPS: u32 = 4;
+///
+/// # Why 32 and not 4
+///
+/// A tile is scored a false positive when **no** sample point inside it is
+/// unambiguously visible. That makes the metric one-sided in N: adding sample
+/// points can only ever *discover* visible surface that a coarser grid stepped
+/// over, never hide surface a coarser grid found. So for any tile, raising N can
+/// only move it from FP to not-FP — **the reported FP count is a monotonically
+/// non-increasing function of N, and therefore an upper bound on the true FP
+/// count at every N**. It is never an understatement, which is the direction a
+/// waste budget must err in.
+///
+/// The FN side is already dense — a 257 × 145 NDC grid plus a 0.5°-step geodetic
+/// grid, ~300 000 points per cell — while N = 4 gave the FP side just
+/// (4+1)² = 25 points per tile. That asymmetry systematically *overstated* FP: a
+/// tile whose visible part is a strip thinner than the sample spacing (the
+/// ordinary case for a tile straddling the limb or a screen edge) has genuinely
+/// visible surface but no sample landing on it, and was scored as pure waste.
+///
+/// Measured on `15114a9`, total over the nine scoring sweeps:
+///
+/// | N  | points/tile | FP total | FP %   | wall |
+/// |----|-------------|----------|--------|------|
+/// | 4  | 25          | 27 103   | 2.054% | 36 s |
+/// | 8  | 81          | 14 622   | 1.108% | 48 s |
+/// | 16 | 289         | 7 422    | 0.563% | 42 s |
+/// | 32 | 1089        | 3 264    | 0.247% | 42 s |
+///
+/// FP halves with every doubling of N. That is the signature of a **boundary
+/// artifact** — tiles resolved one dimension at a time as the spacing shrinks —
+/// not of real over-culling, which would converge to a non-zero floor. The
+/// engine did not change across those four rows; only the instrument's ability
+/// to see the thin visible strips did.
+///
+/// The cost is close to free because the FN grids dominate the runtime: a 44×
+/// increase in FP sample points moves whole-gate wall clock by a few seconds of
+/// noise, since the per-tile loop short-circuits on the first `Visible` verdict
+/// and most tiles hit it on an early sample.
+///
+/// 32 is the point where the remaining FP is small enough that the thresholds it
+/// calibrates are dominated by real conservatism rather than by grid spacing.
+/// Raising it further would keep lowering the number — as the monotonicity
+/// argument above guarantees it must — without changing any conclusion.
+pub const TILE_SAMPLE_STEPS: u32 = 32;
 
 /// Hard cap on retained per-cell false-negative records.
 ///
@@ -194,12 +239,33 @@ impl CellResult {
     }
 
     /// FP as a fraction of the visible tile set. 0.0 when the set is empty.
+    ///
+    /// Raw ratio, kept unfiltered so the CSV records what actually happened.
+    /// Aggregate statistics must skip degenerate cells — see [`Self::is_degenerate`].
     pub fn fp_rate(&self) -> f64 {
         if self.tiles == 0 {
             0.0
         } else {
             self.false_positive_tiles as f64 / self.tiles as f64
         }
+    }
+
+    /// A cell in which the oracle finds no visible surface at all, so the
+    /// false-positive ratio has no meaningful denominator.
+    ///
+    /// This is not a measurement artifact but exact geometry: for a camera at
+    /// altitude 0 the front-face condition at any other surface point `p` is
+    /// `n_p . (cam - p) = cos(gamma) - 1 <= 0`, with equality only at `p = cam`.
+    /// Standing exactly on the ellipsoid, nothing else on it is visible; below
+    /// the surface, likewise. Every tile the culler keeps there is counted as a
+    /// false positive purely because no tile *could* be correct.
+    ///
+    /// Keeping tiles at such a pose is the conservative behaviour invariant I-6
+    /// demands, so these cells are excluded from FP aggregates and reported
+    /// separately. They remain fully subject to the false-negative check, which
+    /// is the criterion that actually matters there.
+    pub fn is_degenerate(&self) -> bool {
+        self.samples_visible == 0
     }
 }
 
@@ -210,15 +276,12 @@ pub fn visible_tiles_for(params: &ViewParams) -> (Vec<TileId>, VisibilityOracle)
     let frustum_planes = cam.calculate_frustum_planes(aspect as f32);
 
     let (global_pos, _) = cam.global_transform_f64();
-    let cam_pos_f32 = Vec3::new(
-        global_pos.x as f32,
-        global_pos.y as f32,
-        global_pos.z as f32,
-    );
+    let frustum = Frustum::new(frustum_planes, global_pos)
+        .with_corners(cam.frustum_corners_relative(aspect as f32));
 
     let mut quadtree = QuadtreeManager::new();
     for _ in 0..UPDATE_ITERATIONS {
-        quadtree.update(cam_pos_f32, frustum_planes);
+        quadtree.update(&frustum);
     }
 
     let tiles = quadtree

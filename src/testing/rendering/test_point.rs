@@ -1,72 +1,52 @@
+//! Ad-hoc single-tile diagnostic: prints why one node is (or is not) culled.
+//!
+//! Not a gate — it asserts nothing. It exists so a specific tile can be walked
+//! through the three culling stages by hand.
+
 use cesium_engine::camera::camera::Camera;
+use cesium_engine::globe::quadtree::{Frustum, HorizonCamera, QuadtreeNode, TileId};
 use glam::{Quat, Vec3};
 
 #[test]
 fn test_point() {
     let mut cam = Camera::new(Vec3::new(0.0, 0.0, 9.0), Vec3::ZERO);
     cam.set_local_transform(Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY);
-    let camera_pos = cam.global_transform().0;
+    let (eye, _) = cam.global_transform_f64();
     let aspect_ratio = 16.0 / 9.0;
-    let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
-    let frustum = cesium_engine::globe::quadtree::Frustum::from_planes(frustum_planes);
+    let frustum = Frustum::new(cam.calculate_frustum_planes(aspect_ratio), eye);
+    let horizon = HorizonCamera::new(eye);
 
-    let node =
-        cesium_engine::globe::quadtree::QuadtreeNode::new(cesium_engine::globe::quadtree::TileId {
-            z: 3,
-            x: 3,
-            y: 7,
-        });
+    for id in [TileId { z: 3, x: 3, y: 7 }, TileId { z: 5, x: 7, y: 15 }] {
+        let node = QuadtreeNode::new(id);
 
-    let obb_pass = frustum.intersects_obb(&node.obb);
-    println!("OBB pass for Z=3, X=3, Y=7: {}", obb_pass);
-
-    let mut any_visible = false;
-    for p in &node.surface_points {
-        if frustum.contains_point(*p) {
-            any_visible = true;
-            break;
-        }
-    }
-    println!("Surface points visible for Z=3 X=3 Y=7: {}", any_visible);
-
-    if let Some(hcp) = node.horizon_culling_point {
-        let a = 6.378137_f32;
-        let b = 6.3567523142_f32;
-        let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
-        let vh_mag_sq = cv.length_squared() - 1.0;
-        let vt = hcp - cv;
-        let vt_dot_vc = -vt.dot(cv);
-        let is_occluded =
-            vt_dot_vc > vh_mag_sq && (vt_dot_vc * vt_dot_vc) / vt.length_squared() > vh_mag_sq;
-        println!("is_occluded for Z=5 X=7 Y=15: {}", is_occluded);
-    }
-
-    let mut any_visible = false;
-    for p in &node.surface_points {
-        if frustum.contains_point(*p) {
-            any_visible = true;
-            break;
-        }
-    }
-    println!("Surface points visible for Z=5 X=7 Y=15: {}", any_visible);
-
-    let obb_pass = frustum.intersects_obb(&node.obb);
-    println!("OBB pass for Z=5, X=7, Y=15: {}", obb_pass);
-    println!("OBB center: {:?}", node.obb.center);
-    println!("OBB extents: {:?}", node.obb.half_axes);
-    for (i, (n, d)) in frustum.planes.iter().enumerate() {
-        let r = n.dot(node.obb.half_axes[0]).abs()
-            + n.dot(node.obb.half_axes[1]).abs()
-            + n.dot(node.obb.half_axes[2]).abs();
-        let dist = n.dot(node.obb.center) + d;
+        println!("-- tile z={} x={} y={} --", id.z, id.x, id.y);
         println!(
-            "Plane {}: n={:?} d={} dist={} r={} (dist < -r: {})",
-            i,
-            n,
-            d,
-            dist,
-            r,
-            dist < -r
+            "  horizon: max q.c = {:.9} (cull at <= {:.9}) -> occluded={}",
+            node.patch.max_dot(&horizon),
+            1.0 - horizon.eps,
+            node.patch.is_occluded(&horizon)
         );
+
+        let delta = frustum.relative(node.obb.center);
+        println!("  OBB pass: {}", frustum.intersects_obb(&node.obb));
+        println!("  OBB center (f64): {:?}", node.obb.center);
+        println!("  OBB half-axes:    {:?}", node.obb.half_axes);
+        println!("  camera-relative delta: {delta:?}");
+
+        for (i, n) in frustum.normals.iter().enumerate() {
+            let r = n.dot(node.obb.half_axes[0]).abs()
+                + n.dot(node.obb.half_axes[1]).abs()
+                + n.dot(node.obb.half_axes[2]).abs();
+            let s = n.dot(delta);
+            println!(
+                "  plane {} ({}): n={:?} s={} r={} (s + r < 0: {})",
+                i,
+                ["Left", "Right", "Bottom", "Top"][i],
+                n,
+                s,
+                r,
+                s + r < 0.0
+            );
+        }
     }
 }
