@@ -2,6 +2,7 @@
 pub mod bounding_volume;
 pub mod horizon;
 pub mod quadtree;
+pub mod slab;
 pub mod tile_id;
 
 pub use bounding_volume::{Frustum, OrientedBoundingBox};

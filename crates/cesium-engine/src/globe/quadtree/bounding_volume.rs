@@ -35,7 +35,7 @@ const U_F32: f32 = 5.960_464_5e-8;
 /// plane normal's components and `3u` for accumulating each three-term dot product.
 /// Applied in the conservative direction — it widens the *kept* set (invariant
 /// **I-6**), never the culled one.
-const FRUSTUM_EPS_COEFF: f32 = 8.0 * U_F32;
+pub(super) const FRUSTUM_EPS_COEFF: f32 = 8.0 * U_F32;
 
 /// An oriented bounding box.
 ///
@@ -79,6 +79,11 @@ pub struct Frustum {
     pub normals: [Vec3; 4],
     /// The eye, in world space (megameters): the origin of this frame.
     pub eye: DVec3,
+    /// The eight frustum corners, camera-relative, for the optional box-slab stage
+    /// ([`super::slab`]). `None` skips that stage entirely.
+    pub corners: Option<[Vec3; 8]>,
+    /// `max_k ‖corner_k‖₁`, cached for the slab stage's rounding bound.
+    pub corner_l1_max: f32,
 }
 
 impl Frustum {
@@ -91,7 +96,20 @@ impl Frustum {
         Self {
             normals: n32,
             eye,
+            corners: None,
+            corner_l1_max: 0.0,
         }
+    }
+
+    /// Attaches the eight camera-relative frustum corners (from
+    /// `Camera::frustum_corners_relative`), enabling the box-slab stage.
+    pub fn with_corners(mut self, corners: [Vec3; 8]) -> Self {
+        self.corner_l1_max = corners
+            .iter()
+            .map(|c| c.x.abs() + c.y.abs() + c.z.abs())
+            .fold(0.0_f32, f32::max);
+        self.corners = Some(corners);
+        self
     }
 
     /// Camera-relative position of a world point, differenced in f64.
@@ -180,5 +198,6 @@ impl Frustum {
     pub fn intersects_obb(&self, obb: &OrientedBoundingBox) -> bool {
         let delta = self.relative(obb.center);
         !self.separated_from_box(delta, &obb.half_axes, obb.half_axis_l1)
+            && !super::slab::separated_on_box_axes(self, delta, &obb.half_axes)
     }
 }

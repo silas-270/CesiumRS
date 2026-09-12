@@ -45,15 +45,56 @@ use super::tile_id::{
 };
 use crate::globe::geometry::{lon_lat_to_ecef_f64, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 
-/// Screen-space budget behind the sub-box count (7.4).
+/// Angular budget behind the coarse end of the sub-box count (7.4).
 ///
 /// A leaf sits at `D ≈ 2·a·θ_max` under the distance LOD, so its box overhangs its
 /// own patch by `sagitta/D ≈ θ_max/4` radians at the eye. Allowing 5 % of screen
-/// height (≈ 54 px of 1080, generous for *bounding*-volume slop) gives
-/// `θ_max/4 ≤ 0.04`, i.e. `θ* = 0.16 rad`. This is the one free parameter in the
-/// derivation; `θ* = 0.30` and `θ* = 0.16` both give `k = 1` for `z ≥ 5`, so the
-/// choice only moves z ≤ 4, where the boxes are built once and never again.
+/// height gives `θ* = 0.16 rad`, which yields `k = 14, 7, 4, 2` at z = 1..4 and
+/// `k = 1` from z = 5 up.
+///
+/// That last part is wrong, and [`SUB_BOXES_MIN`] is the measured correction.
 const SUBDIVISION_BUDGET_RAD: f64 = 0.16;
+
+/// Floor on the sub-box count per axis, at **every** zoom.
+///
+/// # Why the derivation's k(z) is not enough
+///
+/// `docs/culling-math.md` §7.2 derives `k(z) = ceil(θ_max(z)/θ*)` from the box's
+/// **sagitta** — its bulge in the "up" direction — and concludes that sub-boxes are
+/// pure waste for z ≥ 5, where the sagitta falls from 61 km to 1.5 cm. The sagitta
+/// argument is correct. The conclusion is not, because the sagitta is not what the
+/// sub-boxes are buying.
+///
+/// What they buy is a fix for §5.2: the four-plane test is an *incomplete*
+/// separating-axis set, so a box that lies wholly outside the frustum past a corner
+/// or an edge is not outside any single plane and is accepted. Splitting the box and
+/// requiring *some* part to pass all four planes is a far better approximation to
+/// "does the patch meet the frustum" than the whole box's support function — and
+/// unlike the sagitta, that over-report does **not** decay with zoom. Under distance
+/// LOD (`dist ≈ 2 × half-diagonal`) every leaf subtends roughly the same ~26°
+/// wherever it is, so a screen holds only ~17 tiles and "straddling a frustum
+/// corner" is the common case at z = 20 exactly as it is at z = 5.
+///
+/// Measured on the 100 000-cell fuzz sweep (`test_fuzz_sweep_has_no_false_negatives`),
+/// false negatives **zero at every point** on this curve:
+///
+/// | k for z ≥ 5 | FP    | mean update | bytes/node |
+/// |-------------|-------|-------------|------------|
+/// | 1 (derivation) | 7.30 % | 2.5 µs | 968 |
+/// | 2           | 5.92 % | 3.2 µs | 1 177 |
+/// | 3           | 4.67 % | 3.7 µs | 1 476 |
+/// | **4**       | **4.18 %** | **4.3 µs** | **1 871** |
+/// | 5           | 4.06 % | 4.9 µs | 2 295 |
+/// | 8 (z ≤ 16, the old code's geometry) | 4.39 % | 7.8 µs | 3 816 |
+///
+/// The knee is at 4: 1 → 3 buys 2.6 points of FP for 1.2 µs, 4 → 5 buys 0.2 points
+/// for 0.7 µs. Note that 8 is *worse* than 4 on every axis — 64 boxes per node
+/// subdivide past the point where the box is a good proxy and only add work.
+///
+/// This is the calibration §11.3 item 8 asks for ("measure the FP rate as a function
+/// of θ* and pick the knee"), done against the harness rather than against the
+/// screen-height estimate.
+const SUB_BOXES_MIN: u32 = 4;
 
 /// Sample grid used to fit a node's OBB, as `(steps+1)²` points.
 ///
@@ -72,14 +113,14 @@ fn obb_grid_steps(z: u8) -> u32 {
     }
 }
 
-/// Sub-boxes per axis, from (7.5): `k(z) = ceil(θ_max(z) / θ*)`.
+/// Sub-boxes per axis: `max(SUB_BOXES_MIN, ceil(θ_max(z)/θ*))`.
 ///
-/// With `θ_max(z) ≈ √2·π/2^z` at the equator (7.1) this is 14, 7, 4, 2 for z = 1..4
-/// and **1 from z = 5 up**. `k = 1` means the node's own OBB is already a tight
-/// enough proxy and no sub-boxes are stored at all.
+/// The `ceil` term (7.5) dominates at z = 1..2, where a single box is a hopeless
+/// proxy for a patch covering most of a hemisphere; [`SUB_BOXES_MIN`] dominates
+/// from z = 3 down and is what the measurement above calibrates.
 fn sub_boxes_per_axis(z: u8) -> u32 {
     let theta_max = std::f64::consts::SQRT_2 * std::f64::consts::PI / (1u64 << z) as f64;
-    (theta_max / SUBDIVISION_BUDGET_RAD).ceil().max(1.0) as u32
+    ((theta_max / SUBDIVISION_BUDGET_RAD).ceil().max(1.0) as u32).max(SUB_BOXES_MIN)
 }
 
 /// Outward unit normal of the ellipsoid at `p`, in f64 — the normalised gradient of
@@ -304,6 +345,7 @@ impl QuadtreeNode {
         if ctx
             .frustum
             .separated_from_box(delta, &self.obb.half_axes, self.obb.half_axis_l1)
+            || super::slab::separated_on_box_axes(&ctx.frustum, delta, &self.obb.half_axes)
         {
             self.visible = false;
             self.children = None;
@@ -316,11 +358,9 @@ impl QuadtreeNode {
         // separated is the conservative direction.
         if let Some(boxes) = &self.sub_obbs {
             let any = boxes.iter().any(|b| {
-                !ctx.frustum.separated_from_box(
-                    ctx.frustum.relative(b.center),
-                    &b.half_axes,
-                    b.half_axis_l1,
-                )
+                let d = ctx.frustum.relative(b.center);
+                !ctx.frustum.separated_from_box(d, &b.half_axes, b.half_axis_l1)
+                    && !super::slab::separated_on_box_axes(&ctx.frustum, d, &b.half_axes)
             });
             if !any {
                 self.visible = false;

@@ -503,7 +503,8 @@ impl<'a> WgpuState<'a> {
         // One camera-relative frustum per frame, shared by the quadtree and the
         // label pass. `eye` is the f64 camera position, so every `p − eye` inside
         // is an f64 subtraction (invariant I-2).
-        let frustum_obj = crate::globe::quadtree::Frustum::new(frustum, camera_pos_dvec);
+        let frustum_obj = crate::globe::quadtree::Frustum::new(frustum, camera_pos_dvec)
+            .with_corners(self.camera.frustum_corners_relative(aspect_ratio));
 
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.quadtree");

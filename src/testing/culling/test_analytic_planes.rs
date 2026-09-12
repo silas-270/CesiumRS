@@ -91,7 +91,7 @@ fn reference() -> Reference {
     let cam = reference_camera();
     let normals = cam.calculate_frustum_planes(ASPECT as f32);
     let (eye, _) = cam.global_transform_f64();
-    let frustum = Frustum::new(normals, eye);
+    let frustum = Frustum::new(normals, eye).with_corners(cam.frustum_corners_relative(ASPECT as f32));
     let mut planes_f64 = [(DVec3::ZERO, 0.0); 4];
     for i in 0..4 {
         planes_f64[i] = (normals[i], -normals[i].dot(eye));
@@ -582,7 +582,7 @@ fn test_camera_relative_plane_error_vs_tile_size() {
     let cam = super::cameras::build_camera(&params);
     let normals = cam.calculate_frustum_planes(ASPECT as f32);
     let (eye, _) = cam.global_transform_f64();
-    let frustum = Frustum::new(normals, eye);
+    let frustum = Frustum::new(normals, eye).with_corners(cam.frustum_corners_relative(ASPECT as f32));
 
     println!("  zoom | tile radius (m) | max |Δ(n·Δ)| (m) | error / radius");
     let mut first_bad_zoom: Option<u8> = None;
