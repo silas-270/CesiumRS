@@ -558,17 +558,10 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
 
-        // Load the A350.glb model (baked into the binary)
-        let glb_bytes = include_bytes!("../../../A350.glb");
-        match ModelRenderer::new(
-            device,
-            queue,
-            config,
-            camera_bind_group_layout,
-            glb_bytes,
-        ) {
+        // Load the exterior aircraft model (baked into the binary)
+        match crate::aircraft_model::load(device, queue, config, camera_bind_group_layout) {
             Ok(renderer) => {
-                println!("A350.glb successfully loaded and renderer initialized!");
+                println!("A350-1000 successfully loaded and renderer initialized!");
                 self.airplane_renderer = Some(renderer);
             }
             Err(e) => eprintln!("Failed to initialize ModelRenderer: {:?}", e),
@@ -992,9 +985,10 @@ impl GlobeExtension for FlightTrackerApp {
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
             if let Some(state) = airplane_state {
-                // Elevate 10m (0.00001 Megameters) to avoid clipping and align with ribbon elevation
+                // Elevate 7.5m (0.0000075 Megameters) to avoid clipping while sitting
+                // just above the ribbon's own 5m z-fighting offset in polyline.wgsl.
                 let up_dir = state.position.normalize();
-                let elevated_position = state.position + up_dir * 0.00001;
+                let elevated_position = state.position + up_dir * 0.0000075;
                 let camera_pos = glam::DVec3::from_slice(&camera_pos_f64);
                 let relative_pos_f64 = elevated_position - camera_pos;
                 let relative_pos = glam::Vec3::new(
@@ -1026,16 +1020,17 @@ impl GlobeExtension for FlightTrackerApp {
 
                 let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
 
-                // Assuming the A350 model is approximately 1.0 local units long.
+                // The mesh is normalised to a bounding radius of 1.0 local unit, so this
+                // is a radius in Megametres rather than a length despite the names.
                 let scale_factor = clamped_length_mm / 1.0;
                 let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
 
-                // Apply a constant yaw correction to align the A350.glb model with standard axes
+                // Apply a constant yaw correction to align the model with standard axes
                 let model_correction = glam::Mat4::from_euler(
                     glam::EulerRot::YXZ,
-                    std::f32::consts::PI, // Yaw
-                    0.0,                  // Pitch
-                    0.0,                  // Roll
+                    crate::aircraft_model::YAW_CORRECTION, // Yaw
+                    0.0,                                   // Pitch
+                    0.0,                                   // Roll
                 );
 
                 let model_matrix = translation * rotation * scale * model_correction;

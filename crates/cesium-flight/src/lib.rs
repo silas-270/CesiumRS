@@ -1,6 +1,8 @@
+pub mod aircraft_model;
 pub mod assets;
 pub mod camera_modes;
 pub mod cockpit_model;
+pub mod cockpit_screens;
 pub mod flight_handle;
 pub mod preset;
 pub mod tracker;

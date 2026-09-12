@@ -44,6 +44,8 @@ struct VertexInput {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    // 1.0 for a self-lit surface (a cockpit display), 0.0 for ordinary shaded geometry.
+    @location(4) unlit: f32,
 }
 
 struct VertexOutput {
@@ -58,6 +60,7 @@ struct VertexOutput {
     // Camera-relative position, for the specular view direction (rendering is already
     // camera-relative, so `-view_pos` is a free, correct direction back to the camera).
     @location(5) view_pos: vec3<f32>,
+    @location(6) unlit: f32,
 }
 
 @vertex
@@ -119,6 +122,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.local_pos = model.position;
     out.local_normal = model.normal;
     out.view_pos = final_world_pos.xyz;
+    out.unlit = model.unlit;
 
     return out;
 }
@@ -226,8 +230,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Everything is tinted by the key light, which is near-white by day, amber at sunset
     // and blue by moonlight. The hue is normalised so it never adds brightness of its own.
-    let color = tex_color * in.color.rgb * light_intensity * detail * key_color
+    let shaded = tex_color * in.color.rgb * light_intensity * detail * key_color
         + key_color * (spec + rim);
+
+    // A self-lit surface is its own light source: it takes none of the key light's
+    // direction, none of the ambient floor, and none of the key light's hue, so a display
+    // stays the colour it was painted whether the sun is on it or the aircraft is over the
+    // Atlantic at night. Everything above is still computed for it — one mix is cheaper
+    // than a branch, and `unlit` is 0.0 for every material that does not ask for this.
+    let emissive = tex_color * in.color.rgb;
+    let color = mix(shaded, emissive, in.unlit);
 
     return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), in.color.a);
 }

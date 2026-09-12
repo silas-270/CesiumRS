@@ -7,6 +7,10 @@ pub struct ModelVertex {
     pub normal: [f32; 3],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// `1.0` for a surface that emits its own light — a cockpit display — and so should
+    /// be drawn at its texture's own value, ignoring the key light and the ambient floor
+    /// entirely. `0.0` is ordinary shaded geometry. Values between the two blend.
+    pub unlit: f32,
 }
 
 impl ModelVertex {
@@ -34,6 +38,11 @@ impl ModelVertex {
                     offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: mem::size_of::<[f32; 12]>() as wgpu::BufferAddress,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32,
                 },
             ],
         }
@@ -98,6 +107,44 @@ pub struct ModelOptions<'f> {
     /// `(width, height, RGBA8 pixels, row-major, no padding)`. `None` (default)
     /// reproduces current behaviour (`images.first()`, else 1x1 white).
     pub texture_override: Option<(u32, u32, Vec<u8>)>,
+    /// The point of the source mesh, in the glTF's own units, that becomes the model
+    /// origin. Every vertex is translated by `-origin_offset` before anything else, so
+    /// this is what the model rotates about and the point the flight path holds. Applied
+    /// before `normalize_to_unit_radius`, which therefore measures its radius from here.
+    /// `[0.0; 3]` (default) keeps the glTF's own origin.
+    pub origin_offset: [f32; 3],
+    /// Uniform scale applied after normalisation. `1.0` (default) is a no-op. This exists
+    /// to hold a replacement mesh to the on-screen footprint of the one it replaces when
+    /// the two have different proportions, which unit-radius normalisation alone will not
+    /// do.
+    pub post_scale: f32,
+    /// Per-vertex UV rewrite, keyed by glTF material name.
+    ///
+    /// A model is drawn with one texture, so every material that has UVs shares one
+    /// 0..1 space. When that texture is an atlas holding content for *some* of them —
+    /// cockpit screens, say — the rest would sample it too and show smeared fragments of
+    /// it. Returning a constant UV for those parks them on a single texel, which is the
+    /// whole of what they then sample: keep that texel white and they render at their
+    /// base colour exactly as they did with no texture at all.
+    ///
+    /// A constant UV also has zero screen-space derivative, so the GPU picks mip 0 and
+    /// the parked material is unaffected by the rest of the atlas at any distance.
+    ///
+    /// `None` (default) passes the authored UVs through untouched.
+    pub uv_override: Option<&'f dyn Fn(Option<&str>, [f32; 2]) -> [f32; 2]>,
+    /// Marks materials as self-lit, keyed by glTF material name: `1.0` draws them at their
+    /// texture's own value, `0.0` (the default for every material) shades them normally.
+    ///
+    /// A cockpit display is a light source, not a lit surface. Shaded like the panel
+    /// around it, it renders at the ambient floor — about a quarter value — and reads as a
+    /// dark grey rectangle no matter what is painted on it.
+    pub material_unlit: Option<&'f dyn Fn(Option<&str>) -> f32>,
+    /// Cap on the base mip level's dimensions, for a model whose authored texture carries
+    /// more detail than it is ever drawn at. The chain is built from the full-size image
+    /// either way and this drops the levels above the cap, so the pixels that survive have
+    /// been through the same gamma-correct box filter — and every level below the cap is
+    /// one that would have existed anyway. `None` (default) uploads the image as authored.
+    pub max_texture_size: Option<u32>,
     /// Label used in the log line emitted once the mesh is assembled.
     pub label: &'f str,
 }
@@ -111,6 +158,11 @@ impl<'f> Default for ModelOptions<'f> {
             material_override: None,
             primitive_normal_offset: None,
             texture_override: None,
+            origin_offset: [0.0; 3],
+            post_scale: 1.0,
+            uv_override: None,
+            material_unlit: None,
+            max_texture_size: None,
             label: "Model",
         }
     }
@@ -150,8 +202,20 @@ impl ModelRenderer {
         glb_bytes: &[u8],
         options: ModelOptions<'_>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Stage timings for the one-time model load. This is a blocking spike on a
+        // frame — at startup for the aircraft, on first cockpit entry for the interior —
+        // so it is worth being able to read the breakdown off a device's log rather than
+        // guessing at it. A handful of `Instant::now` calls per model load, twice a run.
+        let t_total = std::time::Instant::now();
+        let mut t = std::time::Instant::now();
+        let mut stage = |name: &str| {
+            log::info!("[loadtime] {:<22} {:>7.1} ms", name, t.elapsed().as_secs_f64() * 1e3);
+            t = std::time::Instant::now();
+        };
+
         // Parse the glb using the gltf crate
         let (document, buffers, images) = gltf::import_slice(glb_bytes)?;
+        stage("gltf parse");
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -166,6 +230,7 @@ impl ModelRenderer {
         ) {
             let local_transform = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
             let transform = parent_transform * local_transform;
+            let origin = glam::Vec3::from_array(options.origin_offset);
 
             if let Some(mesh) = node.mesh() {
                 let mesh_index = mesh.index();
@@ -192,6 +257,11 @@ impl ModelRenderer {
                         continue;
                     }
 
+                    let unlit = options
+                        .material_unlit
+                        .map(|f| f(material.name()))
+                        .unwrap_or(0.0);
+
                     let mut vertex_colors: Vec<[f32; 4]> = Vec::new();
                     if let Some(read_colors) = reader.read_colors(0) {
                         vertex_colors = read_colors.into_rgba_f32().collect();
@@ -204,6 +274,10 @@ impl ModelRenderer {
                             tex_coords[i]
                         } else {
                             [0.0, 0.0]
+                        };
+                        let uv = match options.uv_override {
+                            Some(f) => f(material.name(), uv),
+                            None => uv,
                         };
                         let color = if i < vertex_colors.len() {
                             vertex_colors[i]
@@ -227,12 +301,14 @@ impl ModelRenderer {
                         .normalize();
 
                         let world_pos = world_pos + world_norm.extend(0.0) * normal_offset;
+                        let local_pos = world_pos.truncate() - origin;
 
                         vertices.push(ModelVertex {
-                            position: [world_pos.x, world_pos.y, world_pos.z],
+                            position: [local_pos.x, local_pos.y, local_pos.z],
                             normal: [world_norm.x, world_norm.y, world_norm.z],
                             uv,
                             color,
+                            unlit,
                         });
                     }
 
@@ -262,7 +338,9 @@ impl ModelRenderer {
             }
         }
 
-        // Normalize the entire assembled mesh so it has a radius of exactly 1.0
+        // Normalize the entire assembled mesh so it has a radius of exactly 1.0, then
+        // apply the caller's corrective scale on top.
+        let mut scale = options.post_scale;
         if options.normalize_to_unit_radius {
             let mut max_extent: f32 = 0.0001;
             for v in &vertices {
@@ -274,13 +352,17 @@ impl ModelRenderer {
                     max_extent = len;
                 }
             }
+            scale /= max_extent;
+        }
+        if scale != 1.0 {
             for v in &mut vertices {
-                v.position[0] /= max_extent;
-                v.position[1] /= max_extent;
-                v.position[2] /= max_extent;
+                v.position[0] *= scale;
+                v.position[1] *= scale;
+                v.position[2] *= scale;
             }
         }
 
+        stage("mesh walk");
         use wgpu::util::DeviceExt;
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Model Vertex Buffer"),
@@ -311,92 +393,94 @@ impl ModelRenderer {
             (padded_data, padded_bytes_per_row)
         }
 
-        // Setup Texture
-        let (texture_size, padded_data, padded_bytes_per_row, format) =
-            if let Some((width, height, rgba)) = &options.texture_override {
-                let (padded_data, padded_bytes_per_row) = pad_rgba(*width, *height, rgba);
-                (
-                    wgpu::Extent3d {
-                        width: *width,
-                        height: *height,
-                        depth_or_array_layers: 1,
-                    },
-                    padded_data,
-                    padded_bytes_per_row,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                )
-            } else if let Some(image) = images.first() {
-                let width = image.width;
-                let height = image.height;
-                let rgba = match image.format {
-                    gltf::image::Format::R8G8B8 => {
-                        // Convert RGB to RGBA
-                        let mut data = Vec::with_capacity(image.pixels.len() / 3 * 4);
-                        for chunk in image.pixels.chunks(3) {
-                            data.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
-                        }
-                        data
+        // Setup Texture. Tightly-packed RGBA8 source pixels, from the caller's override,
+        // the GLB's own first image, or a 1x1 white fallback.
+        let (tex_width, tex_height, tex_rgba) = if let Some((width, height, rgba)) =
+            options.texture_override
+        {
+            (width, height, rgba)
+        } else if let Some(image) = images.first() {
+            let width = image.width;
+            let height = image.height;
+            let rgba = match image.format {
+                gltf::image::Format::R8G8B8 => {
+                    // Convert RGB to RGBA
+                    let mut data = Vec::with_capacity(image.pixels.len() / 3 * 4);
+                    for chunk in image.pixels.chunks(3) {
+                        data.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                     }
-                    gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
-                    _ => vec![255; (width * height * 4) as usize], // Fallback to white
-                };
-
-                let (padded_data, padded_bytes_per_row) = pad_rgba(width, height, &rgba);
-
-                (
-                    wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    padded_data,
-                    padded_bytes_per_row,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                )
-            } else {
-                // Fallback 1x1 white texture
-                let padded_bytes_per_row = 256; // Minimum alignment
-                let mut data = vec![0; 256];
-                data[0..4].copy_from_slice(&[255, 255, 255, 255]);
-                (
-                    wgpu::Extent3d {
-                        width: 1,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                    data,
-                    padded_bytes_per_row,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                )
+                    data
+                }
+                gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
+                _ => vec![255; (width * height * 4) as usize], // Fallback to white
             };
+            (width, height, rgba)
+        } else {
+            // Fallback 1x1 white texture
+            (1, 1, vec![255, 255, 255, 255])
+        };
+
+        stage("vertex/index buffers");
+        let mut mips = build_mip_chain(tex_width, tex_height, tex_rgba);
+        log::info!(
+            "[loadtime] (texture {}x{}, {} mip levels)",
+            tex_width,
+            tex_height,
+            mips.len()
+        );
+        stage("mip chain");
+
+        // Discard the levels above the caller's cap, keeping at least the 1x1 tail.
+        if let Some(cap) = options.max_texture_size {
+            let skip = mips
+                .iter()
+                .position(|(w, h, _)| *w <= cap && *h <= cap)
+                .unwrap_or(mips.len() - 1);
+            mips.drain(..skip);
+        }
+
+        let (base_width, base_height, _) = &mips[0];
+        let texture_size = wgpu::Extent3d {
+            width: *base_width,
+            height: *base_height,
+            depth_or_array_layers: 1,
+        };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Model Texture"),
             size: texture_size,
-            mip_level_count: 1,
+            mip_level_count: mips.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &padded_data,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row),
-                rows_per_image: Some(texture_size.height),
-            },
-            texture_size,
-        );
+        for (level, (width, height, rgba)) in mips.iter().enumerate() {
+            let (padded_data, padded_bytes_per_row) = pad_rgba(*width, *height, rgba);
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded_data,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(*height),
+                },
+                wgpu::Extent3d {
+                    width: *width,
+                    height: *height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
+        stage("texture upload");
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -503,6 +587,12 @@ impl ModelRenderer {
             cache: None,
         });
 
+        stage("pipeline creation");
+        log::info!(
+            "[loadtime] TOTAL {:>20.1} ms  <- {}",
+            t_total.elapsed().as_secs_f64() * 1e3,
+            options.label
+        );
         println!("{} mesh has {} indices", options.label, indices.len());
         Ok(Self {
             pipeline,
@@ -533,4 +623,80 @@ impl ModelRenderer {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
     }
+}
+
+/// Box-filters `rgba` down to a complete mip chain — `(width, height, pixels)` per level,
+/// level 0 being the input — ending at 1x1.
+///
+/// Without this the aircraft, a 2048² livery drawn a few hundred pixels wide, samples
+/// roughly one texel in ten: every panel line and window row crawls and sparkles as it
+/// moves. One texture built once at load costs a third more memory and fixes it.
+///
+/// The averaging runs in linear light rather than on the stored bytes. The texture is
+/// uploaded as `Rgba8UnormSrgb`, so those bytes are gamma-encoded, and averaging them
+/// directly makes every successive level darker than the one above it. Alpha is already
+/// linear and is averaged as-is.
+fn build_mip_chain(width: u32, height: u32, rgba: Vec<u8>) -> Vec<(u32, u32, Vec<u8>)> {
+    // The forward direction is a 256-entry table, so the per-source-texel cost is a
+    // lookup; the inverse is evaluated once per output texel.
+    let to_linear: [f32; 256] = std::array::from_fn(|i| {
+        let c = i as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    fn to_srgb(c: f32) -> u8 {
+        let c = c.clamp(0.0, 1.0);
+        let s = if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0 + 0.5) as u8
+    }
+
+    let mut chain = vec![(width, height, rgba)];
+    loop {
+        let (dw, dh, dst) = {
+            let (sw, sh, src) = chain.last().expect("chain is never empty");
+            let (sw, sh) = (*sw, *sh);
+            if sw <= 1 && sh <= 1 {
+                break;
+            }
+            let dw = (sw / 2).max(1);
+            let dh = (sh / 2).max(1);
+
+            let mut dst = vec![0u8; (dw * dh * 4) as usize];
+            for y in 0..dh {
+                // An odd source dimension repeats its last row/column into the 2x2 box
+                // rather than reading past the end of the level.
+                let y0 = (y * 2).min(sh - 1);
+                let y1 = (y * 2 + 1).min(sh - 1);
+                for x in 0..dw {
+                    let x0 = (x * 2).min(sw - 1);
+                    let x1 = (x * 2 + 1).min(sw - 1);
+
+                    let mut acc = [0.0f32; 4];
+                    for (sy, sx) in [(y0, x0), (y0, x1), (y1, x0), (y1, x1)] {
+                        let i = ((sy * sw + sx) * 4) as usize;
+                        acc[0] += to_linear[src[i] as usize];
+                        acc[1] += to_linear[src[i + 1] as usize];
+                        acc[2] += to_linear[src[i + 2] as usize];
+                        acc[3] += src[i + 3] as f32 / 255.0;
+                    }
+
+                    let o = ((y * dw + x) * 4) as usize;
+                    dst[o] = to_srgb(acc[0] / 4.0);
+                    dst[o + 1] = to_srgb(acc[1] / 4.0);
+                    dst[o + 2] = to_srgb(acc[2] / 4.0);
+                    dst[o + 3] = ((acc[3] / 4.0).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                }
+            }
+            (dw, dh, dst)
+        };
+        chain.push((dw, dh, dst));
+    }
+    chain
 }
