@@ -22,7 +22,8 @@ fn test_all_altitudes() {
             global_pos_dvec.z as f32,
         );
         let frustum =
-            cesium_engine::globe::quadtree::Frustum::planes_only(frustum_planes, global_pos_dvec);
+            cesium_engine::globe::quadtree::Frustum::planes_only(frustum_planes, global_pos_dvec)
+                .with_corners(cam.frustum_corners_relative(aspect));
         let mut quadtree = QuadtreeManager::new();
         for _ in 0..30 {
             quadtree.update(&frustum);

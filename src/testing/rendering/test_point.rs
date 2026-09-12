@@ -13,7 +13,8 @@ fn test_point() {
     cam.set_local_transform(Vec3::new(0.0, 0.0, 9.0), Quat::IDENTITY);
     let (eye, _) = cam.global_transform_f64();
     let aspect_ratio = 16.0 / 9.0;
-    let frustum = Frustum::planes_only(cam.calculate_frustum_planes(aspect_ratio), eye);
+    let frustum = Frustum::planes_only(cam.calculate_frustum_planes(aspect_ratio), eye)
+        .with_corners(cam.frustum_corners_relative(aspect_ratio));
     let horizon = HorizonCamera::new(eye);
 
     for id in [TileId { z: 3, x: 3, y: 7 }, TileId { z: 5, x: 7, y: 15 }] {
