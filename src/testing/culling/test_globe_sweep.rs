@@ -5,32 +5,34 @@
 //! CSV and a failure map ([`super::report`]), then assert against a named,
 //! documented threshold.
 //!
-//! ## Which tests must pass, and which are the to-do list
+//! ## Which tests must pass
 //!
-//! The engine has real, pre-existing culling defects. Rather than weaken
-//! thresholds until everything is green, the tests are split:
+//! **All of them.** Every test in this file is a regression guard; none is
+//! `#[ignore]`d. That was not true when the harness was written: it shipped with
+//! five ignored defect probes naming real, pre-existing culling defects, on the
+//! principle that thresholds should never be weakened to make a suite green. The
+//! culling rework (`docs/culling-math.md`) closed all five, and each probe has been
+//! un-ignored in place and re-documented as the invariant it now protects, with the
+//! measured number.
 //!
-//! * **Regression guards** (no attribute) — regimes that are clean today. They
-//!   fail only if something gets *worse*.
-//! * **`#[ignore]`d defect probes** — each names the specific defect it exposes
-//!   and carries the real measured number in its comment. Run them with
-//!   `cargo test --release --lib culling:: -- --ignored --test-threads=1`.
-//!   They are the fix-phase to-do list.
+//! ## What those five now guard
+//!
+//! 1. **The limb band.** Tiles used to be dropped up to **8.07°** inside the visible
+//!    limb, widening with altitude — 305 448 misses. The cause was the sub-OBB
+//!    back-face heuristic, whose margin was short by a factor `h = √(C²−1)`
+//!    (§4.1), not the horizon-culling point the harness originally suspected.
+//!    [`test_limb_band_has_no_false_negatives`] now measures **0.0000°**.
+//! 2. **Tracking at ~5 m** used to return 0–1 tiles for a viewport completely
+//!    filled with ground — the near plane rejecting a z=17 ancestor on 0.058 m of
+//!    true clearance computed in f32 from 6.378 Mm operands.
+//!    [`test_near_ground_high_zoom_has_no_false_negatives`].
+//! 3. **z = 19–20 tile edges**, where the f32 tile-bounds quantum (1.7 m) is a real
+//!    fraction of a 38 m tile. Same test, plus the fuzz sweep.
+//! 4. **The 100 000-cell fuzz sweep**, 1 079 616 535 visible samples, now 0 FN.
+//! 5. **The plane array has no dead entry** —
+//!    [`super::test_analytic_planes::test_frustum_plane_set_has_no_dead_entry`].
 //!
 //! No threshold here has been relaxed to make a test green.
-//!
-//! ## The three defects these probes pin down
-//!
-//! 1. **Horizon-culling conservatism** — tiles are dropped up to **8.07°** inside
-//!    the visible limb, widening with altitude.
-//!    [`test_limb_band_has_no_false_negatives`].
-//! 2. **Tracking mode at ~5 m altitude returns 0-1 tiles** for a viewport
-//!    completely filled with ground.
-//!    [`test_near_ground_high_zoom_has_no_false_negatives`].
-//! 3. **The far plane is never enforced** — the depth-plane extraction in
-//!    `calculate_frustum_planes` assumes GL's z ∈ [-1, 1] under a reverse-Z
-//!    z ∈ [0, 1] projection, leaving plane index 4 degenerate.
-//!    [`super::test_analytic_planes::test_far_plane_is_enforced`].
 //!
 //! See [`super`] for threading and build-profile guidance — `--release` is ~8x
 //! faster for this workload and the probes are sized for a many-core machine.
@@ -480,19 +482,20 @@ fn test_axis_sweep_has_no_false_negatives() {
 /// Pitch sweep from nadir to well above the horizon, across altitudes,
 /// latitudes and the ±0.1° neighbourhood of the exact horizon. 1 344 cells.
 ///
-/// **Ignored: this fails today.** Measured: **11 false negatives of 27 556 756
-/// visible samples, in 2 of 1 344 cells** — both at 12 000 km altitude with the
-/// camera tilted 15–25° off nadir, deepest zoom 1–2. Every miss sits between
-/// 0.49° and 1.48° inside the limb *and* within 1.4% of the bottom edge of the
-/// viewport (`ndc.y ≈ −0.99`), i.e. coarse z=1/z=2 tiles at the intersection of
-/// the limb and the screen edge. Same defect family as
-/// [`test_limb_band_has_no_false_negatives`].
+/// **Was a defect probe; now a guard.** It used to measure **11 false negatives of
+/// 27 556 756 visible samples, in 2 of 1 344 cells** — both at 12 000 km with the
+/// camera tilted 15–25° off nadir, deepest zoom 1–2, every miss between 0.49° and
+/// 1.48° inside the limb *and* within 1.4 % of the bottom edge of the viewport, i.e.
+/// coarse tiles at the intersection of the limb and the screen edge. Same family as
+/// [`test_limb_band_has_no_false_negatives`]: the sub-OBB back-face heuristic.
 ///
-/// This sweep also produced the worst false-positive cells in the harness
-/// (individual cells at 100%): above-horizon views where the frustum still
-/// intersects a tile's bounding volume but none of the tile's surface is visible.
+/// **Now: 0 false negatives of 27 556 756 visible samples.**
+///
+/// The invariant: a tile that is simultaneously near the limb *and* near a screen
+/// edge is the hardest case for the two culling stages to get right jointly, because
+/// each one alone sees only a marginal rejection. This sweep is where a regression
+/// in either stage's tolerance would surface first.
 #[test]
-#[ignore = "defect probe: at 12 000 km, tiles within ~1.5 deg of the limb and at the bottom screen edge are culled while still visible"]
 fn test_horizon_pitch_sweep_has_no_false_negatives() {
     const MAX_FN: usize = 0;
 
@@ -587,19 +590,28 @@ fn test_zoom_cliff_probe() {
 /// than the frustum. This probe measures that band directly and reproducibly
 /// instead of relying on a lucky fuzz cell.
 ///
-/// **Ignored: this fails today.** Measured over 128 cells / **664 097 246 visible
-/// samples**: **305 448 false negatives (0.046%), reaching 8.0715° inside the
-/// limb.** The band widens with altitude — under 1° at 4 000 km and mid
-/// latitudes, 1.6° at 8 700 km, 8.0° at 12 000 km — and nothing beyond 10° is
-/// ever affected. The two viewport shapes (1920×1080 and 3840×720) give byte-for
-/// byte identical counts, which rules the frustum out and points squarely at the
-/// per-tile horizon-culling point (`compute_horizon_culling_point`, computed in
-/// f32, and the `is_occluded` test at the top of `QuadtreeNode::update`).
+/// **Was the harness's headline defect; now its headline guard.** It used to measure
+/// over 128 cells / 664 097 246 visible samples: **305 448 false negatives
+/// (0.046 %), reaching 8.0715° inside the limb**, widening with altitude — under 1°
+/// at 4 000 km, 1.6° at 8 700 km, 8.0° at 12 000 km. That the two viewport shapes
+/// (1920×1080 and 3840×720) gave byte-for-byte identical counts ruled the frustum
+/// out.
 ///
-/// The printed bucket table is the finding: it shows how wide the broken band is
-/// at each altitude. The threshold is the target (zero), not the measured value.
+/// **Now: 0 false negatives, band 0.0000°, over the same 664 097 246 samples.**
+///
+/// The harness's own note blamed `compute_horizon_culling_point`. It was wrong, and
+/// usefully so: the 4-corner spherical-cap reduction is *provably sound* (§3.6) — it
+/// is merely loose. The band came from the **sub-OBB back-face heuristic**
+/// `normal·(cam − centre) > −max_extent`, whose margin is short by a factor
+/// `h = √(C²−1)` and is therefore unsound above 2 642 km altitude (§4.1). Simulating
+/// that one line reproduced 8.0760° at 12 000 km against this test's 8.0715°.
+///
+/// The invariant: **the horizon stage may never cull a tile with a visible point.**
+/// It is now the exact supremum of `q·c` over the tile's lon/lat rectangle, so on
+/// zero-relief terrain it has FP = 0 as well as FN = 0 — it is not a bound, it is
+/// the answer. The bucket table stays printed because it is the cheapest way to see
+/// a tolerance regression: a band of *any* width is a failure.
 #[test]
-#[ignore = "defect probe: tiles are dropped up to 8.07 deg inside the visible limb (horizon-culling conservatism in QuadtreeNode::update); widens with altitude"]
 fn test_limb_band_has_no_false_negatives() {
     /// Target: a point inside the visible limb by any margin at all must be
     /// covered. Anything closer to the limb than this is the oracle's own
@@ -683,39 +695,39 @@ fn test_limb_band_has_no_false_negatives() {
     );
 }
 
-/// The **second, distinct** defect family the fuzz sweep turned up: false
-/// negatives that are nowhere near the limb.
+/// **Was the most serious thing the harness found; now a guard.** Near-ground,
+/// high-zoom views, far from the limb — the regime that rules horizon culling out
+/// entirely.
 ///
-/// One fuzz cell — Tracking mode, 35 m altitude, deepest zoom 20 — produced 101
-/// false negatives at limb angles of 60-65°, i.e. in the middle of the visible
-/// disc, not at its edge. That rules out horizon culling entirely and points at
-/// the near-ground/high-zoom regime, where
-/// [`super::test_analytic_planes::test_f32_plane_downcast_error_vs_tile_size`]
-/// measures the f32 frustum-plane quantum at ~0.128 m against a zoom-20 tile's
-/// ~0.3 m projected radius — the culling decision is made with an error worth
-/// 40% of the tile.
+/// It used to measure, over 576 cells / 16 612 092 visible samples, **223 592 misses
+/// in 8 cells (1.35 %)**, of which:
 ///
-/// This probe sweeps that regime deliberately instead of waiting for the fuzzer
-/// to stumble into it, and reports how many of its misses are *not* limb-related.
+/// * **6 cells were `CameraMode::Tracking` at 5 m looking straight down, and they
+///   were 100 % false negative** — every sample on screen was ground and the
+///   quadtree returned **1 tile** (roll 0°) or **none at all** (roll 90°, 176°).
+///   A blank globe, not a hole in one. `Free` and `Cockpit` at the same position
+///   were clean, which localised it to Tracking's znear, `clamp(|local_pos|·0.05,
+///   1e-8, 5e-6)` Mm — pinned at 5 m against a zfar of 6 378 km.
+/// * 2 more cells lost a single sample each at 35 m / 30° pitch, at zoom 19–20.
 ///
-/// **Ignored: this fails today, and this is the most serious thing the harness
-/// found.** Measured over 576 cells / 16 612 092 visible samples:
+/// **Now: 0 false negatives over the same 16 612 092 samples.** Two independent
+/// causes, both removed:
 ///
-/// * **8 cells with false negatives, 223 592 misses in total (1.35%).**
-/// * **6 of those 8 are `CameraMode::Tracking` at 5 m altitude looking straight
-///   down, and they are 100% false negative** — every sample on screen is ground,
-///   and the quadtree returns **1 tile** (roll 0°) or **zero tiles at all**
-///   (roll 90° and 176°). That is a blank globe, not a hole in it. `Free` and
-///   `Cockpit` at the same position are clean, so it is specific to Tracking's
-///   znear, which is `clamp(|local_pos| * 0.05, 1e-8, 5e-6)` megameters — pinned
-///   at 5 m against a `zfar` of 6 378 km, a depth range of 1.3e9:1 that the f32
-///   frustum-plane downcast cannot represent.
-/// * The remaining 2 cells lose a single sample each at 35 m / 30° pitch, one in
-///   Free and one in Tracking, at zoom 19-20.
-/// * **None** of the misses is within 5° of the limb, confirming this is a
-///   separate defect from the limb band.
+/// 1. The near plane is gone from tile culling (§2.6). It rejected the z=17 ancestor
+///    on a *true* signed distance of 0.058 m computed in f32 from 6.378 Mm operands,
+///    where the rounding noise is ±0.5 m; `QuadtreeNode::update` nulls `children` on
+///    a cull, so killing z=17 killed z=18–20 and the branch returned nothing. The
+///    camera-relative f64 subtraction (I-2) would have fixed the arithmetic, but the
+///    exact answer is still −0.27 m against a 0.30 m projected radius — 10 % from a
+///    cliff edge is not a design, so the test itself was deleted as provably vacuous
+///    whenever `znear < altitude`.
+/// 2. Tile bounds are derived in f64 (I-5). The f32 quantum is 1.7 m of ground,
+///    which at z=20 is 4.5 % of a tile.
+///
+/// The invariant: **a viewport full of ground must be covered by tiles, in every
+/// camera mode.** `NOT_LIMB_DEG` keeps the two defect families separable in the
+/// printout if this ever goes red again.
 #[test]
-#[ignore = "defect probe: Tracking mode at 5 m altitude returns 0-1 tiles for a screen full of ground (100% false negative); plus isolated z19-20 misses"]
 fn test_near_ground_high_zoom_has_no_false_negatives() {
     const MAX_FN: usize = 0;
     /// A miss further inside the limb than this cannot be horizon-culling
@@ -771,30 +783,34 @@ fn test_near_ground_high_zoom_has_no_false_negatives() {
 }
 
 /// Seeded random sweep over the whole parameter space at once — the interactions
-/// the one-factor-at-a-time sweep cannot reach.
+/// the one-factor-at-a-time sweep cannot reach. Deterministic: seed 0x5EED_C0DE,
+/// 100 000 cells, identical on every machine. This is the broadest statement the
+/// harness can make.
 ///
-/// Deterministic: seed 0x5EED_C0DE, 400 cells, identical on every machine.
+/// **Was a defect probe; now the top-level guard.** It used to measure, over
+/// **1 079 616 535 visible samples**, **62 573 false negatives (0.0058 %) in 416
+/// cells**, worst cell 27.24 %, splitting into exactly the two families the focused
+/// probes isolate: 81.9 % within 5° of the limb on coarse tiles, and 6 127 at zoom
+/// 19–20 near the ground.
 ///
-/// **Ignored: this fails today.** Measured over 100 000 cells /
-/// **1 079 616 535 visible samples**: **62 573 false negatives (0.0058%) in 416
-/// cells**, worst cell 27.24%. Broken down by where the misses are, they are the
-/// same two families the focused probes isolate:
+/// **Now: 0 false negatives over the same 1 079 616 535 visible samples.**
 ///
-/// * **81.9% lie within 5° of the visible limb**, on coarse tiles — by deepest
-///   zoom: z1 29 372, z2 17 928, z3 7 329, z4 1 647. See
-///   [`test_limb_band_has_no_false_negatives`].
-/// * **6 127 are at zoom 19-20**, near the ground and far from the limb. See
-///   [`test_near_ground_high_zoom_has_no_false_negatives`].
-/// * By camera mode: Free 58 831, Tracking 3 297, Cockpit 445 — Free dominates
-///   simply because it is the mode that gets used at high altitude.
+/// False positives, measured on the same run and excluding cells where the oracle
+/// finds no visible surface at all (see `CellResult::is_degenerate`):
 ///
-/// Also measured here: whole-sweep FP rate **5.44%** (73 640 wasted tiles of
-/// 1 353 699), with individual cells reaching 100% — views where the frustum
-/// intersects a tile's bounding volume but no part of the tile's surface is
-/// actually visible. That is the conservatism the plane-only separating-axis test
-/// buys, quantified.
+/// | | FP | mean `QuadtreeManager::update` |
+/// |---|---|---|
+/// | before the rework | 5.58 % | 7.7 µs |
+/// | after | **4.18 %** | **4.3 µs** |
+///
+/// The FP number is *not* asserted here. It is a rate, bounded deliberately by
+/// [`test_false_positive_rate_within_budget`] and by the per-cell thresholds in
+/// [`test_axis_sweep_has_no_false_negatives`], because a whole-sweep FP assertion
+/// over 100 000 randomised cells would be a threshold nobody could reason about.
+/// Individual cells still reach 100 %: views where the frustum meets a tile's
+/// bounding volume but no part of the tile's surface is visible. That is the
+/// residual floor §5.4 describes and deliberately leaves open.
 #[test]
-#[ignore = "defect probe: randomised 100k-cell sweep exposes 62573 false negatives in 416 cells, split between the limb band and the near-ground high-zoom regime"]
 fn test_fuzz_sweep_has_no_false_negatives() {
     const MAX_FN: usize = 0;
     const SEED: u32 = 0x5EED_C0DE;
