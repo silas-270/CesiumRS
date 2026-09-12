@@ -652,7 +652,7 @@ impl<'a> WgpuState<'a> {
         });
         self.last_visible_set = current_visible;
 
-        for (id, _center, _radius) in visible_tiles {
+        for (id, _center, _bounding_radius) in visible_tiles {
             let id = *id;
 
             // Check if own hi-res texture is available (non-mutating peek).
@@ -777,11 +777,11 @@ impl<'a> WgpuState<'a> {
                 [1.0, 1.0, 0.0, 1.0],
             );
 
-            for (_tile_id, center, radius) in visible_tiles {
+            for (_tile_id, center, bounding_radius) in visible_tiles {
                 crate::render::debug_geometry::append_crosshair_lines(
                     &mut debug_vertices,
                     *center,
-                    *radius,
+                    *bounding_radius,
                     [0.0, 1.0, 0.0, 1.0],
                 );
             }

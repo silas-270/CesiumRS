@@ -5,7 +5,7 @@ pub mod quadtree;
 pub mod slab;
 pub mod tile_id;
 
-pub use bounding_volume::{Frustum, OrientedBoundingBox};
+pub use bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
 pub use horizon::{point_is_occluded, transform_to_scaled_space, HorizonCamera, TilePatch};
 pub use quadtree::{CullContext, QuadtreeManager, QuadtreeNode};
 pub use tile_id::{

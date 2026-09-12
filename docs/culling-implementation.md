@@ -138,8 +138,8 @@ quantisation survives.
 | world → camera-relative, f64 subtract then downcast | `bounding_volume.rs:151` |
 | world → scaled space (camera) | `horizon.rs:88` |
 | patch λ/φ → eight trig constants, f64 | `horizon.rs:155` |
-| OBB half-axes f64 → f32 | `quadtree.rs:187-195` |
-| node centre → LOD distance, f64 subtract then downcast | `quadtree.rs:510` |
+| OBB half-axes f64 → f32 | `quadtree.rs:188-196` |
+| node centre → LOD distance, f64 subtract then downcast | `quadtree.rs:563` |
 
 ---
 
@@ -212,7 +212,7 @@ a looser but still sound answer.
 
 ### 2.4 The horizon constants
 
-`CullContext::new` (`quadtree.rs:392`) builds a `HorizonCamera`
+`CullContext::new` (`quadtree.rs:432`) builds a `HorizonCamera`
 (`horizon.rs:87`) from the eye:
 
 | field | value | why |
@@ -231,14 +231,14 @@ hole rather than a safety belt.
 
 ## 3. Once per node, at construction
 
-`QuadtreeNode::new` (`quadtree.rs:416`). Everything here is computed once, when
+`QuadtreeNode::new` (`quadtree.rs:465`). Everything here is computed once, when
 the node is created by `subdivide()`, and never recomputed — it depends only on
 the `TileId`.
 
 ### 3.1 The tile's rectangle
 
 ```rust
-let bounds = tile_bounds(&id);   // quadtree.rs:418 → tile_id.rs:86
+let bounds = tile_bounds(&id);   // quadtree.rs:467 → tile_id.rs:86
 ```
 
 `tile_bounds` is the **only** place a tile's four numbers are derived
@@ -285,7 +285,7 @@ implicit form — exact whether or not the point is on the surface.
 
 ### 3.3 The OBB
 
-`fit_obb` (`quadtree.rs:158`) samples an `(steps+1)²` grid over the patch in f64,
+`fit_obb` (`quadtree.rs:159`) samples an `(steps+1)²` grid over the patch in f64,
 projects each sample onto `(east, north, up)`, and takes the min/max box. It
 returns:
 
@@ -293,7 +293,7 @@ returns:
   `QuadtreeNode::center` and used for the LOD distance and for the renderer;
 * `radius` — the greatest sample distance from that centre, f32, the renderer's
   per-tile bounding radius;
-* `obb` — centre in f64, three half-axes in f32 (`quadtree.rs:187-195`).
+* `obb` — centre in f64, three half-axes in f32 (`quadtree.rs:188-196`).
 
 Grid density is `obb_grid_steps` (`quadtree.rs:113`): **8 for z < 5, 2
 otherwise**. §5.3 proves a 3×3 grid captures all three extents of a lon/lat patch
@@ -317,17 +317,30 @@ per node, and **no transcendentals at run time**.
 
 ### 3.5 The sub-grid
 
-`SubGrid::build` (`quadtree.rs:250`) cuts the patch into `k × k` sub-patches,
+`SubGrid::build` (`quadtree.rs:259`) cuts the patch into `k × k` sub-patches,
 each with its own OBB (fitted at `steps = 4`) plus the `k+1` longitude and `k+1`
 latitude breakpoints, stored as `(sin, cos)` pairs shared along each row and
 column. That is `32·(k+1)` bytes instead of `64·k²` — at `k = 8`, 288 B rather
 than 4 kB.
 
-The breakpoints come from the same expressions `sub_bounds` (`quadtree.rs:205`)
-uses, with latitude taken in **Mercator y** so consecutive cells share an edge
-exactly and the pole stretch is reapplied to the cell that actually touches the
-pole row. **The union of the `k²` cells is exactly the drawn patch**, and that is
-what makes `any_visible` sound (§4.7 below).
+The breakpoints come from the same expressions `sub_bounds` (`quadtree.rs:206`)
+uses, with latitude taken in **Mercator y** so consecutive sub-patches share an
+edge exactly and the pole stretch is reapplied to the sub-patch that actually
+touches the pole row. **The union of the `k²` sub-patches is exactly the drawn
+patch**, and that is what makes `has_surviving_sub_patch` sound (§4.7 below).
+
+The sub-boxes are fitted at a fixed `steps = 4`, **not** at `obb_grid_steps(z)`.
+That is deliberate and bit-relevant: `steps` selects which points of the
+sub-rectangle are sampled, so any other value changes every sub-box's extents and
+moves the FP figures globally. It is a recalibration, not a tidy-up.
+
+The `k+1` latitude breakpoints are stored **increasing in φ** — index 0 is the
+south edge — the same polarity as `TilePatch` and as the longitude breakpoints,
+so every span handed to `lat_span_max` is `[low, high]`. The row index `vi`, which
+follows Mercator y, runs the other way; `sub_patch_is_occluded` converts once, in
+one named place. The breakpoint values themselves must keep coming from
+`i as f64 / k as f64`: re-deriving them from the far end (`1.0 - i/k`) is not
+bit-identical at k = 12, 6, 3, and one ulp there flips borderline sub-patches.
 
 `k` comes from the calibrated table (`quadtree.rs:98`):
 
@@ -348,7 +361,7 @@ the chosen row is the knee, and FN is zero at every row of it.
 
 ## 4. The per-node test sequence
 
-`QuadtreeNode::update` (`quadtree.rs:467`), in execution order. Every stage
+`QuadtreeNode::update` (`quadtree.rs:520`), in execution order. Every stage
 either **rejects on a proof** or defers; nothing rejects on a heuristic.
 
 ### 4.0 Summary
@@ -360,14 +373,14 @@ either **rejects on a proof** or defers; nothing rejects on a heuristic.
 | 3a | circumsphere vs 4 planes | `bounding_volume.rs:258-269` | ~20 f32 flops | boxes far from the boundary, both ways | bound |
 | 3b | 4 planes vs box | `bounding_volume.rs:272-288` | ~92 f32 flops | boxes outside one plane | bound |
 | 3c | vertex witness | `bounding_volume.rs:355-369` | ~96 f32 adds | — (it *accepts*) | exact acceptance |
-| 3d | box-axis slabs | `slab.rs:79` | 3 axes × 8 corners | **compiled out** (`ENABLED = false`) | — |
+| 3d | box-axis slabs | `slab.rs:79` | 3 axes × 8 corners | **compiled out** (`BOX_AXES_ENABLED = false`) | — |
 | 3e | edge × edge axes | `slab.rs:171` | ~660 f64 flops | boxes past a frustum corner or edge | completes the set |
-| 4 | the same, per sub-cell | `quadtree.rs:322` | `k²` × the above | patches whose every cell is dead | — |
+| 4 | the same, per sub-patch | `quadtree.rs:354` | `k²` × the above | patches whose every sub-patch is dead | — |
 
 ### 4.1 Stage 1 — horizon
 
 ```rust
-// quadtree.rs:469
+// quadtree.rs:522
 if self.patch.is_occluded(&ctx.horizon) { self.visible = false; self.children = None; return; }
 ```
 
@@ -413,7 +426,7 @@ keeps one nanometre higher up too. No cliff at zero altitude.
 ### 4.2 Stage 2 — the camera-relative offset
 
 ```rust
-let delta = ctx.frustum.relative(self.obb.center);   // quadtree.rs:476
+let delta = ctx.frustum.relative(self.obb.center);   // quadtree.rs:529
 ```
 
 One f64 subtraction and a downcast. This is invariant **I-2** at its point of
@@ -428,9 +441,10 @@ circumsphere radius:
 * `s_p + L1 < −ε` for any `p` → **Outside**, done in 20 flops;
 * `s_p − L1 ≥ ε` for all four → **Inside**, likewise.
 
-A sub-cell is usually either well inside the frustum or well outside it, so this
+A sub-patch is usually either well inside the frustum or well outside it, so this
 settles most boxes for a fifth of the cost of the full plane test. It matters
-because `SubGrid::any_visible`'s first pass runs it `k²` times per node.
+because `SubGrid::has_surviving_sub_patch`'s first pass runs it `k²` times per
+node.
 
 ### 4.4 Stage 3b — the four planes
 
@@ -447,8 +461,9 @@ negative, the whole box lies in the open half-space outside a frustum plane and
 cannot meet the frustum. Rejecting only when it is below `−ε` puts the tolerance
 in the **keeping** direction (I-6).
 
-`classify_box` (`bounding_volume.rs:249`) returns the three-way verdict
-`Outside` / `Inside` / `Straddling`. Both decisive verdicts are taken on a proof:
+`classify_box` (`bounding_volume.rs:249`) returns the three-way `PlaneVerdict`
+— `Outside` / `Inside` / `Straddling`. The type is named for the *four planes*
+that produce it, not for the box it is asked about. Both decisive verdicts are taken on a proof:
 a box is called `Inside` only when `s_p − r_p ≥ ε` for all four.
 
 ### 4.5 Stage 3c — the vertex witness
@@ -475,7 +490,7 @@ other:
 | family | count | where |
 |---|---|---|
 | face normals of `P` | 4 | stage 3b |
-| face normals of the box | 3 | `slab.rs:79`, **`ENABLED = false`** |
+| face normals of the box | 3 | `slab.rs:79`, **`BOX_AXES_ENABLED = false`** |
 | edge × edge | 4 × 3 = 12 | `slab.rs:171`, **on** |
 
 So `four planes ‖ separated_on_box_axes ‖ separated_on_edge_cross_axes` is
@@ -519,14 +534,16 @@ absolute FP figure. See §8.2 below.)*
 
 ### 4.7 Stage 4 — the sub-grid
 
-`SubGrid::any_visible` (`quadtree.rs:322`), reached only when the node's own box
-is `Straddling` (`quadtree.rs:487-499`).
+`SubGrid::has_surviving_sub_patch` (`quadtree.rs:354`), reached only when the
+node's own box is `Straddling` (`quadtree.rs:540-552`). The name is the claim: a
+survivor is a sub-patch no proof of invisibility reached, not one shown to be on
+screen.
 
 **The dispatch.** With a grid present, the node's own box is asked *only* the
 four planes:
 
 * `Outside` → cull, no grid work;
-* `Inside` → keep outright. Every sub-cell is inside the frustum too, so the grid
+* `Inside` → keep outright. Every sub-patch is inside the frustum too, so the grid
   could only cull if every sub-patch were behind the limb — and stage 1 already
   tested exactly that, on the whole patch, exactly;
 * `Straddling` → run the grid, where the exact stages are both cheaper (smaller
@@ -534,24 +551,24 @@ four planes:
 
 Without a grid (`k = 1`) the node's box takes `intersects_obb` itself.
 
-**The cell loop, two passes.** Pass 1 asks the limb test then `classify_box` for
-each cell: an `Inside` cell settles the node immediately, and a tile with no
-straddling cell at all is settled too. Pass 2 — `intersects_obb`, including the
-edge-cross axes — therefore runs only for a node that has cells on the frustum
-boundary and none strictly within it, which is the thin band where the answer was
-ever in doubt. The frustum stage is ~7× the first, so this ordering is worth the
-duplicated loop.
+**The sub-patch loop, two passes.** Pass 1 asks the limb test then `classify_box`
+for each sub-patch: an `Inside` sub-patch settles the node immediately, and a tile
+with no straddling sub-patch at all is settled too. Pass 2 — `intersects_obb`,
+including the edge-cross axes — therefore runs only for a node that has
+sub-patches on the frustum boundary and none strictly within it, which is the thin
+band where the answer was ever in doubt. The frustum stage is ~7× the first, so
+this ordering is worth the duplicated loop.
 
 The limb test comes first in both passes, and its λ half is **hoisted out of the
-inner loop** (`lon_span_max`, `quadtree.rs:361`): every cell in column `ui` has
-the same λ span, and that is the expensive half.
+inner loop** (`SubGrid::column_a_star`, `quadtree.rs:397`): every sub-patch in
+column `ui` has the same λ span, and that is the expensive half.
 
-**Soundness.** A cell is discarded only when it is provably invisible on its own —
-its spherical rectangle entirely behind the limb (exact) or its box separated
-from the frustum (exact). Discarding *every* cell proves the tile invisible,
-because the cells' union is the whole drawn patch: any drawable point lies in
-some cell, and that cell is invisible. Keeping the tile as soon as one cell
-survives is the conservative direction. ∎ The union property is not incidental —
+**Soundness.** A sub-patch is discarded only when it is provably invisible on its
+own — its spherical rectangle entirely behind the limb (exact) or its box
+separated from the frustum (exact). Discarding *every* sub-patch proves the tile
+invisible, because the sub-patches' union is the whole drawn patch: any drawable
+point lies in some sub-patch, and that sub-patch is invisible. Keeping the tile as
+soon as one survives is the conservative direction. ∎ The union property is not incidental —
 it is why `sub_bounds` parameterises latitude in Mercator y and reapplies the
 pole stretch. Break that and the soundness argument goes with it.
 
@@ -559,13 +576,13 @@ pole stretch. Break that and the soundness argument goes with it.
 
 ## 5. LOD, subdivision and hysteresis
 
-`quadtree.rs:506-538`, reached only by a node that survived culling.
+`quadtree.rs:559-591`, reached only by a node that survived culling.
 
 ```rust
-self.visible = true;                                        // :506
-let dist = (self.center - ctx.frustum.eye).length() as f32; // :510  f64 subtract
-let subdivide_dist = self.lod_radius * lod_factor;          // :517  lod_factor = 2.0
-let collapse_dist  = subdivide_dist * 1.20;                 // :518
+self.visible = true;                                        // :559
+let dist = (self.center - ctx.frustum.eye).length() as f32; // :563  f64 subtract
+let subdivide_dist = self.unstretched_radius * lod_factor;  // :570  lod_factor = 2.0
+let collapse_dist  = subdivide_dist * 1.20;                 // :571
 let should_be_subdivided = if is_subdivided { dist < collapse_dist }
                            else             { dist < subdivide_dist };
 ```
@@ -578,28 +595,30 @@ collapse until `1.2×`, which prevents LOD oscillation when the camera straddles
 the threshold. The previous 1.05× band was ~50 m at z = 19 and caused visible
 APPEAR/DISAPPEAR flicker on high-detail tiles.
 
-**`lod_radius` is measured on the *un*-stretched rectangle**
-(`quadtree.rs:424-425`): a polar row's true ground extent, not its pull to ±90°.
-That makes polar caps subdivide later, which is an FP source, not an FN one, and
-is kept deliberately (§8.4).
+**`unstretched_radius` is measured on the *un*-stretched rectangle**
+(`quadtree.rs:477-478`): a polar row's true ground extent, not its pull to ±90°.
+That makes polar caps subdivide later, which is an accepted FP source, never an FN
+one, and is kept deliberately (§8.4). The name says what it measures — a geometry.
+The LOD knob is `lod_factor` and the threshold is `subdivide_dist`; neither is
+this number.
 
 ### 5.1 How visibility interacts with subdivision
 
 This is the part that bites.
 
 * **A cull deletes the subtree.** Both cull paths set `children = None`
-  (`quadtree.rs:471`, `:502`), and so does falling out of the LOD band (`:537`).
-* **Only leaves are emitted.** `collect_visible_tiles` (`quadtree.rs:549`)
+  (`quadtree.rs:524`, `:555`), and so does falling out of the LOD band (`:590`).
+* **Only leaves are emitted.** `collect_visible_tiles` (`quadtree.rs:602`)
   returns early on `!visible` and pushes only nodes with no children.
 * **Therefore a wrong cull at *any* ancestor removes an entire subtree**, not one
   tile. This is invariant **I-7**, and it is why every test in §4 must be sound at
   every level, not merely "sound at leaf granularity". A test that is only
   correct for small patches is not admissible here.
-* **Children are updated within the same call** (`quadtree.rs:531-535`), so the
+* **Children are updated within the same call** (`quadtree.rs:584-588`), so the
   tree reaches full depth in a single `update`. More than one update matters only
   for the hysteresis band; the harness uses four and asserts the set is a fixed
   point (`test_update_iterations_reach_fixed_point`).
-* **`get_renderable_tiles`** (`quadtree.rs:562`) is a *separate* traversal that
+* **`get_renderable_tiles`** (`quadtree.rs:615`) is a *separate* traversal that
   falls back to an ancestor's mesh when a child is not yet cached. It does not
   re-run any visibility test — it reads the `visible` flags this pass set.
 
@@ -801,7 +820,7 @@ the five known defects rather than failing on them; use `--ignored` there to get
 the limb band and the fuzz sweep.
 
 To A/B a single stage inside the engine, flip its `const` and rerun — `slab.rs`'s
-`ENABLED` and `EDGE_CROSS_ENABLED` exist for exactly that, and
+`BOX_AXES_ENABLED` and `EDGE_CROSS_ENABLED` exist for exactly that, and
 `SUB_BOXES_PER_AXIS` is a table for the same reason. Every row of the tables in
 those comments was produced this way.
 

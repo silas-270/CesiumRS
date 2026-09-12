@@ -167,7 +167,7 @@ const ZOOM_CLIFF_CELLS: usize = 132;
 /// [`UPDATE_ITERATIONS`] updates, for these ~200 camera cells, plus the
 /// bounding-volume arithmetic (`fit_obb`) that feeds it. It covers **nothing
 /// else**. In particular it does not cover `get_renderable_tiles`
-/// (`crates/cesium-engine/src/globe/quadtree/quadtree.rs:562`, a separate
+/// (`crates/cesium-engine/src/globe/quadtree/quadtree.rs:615`, a separate
 /// traversal with its own readiness and ancestor-substitution rules), the label
 /// culling in [`super::test_label_culling`], or any rendering capture downstream
 /// of tile selection. A green digest means "these cells select the same tiles",

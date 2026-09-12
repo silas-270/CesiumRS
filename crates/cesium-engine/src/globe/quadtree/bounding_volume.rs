@@ -70,7 +70,7 @@ impl OrientedBoundingBox {
 
 /// Where a box sits relative to the frustum's four side half-spaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BoxVerdict {
+pub enum PlaneVerdict {
     /// Provably outside one of the four planes — culled, no further test needed.
     Outside,
     /// Provably inside all four — it meets the frustum, no further test possible.
@@ -94,7 +94,7 @@ pub struct Frustum {
     /// ([`super::slab::separated_on_box_axes`]). `None` skips that stage entirely.
     ///
     /// **No reachable reader today.** That stage is compiled out behind
-    /// [`super::slab::ENABLED`]` == false` — a deliberately preserved negative
+    /// [`super::slab::BOX_AXES_ENABLED`]` == false` — a deliberately preserved negative
     /// result, not dead code: it is correct, it is measured (0.01 points of FP for
     /// 0.5 µs; see the `slab` module header's A/B table), and the trade flips back
     /// if tile bounding volumes ever grow much larger relative to the frustum.
@@ -227,10 +227,10 @@ impl Frustum {
     ///
     /// The four `s_p` come first on their own, tested against the box's
     /// **circumsphere** (`half_axis_l1` bounds its radius, since
-    /// `‖Σ t_j h_j‖ ≤ Σ ‖h_j‖ ≤ Σ ‖h_j‖₁`). That decides most boxes — a sub-cell is
+    /// `‖Σ t_j h_j‖ ≤ Σ ‖h_j‖ ≤ Σ ‖h_j‖₁`). That decides most boxes — a sub-patch is
     /// either well inside the frustum or well outside it — for 20 flops instead of
     /// 92, and only a box the sphere leaves undecided pays for the twelve
-    /// `n_p·h_j`. It matters because `SubGrid::any_visible`'s first pass runs this
+    /// `n_p·h_j`. It matters because `SubGrid::has_surviving_sub_patch`'s first pass runs this
     /// `k²` times per node.
     #[inline]
     pub fn classify_box(
@@ -238,21 +238,21 @@ impl Frustum {
         delta: Vec3,
         half_axes: &[Vec3; 3],
         half_axis_l1: f32,
-    ) -> BoxVerdict {
+    ) -> PlaneVerdict {
         let eps = Self::eps(delta, half_axis_l1);
         let mut s = [0.0_f32; 4];
         let mut sphere_inside = true;
         for p in 0..4 {
             s[p] = self.normals[p].dot(delta);
             if s[p] + half_axis_l1 < -eps {
-                return BoxVerdict::Outside;
+                return PlaneVerdict::Outside;
             }
             if s[p] - half_axis_l1 < eps {
                 sphere_inside = false;
             }
         }
         if sphere_inside {
-            return BoxVerdict::Inside;
+            return PlaneVerdict::Inside;
         }
 
         let mut inside_all = true;
@@ -261,16 +261,16 @@ impl Frustum {
             let r =
                 n.dot(half_axes[0]).abs() + n.dot(half_axes[1]).abs() + n.dot(half_axes[2]).abs();
             if s[p] + r < -eps {
-                return BoxVerdict::Outside;
+                return PlaneVerdict::Outside;
             }
             if s[p] - r < eps {
                 inside_all = false;
             }
         }
         if inside_all {
-            BoxVerdict::Inside
+            PlaneVerdict::Inside
         } else {
-            BoxVerdict::Straddling
+            PlaneVerdict::Straddling
         }
     }
 

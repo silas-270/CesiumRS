@@ -102,10 +102,10 @@ pub fn tile_bounds(id: &TileId) -> TileBounds {
 /// The *un*-stretched extent of `id`: identical to [`tile_bounds`] except that the
 /// polar rows keep their true Mercator latitude instead of being pulled to ±90°.
 ///
-/// Used only by the LOD radius, which deliberately sizes a polar cap by the ground
-/// it really covers rather than by the stretched rectangle (see
-/// `docs/culling-math.md` §6.3 / §8.4). **Never** use this for culling: the drawn
-/// patch is the stretched one.
+/// Used only by `QuadtreeNode::unstretched_radius`, which deliberately sizes a
+/// polar cap by the ground it really covers rather than by the stretched rectangle
+/// (see `docs/culling-math.md` §6.3 / §8.4). **Never** use this for culling: the
+/// drawn patch is the stretched one.
 pub fn tile_bounds_unstretched(id: &TileId) -> TileBounds {
     let n = (1_u64 << id.z) as f64;
     TileBounds {

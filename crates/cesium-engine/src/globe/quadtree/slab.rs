@@ -49,7 +49,7 @@
 //!
 //! The **box's own axes**, by contrast, are now worth almost nothing: 0.01 points
 //! of FP for 0.5 µs, because what they used to catch the vertex witness and the
-//! edge crosses already catch. They are kept, compiled out behind [`ENABLED`],
+//! edge crosses already catch. They are kept, compiled out behind [`BOX_AXES_ENABLED`],
 //! because they are correct, they are measured, and if tile bounding volumes ever
 //! get much larger relative to the frustum (a tighter `zfar`, or 3D tiles) the
 //! trade flips back. On the derivation's synthetic corner probe, where the boxes
@@ -68,7 +68,7 @@ use super::bounding_volume::{Frustum, FRUSTUM_EPS_COEFF};
 /// Kept as a `const` rather than a runtime flag on purpose: the stage sits in the
 /// innermost loop of `QuadtreeNode::update`, and even an `env::var_os` probe there
 /// costs more than the test it guards (measured: +4 µs on a 10 µs update).
-pub const ENABLED: bool = false;
+pub const BOX_AXES_ENABLED: bool = false;
 
 /// Is the box separated from the frustum along one of its **own** axes?
 ///
@@ -80,7 +80,7 @@ pub const ENABLED: bool = false;
 /// `delta` is the box centre in the camera-relative frame.
 #[inline]
 pub fn separated_on_box_axes(frustum: &Frustum, delta: Vec3, half_axes: &[Vec3; 3]) -> bool {
-    if !ENABLED {
+    if !BOX_AXES_ENABLED {
         return false;
     }
     let Some(corners) = &frustum.corners else {
@@ -168,7 +168,7 @@ const EDGE_EPS_COEFF: f64 = 8.0 * 5.960_464_5e-8;
 /// # Cost, and why it is affordable
 ///
 /// ~660 flops per box against the four-plane test's ~92 — but it runs **only on a
-/// box the cheap stages already accepted**, and `SubGrid::any_visible` stops at the
+/// box the cheap stages already accepted**, and `SubGrid::has_surviving_sub_patch` stops at the
 /// first survivor. A visible tile therefore pays for one; a tile being culled pays
 /// for the handful of its sub-boxes that reached the frustum's corner.
 #[inline]

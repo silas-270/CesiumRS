@@ -234,7 +234,7 @@ pub fn limb_bucket(deg: f64) -> usize {
 ///
 /// Read this before treating a green digest as "nothing changed":
 ///
-/// * **`get_renderable_tiles`** (`crates/cesium-engine/src/globe/quadtree/quadtree.rs:562`)
+/// * **`get_renderable_tiles`** (`crates/cesium-engine/src/globe/quadtree/quadtree.rs:615`)
 ///   is a *separate* traversal with its own readiness predicate and its own
 ///   ancestor-substitution rules. It can change while `get_visible_tiles` does
 ///   not. Nothing here looks at it.
@@ -296,14 +296,14 @@ fn fnv1a_u64(h: u64, v: u64) -> u64 {
 /// the same tile set is itself a behaviour change worth catching.
 pub fn tiles_digest(tiles: &[(TileId, Vec3, f32)]) -> u64 {
     let mut h = FNV_OFFSET_BASIS;
-    for (id, center, radius) in tiles {
+    for (id, center, bounding_radius) in tiles {
         h = fnv1a_byte(h, id.z);
         h = fnv1a_u32(h, id.x);
         h = fnv1a_u32(h, id.y);
         h = fnv1a_u32(h, center.x.to_bits());
         h = fnv1a_u32(h, center.y.to_bits());
         h = fnv1a_u32(h, center.z.to_bits());
-        h = fnv1a_u32(h, radius.to_bits());
+        h = fnv1a_u32(h, bounding_radius.to_bits());
     }
     h
 }

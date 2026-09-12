@@ -29,7 +29,7 @@ fn bench_cells() -> Vec<ViewParams> {
 /// Resident bytes of one node, including whatever it hangs off the heap.
 fn node_bytes(node: &QuadtreeNode) -> usize {
     let mut total = std::mem::size_of::<QuadtreeNode>();
-    total += node.sub_obb_heap_bytes();
+    total += node.sub_grid_heap_bytes();
     if let Some(children) = &node.children {
         total += std::mem::size_of::<[QuadtreeNode; 4]>() - 4 * std::mem::size_of::<QuadtreeNode>();
         for c in children.iter() {

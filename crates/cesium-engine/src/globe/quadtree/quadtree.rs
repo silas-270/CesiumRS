@@ -11,7 +11,7 @@
 //! 2. **Frustum** — the four side planes, camera-relative, ~92 flops
 //!    ([`super::bounding_volume`]), and where they leave the answer open, the
 //!    separating axes that close it ([`super::slab`]).
-//! 3. **The sub-patch grid** ([`SubGrid`]) — both tests again, per cell of a
+//! 3. **The sub-patch grid** ([`SubGrid`]) — both tests again, per sub-patch of a
 //!    `k × k` subdivision of the tile, with `k` from [`SUB_BOXES_PER_AXIS`].
 //! 4. LOD / hysteresis, unchanged.
 //!
@@ -43,7 +43,7 @@
 
 use glam::{DVec3, Vec3};
 
-use super::bounding_volume::{BoxVerdict, Frustum, OrientedBoundingBox};
+use super::bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
 use super::horizon::{HorizonCamera, TilePatch};
 use super::tile_id::{
     tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
@@ -53,7 +53,7 @@ use crate::globe::geometry::{lon_lat_to_ecef_f64, EARTH_RADIUS_A_F64, EARTH_RADI
 /// Sub-boxes per axis, by zoom — the calibrated subdivision rule.
 ///
 /// Index by zoom level, last entry repeated: `k = 1` means "no grid, the node's own
-/// box takes the exact test". Read [`SubGrid`] first for what a cell buys.
+/// box takes the exact test". Read [`SubGrid`] first for what a sub-patch buys.
 ///
 /// # Why a table and not a formula
 ///
@@ -71,7 +71,7 @@ use crate::globe::geometry::{lon_lat_to_ecef_f64, EARTH_RADIUS_A_F64, EARTH_RADI
 /// buying is the gap between a patch and the single box around it — worth a lot at
 /// z = 1..6, where a tile still spans degrees, and very little below that. Cost
 /// runs the other way: the quadtree holds a handful of nodes per coarse level and
-/// thousands of deep ones, so a cell at z = 3 is nearly free and a cell at z = 12
+/// thousands of deep ones, so a sub-patch at z = 3 is nearly free and one at z = 12
 /// is not. The taper is the measured crossing of those two curves, and the two
 /// curves have no common closed form, so it is a table.
 ///
@@ -152,9 +152,10 @@ fn tangent_frame(center_lon_deg: f64, up: DVec3) -> (DVec3, DVec3) {
 
 /// Fits an oriented box to a lon/lat patch, in f64.
 ///
-/// Returns `(surface_centre, radius, obb)`, where `radius` is the greatest distance
-/// from the patch centre to a sampled point (the renderer's per-tile bounding
-/// radius) and `obb` is the box in the [`tangent_frame`] at that centre.
+/// Returns `(surface_centre, bounding_radius, obb)`, where `bounding_radius` is
+/// the greatest distance from the patch centre to a sampled point (the renderer's
+/// per-tile bounding radius) and `obb` is the box in the [`tangent_frame`] at that
+/// centre.
 fn fit_obb(b: &TileBounds, steps: u32) -> (DVec3, f32, OrientedBoundingBox) {
     let center_lon = b.center_lon();
     let center_lat = b.center_lat();
@@ -226,22 +227,30 @@ fn sub_bounds(id: &TileId, b: &TileBounds, u0: f64, u1: f64, v0: f64, v1: f64) -
 /// * an **oriented box** bounding it, for the frustum test;
 /// * the **spherical rectangle** itself, for the exact limb test (§3.4) — as the
 ///   `k+1` longitude and `k+1` latitude breakpoints, shared along each row and
-///   column rather than stored per cell. That is `32·(k+1)` bytes instead of
+///   column rather than stored per sub-patch. That is `32·(k+1)` bytes instead of
 ///   `64·k²`: at `k = 8`, 288 B rather than 4 kB.
 ///
 /// The breakpoints are the same ones [`sub_bounds`] produces — longitude linear in
-/// the tile's own λ span, latitude taken in **Mercator y** so consecutive cells
-/// share an edge exactly and the union of the `k²` cells is the whole drawn patch,
-/// pole stretch included. That union property is what makes [`SubGrid::any_visible`]
-/// sound.
+/// the tile's own λ span, latitude taken in **Mercator y** so consecutive sub-patches
+/// share an edge exactly and the union of the `k²` sub-patches is the whole drawn
+/// patch, pole stretch included. That union property is what makes
+/// [`SubGrid::has_surviving_sub_patch`] sound.
 pub struct SubGrid {
     k: u32,
-    /// `k²` boxes, indexed `ui · k + vi` — `ui` along λ, `vi` along Mercator y.
+    /// `k²` boxes, indexed `ui · k + vi` — `ui` along λ, `vi` along **Mercator y**,
+    /// so `vi = 0` is the sub-patch row at the *north* edge of the tile.
     obbs: Vec<OrientedBoundingBox>,
     /// `(sin λ, cos λ)` at the `k+1` longitude breakpoints, increasing in λ.
     lon: Vec<(f64, f64)>,
-    /// `(sin φ, cos φ)` at the `k+1` latitude breakpoints, **decreasing** in φ
-    /// (index 0 is the north edge), matching the Mercator-y direction of `vi`.
+    /// `(sin φ, cos φ)` at the `k+1` latitude breakpoints, increasing in φ —
+    /// **index 0 is the south edge**, the same polarity as [`TilePatch`]'s
+    /// `sin_lat`/`cos_lat` and the same as `lon` above, so every span handed to
+    /// [`super::horizon::lat_span_max`] is `[low, high]` with no reversal at the
+    /// call site.
+    ///
+    /// Note that this runs *against* `vi`, which follows Mercator y and therefore
+    /// counts southwards; [`SubGrid::sub_patch_is_occluded`] converts once, in one
+    /// named place.
     lat: Vec<(f64, f64)>,
 }
 
@@ -263,14 +272,33 @@ impl SubGrid {
                     vi as f64 / k as f64,
                     (vi + 1) as f64 / k as f64,
                 );
+                // `steps = 4`, deliberately, and **not** `obb_grid_steps(id.z)`.
+                // This is not an oversight to be tidied away: `steps` decides which
+                // points of the sub-rectangle are sampled, so any other value gives
+                // different extents for every sub-box in the tree and moves the
+                // false-positive figures globally. A sub-patch is small enough that
+                // §5.3's 3×3 argument holds comfortably at every zoom, which is why
+                // the node-level taper does not apply here. Changing this number is
+                // a recalibration, not a cleanup.
                 obbs.push(fit_obb(&sb, 4).2);
             }
         }
 
         // The breakpoints, from the very same expressions `sub_bounds` uses, so a
-        // cell's rectangle and its box are fitted to identical numbers.
+        // sub-patch's rectangle and its box are fitted to identical numbers.
+        //
+        // `i` walks the breakpoints north → south (it follows Mercator y, like
+        // `vi`), but `lat` is stored south → north so that it shares its polarity
+        // with `lon` and with `TilePatch`. The values are therefore written at
+        // `n - i` rather than pushed. This is *only* a permutation of where each
+        // number lands: `phi` is still produced by the same expression at the same
+        // `t`, bit for bit. **Do not "simplify" it by re-deriving the breakpoint
+        // from the other end** — `1.0 - i as f64 / k as f64` is not bit-identical
+        // to `i as f64 / k as f64` for k = 12, 6, 3, and one ulp here travels
+        // through `web_mercator_y_to_lat_f64` into `sin_cos` and flips borderline
+        // sub-patches.
         let mut lon = Vec::with_capacity(n + 1);
-        let mut lat = Vec::with_capacity(n + 1);
+        let mut lat = vec![(0.0_f64, 0.0_f64); n + 1];
         for i in 0..=k {
             let t = i as f64 / k as f64;
             lon.push(
@@ -286,7 +314,7 @@ impl SubGrid {
             if i == k && id.y == (1_u32 << id.z) - 1 {
                 phi = -90.0;
             }
-            lat.push(phi.to_radians().sin_cos());
+            lat[n - i as usize] = phi.to_radians().sin_cos();
         }
 
         Some(SubGrid { k, obbs, lon, lat })
@@ -297,44 +325,52 @@ impl SubGrid {
             + (self.lon.capacity() + self.lat.capacity()) * std::mem::size_of::<(f64, f64)>()
     }
 
-    /// Can **any** sub-patch of this tile be on screen?
+    /// Does **any** sub-patch of this tile survive its own proof of invisibility?
     ///
-    /// A cell is discarded when it is provably invisible on its own: either its
+    /// Not "is a sub-patch visible" — no stage here can establish that. A sub-patch
+    /// is discarded only when it is provably invisible on its own: either its
     /// spherical rectangle is entirely behind the limb (exact, §3.4) or its box is
-    /// separated from the frustum (exact, [`Frustum::intersects_obb`]). Discarding
-    /// every cell proves the tile invisible, because the cells' union is the whole
-    /// drawn patch — so any drawable point lies in some cell, and that cell is
-    /// invisible. Keeping the tile as soon as one cell survives is the conservative
-    /// direction (I-6). ∎
+    /// separated from the frustum (exact, [`Frustum::intersects_obb`]). A survivor
+    /// is merely one that no proof reached, and `true` here means exactly that.
+    ///
+    /// Discarding *every* sub-patch does prove the tile invisible, because the
+    /// sub-patches' union is the whole drawn patch — so any drawable point lies in
+    /// some sub-patch, and that sub-patch is invisible. Keeping the tile as soon as
+    /// one survives is the conservative direction (I-6). ∎
     ///
     /// # Two passes, because the third frustum stage is 7× the first
     ///
     /// Pass 1 asks only the four planes, which answer `Outside` or `Inside`
-    /// outright for every cell that is not on the frustum boundary. An `Inside`
-    /// cell settles the node immediately; a tile with no straddling cell at all is
-    /// settled too. Pass 2 — the exact separating-axis set — therefore runs only
-    /// for a node that has cells on the frustum boundary and none strictly within
-    /// it, which is the thin band where the answer was ever in doubt.
+    /// outright for every sub-patch that is not on the frustum boundary. An
+    /// `Inside` sub-patch settles the node immediately; a tile with no straddling
+    /// sub-patch at all is settled too. Pass 2 — the exact separating-axis set —
+    /// therefore runs only for a node that has sub-patches on the frustum boundary
+    /// and none strictly within it, which is the thin band where the answer was
+    /// ever in doubt.
     ///
     /// The limb test comes first in both passes: it is 25 f64 flops against the
     /// four-plane test's ~92, and its λ half is hoisted out of the inner loop,
-    /// since every cell in column `ui` has the same λ span.
-    fn any_visible(&self, ctx: &CullContext) -> bool {
+    /// since every sub-patch in column `ui` has the same λ span.
+    fn has_surviving_sub_patch(&self, ctx: &CullContext) -> bool {
         let k = self.k as usize;
         let mut any_straddling = false;
 
         for ui in 0..k {
-            let a_star = self.lon_span_max(ctx, ui);
+            let a_star = self.column_a_star(ctx, ui);
             for vi in 0..k {
-                if self.occluded(ctx, a_star, vi) {
+                if self.sub_patch_is_occluded(ctx, a_star, vi) {
                     continue;
                 }
-                let b = &self.obbs[ui * k + vi];
-                let d = ctx.frustum.relative(b.center);
-                match ctx.frustum.classify_box(d, &b.half_axes, b.half_axis_l1) {
-                    BoxVerdict::Inside => return true,
-                    BoxVerdict::Straddling => any_straddling = true,
-                    BoxVerdict::Outside => {}
+                let sub_patch_obb = &self.obbs[ui * k + vi];
+                let d = ctx.frustum.relative(sub_patch_obb.center);
+                match ctx.frustum.classify_box(
+                    d,
+                    &sub_patch_obb.half_axes,
+                    sub_patch_obb.half_axis_l1,
+                ) {
+                    PlaneVerdict::Inside => return true,
+                    PlaneVerdict::Straddling => any_straddling = true,
+                    PlaneVerdict::Outside => {}
                 }
             }
         }
@@ -343,9 +379,9 @@ impl SubGrid {
         }
 
         for ui in 0..k {
-            let a_star = self.lon_span_max(ctx, ui);
+            let a_star = self.column_a_star(ctx, ui);
             for vi in 0..k {
-                if self.occluded(ctx, a_star, vi) {
+                if self.sub_patch_is_occluded(ctx, a_star, vi) {
                     continue;
                 }
                 if ctx.frustum.intersects_obb(&self.obbs[ui * k + vi]) {
@@ -356,9 +392,9 @@ impl SubGrid {
         false
     }
 
-    /// `A*` for sub-column `ui`, shared by every cell in it.
+    /// `A*` for sub-column `ui`, shared by every sub-patch in it.
     #[inline]
-    fn lon_span_max(&self, ctx: &CullContext, ui: usize) -> f64 {
+    fn column_a_star(&self, ctx: &CullContext, ui: usize) -> f64 {
         super::horizon::lon_span_max(
             &ctx.horizon,
             &[self.lon[ui].0, self.lon[ui + 1].0],
@@ -366,16 +402,20 @@ impl SubGrid {
         )
     }
 
-    /// Is sub-row `vi` of a column with this `A*` entirely behind the limb?
+    /// Is sub-patch row `vi` of a column with this `A*` entirely behind the limb?
     ///
-    /// Index 0 of a span is its low end, and `lat` runs north to south.
+    /// The single place where the two directions meet: `vi` counts south along
+    /// Mercator y (`vi = 0` is the north row, matching `obbs`), while `lat` is
+    /// stored increasing in φ. `lo = k − 1 − vi` is that conversion, and it leaves
+    /// the span itself in the `[low, high]` order every `*_span_max` expects.
     #[inline]
-    fn occluded(&self, ctx: &CullContext, a_star: f64, vi: usize) -> bool {
+    fn sub_patch_is_occluded(&self, ctx: &CullContext, a_star: f64, vi: usize) -> bool {
+        let lo = self.k as usize - 1 - vi;
         let s = super::horizon::lat_span_max(
             &ctx.horizon,
             a_star,
-            &[self.lat[vi + 1].0, self.lat[vi].0],
-            &[self.lat[vi + 1].1, self.lat[vi].1],
+            &[self.lat[lo].0, self.lat[lo + 1].0],
+            &[self.lat[lo].1, self.lat[lo + 1].1],
         );
         super::horizon::span_is_occluded(&ctx.horizon, s)
     }
@@ -401,8 +441,17 @@ pub struct QuadtreeNode {
     pub id: TileId,
     /// Patch centre on the ellipsoid, **f64** (invariant I-2).
     pub center: DVec3,
-    pub radius: f32,
-    pub lod_radius: f32,
+    /// Greatest distance from [`QuadtreeNode::center`] to a sampled patch point —
+    /// the renderer's per-tile bounding sphere, fitted on the **drawn** (stretched)
+    /// rectangle by [`fit_obb`].
+    pub bounding_radius: f32,
+    /// The same measurement taken on the ***un*-stretched** rectangle
+    /// ([`tile_bounds_unstretched`]), and the input to `subdivide_dist` below.
+    ///
+    /// A geometry, not an LOD tuning knob: the knob is `lod_factor`, the threshold
+    /// is `subdivide_dist`. See [`QuadtreeNode::new`] for why the un-stretched
+    /// rectangle is the deliberate choice.
+    pub unstretched_radius: f32,
     pub obb: OrientedBoundingBox,
     /// The `k × k` sub-patch grid, when `k ≥ 2` (see [`sub_boxes_per_axis`]).
     pub sub_grid: Option<Box<SubGrid>>,
@@ -416,21 +465,25 @@ impl QuadtreeNode {
     pub fn new(id: TileId) -> Self {
         // I-5: the single source of tile bounds, shared with `TileMesh::generate`.
         let bounds = tile_bounds(&id);
-        let (center, radius, obb) = fit_obb(&bounds, obb_grid_steps(id.z));
+        let (center, bounding_radius, obb) = fit_obb(&bounds, obb_grid_steps(id.z));
 
-        // The LOD radius is deliberately measured on the *un*-stretched rectangle:
-        // a polar row's true ground extent, not its pull to ±90°. Kept as-is (§8.4);
-        // it makes polar caps subdivide later, which is an FP source, not an FN one.
+        // Deliberately measured on the ***un*-stretched** rectangle: a polar row's
+        // true ground extent, not its pull to ±90°. Kept as-is (§8.4) — it makes
+        // polar caps subdivide later, which is an accepted FP source and never an
+        // FN one, because subdividing late only keeps a coarser tile that still
+        // covers the ground. Nothing about it is an LOD parameter; it is the size
+        // of a geometric object, and the threshold derived from it is
+        // `subdivide_dist`.
         let raw = tile_bounds_unstretched(&id);
-        let (_, lod_radius, _) = fit_obb(&raw, 2);
+        let (_, unstretched_radius, _) = fit_obb(&raw, 2);
 
         let sub_grid = SubGrid::build(&id, &bounds, sub_boxes_per_axis(id.z)).map(Box::new);
 
         QuadtreeNode {
             id,
             center,
-            radius,
-            lod_radius,
+            bounding_radius,
+            unstretched_radius,
             obb,
             sub_grid,
             patch: TilePatch::new(&bounds),
@@ -440,7 +493,7 @@ impl QuadtreeNode {
     }
 
     /// Heap bytes this node hangs off itself (not counting children).
-    pub fn sub_obb_heap_bytes(&self) -> usize {
+    pub fn sub_grid_heap_bytes(&self) -> usize {
         self.sub_grid
             .as_ref()
             .map(|g| std::mem::size_of::<SubGrid>() + g.heap_bytes())
@@ -478,11 +531,11 @@ impl QuadtreeNode {
         // ── 3. Frustum, and 4: the sub-patch grid. ───────────────────────────
         //
         // With a grid, the node's own box is asked only the four planes: `Inside`
-        // settles the node outright — every sub-cell is inside the frustum too, so
+        // settles the node outright — every sub-patch is inside the frustum too, so
         // the grid could only cull if *every* sub-patch were behind the limb, and
         // that is exactly what step 1 already tested, on the whole patch, exactly.
-        // The exact stages then run per cell, where they are both cheaper and far
-        // more selective than on the node's box. Without a grid the node's box
+        // The exact stages then run per sub-patch, where they are both cheaper and
+        // far more selective than on the node's box. Without a grid the node's box
         // takes the exact test itself.
         let alive = match &self.sub_grid {
             Some(grid) => {
@@ -490,9 +543,9 @@ impl QuadtreeNode {
                     .frustum
                     .classify_box(delta, &self.obb.half_axes, self.obb.half_axis_l1)
                 {
-                    BoxVerdict::Outside => false,
-                    BoxVerdict::Inside => true,
-                    BoxVerdict::Straddling => grid.any_visible(ctx),
+                    PlaneVerdict::Outside => false,
+                    PlaneVerdict::Inside => true,
+                    PlaneVerdict::Straddling => grid.has_surviving_sub_patch(ctx),
                 }
             }
             None => ctx.frustum.intersects_obb(&self.obb),
@@ -514,7 +567,7 @@ impl QuadtreeNode {
         // subdivision threshold. The old 1.05x band (~50 m at z=19) was too
         // narrow and caused rapid APPEAR/DISAPPEAR flicker on high-detail tiles.
         let is_subdivided = self.children.is_some();
-        let subdivide_dist = self.lod_radius * lod_factor;
+        let subdivide_dist = self.unstretched_radius * lod_factor;
         let collapse_dist = subdivide_dist * 1.20;
 
         let should_be_subdivided = if is_subdivided {
@@ -555,7 +608,7 @@ impl QuadtreeNode {
                 child.collect_visible_tiles(active_tiles);
             }
         } else {
-            active_tiles.push((self.id, self.center_f32(), self.radius));
+            active_tiles.push((self.id, self.center_f32(), self.bounding_radius));
         }
     }
 
@@ -584,7 +637,7 @@ impl QuadtreeNode {
             }
         }
 
-        active_tiles.push((self.id, self.center_f32(), self.radius));
+        active_tiles.push((self.id, self.center_f32(), self.bounding_radius));
         is_ready(&self.id)
     }
 }
