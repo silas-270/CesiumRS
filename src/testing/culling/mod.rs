@@ -73,6 +73,36 @@
 //! gives most of that ~8x without `--release`; `--release` is still recommended for
 //! the heavy sweeps.
 //!
+//! ## Does it still have teeth?
+//!
+//! A suite that goes green after a rewrite is worth exactly as much as its ability to
+//! go red. The instrument was re-validated after the culling rework by perturbing the
+//! *engine* one line at a time and checking that the guards notice. Each perturbation
+//! was applied, measured and reverted; the fast subset (everything except the four
+//! heaviest sweeps, 25 tests, 4.2 s) was used throughout.
+//!
+//! | perturbation | guards that went red |
+//! |---|---|
+//! | control (unperturbed) | 0 of 25 |
+//! | negate the **y** component of every frustum plane normal | **12** |
+//! | flip a sign in the horizon closed form `A(λ)` | 6 |
+//! | swap `a` and `b` in the scaled-space map `T` | 9 |
+//! | drop the **Top** plane from the frustum test | 5 |
+//! | flip the frustum tolerance to the *unsafe* direction (`< +ε`) | 1 |
+//!
+//! The first row is the one that matters historically: the harness was once **blind**
+//! to a y-sign flip, because an axis-aligned reference frustum is mirror-symmetric in
+//! y and such a flip maps the plane set onto itself. `test_analytic_planes` fixed that
+//! by making its reference camera deliberately oblique, and the rework has not
+//! reopened it — a y-flip now trips every analytic test and seven globe sweeps.
+//!
+//! The last row is a genuine limit worth stating: the frustum rounding tolerance is
+//! ~4.8e-7 relative, so flipping its sign moves the decision boundary by ~1e-6 of a
+//! tile. Only `test_degenerate_obb_matches_contains_point` resolves that, and the
+//! sweeps cannot — the oracle's own marginal band (2e-3 of half-screen) is three
+//! orders wider, by design. A tolerance regression has to be caught by construction
+//! and by reading the code, not by the sweeps.
+//!
 //! ## Units
 //!
 //! Everything is in **megameters** (1 unit = 1000 km) and in the engine's Y-up,
