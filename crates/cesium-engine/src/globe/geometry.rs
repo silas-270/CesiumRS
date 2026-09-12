@@ -126,8 +126,14 @@ impl TileMesh {
             let logical_row = (row.max(1) - 1).min(segments);
             let v = logical_row as f32 / segments as f32;
 
-            let global_y = id.y as f32 + v;
-            let mut lat = crate::globe::quadtree::web_mercator_y_to_lat(global_y, id.z);
+            // Interior rows come from the same f64 Mercator definition the shared
+            // bounds are built from, so `v = 0` and `v = 1` reproduce `lat_max` and
+            // `lat_min` bit-for-bit and every interior row is monotonically between
+            // them. Mixing an f32 row latitude into an f64 rectangle would let the
+            // mesh poke a few tenths of a metre outside the culling rectangle —
+            // exactly the sliver invariant I-5 exists to prevent.
+            let global_y = id.y as f64 + v as f64;
+            let mut lat = crate::globe::quadtree::web_mercator_y_to_lat_f64(global_y, id.z);
 
             let is_north_pole_cap = id.y == 0 && row == 0;
             let is_south_pole_cap = id.y == (1_u32 << id.z) - 1 && row == grid_size - 1;
@@ -138,7 +144,7 @@ impl TileMesh {
                 lat = -90.0;
             }
 
-            let phi = (lat as f64).to_radians();
+            let phi = lat.to_radians();
             let cos_phi = phi.cos();
             let sin_phi = phi.sin();
 

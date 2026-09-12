@@ -40,7 +40,8 @@ use glam::{DVec3, Vec3};
 use super::bounding_volume::{Frustum, OrientedBoundingBox};
 use super::horizon::{HorizonCamera, TilePatch};
 use super::tile_id::{
-    tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat, TileBounds, TileId, MAX_ZOOM,
+    tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId,
+    MAX_ZOOM,
 };
 use crate::globe::geometry::{lon_lat_to_ecef_f64, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 
@@ -166,8 +167,8 @@ fn fit_obb(b: &TileBounds, steps: u32) -> (DVec3, f32, OrientedBoundingBox) {
 /// sub-rectangles share an edge exactly and their union is the whole tile. The pole
 /// stretch is reapplied to the sub-rectangle that actually touches the pole row.
 fn sub_bounds(id: &TileId, b: &TileBounds, u0: f64, u1: f64, v0: f64, v1: f64) -> TileBounds {
-    let mut lat_max = web_mercator_y_to_lat(id.y as f32 + v0 as f32, id.z) as f64;
-    let mut lat_min = web_mercator_y_to_lat(id.y as f32 + v1 as f32, id.z) as f64;
+    let mut lat_max = web_mercator_y_to_lat_f64(id.y as f64 + v0, id.z);
+    let mut lat_min = web_mercator_y_to_lat_f64(id.y as f64 + v1, id.z);
     if id.y == 0 && v0 == 0.0 {
         lat_max = 90.0;
     }
