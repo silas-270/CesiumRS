@@ -1496,3 +1496,70 @@ run.
    function of `θ*`, and picking the knee. `θ* = 0.30` and `θ* = 0.16` both give
    `k = 1` for `z ≥ 5`, so the choice only affects z ≤ 4, where the cost is 1024
    boxes allocated once either way. A safe default is `θ* = 0.16`.
+
+---
+
+## 12. Implementation findings
+
+*Added by the implementation pass. §0–§11 above are the original derivation and are
+left as written; this section records where measurement agreed with it, where it did
+not, and what was changed as a result. Numbers are from the harness in
+`src/testing/culling/` unless stated otherwise.*
+
+### 12.1 Confirmed
+
+| claim | predicted | measured |
+|---|---|---|
+| FN → 0 by construction (§11.1) | 0 | **0**, over 1 079 616 535 visible samples in the 100 000-cell fuzz sweep, and 664 097 246 in the limb band |
+| the 8.07° limb band is §4's back-face heuristic | band → 0.0000° | **0.0000°** — deleting those three lines closed it, exactly as predicted |
+| the closed form (3.3) never under-estimates | ≤ 8.88·10⁻¹⁶ | **8.882·10⁻¹⁶**, from an independent 257×257 brute force over 3 120 (tile, camera) pairs |
+| camera-relative error is scale-free (2.3) | ≈ 6·10⁻⁷ of a tile at every zoom | **1.23·10⁻⁶**, flat from z = 4 to z = 20 |
+| plane-only SAT over-reports (§5.2) | 12.4 % | **13.8 %** on the 658-box corner probe |
+| the box-slab test recovers most of it | → 2.1 % | **3.6 %** |
+| `‖T(p)‖ = 1` (§11.3 item 6) | — | 3.3·10⁻¹⁶ over 20 000 surface points |
+| all four side planes pass through the eye | `d ≡ 0` | `max |n·eye + d| = 0` exactly |
+
+### 12.2 Refuted
+
+**§7.2's subdivision criterion is derived from the wrong quantity.** It bounds the
+box's *sagitta* overhang and concludes `k = 1` for `z ≥ 5`. That conclusion costs
+**3.1 points of false positives**. The sagitta is not what the sub-boxes buy: they buy
+a fix for §5.2's corner over-report, and *that* does not decay with zoom, because
+distance LOD keeps every leaf at roughly the same angular size (≈26° half-diagonal, so
+a screen holds ~17 tiles) and "straddling a frustum corner" is as common at z = 20 as
+at z = 5. Measured FP against `k` for `z ≥ 5`, FN = 0 throughout:
+
+| k | 1 (derived) | 2 | 3 | **4** | 5 | 8 |
+|---|---|---|---|---|---|---|
+| FP | 7.30 % | 5.92 % | 4.67 % | **4.18 %** | 4.06 % | 4.39 % |
+| mean update | 2.5 µs | 3.2 µs | 3.7 µs | **4.3 µs** | 4.9 µs | 7.8 µs |
+
+`k(z)` is now `max(4, ceil(θ_max(z)/θ*))`. This is the calibration §11.3 item 8 asks
+for, done against the harness rather than the screen-height estimate.
+
+**§11.2's FP forecast (5.44 % → ~2 %) was optimistic, and in the wrong direction at
+first.** The old 5.58 % was bought with 62 573 false negatives; removing unsound
+culling necessarily raises FP. The four-plane, exact-horizon, no-sub-box configuration
+lands at 7.30 %. The sub-box calibration above brings it to **4.18 %**, below the
+baseline, but the route there is not the one §11.2 predicted: the box-slab test
+contributes 0.2 points, not the bulk.
+
+**The box-slab test is not worth its cost on real tiles** (§11.3 item 2, answered).
+4.18 % → 3.98 % for 4.3 → 7.0 µs — about 65 µs of CPU per tile avoided. Tile OBBs are
+tiny next to a frustum reaching `‖cam‖ + 10 Mm`, so their own axes rarely separate
+anything the four planes did not already reject. Implemented, measured, and compiled
+out behind `slab::ENABLED`.
+
+### 12.3 One thing the derivation did not reach
+
+`web_mercator_y_to_lat` in f32 (§11.3 item 5, where "leave it f32" is offered as the
+conservative fallback) was **the last false-negative source**, and had to go. The f32
+longitude bound `-180 + x·360/2^z` has an ulp of 1.53·10⁻⁵° ≈ **1.7 m of ground**. The
+tiling stays a partition under that — both sides of an edge evaluate the same
+expression — but every tile edge sits up to 1.7 m from its true Web-Mercator position,
+which at z = 19–20 (76 m and 38 m tiles) is a real fraction of a tile. Every one of the
+7 177 residual fuzz misses and all 4 near-ground misses had that signature.
+
+The fallback was offered because the mesh and the quadtree had separate call sites that
+would have to move together. After the I-5 extraction they have one, so the reason for
+it is gone. §11.3 item 5's own words — "promoting it to f64 is correct" — hold.
