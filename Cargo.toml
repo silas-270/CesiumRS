@@ -54,6 +54,12 @@ image = "0.25.10"
 rayon = "1.12.0"
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
 
+# Tests carry heavy f64 sweeps (see src/testing/culling/). At the default
+# opt-level = 0 the culling harness runs ~8x slower, which dominates the
+# edit-measure loop. Debuggability of test code is unaffected in practice.
+[profile.test]
+opt-level = 2
+
 # Release-level codegen but with debug symbols kept, for symbolicated on-device
 # profiling (simpleperf/Perfetto). Never used for the shipped/Play-Store build —
 # the normal `[profile.release]` above is untouched and stays the default.

@@ -23,7 +23,10 @@ fn evaluate_direct_camera(file: &mut std::fs::File, z: f32) {
         global_pos_dvec.z as f32,
     );
     for _ in 0..30 {
-        quadtree.update(global_pos_f32, frustum_planes);
+        quadtree.update(&cesium_engine::globe::quadtree::Frustum::new(
+            frustum_planes,
+            global_pos_dvec,
+        ));
     }
     let visible_tiles_data = quadtree.get_visible_tiles();
     let visible_tiles: Vec<TileId> = visible_tiles_data.iter().map(|(id, _, _)| *id).collect();

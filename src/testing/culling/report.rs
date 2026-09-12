@@ -141,7 +141,10 @@ pub struct Summary {
     pub total_tiles: usize,
     pub total_false_positive_tiles: usize,
     pub worst_fn_rate: f64,
+    /// Worst FP rate over non-degenerate cells only; see `CellResult::is_degenerate`.
     pub worst_fp_rate: f64,
+    /// Cells the oracle found no visible surface in, excluded from FP aggregates.
+    pub degenerate_cells: usize,
 }
 
 pub fn summarize(results: &[CellResult]) -> Summary {
@@ -154,6 +157,7 @@ pub fn summarize(results: &[CellResult]) -> Summary {
         total_false_positive_tiles: 0,
         worst_fn_rate: 0.0,
         worst_fp_rate: 0.0,
+        degenerate_cells: 0,
     };
     for r in results {
         if r.false_negatives > 0 {
@@ -161,9 +165,17 @@ pub fn summarize(results: &[CellResult]) -> Summary {
         }
         s.total_visible_samples += r.samples_visible;
         s.total_false_negatives += r.false_negatives;
+        s.worst_fn_rate = s.worst_fn_rate.max(r.fn_rate());
+
+        // Degenerate cells carry no meaningful FP denominator, so they are kept
+        // out of every FP aggregate and counted on their own. FN above is
+        // unconditional: conservatism at and below the surface still matters.
+        if r.is_degenerate() {
+            s.degenerate_cells += 1;
+            continue;
+        }
         s.total_tiles += r.tiles;
         s.total_false_positive_tiles += r.false_positive_tiles;
-        s.worst_fn_rate = s.worst_fn_rate.max(r.fn_rate());
         s.worst_fp_rate = s.worst_fp_rate.max(r.fp_rate());
     }
     s
@@ -193,6 +205,12 @@ pub fn render_report(name: &str, csv: &std::path::Path, results: &[CellResult]) 
         100.0 * s.worst_fn_rate,
         100.0 * s.worst_fp_rate,
     ));
+    if s.degenerate_cells > 0 {
+        out.push_str(&format!(
+            "degenerate cells (no visible surface, excluded from FP): {} of {}\n",
+            s.degenerate_cells, s.cells,
+        ));
+    }
 
     // ── Worst cells by FN rate ───────────────────────────────────────────────
     let mut by_fn: Vec<&CellResult> = results.iter().filter(|r| r.false_negatives > 0).collect();

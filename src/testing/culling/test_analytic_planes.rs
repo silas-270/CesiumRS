@@ -7,8 +7,15 @@
 //! separating-axis intersection over the frustum's convex hull (for the cases
 //! where the two disagree by design).
 //!
-//! Plane order, from the upstream Cesium convention the engine inherits, is
-//! `[Left, Right, Bottom, Top, Near, Far]`.
+//! Plane order is `[Left, Right, Bottom, Top]`. There are **four**: under the
+//! engine's reverse-Z, `z_ndc ∈ [0,1]` projection the near and far constraints are
+//! `r3 − r2` and `r2`, and tile culling drops both as provably vacuous for the
+//! globe — see `Camera::calculate_frustum_planes` and `docs/culling-math.md` §2.6.
+//!
+//! The engine works in the **camera-relative** frame: all four side planes pass
+//! through the eye, so their offset is identically zero and only the normal is
+//! stored. This file reconstructs the world-space offset `d = −n·eye` in f64 so the
+//! probe geometry below can still be placed against an absolute plane.
 
 use cesium_engine::camera::camera::{Camera, CameraMode};
 use cesium_engine::globe::quadtree::{Frustum, OrientedBoundingBox, QuadtreeNode, TileId};
@@ -16,7 +23,7 @@ use glam::{DVec3, Quat, Vec3};
 
 use super::sat::{obb_hull, Hull};
 
-pub const PLANE_NAMES: [&str; 6] = ["Left", "Right", "Bottom", "Top", "Near", "Far"];
+pub const PLANE_NAMES: [&str; 4] = ["Left", "Right", "Bottom", "Top"];
 
 /// Half-extent of the probe box, in megameters (50 km).
 ///
@@ -69,17 +76,26 @@ fn reference_params() -> super::cameras::ViewParams {
 const ASPECT: f64 = 16.0 / 9.0;
 
 struct Reference {
-    planes_f64: [(DVec3, f64); 6],
+    /// `(unit normal, offset)` in **world** space, with `d = −n·eye` computed in
+    /// f64. The engine stores only the normal; this is the same plane, re-expressed
+    /// absolutely so probe boxes can be positioned against it.
+    planes_f64: [(DVec3, f64); 4],
     frustum: Frustum,
     hull: Hull,
+    eye: DVec3,
     /// A point comfortably inside the frustum: the centroid of its eight corners.
     centroid: DVec3,
 }
 
 fn reference() -> Reference {
     let cam = reference_camera();
-    let planes_f64 = cam.calculate_frustum_planes(ASPECT as f32);
-    let frustum = Frustum::from_planes(planes_f64);
+    let normals = cam.calculate_frustum_planes(ASPECT as f32);
+    let (eye, _) = cam.global_transform_f64();
+    let frustum = Frustum::new(normals, eye).with_corners(cam.frustum_corners_relative(ASPECT as f32));
+    let mut planes_f64 = [(DVec3::ZERO, 0.0); 4];
+    for i in 0..4 {
+        planes_f64[i] = (normals[i], -normals[i].dot(eye));
+    }
     let view_proj = cam.get_projection_matrix_f64(ASPECT) * cam.get_view_matrix_f64();
     let hull = Hull::from_view_proj(view_proj);
     let centroid = hull.points.iter().copied().sum::<DVec3>() / hull.points.len() as f64;
@@ -87,6 +103,7 @@ fn reference() -> Reference {
         planes_f64,
         frustum,
         hull,
+        eye,
         centroid,
     }
 }
@@ -105,10 +122,9 @@ fn probe_half_axes(scale: f64) -> [DVec3; 3] {
 
 fn to_obb(center: DVec3, half_axes: [DVec3; 3]) -> OrientedBoundingBox {
     let f = |v: DVec3| Vec3::new(v.x as f32, v.y as f32, v.z as f32);
-    OrientedBoundingBox {
-        center: f(center),
-        half_axes: [f(half_axes[0]), f(half_axes[1]), f(half_axes[2])],
-    }
+    // The centre stays f64 (invariant I-2): it is what makes `centre − eye` an f64
+    // subtraction, which is the whole point of the camera-relative frame.
+    OrientedBoundingBox::new(center, [f(half_axes[0]), f(half_axes[1]), f(half_axes[2])])
 }
 
 /// Projected radius of the box onto `n` — the same quantity the engine computes,
@@ -328,11 +344,15 @@ fn test_large_box_past_corner_is_conservative() {
     // bisector of each pair and triple of planes meeting there. The classic case
     // only exists in a narrow band of (box size, offset), so it has to be searched
     // for rather than guessed at.
+    // With the depth planes gone there is no near plane to bisect against, so the
+    // "corner" sets are the two side planes meeting at each lateral edge. The probe
+    // is still anchored at the near quad's corners, which is where a box first
+    // escapes the hull.
     let corner_plane_sets: [(&str, [usize; 3], usize); 8] = [
-        ("near bottom-left", [0, 2, 5], 0),
-        ("near bottom-right", [1, 2, 5], 1),
-        ("near top-right", [1, 3, 5], 2),
-        ("near top-left", [0, 3, 5], 3),
+        ("near bottom-left", [0, 2, 0], 0),
+        ("near bottom-right", [1, 2, 1], 1),
+        ("near top-right", [1, 3, 3], 2),
+        ("near top-left", [0, 3, 0], 3),
         ("left/bottom edge", [0, 2, 0], 0),
         ("right/bottom edge", [1, 2, 1], 1),
         ("right/top edge", [1, 3, 2], 2),
@@ -419,30 +439,34 @@ fn test_large_box_past_corner_is_conservative() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 3b: the far plane is never enforced. DEFECT PROBE.
+// Test 3b: the plane set has no dead entry. PERMANENT GUARD (was a defect probe).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// **Measured defect.** `Camera::calculate_frustum_planes` extracts the depth
-/// planes as `r3 + r2` (index 4, "Near") and `r3 - r2` (index 5, "Far").
+/// Every plane the engine emits must actually bound the frustum.
 ///
-/// That pair is the OpenGL extraction, valid when NDC z spans `[-1, 1]`. The
-/// engine's projection is `glam::Mat4::perspective_rh` (NDC z in `[0, 1]`) with a
-/// reverse-Z remap on top, so the two depth constraints are `z_clip ≥ 0` and
-/// `z_clip ≤ w` — extracted as `r2` and `r3 - r2`, not `r3 + r2` and `r3 - r2`.
+/// **This was a defect probe.** `Camera::calculate_frustum_planes` used to extract
+/// the depth planes as `r3 + r2` ("Near") and `r3 − r2` ("Far"), which is the
+/// OpenGL extraction, valid when NDC z spans `[-1, 1]`. Under this engine's
+/// `perspective_rh` (z ∈ `[0, 1]`) plus reverse-Z remap, the two depth constraints
+/// are `z_clip ≤ w` and `z_clip ≥ 0`, extracted as `r3 − r2` and `r2`. The
+/// consequence, measured by this test at the time: index 5 really was the near
+/// plane, index 4 was a plane sitting **2.8557 Mm behind** the frustum hull — a
+/// dead entry that could never reject anything — and there was no far plane at all.
 ///
-/// The consequence, measured below: index 5 really is the near plane, and index 4
-/// is a plane sitting *behind the eye* that the frustum hull clears by megameters
-/// and which therefore never rejects anything. **There is no far-plane culling.**
+/// The invariant this now protects: **the plane array has no redundant entry.**
+/// Measured hull clearance for all four planes is ~1e-12 Mm, i.e. each one supports
+/// a face of the frustum. If a fifth entry ever appears it must support a face too.
 ///
-/// This is conservative — it can only cause false positives, never holes — and it
-/// is currently harmless because `zfar = |camera| + 10 Mm` already encloses the
-/// whole Earth. It is recorded here so the fix phase knows the plane array has a
-/// dead entry, and so that anyone who later tightens `zfar` finds out immediately.
+/// The old "a point at 2× zfar must be rejected" assertion is deliberately gone. It
+/// is not a property of the tile-culling plane set any more, by design: the far
+/// plane is omitted because it is **provably vacuous** for the globe. Every
+/// ellipsoid point is within `‖cam‖ + a = ‖cam‖ + 6.378 Mm` of the eye, and
+/// `zfar = ‖cam‖ + 10 Mm`, so no tile can ever be beyond it. That is invariant
+/// **I-3**, and [`test_far_plane_is_vacuous_for_the_globe`] asserts the premise
+/// directly instead of asserting a consequence the plane set no longer has.
 #[test]
-#[ignore = "defect probe: calculate_frustum_planes uses the GL z-in-[-1,1] depth-plane extraction under a reverse-Z z-in-[0,1] projection, leaving plane 4 degenerate and the far plane unenforced"]
-fn test_far_plane_is_enforced() {
+fn test_frustum_plane_set_has_no_dead_entry() {
     let r = reference();
-    let cam = reference_camera();
 
     println!("  plane | normal                              | d           | hull clearance (Mm)");
     for (i, name) in PLANE_NAMES.iter().enumerate() {
@@ -457,21 +481,6 @@ fn test_far_plane_is_enforced() {
         );
     }
 
-    // A point twice as far away as zfar, straight down the view axis. The oracle's
-    // clip box rejects it (reverse-Z ndc.z < 0); a correct frustum must too.
-    let (cam_pos, cam_ori) = cam.global_transform_f64();
-    let forward = (cam_ori * DVec3::NEG_Z).normalize();
-    let zfar = cam_pos.length() + 10.0;
-    let beyond = cam_pos + forward * (zfar * 2.0);
-
-    let oracle = super::oracle::VisibilityOracle::new(&cam, ASPECT);
-    let ndc = oracle.ndc(beyond).expect("point is in front of the eye");
-    println!("  probe at 2x zfar: ndc.z = {:.6} (must be in [0,1] to be visible)", ndc.z);
-    assert!(
-        ndc.z < 0.0,
-        "test setup: the probe point should be beyond the far plane in NDC"
-    );
-
     let redundant: Vec<&str> = PLANE_NAMES
         .iter()
         .enumerate()
@@ -480,36 +489,86 @@ fn test_far_plane_is_enforced() {
         })
         .map(|(_, n)| *n)
         .collect();
-    println!("  redundant planes (never bound the frustum): {redundant:?}");
 
     assert!(
         redundant.is_empty(),
         "frustum planes {redundant:?} never touch the frustum hull — they are dead \
          entries in the plane array"
     );
+
+    // All four side planes pass through the eye, which is what licenses `d ≡ 0` in
+    // the camera-relative frame. Verify the premise rather than assume it.
+    let mut worst = 0.0_f64;
+    for (n, d) in r.planes_f64.iter() {
+        worst = worst.max((n.dot(r.eye) + d).abs());
+    }
+    println!("  worst |n·eye + d| over the four side planes: {worst:.3e} Mm");
     assert!(
-        !r.frustum
-            .contains_point(Vec3::new(beyond.x as f32, beyond.y as f32, beyond.z as f32)),
-        "a point at 2x zfar is outside the clip box but the frustum accepted it: \
-         the far plane is not being enforced"
+        worst < 1.0e-12,
+        "a side plane does not pass through the eye ({worst:.3e} Mm); the d ≡ 0 \
+         assumption behind the camera-relative frame is invalid"
     );
+}
+
+/// **Invariant I-3.** The far plane is omitted from tile culling because it cannot
+/// reject an ellipsoid point: `‖p − cam‖ ≤ ‖cam‖ + a < ‖cam‖ + 10 = zfar`.
+///
+/// This asserts the premise. If anyone tightens `zfar`, this test fails and
+/// `π_far = r2` must be reinstated in `Camera::calculate_frustum_planes` and in
+/// `Frustum`.
+#[test]
+fn test_far_plane_is_vacuous_for_the_globe() {
+    use super::geodesy::A;
+
+    for alt_m in [0.0_f64, 500.0, 400_000.0, 12_000_000.0, 30_000_000.0] {
+        for mode in [CameraMode::Free, CameraMode::Tracking, CameraMode::Cockpit] {
+            let p = super::cameras::ViewParams {
+                sweep: "i3",
+                lat_deg: 23.0,
+                lon_deg: 41.0,
+                alt_m,
+                mode,
+                ..Default::default()
+            };
+            let cam = super::cameras::build_camera(&p);
+            let (eye, _) = cam.global_transform_f64();
+            let zfar = eye.length() + 10.0;
+            let worst = eye.length() + A;
+            assert!(
+                zfar >= worst,
+                "I-3 violated: zfar = {zfar} Mm but an ellipsoid point can be \
+                 {worst} Mm from the eye (alt {alt_m} m, {:?}). Reinstate the far \
+                 plane π = r2.",
+                mode
+            );
+        }
+    }
+    println!("  I-3 holds: zfar = ‖cam‖ + 10 Mm ≥ ‖cam‖ + a = ‖cam‖ + {A} Mm");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 4: the f32 downcast precision floor. MEASURED, with a guard.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `Frustum::from_planes` downcasts plane normals and offsets to f32 before any
-/// culling happens. At Earth scale the offset `d` is O(1..30) megameters, so its
-/// f32 quantum is O(1e-6..1e-6·30) megameters — i.e. metres. A zoom-20 tile is
-/// about 30 m across.
+/// **This was the precision floor. It is now the precision guard.**
 ///
-/// This test measures, per zoom level, the f32 plane-distance error against the
-/// tile's own projected radius, and reports the zoom at which the error stops
-/// being negligible. It asserts only a loose, documented guard so it does not go
-/// red on unrelated changes; the numbers in the output are the finding.
+/// The old pipeline evaluated `n·m + d` in f32 with `‖m‖ ≈ ‖d‖ ≈ 6.378 Mm, whose
+/// f32 ulp is 0.477 m, to obtain a distance of order metres — catastrophic
+/// cancellation, and a *distance-independent* ~3 m error floor. Measured here at
+/// the time: 0.128 m of plane-distance error against a zoom-20 tile's ~0.3 m
+/// projected radius, i.e. the culling decision was made with an error worth 40 % of
+/// the tile.
+///
+/// The pipeline now evaluates `n·Δ` with `Δ = centre − eye` formed in f64 and only
+/// the small difference downcast. The error becomes `1.5·10⁻⁷·‖Δ‖`, and because the
+/// LOD rule keeps a leaf at `D ≈ 2..4 ×` its own half-diagonal, the ratio
+/// `error / tile_size` is a **constant ~6·10⁻⁷ at every zoom** (2.3) instead of
+/// growing without bound as tiles shrink.
+///
+/// The table below is the finding; the assertion is that the ratio never approaches
+/// 1 at any zoom, which the old pipeline could not satisfy.
 #[test]
-fn test_f32_plane_downcast_error_vs_tile_size() {
+fn test_camera_relative_plane_error_vs_tile_size() {
     // A low-altitude camera is where high-zoom tiles actually get tested.
     let params = super::cameras::ViewParams {
         sweep: "f32-probe",
@@ -521,11 +580,13 @@ fn test_f32_plane_downcast_error_vs_tile_size() {
         ..Default::default()
     };
     let cam = super::cameras::build_camera(&params);
-    let planes_f64 = cam.calculate_frustum_planes(ASPECT as f32);
-    let frustum_f32 = Frustum::from_planes(planes_f64);
+    let normals = cam.calculate_frustum_planes(ASPECT as f32);
+    let (eye, _) = cam.global_transform_f64();
+    let frustum = Frustum::new(normals, eye).with_corners(cam.frustum_corners_relative(ASPECT as f32));
 
-    println!("  zoom | tile radius (m) | max |Δ(n·c+d)| (m) | error / radius");
+    println!("  zoom | tile radius (m) | max |Δ(n·Δ)| (m) | error / radius");
     let mut first_bad_zoom: Option<u8> = None;
+    let mut worst_ratio = 0.0_f64;
 
     for z in [4_u8, 8, 12, 14, 16, 17, 18, 19, 20] {
         // The tile directly under the camera.
@@ -535,43 +596,30 @@ fn test_f32_plane_downcast_error_vs_tile_size() {
             x: id.x,
             y: id.y,
         });
-        let c64 = DVec3::new(
-            node.obb.center.x as f64,
-            node.obb.center.y as f64,
-            node.obb.center.z as f64,
-        );
         let ha64 = [
-            DVec3::new(
-                node.obb.half_axes[0].x as f64,
-                node.obb.half_axes[0].y as f64,
-                node.obb.half_axes[0].z as f64,
-            ),
-            DVec3::new(
-                node.obb.half_axes[1].x as f64,
-                node.obb.half_axes[1].y as f64,
-                node.obb.half_axes[1].z as f64,
-            ),
-            DVec3::new(
-                node.obb.half_axes[2].x as f64,
-                node.obb.half_axes[2].y as f64,
-                node.obb.half_axes[2].z as f64,
-            ),
+            to_d(node.obb.half_axes[0]),
+            to_d(node.obb.half_axes[1]),
+            to_d(node.obb.half_axes[2]),
         ];
+
+        // What the engine actually computes, and what it should have computed.
+        let delta_f32 = frustum.relative(node.obb.center);
+        let delta_f64 = node.obb.center - eye;
 
         let mut max_err = 0.0_f64;
         let mut min_radius = f64::INFINITY;
-        for (i, (n64, d64)) in planes_f64.iter().enumerate() {
-            let (n32, d32) = frustum_f32.planes[i];
-            let n32_64 = DVec3::new(n32.x as f64, n32.y as f64, n32.z as f64);
-            let exact = n64.dot(c64) + d64;
-            let approx = n32_64.dot(c64) + d32 as f64;
+        for (i, n64) in normals.iter().enumerate() {
+            let n32 = frustum.normals[i];
+            let approx = to_d(n32).dot(to_d(delta_f32));
+            let exact = n64.dot(delta_f64);
             max_err = max_err.max((exact - approx).abs());
             min_radius = min_radius.min(projected_radius(*n64, &ha64));
         }
 
         let ratio = max_err / min_radius;
+        worst_ratio = worst_ratio.max(ratio);
         println!(
-            "  {z:>4} | {:>15.3} | {:>18.3} | {:>14.4}",
+            "  {z:>4} | {:>15.3} | {:>17.6} | {:>14.3e}",
             min_radius * 1.0e6,
             max_err * 1.0e6,
             ratio
@@ -581,23 +629,27 @@ fn test_f32_plane_downcast_error_vs_tile_size() {
         }
     }
 
-    match first_bad_zoom {
-        Some(z) => println!(
-            "  => from zoom {z} onward, the f32 plane downcast error exceeds the \
-             tile's own projected radius: culling decisions at that scale are noise."
-        ),
-        None => println!("  => f32 downcast error stayed below tile radius at every zoom probed."),
-    }
+    println!("  => worst error/radius over all zooms probed: {worst_ratio:.3e}");
 
-    // Guard only. The documented expectation at the time of writing is that the
-    // error stays below the tile radius through at least zoom 14; if that stops
-    // being true something has changed about the plane pipeline, not about f32.
     assert!(
-        first_bad_zoom.map(|z| z > 14).unwrap_or(true),
-        "f32 plane downcast error exceeded the tile radius as early as zoom {:?}, \
-         which is far coarser than expected — the frustum plane pipeline changed.",
-        first_bad_zoom
+        first_bad_zoom.is_none(),
+        "camera-relative plane error exceeded the tile's own projected radius at \
+         zoom {first_bad_zoom:?}. Under the f64 subtraction this ratio should be a \
+         scale-free ~1e-6 at every zoom; something has reintroduced absolute-frame \
+         arithmetic into the frustum path (invariant I-2)."
     );
+    // Generous by three orders of magnitude over the derived 6e-7, so this does not
+    // go red on unrelated LOD tuning — but tight enough that the old absolute-frame
+    // pipeline (0.43 at z=20) could never pass it.
+    assert!(
+        worst_ratio < 1.0e-3,
+        "camera-relative plane error is {worst_ratio:.3e} of the tile radius; the \
+         derivation predicts ~6e-7 at every zoom"
+    );
+}
+
+fn to_d(v: Vec3) -> DVec3 {
+    DVec3::new(v.x as f64, v.y as f64, v.z as f64)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

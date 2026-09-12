@@ -114,6 +114,17 @@ impl GodCamera {
         )
     }
 
+    /// All six frustum planes as `(unit normal, offset)`, in world space.
+    ///
+    /// Order is **`[Left, Right, Bottom, Top, Near, Far]`** and the depth pair is
+    /// extracted for the engine's reverse-Z, `z_ndc ∈ [0,1]` projection:
+    /// **near = `r3 − r2`**, **far = `r2`**. The OpenGL `r3 ± r2` pair that used to
+    /// be here is wrong under this clip volume — it made index 5 the near plane,
+    /// index 4 a plane sitting `≈ znear` behind the eye, and omitted far entirely.
+    /// See `Camera::calculate_frustum_planes` and `docs/culling-math.md` §2.2.
+    ///
+    /// This is the debug-panel god camera's own copy; the tile culling path does
+    /// **not** use six planes (§2.6) and does not call this.
     pub fn calculate_frustum_planes(&self, aspect_ratio: f32) -> [(glam::DVec3, f64); 6] {
         let vp = self.get_projection_matrix(aspect_ratio) * self.get_view_matrix();
         let r0 = vp.row(0);
@@ -122,12 +133,12 @@ impl GodCamera {
         let r3 = vp.row(3);
 
         let planes = [
-            r3 + r0, // Left
-            r3 - r0, // Right
-            r3 + r1, // Bottom
-            r3 - r1, // Top
-            r3 + r2, // Near
-            r3 - r2, // Far
+            r3 + r0, // Left    (x_c ≥ −w_c)
+            r3 - r0, // Right   (x_c ≤ +w_c)
+            r3 + r1, // Bottom  (y_c ≥ −w_c)
+            r3 - r1, // Top     (y_c ≤ +w_c)
+            r3 - r2, // Near    (z_ndc ≤ 1 — reverse-Z: 1 *is* near)
+            r2,      // Far     (z_ndc ≥ 0 — reverse-Z: 0 *is* far)
         ];
 
         let mut result = [(glam::DVec3::ZERO, 0.0); 6];

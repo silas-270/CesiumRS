@@ -500,17 +500,22 @@ impl<'a> WgpuState<'a> {
             camera_ori_dquat.z as f32,
             camera_ori_dquat.w as f32,
         );
+        // One camera-relative frustum per frame, shared by the quadtree and the
+        // label pass. `eye` is the f64 camera position, so every `p − eye` inside
+        // is an f64 subtraction (invariant I-2).
+        let frustum_obj = crate::globe::quadtree::Frustum::new(frustum, camera_pos_dvec)
+            .with_corners(self.camera.frustum_corners_relative(aspect_ratio));
+
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.quadtree");
             let quadtree_start = Instant::now();
-            self.quadtree_manager.update(camera_pos_f32, frustum);
+            self.quadtree_manager.update(&frustum_obj);
             self.last_subsystem_timings.quadtree_us =
                 quadtree_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
 
         let altitude = self.camera.altitude();
         let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
-        let frustum_obj = crate::globe::quadtree::Frustum::from_planes(frustum);
 
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.label_manager");
