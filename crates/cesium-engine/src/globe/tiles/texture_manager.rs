@@ -11,6 +11,16 @@ pub struct TileTextureManager {
     pub bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pub fallback_bind_group: wgpu::BindGroup,
+    /// Memory ceiling for decoded tile textures; the entry count is derived
+    /// from it once a tile's real size is known. See
+    /// [`TileEngineConfig::tile_cache_budget_bytes`].
+    budget_bytes: usize,
+    /// Upper bound on entries regardless of how small tiles turn out to be.
+    max_entries: std::num::NonZeroUsize,
+    /// Byte size of the last decoded tile. Tiles from one imagery style are
+    /// uniform, so this settles after the first one; it's re-checked per tile
+    /// only so a style whose tiles differ in size still converges.
+    bytes_per_tile: Option<usize>,
 }
 
 impl TileTextureManager {
@@ -107,6 +117,9 @@ impl TileTextureManager {
             bind_group_layout,
             sampler,
             fallback_bind_group,
+            budget_bytes: config.tile_cache_budget_bytes,
+            max_entries: config.max_cache_size,
+            bytes_per_tile: None,
         }
     }
 
@@ -195,6 +208,7 @@ impl TileTextureManager {
                 });
 
                 self.cache.mark_ready(id, (texture, bind_group));
+                self.apply_budget(width as usize * height as usize * 4);
             }
             Err(e) => {
                 log::error!(
@@ -244,6 +258,32 @@ impl TileTextureManager {
         self.update(device, queue);
     }
 
+    /// Re-derives the entry count from the byte budget now that a tile's real
+    /// decoded size is known, and shrinks the cache if it was sized for
+    /// smaller tiles. A no-op while the size is unchanged, which is every tile
+    /// after the first of a given imagery style.
+    fn apply_budget(&mut self, bytes_per_tile: usize) {
+        if self.bytes_per_tile == Some(bytes_per_tile) || bytes_per_tile == 0 {
+            return;
+        }
+        self.bytes_per_tile = Some(bytes_per_tile);
+        let capacity = crate::globe::tiles::config::tile_cache_entries_for(
+            self.budget_bytes,
+            bytes_per_tile,
+            self.max_entries,
+        );
+        log::info!(
+            "Tile cache: {}KiB per tile, {}MB budget -> {} entries (cap {})",
+            bytes_per_tile / 1024,
+            self.budget_bytes / (1024 * 1024),
+            capacity.get(),
+            self.max_entries.get()
+        );
+        self.cache.resize(capacity);
+    }
+
+    /// Overrides the entry count directly, ignoring the byte budget until the
+    /// next tile size change re-derives it.
     pub fn resize(&mut self, new_capacity: std::num::NonZeroUsize) {
         self.cache.resize(new_capacity);
     }
