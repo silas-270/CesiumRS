@@ -3,6 +3,11 @@
 *Derivation document for the visibility-culling rework. No production code is
 changed by this document; it is the specification an implementer works from.*
 
+For what the code ultimately *does* — the frames, the per-node test sequence in
+execution order, the invariants as operational rules — see the companion
+`docs/culling-implementation.md`. This document is the derivation; that one is
+the implementation reference.
+
 Every claim below is either proved here or marked explicitly as an estimate.
 Numbers quoted as "measured" come either from the harness in
 `src/testing/culling/` (commit `da6573a`) or from throwaway numerical
