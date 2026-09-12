@@ -557,7 +557,7 @@ fn measure_cell_inner(params: &ViewParams) -> CellResult {
 // Limb-band instrument
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Upper edges (degrees of limb angle) of the buckets used by [`measure_limb_band`].
+/// Upper edges (degrees of limb angle) of the buckets used by [`measure_limb_bands`].
 ///
 /// "Limb angle" is `asin(facing_cos)`: 0° means the surface point sits exactly on
 /// the visible edge of the disc, 90° means it is directly beneath the camera.
@@ -587,17 +587,13 @@ pub struct LimbBandResult {
     pub total_false_negatives: usize,
 }
 
-/// Measures false negatives as a function of distance from the visible limb.
+/// Measures false negatives as a function of distance from the visible limb, for a
+/// set of cells, parallel across cells inside the harness pool.
 ///
 /// This isolates the horizon/occlusion stage of `QuadtreeNode::update` from the
 /// frustum stage: a hole that only ever appears within a fraction of a degree of
 /// the limb is a horizon-culling conservatism, whereas one that reaches several
 /// degrees inward is a frustum or LOD problem.
-pub fn measure_limb_band(params: &ViewParams) -> LimbBandResult {
-    harness_pool().install(|| measure_limb_band_inner(params))
-}
-
-/// Measures a set of limb-band cells, parallel across cells inside the harness pool.
 pub fn measure_limb_bands(cells: &[ViewParams]) -> Vec<LimbBandResult> {
     harness_pool().install(|| cells.par_iter().map(measure_limb_band_inner).collect())
 }

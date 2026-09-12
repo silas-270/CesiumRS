@@ -4,10 +4,10 @@
 //!
 //! * [`ViewParams`] / [`build_camera`] — the sweep's camera, built from a local
 //!   East/North/Up frame so that pitch/yaw/roll mean something geographically.
-//! * The legacy `setup_camera` / `setup_camera_direct` / `setup_fuzz_camera` /
-//!   [`Lcg`] helpers, migrated verbatim out of the deleted
-//!   `test_frustum_coverage.rs` because `testing::camera::test_z_sweep` and
-//!   `testing::terrain::test_parametric_sweeps` still depend on them.
+//! * The legacy [`setup_camera`] and [`Lcg`] helpers, migrated verbatim out of the
+//!   deleted `test_frustum_coverage.rs`. `testing::terrain::test_parametric_sweeps`
+//!   still uses [`setup_camera`]; [`Lcg`] seeds the fuzz sweep's cells
+//!   (`cells.rs`) and `test_tile_bounds`.
 
 use cesium_engine::camera::camera::{Camera, CameraMode};
 use glam::{DVec3, Quat, Vec3};
@@ -111,12 +111,15 @@ fn camera_transform(p: &ViewParams) -> (DVec3, Quat) {
     let pos = lon_lat_alt_to_ecef(p.lon_deg, p.lat_deg, p.alt_m);
     let up = ellipsoid_normal(pos);
 
-    // The engine builds its tile tangent frames as `east = Y × normal`; matching it
-    // keeps "north"/"east" meaning the same thing in the harness as in the renderer.
+    // The harness builds its local frame as `east = Y × normal`, with a +X fallback
+    // where that degenerates. The engine no longer does: `quadtree::tangent_frame`
+    // builds `east` analytically from the centre longitude, precisely to be rid of
+    // the cross-product form and this fallback. Away from the poles the two frames
+    // agree, so "north"/"east" keep meaning the same thing here as in the renderer;
+    // exactly at a pole they do not, and the analytic one is the correct frame.
+    // This form is kept because the sweep's cells are bit-pinned to it.
     let mut east = DVec3::Y.cross(up);
     if east.length_squared() < 1.0e-12 {
-        // Exactly at a pole the cross product degenerates; the engine falls back
-        // to +X in `compute_sub_obb`, so do the same.
         east = DVec3::X;
     }
     let east = east.normalize();
@@ -140,8 +143,8 @@ fn camera_transform(p: &ViewParams) -> (DVec3, Quat) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Legacy helpers, migrated from the removed `test_frustum_coverage.rs`.
-// Kept byte-for-byte in behaviour so the call sites in `testing::camera` and
-// `testing::terrain` keep measuring exactly what they measured before.
+// Kept byte-for-byte in behaviour so the call site in `testing::terrain` keeps
+// measuring exactly what it measured before.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Camera at (lat, lon, altitude-in-megameters) looking at the Earth's centre,
@@ -157,44 +160,6 @@ pub fn setup_camera(lat_deg: f32, lon_deg: f32, altitude: f32, pitch_offset_deg:
         cam.rotate_local(pitch_quat);
     }
 
-    cam
-}
-
-/// Camera placed at an explicit ECEF position with explicit YXZ Euler angles.
-pub fn setup_camera_direct(pos: Vec3, pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> Camera {
-    let mut cam = Camera::new(pos, Vec3::ZERO);
-    cam.set_local_transform(
-        pos,
-        Quat::from_euler(
-            glam::EulerRot::YXZ,
-            yaw_deg.to_radians(),
-            pitch_deg.to_radians(),
-            roll_deg.to_radians(),
-        ),
-    );
-    cam
-}
-
-/// Camera at (lat, lon, altitude-in-megameters) with explicit YXZ Euler angles.
-pub fn setup_fuzz_camera(
-    lat_deg: f32,
-    lon_deg: f32,
-    altitude: f32,
-    pitch_deg: f32,
-    yaw_deg: f32,
-    roll_deg: f32,
-) -> Camera {
-    let pos = surface_normal_offset_pos(lat_deg, lon_deg, altitude);
-    let mut cam = Camera::new(pos, Vec3::ZERO);
-    cam.set_local_transform(
-        pos,
-        Quat::from_euler(
-            glam::EulerRot::YXZ,
-            yaw_deg.to_radians(),
-            pitch_deg.to_radians(),
-            roll_deg.to_radians(),
-        ),
-    );
     cam
 }
 
@@ -234,14 +199,8 @@ impl Lcg {
         Self { state: seed }
     }
 
-    /// Uniform in [0, 1].
-    pub fn next_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
-        (self.state as f32) / (u32::MAX as f32)
-    }
-
-    /// Uniform in [0, 1], in f64 (still driven by the same 32-bit stream, so the
-    /// sequence is identical to `next_f32`'s).
+    /// Uniform in [0, 1], in f64. The stream is the 32-bit LCG state itself, so
+    /// the sequence of draws does not depend on the width it is read out at.
     pub fn next_f64(&mut self) -> f64 {
         self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
         (self.state as f64) / (u32::MAX as f64)

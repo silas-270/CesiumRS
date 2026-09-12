@@ -21,10 +21,13 @@
 //! projections onto an axis are disjoint, the hulls are disjoint. Adding axes can
 //! only reject more, and every rejection is a proof. FN stays 0. ∎
 //!
-//! Both stages are skipped when the caller did not attach the frustum corners
-//! (`Frustum::corners == None`), which is what [`Frustum::new`] leaves them as — so
-//! a caller that only has plane normals is unaffected, and correspondingly gets the
-//! looser answer.
+//! Both stages are skipped when the caller did not attach the frustum corners,
+//! which is what [`Frustum::new`] leaves them as — so a caller that only has plane
+//! normals is unaffected, and correspondingly gets the looser answer. The two read
+//! different fields to see it: [`separated_on_box_axes`] checks
+//! `Frustum::corners == None`, [`separated_on_edge_cross_axes`] checks
+//! `Frustum::rays == None`. That is the same condition in practice, since
+//! [`Frustum::with_corners`] is the only thing that sets either and sets both.
 //!
 //! # What the measurement says now
 //!
@@ -136,11 +139,12 @@ const EDGE_EPS_COEFF: f64 = 8.0 * 5.960_464_5e-8;
 /// when it holds every face normal of each and every cross product of an edge of
 /// one with an edge of the other. Here that is
 ///
-/// * 4 face normals of `P` — [`Frustum::separated_from_box`];
+/// * 4 face normals of `P` — inline in [`Frustum::classify_box`] and
+///   [`Frustum::intersects_obb`];
 /// * 3 face normals of the box — [`separated_on_box_axes`];
 /// * 4 × 3 = 12 edge crosses — **this function**.
 ///
-/// So `separated_from_box || separated_on_box_axes || separated_on_edge_cross_axes`
+/// So `four planes || separated_on_box_axes || separated_on_edge_cross_axes`
 /// is not a bound at all: it is disjointness, decided. What was left over after the
 /// first two stages is exactly §5.2's corner over-report, and it does not vanish
 /// with subdivision — a patch that grazes a frustum *corner* has every sub-box

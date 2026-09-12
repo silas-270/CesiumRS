@@ -478,7 +478,7 @@ other:
 | face normals of the box | 3 | `slab.rs:79`, **`ENABLED = false`** |
 | edge × edge | 4 × 3 = 12 | `slab.rs:171`, **on** |
 
-So `separated_from_box ‖ separated_on_box_axes ‖ separated_on_edge_cross_axes` is
+So `four planes ‖ separated_on_box_axes ‖ separated_on_edge_cross_axes` is
 not a bound at all — it is disjointness, decided.
 
 **The mechanics.** `P` is a cone with apex at the origin of this frame, so its
@@ -616,7 +616,7 @@ someone changing the code, with the guard that catches a violation.
 | **I-2** | **Keep `OrientedBoundingBox::center` and `QuadtreeNode::center` in f64.** Any `p − cam` must be subtracted in f64 and only the difference downcast. Never store a world position in f32 and subtract afterwards. | `test_camera_relative_plane_error_vs_tile_size`; `test_degenerate_obb_matches_contains_point` |
 | **I-3** | **Do not tighten `zfar`** below `‖cam‖ + a` without reinstating the far plane `π_far = r2`. | `test_far_plane_is_vacuous_for_the_globe` (asserts the *premise*) |
 | **I-4** | **Keep the horizon test in f64** end to end. Its conditioning near the surface scales as `1/h`; in f32 the error in `S` is ~1.2·10⁻⁷, which at 3 m altitude is 0.23° of limb angle — 26 km of ground. It is 25 flops. | `test_horizon_closed_form_matches_brute_force`; `test_limb_band_has_no_false_negatives` |
-| **I-5** | **`tile_bounds()` is the only source of a tile's rectangle.** Culling and `TileMesh::generate` must see bit-identical numbers, pole stretch included. Do not re-derive bounds anywhere; do not use the f32 `web_mercator_y_to_lat` for a boundary. | `test_generated_mesh_stays_inside_the_culling_rectangle`; `test_tile_bounds_tile_the_sphere_without_seams` |
+| **I-5** | **`tile_bounds()` is the only source of a tile's rectangle.** Culling and `TileMesh::generate` must see bit-identical numbers, pole stretch included. Do not re-derive bounds anywhere. The f32 `web_mercator_y_to_lat` wrapper that used to tempt callers into doing so no longer exists; only the f64 form remains. | `test_generated_mesh_stays_inside_the_culling_rectangle`; `test_tile_bounds_tile_the_sphere_without_seams` |
 | **I-6** | **Every rejection needs a strict proof, with the tolerance widening the kept set.** Write `reject iff value < −ε`, never `value < +ε`. Same for an `Inside` verdict: it must also be proved, because it *skips* later rejections. | `test_plane_offset_partitions`; `test_degenerate_obb_matches_contains_point` (the only test that resolves the ~4.8e-7 tolerance — the sweeps cannot, see §7.3) |
 | **I-7** | **Every test must be sound at every level of the tree**, because a cull discards the subtree. Do not add a test that is only valid for small patches. | the sweeps collectively; `test_zoom_cliff_probe` straddles the one place the conservatism changes character |
 

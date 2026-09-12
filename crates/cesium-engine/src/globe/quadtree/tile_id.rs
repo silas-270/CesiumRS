@@ -34,14 +34,6 @@ pub fn web_mercator_y_to_lat_f64(y: f64, z: u8) -> f64 {
         .to_degrees()
 }
 
-/// f32 convenience wrapper over [`web_mercator_y_to_lat_f64`].
-///
-/// Retained for callers outside the culling path that want an f32 latitude. **Do
-/// not** use it to derive a tile boundary: go through [`tile_bounds`].
-pub fn web_mercator_y_to_lat(y: f32, z: u8) -> f32 {
-    web_mercator_y_to_lat_f64(y as f64, z) as f32
-}
-
 pub(super) const MAX_ZOOM: u8 = 20;
 
 /// The geographic rectangle a tile covers, in **degrees**, pole stretch included.

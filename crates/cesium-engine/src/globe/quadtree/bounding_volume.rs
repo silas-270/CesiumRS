@@ -90,10 +90,23 @@ pub struct Frustum {
     pub normals: [Vec3; 4],
     /// The eye, in world space (megameters): the origin of this frame.
     pub eye: DVec3,
-    /// The eight frustum corners, camera-relative, for the optional box-slab stage
-    /// ([`super::slab`]). `None` skips that stage entirely.
+    /// The eight frustum corners, camera-relative, for the box-axis slab stage
+    /// ([`super::slab::separated_on_box_axes`]). `None` skips that stage entirely.
+    ///
+    /// **No reachable reader today.** That stage is compiled out behind
+    /// [`super::slab::ENABLED`]` == false` — a deliberately preserved negative
+    /// result, not dead code: it is correct, it is measured (0.01 points of FP for
+    /// 0.5 µs; see the `slab` module header's A/B table), and the trade flips back
+    /// if tile bounding volumes ever grow much larger relative to the frustum.
+    /// These two fields are its inputs and must survive with it. The live purpose
+    /// of [`Frustum::with_corners`] is the *other* thing it derives from the same
+    /// eight corners — [`Frustum::rays`], for the active edge-cross stage.
     pub corners: Option<[Vec3; 8]>,
-    /// `max_k ‖corner_k‖₁`, cached for the slab stage's rounding bound.
+    /// `max_k ‖corner_k‖₁`, cached for the box-axis slab stage's rounding bound.
+    ///
+    /// Read only by [`super::slab::separated_on_box_axes`], and therefore — like
+    /// [`Frustum::corners`], whose note explains why it stays — unreachable while
+    /// that stage is compiled out.
     pub corner_l1_max: f32,
     /// The four **edge rays** of the side-plane pyramid — unit direction of each
     /// far corner in the camera-relative frame, in f64. `None` alongside `corners`.
@@ -169,7 +182,7 @@ impl Frustum {
 
     /// Is a camera-relative point inside all four side half-spaces?
     ///
-    /// Uses the same tolerance as [`Frustum::separated_from_box`] with zero extents,
+    /// Uses the same tolerance as [`Frustum::classify_box`] with zero extents,
     /// so a degenerate (zero half-axis) box and a point give the same answer.
     #[inline]
     pub fn contains_relative(&self, rel: Vec3) -> bool {
@@ -203,32 +216,6 @@ impl Frustum {
             }
         }
         true
-    }
-
-    /// The separating-plane test for a box already expressed camera-relative.
-    ///
-    /// Rejects iff the box lies strictly outside one plane:
-    /// `n·Δ + Σ_j |n·h_j| < −ε`, with `ε` the f32 rounding bound (2.4) of that very
-    /// expression. Soundness: rejection means `sup_{p∈B} n·(p − cam) < 0`, so `B`
-    /// is in the open half-space outside a frustum plane and cannot meet the
-    /// frustum. Dropping the depth planes can only add false positives.
-    #[inline]
-    pub fn separated_from_box(
-        &self,
-        delta: Vec3,
-        half_axes: &[Vec3; 3],
-        half_axis_l1: f32,
-    ) -> bool {
-        let eps = Self::eps(delta, half_axis_l1);
-        for n in &self.normals {
-            let s = n.dot(delta);
-            let r =
-                n.dot(half_axes[0]).abs() + n.dot(half_axes[1]).abs() + n.dot(half_axes[2]).abs();
-            if s + r < -eps {
-                return true;
-            }
-        }
-        false
     }
 
     /// Where a box sits relative to the four side half-spaces.
