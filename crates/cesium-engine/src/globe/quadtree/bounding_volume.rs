@@ -68,6 +68,17 @@ impl OrientedBoundingBox {
     }
 }
 
+/// Where a box sits relative to the frustum's four side half-spaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoxVerdict {
+    /// Provably outside one of the four planes — culled, no further test needed.
+    Outside,
+    /// Provably inside all four — it meets the frustum, no further test possible.
+    Inside,
+    /// Neither: the only case where the extra separating axes can say anything.
+    Straddling,
+}
+
 /// The four side planes of the view frustum, in the camera-relative frame.
 ///
 /// Plane order is `[Left, Right, Bottom, Top]`, derived from the rows of
@@ -84,6 +95,14 @@ pub struct Frustum {
     pub corners: Option<[Vec3; 8]>,
     /// `max_k ‖corner_k‖₁`, cached for the slab stage's rounding bound.
     pub corner_l1_max: f32,
+    /// The four **edge rays** of the side-plane pyramid — unit direction of each
+    /// far corner in the camera-relative frame, in f64. `None` alongside `corners`.
+    ///
+    /// The side planes all pass through the eye, so the volume the four-plane test
+    /// models is the infinite pyramid `cone(r₀..r₃)` with apex at the eye. These
+    /// rays are its *edges*, and edges are half of what a complete separating-axis
+    /// set needs (see [`super::slab::separated_on_edge_cross_axes`]).
+    pub rays: Option<[DVec3; 4]>,
 }
 
 impl Frustum {
@@ -91,13 +110,18 @@ impl Frustum {
     pub fn new(normals: [DVec3; 4], eye: DVec3) -> Self {
         let mut n32 = [Vec3::ZERO; 4];
         for i in 0..4 {
-            n32[i] = Vec3::new(normals[i].x as f32, normals[i].y as f32, normals[i].z as f32);
+            n32[i] = Vec3::new(
+                normals[i].x as f32,
+                normals[i].y as f32,
+                normals[i].z as f32,
+            );
         }
         Self {
             normals: n32,
             eye,
             corners: None,
             corner_l1_max: 0.0,
+            rays: None,
         }
     }
 
@@ -108,6 +132,16 @@ impl Frustum {
             .iter()
             .map(|c| c.x.abs() + c.y.abs() + c.z.abs())
             .fold(0.0_f32, f32::max);
+        // The far quad, normalised in f64: the pyramid's four edge directions.
+        // f32 corner components carry ~6·10⁻⁸ of relative error, i.e. ~6·10⁻⁸ rad
+        // of direction error, which the edge-cross test's tolerance covers with
+        // three orders to spare (see `slab::separated_on_edge_cross_axes`).
+        let mut rays = [DVec3::ZERO; 4];
+        for i in 0..4 {
+            let c = corners[4 + i];
+            rays[i] = DVec3::new(c.x as f64, c.y as f64, c.z as f64).normalize_or_zero();
+        }
+        self.rays = Some(rays);
         self.corners = Some(corners);
         self
     }
@@ -179,13 +213,17 @@ impl Frustum {
     /// is in the open half-space outside a frustum plane and cannot meet the
     /// frustum. Dropping the depth planes can only add false positives.
     #[inline]
-    pub fn separated_from_box(&self, delta: Vec3, half_axes: &[Vec3; 3], half_axis_l1: f32) -> bool {
+    pub fn separated_from_box(
+        &self,
+        delta: Vec3,
+        half_axes: &[Vec3; 3],
+        half_axis_l1: f32,
+    ) -> bool {
         let eps = Self::eps(delta, half_axis_l1);
         for n in &self.normals {
             let s = n.dot(delta);
-            let r = n.dot(half_axes[0]).abs()
-                + n.dot(half_axes[1]).abs()
-                + n.dot(half_axes[2]).abs();
+            let r =
+                n.dot(half_axes[0]).abs() + n.dot(half_axes[1]).abs() + n.dot(half_axes[2]).abs();
             if s + r < -eps {
                 return true;
             }
@@ -193,11 +231,144 @@ impl Frustum {
         false
     }
 
-    /// `true` when the box may intersect the frustum.
+    /// Where a box sits relative to the four side half-spaces.
+    ///
+    /// `s + r < 0` puts the box wholly outside a plane, `s − r ≥ 0` puts it wholly
+    /// inside one, and the `s_p = n_p·Δ` both need are shared. Both verdicts are
+    /// taken with the rounding bound in the conservative direction (I-6) — a box is
+    /// only called `Outside` on a proof, and only called `Inside` on a proof.
+    ///
+    /// The four `s_p` come first on their own, tested against the box's
+    /// **circumsphere** (`half_axis_l1` bounds its radius, since
+    /// `‖Σ t_j h_j‖ ≤ Σ ‖h_j‖ ≤ Σ ‖h_j‖₁`). That decides most boxes — a sub-cell is
+    /// either well inside the frustum or well outside it — for 20 flops instead of
+    /// 92, and only a box the sphere leaves undecided pays for the twelve
+    /// `n_p·h_j`. It matters because `SubGrid::any_visible`'s first pass runs this
+    /// `k²` times per node.
+    #[inline]
+    pub fn classify_box(
+        &self,
+        delta: Vec3,
+        half_axes: &[Vec3; 3],
+        half_axis_l1: f32,
+    ) -> BoxVerdict {
+        let eps = Self::eps(delta, half_axis_l1);
+        let mut s = [0.0_f32; 4];
+        let mut sphere_inside = true;
+        for p in 0..4 {
+            s[p] = self.normals[p].dot(delta);
+            if s[p] + half_axis_l1 < -eps {
+                return BoxVerdict::Outside;
+            }
+            if s[p] - half_axis_l1 < eps {
+                sphere_inside = false;
+            }
+        }
+        if sphere_inside {
+            return BoxVerdict::Inside;
+        }
+
+        let mut inside_all = true;
+        for p in 0..4 {
+            let n = self.normals[p];
+            let r =
+                n.dot(half_axes[0]).abs() + n.dot(half_axes[1]).abs() + n.dot(half_axes[2]).abs();
+            if s[p] + r < -eps {
+                return BoxVerdict::Outside;
+            }
+            if s[p] - r < eps {
+                inside_all = false;
+            }
+        }
+        if inside_all {
+            BoxVerdict::Inside
+        } else {
+            BoxVerdict::Straddling
+        }
+    }
+
+    /// `true` when the box may intersect the frustum — exact, up to the rounding
+    /// tolerances, for the four-plane pyramid (§5.2 + [`super::slab`]).
+    ///
+    /// Three cheap verdicts come first, in increasing order of cost, and each ends
+    /// the question outright:
+    ///
+    /// 0. **Circumsphere outside a plane, or inside all four** — 20 flops, and it
+    ///    settles any box that is not close to the frustum's boundary.
+    /// 1. **Outside one plane** — separated, culled. One pass, ~92 flops.
+    /// 2. **Inside all four** — it meets the frustum, and no axis could separate it.
+    /// 3. **A box vertex inside all four** — likewise a witness of intersection,
+    ///    and it costs only sign flips: the vertex's plane distance is
+    ///    `s_p ± r_{p,0} ± r_{p,1} ± r_{p,2}` in quantities the first pass already
+    ///    computed. ~96 adds for all eight vertices.
+    ///
+    /// Only a box with no vertex inside and no separating plane — one truly wedged
+    /// against a frustum edge or corner — reaches the ~760-flop remainder. That is
+    /// what makes an exact test affordable per node *and* per sub-box: the
+    /// expensive branch is not the boundary, it is the boundary's corners.
+    ///
+    /// Verdicts 2 and 3 keep the box, so their tolerance is applied in the keeping
+    /// direction; verdict 1 culls, so its tolerance is applied in the keeping
+    /// direction too (invariant **I-6**).
     #[inline]
     pub fn intersects_obb(&self, obb: &OrientedBoundingBox) -> bool {
         let delta = self.relative(obb.center);
-        !self.separated_from_box(delta, &obb.half_axes, obb.half_axis_l1)
-            && !super::slab::separated_on_box_axes(self, delta, &obb.half_axes)
+        let eps = Self::eps(delta, obb.half_axis_l1);
+        let half_axes = &obb.half_axes;
+
+        let mut s = [0.0_f32; 4];
+        let mut sphere_inside = true;
+        for p in 0..4 {
+            s[p] = self.normals[p].dot(delta);
+            if s[p] + obb.half_axis_l1 < -eps {
+                return false;
+            }
+            if s[p] - obb.half_axis_l1 < eps {
+                sphere_inside = false;
+            }
+        }
+        if sphere_inside {
+            return true;
+        }
+
+        let mut r = [[0.0_f32; 3]; 4];
+        let mut inside_all = true;
+        for p in 0..4 {
+            let n = self.normals[p];
+            r[p] = [
+                n.dot(half_axes[0]),
+                n.dot(half_axes[1]),
+                n.dot(half_axes[2]),
+            ];
+            let ra = r[p][0].abs() + r[p][1].abs() + r[p][2].abs();
+            if s[p] + ra < -eps {
+                return false;
+            }
+            if s[p] - ra < eps {
+                inside_all = false;
+            }
+        }
+        if inside_all {
+            return true;
+        }
+
+        for m in 0..8u32 {
+            let t0 = if m & 1 == 0 { 1.0 } else { -1.0 };
+            let t1 = if m & 2 == 0 { 1.0 } else { -1.0 };
+            let t2 = if m & 4 == 0 { 1.0 } else { -1.0 };
+            let mut inside = true;
+            for p in 0..4 {
+                if s[p] + t0 * r[p][0] + t1 * r[p][1] + t2 * r[p][2] < -eps {
+                    inside = false;
+                    break;
+                }
+            }
+            if inside {
+                return true;
+            }
+        }
+
+        !super::slab::separated_on_box_axes(self, delta, half_axes)
+            && !super::slab::separated_on_edge_cross_axes(self, delta, half_axes)
     }
 }

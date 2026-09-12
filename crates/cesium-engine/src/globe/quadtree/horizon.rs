@@ -182,32 +182,8 @@ impl TilePatch {
     /// tile. Conservative either way (I-6).
     #[inline]
     pub fn max_dot(&self, cam: &HorizonCamera) -> f64 {
-        let c = cam.c;
-
-        // ── maximise over λ ──────────────────────────────────────────────────
-        // A'(λ) = −(c.x·sin λ + c.z·cos λ)
-        let da0 = -(c.x * self.sin_lon[0] + c.z * self.cos_lon[0]);
-        let da1 = -(c.x * self.sin_lon[1] + c.z * self.cos_lon[1]);
-        let a_star = if da0 >= 0.0 && da1 <= 0.0 {
-            cam.rho
-        } else {
-            let a0 = c.x * self.cos_lon[0] - c.z * self.sin_lon[0];
-            let a1 = c.x * self.cos_lon[1] - c.z * self.sin_lon[1];
-            a0.max(a1)
-        };
-
-        // ── maximise over φ ──────────────────────────────────────────────────
-        let g0 = a_star * self.cos_lat[0] + c.y * self.sin_lat[0];
-        let g1 = a_star * self.cos_lat[1] + c.y * self.sin_lat[1];
-        let mut s = g0.max(g1);
-
-        // g'(φ) = −A*·sin φ + c.y·cos φ
-        let dg0 = -a_star * self.sin_lat[0] + c.y * self.cos_lat[0];
-        let dg1 = -a_star * self.sin_lat[1] + c.y * self.cos_lat[1];
-        if dg0 >= 0.0 && dg1 <= 0.0 {
-            s = s.max((a_star * a_star + c.y * c.y).sqrt());
-        }
-        s
+        let a_star = lon_span_max(cam, &self.sin_lon, &self.cos_lon);
+        lat_span_max(cam, a_star, &self.sin_lat, &self.cos_lat)
     }
 
     /// Is every drawable point of this tile hidden behind the limb?
@@ -220,6 +196,90 @@ impl TilePatch {
     /// convex and is the only occluder, so nothing can un-occlude them. ∎
     #[inline]
     pub fn is_occluded(&self, cam: &HorizonCamera) -> bool {
-        cam.active && self.max_dot(cam) <= 1.0 - cam.eps
+        span_is_occluded(cam, self.max_dot(cam))
     }
+}
+
+/// `A* = max_{λ∈[λ₀,λ₁]} (c.x·cos λ − c.z·sin λ)` — the λ half of (3.4), exact.
+///
+/// Split out of [`TilePatch::max_dot`] so a **sub**-rectangle grid can share one
+/// λ-maximisation across a whole column of sub-rectangles: the λ span of column
+/// `i` is the same for every row `j`, and this is the expensive half.
+///
+/// `A(λ) = ρ·cos(λ − λ_cam)`, so the interior maximum is `ρ`; it is taken exactly
+/// when the derivative is ≥ 0 at the low end and ≤ 0 at the high end. The span is
+/// at most π wide (a whole tile is, and a sub-rectangle of one is narrower), which
+/// is what makes that one-sided test sufficient.
+#[inline]
+pub fn lon_span_max(cam: &HorizonCamera, sin_lon: &[f64; 2], cos_lon: &[f64; 2]) -> f64 {
+    let c = cam.c;
+    // A'(λ) = −(c.x·sin λ + c.z·cos λ)
+    let da0 = -(c.x * sin_lon[0] + c.z * cos_lon[0]);
+    let da1 = -(c.x * sin_lon[1] + c.z * cos_lon[1]);
+    if da0 >= 0.0 && da1 <= 0.0 {
+        cam.rho
+    } else {
+        let a0 = c.x * cos_lon[0] - c.z * sin_lon[0];
+        let a1 = c.x * cos_lon[1] - c.z * sin_lon[1];
+        a0.max(a1)
+    }
+}
+
+/// `S = max_{φ∈[φ₀,φ₁]} (A*·cos φ + c.y·sin φ)` — the φ half of (3.4), exact.
+///
+/// The interior candidate `√(A*² + c.y²)` is folded in with `max` rather than
+/// replacing the endpoints: it is the *global* maximum of `g`, so admitting it when
+/// the interior test is wrong can only over-estimate `S`, i.e. keep the tile.
+/// Conservative either way (I-6).
+#[inline]
+pub fn lat_span_max(
+    cam: &HorizonCamera,
+    a_star: f64,
+    sin_lat: &[f64; 2],
+    cos_lat: &[f64; 2],
+) -> f64 {
+    let c = cam.c;
+    let g0 = a_star * cos_lat[0] + c.y * sin_lat[0];
+    let g1 = a_star * cos_lat[1] + c.y * sin_lat[1];
+    let mut s = g0.max(g1);
+
+    // g'(φ) = −A*·sin φ + c.y·cos φ
+    let dg0 = -a_star * sin_lat[0] + c.y * cos_lat[0];
+    let dg1 = -a_star * sin_lat[1] + c.y * cos_lat[1];
+    if dg0 >= 0.0 && dg1 <= 0.0 {
+        s = s.max((a_star * a_star + c.y * c.y).sqrt());
+    }
+    s
+}
+
+/// Is the spherical rectangle with this precomputed `S` entirely behind the limb?
+///
+/// The threshold half of [`TilePatch::is_occluded`], for callers that computed `S`
+/// themselves via [`lon_span_max`] / [`lat_span_max`].
+///
+/// # Why there is no `cam.active` guard
+///
+/// [`HorizonCamera::active`] is `C² > 1`, and it gates [`point_is_occluded`],
+/// whose polar-plane/cone algebra really does break down at or inside the surface
+/// (§3.1). The **surface-point** form `q·c ≤ 1` does not use a polar plane, and it
+/// stays exact for `C² ≤ 1`:
+///
+/// * `C² = 1` — the eye is *on* the unit sphere. For any other surface point `q`
+///   the open chord `(c, q)` lies strictly inside the ball, so `q` is occluded; and
+///   `q·c < 1` for every `q ≠ c`, with `q·c = 1` exactly at `q = c`. The two agree.
+/// * `C² < 1` — the eye is strictly inside, every chord from it starts in the open
+///   ball, so every surface point is occluded; and `q·c ≤ ‖q‖‖c‖ = C < 1` for
+///   every `q`. The two agree again.
+///
+/// So the one inequality covers all three regimes and the guard is not a safety
+/// belt, it is a hole: with it, a camera at or below the surface culls *nothing*
+/// and the whole globe is scheduled, every tile of it provably invisible. Without
+/// it, the footpoint tile is still kept — `S ≥ q·c|_{q=c} = C² = 1 > 1 − eps` — so
+/// a camera grazing the surface keeps exactly the ground under its feet, which is
+/// also what it keeps one nanometre higher up. There is no cliff at zero altitude,
+/// and no false negative: the harness's own `CellResult::is_degenerate` records the
+/// same geometry from the oracle's side.
+#[inline]
+pub fn span_is_occluded(cam: &HorizonCamera, s: f64) -> bool {
+    s <= 1.0 - cam.eps
 }
