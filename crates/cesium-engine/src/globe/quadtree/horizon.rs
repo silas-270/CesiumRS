@@ -46,19 +46,20 @@ const HORIZON_EPS_ROUNDING: f64 = 8.9e-16;
 
 /// Angular slack, in radians, between the culling rectangle and the drawn mesh.
 ///
-/// [`super::tile_id::tile_bounds`] and `TileMesh::generate` share their four corner
-/// values exactly (invariant I-5), and the mesh's longitude lerp is exact at both
-/// ends. What is *not* bit-exact is the mesh's interior rows: they come from
-/// `web_mercator_y_to_lat` evaluated at intermediate `y`, in f32, whose monotonicity
-/// is only good to an ulp of the returned latitude (~7.6·10⁻⁶ ° ≈ 0.85 m at 85°).
+/// Invariant I-5 makes these two the *same* rectangle: `TileMesh::generate` takes
+/// its corner latitudes and longitudes from [`super::tile_id::tile_bounds`], and
+/// interpolates between them with the same f64 expressions, so `u = 0/1` and
+/// `v = 0/1` reproduce the bounds bit-for-bit and every interior vertex is strictly
+/// between them. What is left is the ≈1 ulp of non-monotonicity an f64
+/// `atan(sinh(·))` chain can show at an interior row — of order 10⁻¹⁴ rad.
 ///
-/// 10⁻⁶ rad ≈ 6.4 m of ground covers several such ulps. It is applied in the
-/// conservative direction (I-6): the horizon stage must see the whole patch below
-/// the limb *by this margin* before it culls. The cost is that a tile stays
-/// scheduled for the last ~6 m of its descent behind the limb — immeasurable as a
-/// false-positive rate, and it is the difference between "exact" and "exact for the
-/// rectangle but not quite for the mesh inside it".
-const HORIZON_EPS_BOUNDS_RAD: f64 = 1.0e-6;
+/// 10⁻⁹ rad ≈ 6 mm of ground is five orders above that and eleven orders below a
+/// tile. Applied in the conservative direction (I-6): the whole patch must be below
+/// the limb *by this margin* before the tile is culled.
+///
+/// It was 10⁻⁶ rad while the bounds were still f32-quantised; that was covering for
+/// a 1.7 m tile-edge displacement which is now gone at the source.
+const HORIZON_EPS_BOUNDS_RAD: f64 = 1.0e-9;
 
 /// Per-frame camera constants in scaled space. Built once, read by every node.
 #[derive(Clone, Copy, Debug)]
