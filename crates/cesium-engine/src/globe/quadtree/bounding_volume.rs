@@ -119,8 +119,29 @@ pub struct Frustum {
 }
 
 impl Frustum {
-    /// Builds a frustum from the four f64 side-plane normals and the eye.
-    pub fn new(normals: [DVec3; 4], eye: DVec3) -> Self {
+    /// Builds a frustum from the four f64 side-plane normals and the eye — and
+    /// **nothing else**, which is a choice with a measured price.
+    ///
+    /// Without the eight corners, two stages of the cascade have no inputs and
+    /// silently do not run: [`super::slab::separated_on_box_axes`] reads
+    /// [`Frustum::corners`] (compiled out today anyway, see that field), and
+    /// [`super::slab::separated_on_edge_cross_axes`] — which *is* active — reads
+    /// [`Frustum::rays`]. Neither reports anything when its field is `None`; they
+    /// just return "not separated" and the four planes answer alone. Per the
+    /// `slab` module header's A/B table over all nine harness sweeps, that is
+    /// **5.91 % total FP instead of 2.05 %** (FN is 0 either way — dropping
+    /// separating axes can only over-report, never under-report).
+    ///
+    /// So use this only when the extra stages are *inapplicable*, not merely
+    /// inconvenient. That is the case for a caller that needs only
+    /// [`Frustum::contains_point`] / [`Frustum::intersects_sphere`] and never
+    /// [`Frustum::intersects_obb`] — label culling, for one: labels are points
+    /// floating off the ellipsoid, not tile boxes, so there is no OBB for SAT to
+    /// separate and the corners would buy nothing.
+    ///
+    /// Anything that culls tiles — or that measures, benchmarks or reproduces
+    /// what the renderer does — wants [`Frustum::with_corners`] on top of this.
+    pub fn planes_only(normals: [DVec3; 4], eye: DVec3) -> Self {
         let mut n32 = [Vec3::ZERO; 4];
         for i in 0..4 {
             n32[i] = Vec3::new(
@@ -139,7 +160,14 @@ impl Frustum {
     }
 
     /// Attaches the eight camera-relative frustum corners (from
-    /// `Camera::frustum_corners_relative`), enabling the box-slab stage.
+    /// `Camera::frustum_corners_relative`), deriving [`Frustum::rays`] for the
+    /// active edge-cross stage and [`Frustum::corner_l1_max`] for the box-axis one.
+    ///
+    /// **This is the variant the renderer runs** (`render::wgpu_state`, one
+    /// frustum per frame). It is therefore also the variant any measuring code
+    /// must build — a harness, benchmark or regression run that stops at
+    /// [`Frustum::planes_only`] is exercising a strictly weaker cascade than
+    /// production and its numbers do not describe the shipped path.
     pub fn with_corners(mut self, corners: [Vec3; 8]) -> Self {
         self.corner_l1_max = corners
             .iter()

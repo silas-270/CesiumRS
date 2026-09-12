@@ -66,7 +66,8 @@ fn bench_quadtree_update() {
         let planes = cam.calculate_frustum_planes(aspect as f32);
         let (eye, _) = cam.global_transform_f64();
         let frustum =
-            Frustum::new(planes, eye).with_corners(cam.frustum_corners_relative(aspect as f32));
+            Frustum::planes_only(planes, eye)
+                .with_corners(cam.frustum_corners_relative(aspect as f32));
 
         let mut qt = QuadtreeManager::new();
         // Warm-up: build the tree and settle the LOD hysteresis band, so the timed

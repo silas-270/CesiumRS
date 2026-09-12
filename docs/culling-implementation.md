@@ -150,7 +150,7 @@ Driver: `render/wgpu_state.rs:445` `update_logic`.
 ```rust
 let mut frustum = self.camera.calculate_frustum_planes(aspect_ratio);   // :453
 // … extension may move the camera; planes are recomputed at :469 …
-let frustum_obj = Frustum::new(frustum, camera_pos_dvec)                // :506
+let frustum_obj = Frustum::planes_only(frustum, camera_pos_dvec)                // :506
     .with_corners(self.camera.frustum_corners_relative(aspect_ratio));  // :507
 self.quadtree_manager.update(&frustum_obj);                             // :512
 ```

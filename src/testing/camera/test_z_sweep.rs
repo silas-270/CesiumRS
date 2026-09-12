@@ -23,7 +23,7 @@ fn evaluate_direct_camera(file: &mut std::fs::File, z: f32) {
         global_pos_dvec.z as f32,
     );
     for _ in 0..30 {
-        quadtree.update(&cesium_engine::globe::quadtree::Frustum::new(
+        quadtree.update(&cesium_engine::globe::quadtree::Frustum::planes_only(
             frustum_planes,
             global_pos_dvec,
         ));

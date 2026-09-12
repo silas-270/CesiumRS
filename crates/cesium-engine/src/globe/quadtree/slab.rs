@@ -22,9 +22,9 @@
 //! only reject more, and every rejection is a proof. FN stays 0. ∎
 //!
 //! Both stages are skipped when the caller did not attach the frustum corners,
-//! which is what [`Frustum::new`] leaves them as — so a caller that only has plane
-//! normals is unaffected, and correspondingly gets the looser answer. The two read
-//! different fields to see it: [`separated_on_box_axes`] checks
+//! which is what [`Frustum::planes_only`] leaves them as — so a caller that only
+//! has plane normals is unaffected, and correspondingly gets the looser answer.
+//! The two read different fields to see it: [`separated_on_box_axes`] checks
 //! `Frustum::corners == None`, [`separated_on_edge_cross_axes`] checks
 //! `Frustum::rays == None`. That is the same condition in practice, since
 //! [`Frustum::with_corners`] is the only thing that sets either and sets both.

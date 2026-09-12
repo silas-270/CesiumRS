@@ -12,7 +12,7 @@ fn test_20_tiles() {
     let frustum_planes = cam.calculate_frustum_planes(aspect_ratio);
     let (global_pos_dvec, _) = cam.global_transform_f64();
     let frustum =
-        cesium_engine::globe::quadtree::Frustum::new(frustum_planes, global_pos_dvec);
+        cesium_engine::globe::quadtree::Frustum::planes_only(frustum_planes, global_pos_dvec);
 
     let mut quadtree = QuadtreeManager::new();
     quadtree.update(&frustum);

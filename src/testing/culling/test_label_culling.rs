@@ -169,7 +169,7 @@ fn test_intersects_sphere_degenerates_and_is_monotone() {
     };
     let cam = build_camera(&params);
     let (eye, _) = cam.global_transform_f64();
-    let frustum = Frustum::new(cam.calculate_frustum_planes(params.aspect() as f32), eye);
+    let frustum = Frustum::planes_only(cam.calculate_frustum_planes(params.aspect() as f32), eye);
     let oracle = VisibilityOracle::new(&cam, params.aspect());
 
     let mut checked = 0usize;

@@ -117,7 +117,7 @@ impl<'a> ApplicationHandler for RegressionApp<'a> {
                     let frustum_planes = state.camera.calculate_frustum_planes(aspect_ratio);
 
                     let (global_pos_dvec, _) = state.camera.global_transform_f64();
-                    let frustum = cesium_engine::globe::quadtree::Frustum::new(
+                    let frustum = cesium_engine::globe::quadtree::Frustum::planes_only(
                         frustum_planes,
                         global_pos_dvec,
                     );

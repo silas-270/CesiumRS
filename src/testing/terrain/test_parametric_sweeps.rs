@@ -47,7 +47,7 @@ fn evaluate_camera(
         global_pos_dvec.z as f32,
     );
     let frustum =
-        cesium_engine::globe::quadtree::Frustum::new(frustum_planes, global_pos_dvec);
+        cesium_engine::globe::quadtree::Frustum::planes_only(frustum_planes, global_pos_dvec);
     for _ in 0..30 {
         quadtree.update(&frustum);
     }

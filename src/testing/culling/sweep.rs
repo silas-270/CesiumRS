@@ -409,7 +409,7 @@ pub fn visible_tiles_for(params: &ViewParams) -> (Vec<TileId>, VisibilityOracle,
     let frustum_planes = cam.calculate_frustum_planes(aspect as f32);
 
     let (global_pos, _) = cam.global_transform_f64();
-    let frustum = Frustum::new(frustum_planes, global_pos)
+    let frustum = Frustum::planes_only(frustum_planes, global_pos)
         .with_corners(cam.frustum_corners_relative(aspect as f32));
 
     let mut quadtree = QuadtreeManager::new();
