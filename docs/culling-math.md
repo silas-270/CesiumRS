@@ -1563,3 +1563,126 @@ which at z = 19–20 (76 m and 38 m tiles) is a real fraction of a tile. Every o
 The fallback was offered because the mesh and the quadtree had separate call sites that
 would have to move together. After the I-5 extraction they have one, so the reason for
 it is gone. §11.3 item 5's own words — "promoting it to f64 is correct" — hold.
+
+---
+
+## 13. Recalibration — the corner over-report, solved
+
+*Added by the false-positive pass that followed §12. §12 is left as written; where a
+number below contradicts one there, this section supersedes it. Everything is
+measured over all nine sweeps of `src/testing/culling/`, aggregated from the raw
+per-cell CSV columns with no exclusions, and against `bench_update`'s 204 poses.*
+
+### 13.1 What §12 got wrong about its own fix
+
+§12.2 replaced §7.2's `k(z)` with a flat floor of `k ≥ 4` at every zoom, calibrated
+against `fuzz_sweep` alone. That sweep improved. So did `near_ground_high_zoom` and
+`zoom_cliff`. **Five other sweeps got worse than the code being replaced** —
+`horizon_pitch` 1.24 % → 1.62 %, `axis_sweep` 1.56 % → 4.16 %, `aspect_extremes`
+1.76 % → 6.70 %, `nadir_ladder` and `fp_budget` 0.94 % → 3.05 % — and all five were
+sweeps where the old code already had FN = 0, so "the old number was bought with
+false negatives" does not explain them.
+
+Their regressions all sit at ~1 000 km and ~5 000 km altitude, at z = 3..6, and they
+are all the same defect: a tile that grazes a frustum **corner**. §12.2 is right that
+this over-report does not decay with zoom, and right that subdivision attacks it.
+What it missed is that subdivision never *closes* it. Refining the grid refines the
+box, but every sub-box near the corner still straddles the corner; `camera_modes`'
+single false positive — one z = 5 tile whose nearest point is 0.012 of half-screen
+outside the frustum — survives a 16 × 16 grid unchanged. §7.2 fixed `k` by a
+derivation from the wrong quantity; §12.2 fixed it by a measurement on the wrong
+sample. Neither was the shape of the answer.
+
+### 13.2 The answer: the axis set was incomplete, and completing it is cheap
+
+§5.2 says the four side planes are an incomplete separating-axis set and prices the
+complete one at "27 axes, about 1 900 flops, out of budget". Both halves of that are
+wrong now.
+
+**It is 19 axes, not 27.** With near and far dropped (I-3), the volume the test
+models is not a box-shaped frustum but the infinite pyramid `P = cone(r₀..r₃)` with
+apex at the eye. `P` has four faces and **four edges**, so the complete set is 4 face
+normals of `P`, 3 face normals of the box, and 4 × 3 = 12 edge crosses.
+
+**The cost is not what it costs when you always pay it.** Three witnesses settle a
+box before any of that, in the order they are cheap:
+
+1. the box's circumsphere is outside a plane, or inside all four — 20 flops;
+2. the box is outside a plane, or inside all four — one pass, ~92 flops;
+3. **a box vertex is inside all four** — the vertex's distance to plane `p` is
+   `s_p ± r_{p,0} ± r_{p,1} ± r_{p,2}` in quantities pass 2 already computed, so all
+   eight vertices cost ~96 adds, and a witness of intersection ends the question.
+
+Only a box wedged against an edge or a corner — no vertex inside, no plane
+separating — reaches the 12 crosses. Measured over the bench poses, that is about one
+box in a hundred. The exact test therefore costs **+1.6 µs of a 7.8 µs budget**, not
+the tenfold blowup §5.2 assumed, and it is affordable per node *and* per sub-box.
+
+Because `P` is a cone with its apex at the origin of the camera-relative frame, its
+support along an axis `a` is `0` when every `a·rₘ ≤ 0` and `+∞` otherwise, which is
+what makes each cross-product axis ~50 flops rather than a projection of a polytope.
+`a = r_i × h_j ⊥ r_i`, so only the other three rays are tested. Implementation:
+`slab::separated_on_edge_cross_axes`.
+
+### 13.3 Two more places where an exact test was already available
+
+**Per-sub-patch occlusion.** The old code tested the limb per *sub-box*, with the
+unsound back-face heuristic §4 deleted. The tile-level limb test that replaced it is
+exact but coarser: a tile whose in-frustum part is behind the limb and whose visible
+part is off-screen passes both stages and is scheduled. `SubGrid` restores the
+granularity soundly — a cell is discarded if its own spherical rectangle is entirely
+below the limb (3.4, exact) *or* its box misses the frustum, and discarding every
+cell proves the tile invisible because the cells tile the patch. The rectangles cost
+`32·(k+1)` bytes, not `64·k²`, because λ and φ separate: `lon_span_max` is hoisted
+out of the row loop. Worth 1.2 points of FP on the fuzz sweep on its own.
+
+**The eye at or below the surface.** §3.1 argues that from inside the sphere there is
+no useful polar plane and the only correct answer is to cull nothing. That is true of
+the *cone* form (`point_is_occluded`) and false of the **surface-point** form. For
+`q` on the unit sphere, `q·c ≤ 1` decides occlusion in all three regimes:
+`C² > 1` is Theorem 3.5; at `C² = 1` the open chord `(c, q)` lies strictly inside the
+ball for every `q ≠ c`, and `q·c < 1` exactly there; at `C² < 1` every chord starts
+inside, and `q·c ≤ C < 1` for every `q`. So `TilePatch::is_occluded` drops the
+`cam.active` guard. It is not a special case bolted on — it is one inequality doing
+the work of three, and the guard was a hole: with it, a camera at altitude 0 scheduled
+15 tiles of which the oracle calls 14 invisible, and a camera 50 m *under* the ground
+scheduled 14 of 14. The footpoint tile is still kept (`S ≥ C² = 1 > 1 − eps`), so
+there is no cliff at zero altitude — which matters, because `enforce_bounds` parks the
+camera at +2 mm, where the limb is 160 m away and the kept set is already just the
+ground underfoot. The harness's own `CellResult::is_degenerate` documents the same
+geometry from the oracle's side.
+
+### 13.4 Result
+
+Same suite, same cells, same oracle, raw aggregation, FN **0** everywhere:
+
+| sweep | FP before (`main`) | FP after | |
+|---|---|---|---|
+| `fuzz_sweep` | 5.440 % (73 640) | 2.078 % (26 855) | |
+| `near_ground_high_zoom` | 12.407 % (603) | 3.572 % (154) | |
+| `zoom_cliff` | 0.540 % (18) | 0.061 % (2) | |
+| `camera_modes` | 0.568 % (1) | 0.000 % (0) | |
+| `horizon_pitch` | 1.245 % (207) | 0.463 % (76) | |
+| `axis_sweep` | 1.564 % (23) | 0.958 % (14) | |
+| `aspect_extremes` | 1.765 % (3) | 1.183 % (2) | |
+| `fp_budget` / `nadir_ladder` | 0.938 % (6) | 0.000 % (0) | |
+| **total** | **5.393 % (74 507)** | **2.054 % (27 103)** | |
+
+`main` also carried 286 176 false negatives (0.0251 % of visible samples); those are
+0. Mean `QuadtreeManager::update` 7.8 → 6.7 µs, worst 12.8 → 16.8 µs, footprint
+2 966 → 1 919 B/node.
+
+### 13.5 What this leaves open
+
+* The **worst-case** update is now 2.5× the mean and 1.3× the old worst. It is a
+  nadir view at 1 000 km, where z = 3..5 nodes with the widest `k` all straddle at
+  once. A per-frame budget on the sub-grid, or a hierarchy over the cells rather than
+  a flat `k × k`, would cap it; neither is needed at 17 µs.
+* `slab::ENABLED` (the box's own three axes) is now worth 0.01 points of FP for
+  0.5 µs and is off. It is the stage to revisit first if bounding volumes ever grow
+  relative to the frustum.
+* Remaining false positives are no longer a culling defect in the frustum stage,
+  which is exact. They are the gap between a **patch and the box around it**, which
+  is what `SUB_BOXES_PER_AXIS` trades against cost, and the harness's own 5 × 5
+  per-tile sampling, which calls a tile invisible when its visible sliver misses
+  every sample.

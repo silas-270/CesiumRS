@@ -2,14 +2,18 @@
 //! The tile quadtree and its per-node visibility decision.
 //!
 //! Derivation: `docs/culling-math.md` §9 is the consolidated algorithm this file
-//! implements. Per node, in order:
+//! implements, §13 the recalibration that produced its present shape. Per node, in
+//! order:
 //!
 //! 1. **Horizon** — exact, f64, ~25 flops ([`super::horizon`]). Cheapest *and* most
 //!    selective: roughly half the globe is below the limb at any time, and the whole
 //!    back hemisphere falls to one comparison at the coarsest level.
 //! 2. **Frustum** — the four side planes, camera-relative, ~92 flops
-//!    ([`super::bounding_volume`]).
-//! 3. LOD / hysteresis, unchanged.
+//!    ([`super::bounding_volume`]), and where they leave the answer open, the
+//!    separating axes that close it ([`super::slab`]).
+//! 3. **The sub-patch grid** ([`SubGrid`]) — both tests again, per cell of a
+//!    `k × k` subdivision of the tile, with `k` from [`SUB_BOXES_PER_AXIS`].
+//! 4. LOD / hysteresis, unchanged.
 //!
 //! Deliberately absent, and deleted rather than repaired:
 //!
@@ -22,10 +26,12 @@
 //!   `h = √(C²−1)`, making it unsound above 2 642 km and culling visible tiles up
 //!   to 8.07° inside the limb at 12 000 km (§4.1). Back-face culling is not merely
 //!   fixed here, it is *subsumed*: for a surface point `n̂(p)·(cam − p)` and
-//!   `q·c − 1` are the same expression up to a positive factor (Theorem 3.4).
+//!   `q·c − 1` are the same expression up to a positive factor (Theorem 3.4). What
+//!   that heuristic was *also* doing — testing occlusion per sub-box rather than per
+//!   tile — is not lost: [`SubGrid`] does it exactly, on the sub-patch itself.
 //! * The near and far planes, and the `vh_mag_sq > −0.1` sub-surface band.
-//! * The 8×8 sub-OBB grid for `5 ≤ z ≤ 16` — 64 boxes per node bounding a patch
-//!   whose sagitta is 1.5 cm at z = 16 (§7).
+//! * The flat 8×8 sub-OBB grid for `5 ≤ z ≤ 16`. A grid is kept, but tapered by
+//!   measurement rather than fixed by assertion — see [`SUB_BOXES_PER_AXIS`].
 //!
 //! # Invariant I-7 — soundness at every level
 //!
@@ -37,64 +43,63 @@
 
 use glam::{DVec3, Vec3};
 
-use super::bounding_volume::{Frustum, OrientedBoundingBox};
+use super::bounding_volume::{BoxVerdict, Frustum, OrientedBoundingBox};
 use super::horizon::{HorizonCamera, TilePatch};
 use super::tile_id::{
-    tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId,
-    MAX_ZOOM,
+    tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
 };
 use crate::globe::geometry::{lon_lat_to_ecef_f64, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 
-/// Angular budget behind the coarse end of the sub-box count (7.4).
+/// Sub-boxes per axis, by zoom — the calibrated subdivision rule.
 ///
-/// A leaf sits at `D ≈ 2·a·θ_max` under the distance LOD, so its box overhangs its
-/// own patch by `sagitta/D ≈ θ_max/4` radians at the eye. Allowing 5 % of screen
-/// height gives `θ* = 0.16 rad`, which yields `k = 14, 7, 4, 2` at z = 1..4 and
-/// `k = 1` from z = 5 up.
+/// Index by zoom level, last entry repeated: `k = 1` means "no grid, the node's own
+/// box takes the exact test". Read [`SubGrid`] first for what a cell buys.
 ///
-/// That last part is wrong, and [`SUB_BOXES_MIN`] is the measured correction.
-const SUBDIVISION_BUDGET_RAD: f64 = 0.16;
+/// # Why a table and not a formula
+///
+/// `docs/culling-math.md` §7.2 derived `k(z) = ceil(θ_max(z)/θ*)` from the box's
+/// **sagitta** and concluded sub-boxes are waste above z = 4. §12 recorded that the
+/// conclusion was wrong, because the sagitta is not what sub-boxes buy — they
+/// attack §5.2's corner over-report, which does not decay with zoom. The first fix
+/// for that was a flat floor, `k ≥ 4` at every zoom, calibrated against
+/// `fuzz_sweep` alone; it improved `fuzz_sweep` and `near_ground_high_zoom` and
+/// made **five** other sweeps worse than the code it replaced.
+///
+/// Neither shape was right, because neither quantity is what the taper tracks. The
+/// corner over-report is now *solved*, exactly, by
+/// [`super::slab::separated_on_edge_cross_axes`], and what the sub-boxes are left
+/// buying is the gap between a patch and the single box around it — worth a lot at
+/// z = 1..6, where a tile still spans degrees, and very little below that. Cost
+/// runs the other way: the quadtree holds a handful of nodes per coarse level and
+/// thousands of deep ones, so a cell at z = 3 is nearly free and a cell at z = 12
+/// is not. The taper is the measured crossing of those two curves, and the two
+/// curves have no common closed form, so it is a table.
+///
+/// # The measurement
+///
+/// All nine sweeps of the harness, aggregated over the raw per-cell CSV columns,
+/// against `QuadtreeManager::update` over the 204 bench poses. False negatives are
+/// **zero at every point** in this table.
+///
+/// | k(z) | total FP | worst sweep vs the pre-rework baseline | mean update | B/node |
+/// |------|----------|----------------------------------------|-------------|--------|
+/// | `1` (no grid anywhere)      | 3.87 % | `axis_sweep` 123 vs 23 — far worse | 3.4 µs | 192 |
+/// | `16,16,8,8,4,2,1`           | 2.39 % | `aspect_extremes` 9 vs 3 — worse   | 6.0 µs | 1 487 |
+/// | **`16,16,12,8,6,4,3,2,1`**  | **2.05 %** | **all nine better**            | **6.7 µs** | **1 919** |
+/// | `16,16,12,12,8,6,4,2,1`     | 1.97 % | all nine better                    | 7.5 µs | 2 362 |
+/// | `16,16,12,12,12,8,4,2,1`    | 1.93 % | all nine better                    | 8.1 µs | 2 691 |
+/// | flat `k = 8` from z = 2     | 1.84 % | all nine better                    | 17.7 µs | 6 015 |
+///
+/// The pre-rework baseline this must beat is 5.39 % FP at 7.8 µs and 2 966 B/node
+/// (measured on the same 204 poses, `main` @ da6573a). The chosen row is the knee:
+/// one step richer costs 0.8 µs for 0.08 points of FP, one step poorer gives back
+/// 0.34 points and loses `aspect_extremes`. It leaves 1.1 µs of the old budget
+/// unspent and a third of the old memory free.
+const SUB_BOXES_PER_AXIS: [u32; 9] = [16, 16, 12, 8, 6, 4, 3, 2, 1];
 
-/// Floor on the sub-box count per axis, at **every** zoom.
-///
-/// # Why the derivation's k(z) is not enough
-///
-/// `docs/culling-math.md` §7.2 derives `k(z) = ceil(θ_max(z)/θ*)` from the box's
-/// **sagitta** — its bulge in the "up" direction — and concludes that sub-boxes are
-/// pure waste for z ≥ 5, where the sagitta falls from 61 km to 1.5 cm. The sagitta
-/// argument is correct. The conclusion is not, because the sagitta is not what the
-/// sub-boxes are buying.
-///
-/// What they buy is a fix for §5.2: the four-plane test is an *incomplete*
-/// separating-axis set, so a box that lies wholly outside the frustum past a corner
-/// or an edge is not outside any single plane and is accepted. Splitting the box and
-/// requiring *some* part to pass all four planes is a far better approximation to
-/// "does the patch meet the frustum" than the whole box's support function — and
-/// unlike the sagitta, that over-report does **not** decay with zoom. Under distance
-/// LOD (`dist ≈ 2 × half-diagonal`) every leaf subtends roughly the same ~26°
-/// wherever it is, so a screen holds only ~17 tiles and "straddling a frustum
-/// corner" is the common case at z = 20 exactly as it is at z = 5.
-///
-/// Measured on the 100 000-cell fuzz sweep (`test_fuzz_sweep_has_no_false_negatives`),
-/// false negatives **zero at every point** on this curve:
-///
-/// | k for z ≥ 5 | FP    | mean update | bytes/node |
-/// |-------------|-------|-------------|------------|
-/// | 1 (derivation) | 7.30 % | 2.5 µs | 968 |
-/// | 2           | 5.92 % | 3.2 µs | 1 177 |
-/// | 3           | 4.67 % | 3.7 µs | 1 476 |
-/// | **4**       | **4.18 %** | **4.3 µs** | **1 871** |
-/// | 5           | 4.06 % | 4.9 µs | 2 295 |
-/// | 8 (z ≤ 16, the old code's geometry) | 4.39 % | 7.8 µs | 3 816 |
-///
-/// The knee is at 4: 1 → 3 buys 2.6 points of FP for 1.2 µs, 4 → 5 buys 0.2 points
-/// for 0.7 µs. Note that 8 is *worse* than 4 on every axis — 64 boxes per node
-/// subdivide past the point where the box is a good proxy and only add work.
-///
-/// This is the calibration §11.3 item 8 asks for ("measure the FP rate as a function
-/// of θ* and pick the knee"), done against the harness rather than against the
-/// screen-height estimate.
-const SUB_BOXES_MIN: u32 = 4;
+fn sub_boxes_per_axis(z: u8) -> u32 {
+    SUB_BOXES_PER_AXIS[(z as usize).min(SUB_BOXES_PER_AXIS.len() - 1)]
+}
 
 /// Sample grid used to fit a node's OBB, as `(steps+1)²` points.
 ///
@@ -111,16 +116,6 @@ fn obb_grid_steps(z: u8) -> u32 {
     } else {
         2
     }
-}
-
-/// Sub-boxes per axis: `max(SUB_BOXES_MIN, ceil(θ_max(z)/θ*))`.
-///
-/// The `ceil` term (7.5) dominates at z = 1..2, where a single box is a hopeless
-/// proxy for a patch covering most of a hemisphere; [`SUB_BOXES_MIN`] dominates
-/// from z = 3 down and is what the measurement above calibrates.
-fn sub_boxes_per_axis(z: u8) -> u32 {
-    let theta_max = std::f64::consts::SQRT_2 * std::f64::consts::PI / (1u64 << z) as f64;
-    ((theta_max / SUBDIVISION_BUDGET_RAD).ceil().max(1.0) as u32).max(SUB_BOXES_MIN)
 }
 
 /// Outward unit normal of the ellipsoid at `p`, in f64 — the normalised gradient of
@@ -224,6 +219,168 @@ fn sub_bounds(id: &TileId, b: &TileBounds, u0: f64, u1: f64, v0: f64, v1: f64) -
     }
 }
 
+/// A tile's patch cut into a `k × k` grid of sub-patches, each with its own box.
+///
+/// Two things are stored per sub-patch, and both are needed:
+///
+/// * an **oriented box** bounding it, for the frustum test;
+/// * the **spherical rectangle** itself, for the exact limb test (§3.4) — as the
+///   `k+1` longitude and `k+1` latitude breakpoints, shared along each row and
+///   column rather than stored per cell. That is `32·(k+1)` bytes instead of
+///   `64·k²`: at `k = 8`, 288 B rather than 4 kB.
+///
+/// The breakpoints are the same ones [`sub_bounds`] produces — longitude linear in
+/// the tile's own λ span, latitude taken in **Mercator y** so consecutive cells
+/// share an edge exactly and the union of the `k²` cells is the whole drawn patch,
+/// pole stretch included. That union property is what makes [`SubGrid::any_visible`]
+/// sound.
+pub struct SubGrid {
+    k: u32,
+    /// `k²` boxes, indexed `ui · k + vi` — `ui` along λ, `vi` along Mercator y.
+    obbs: Vec<OrientedBoundingBox>,
+    /// `(sin λ, cos λ)` at the `k+1` longitude breakpoints, increasing in λ.
+    lon: Vec<(f64, f64)>,
+    /// `(sin φ, cos φ)` at the `k+1` latitude breakpoints, **decreasing** in φ
+    /// (index 0 is the north edge), matching the Mercator-y direction of `vi`.
+    lat: Vec<(f64, f64)>,
+}
+
+impl SubGrid {
+    /// Builds the grid, or `None` when `k < 2` (a 1×1 grid is the node's own OBB).
+    fn build(id: &TileId, b: &TileBounds, k: u32) -> Option<Self> {
+        if k < 2 {
+            return None;
+        }
+        let n = k as usize;
+        let mut obbs = Vec::with_capacity(n * n);
+        for ui in 0..k {
+            for vi in 0..k {
+                let sb = sub_bounds(
+                    id,
+                    b,
+                    ui as f64 / k as f64,
+                    (ui + 1) as f64 / k as f64,
+                    vi as f64 / k as f64,
+                    (vi + 1) as f64 / k as f64,
+                );
+                obbs.push(fit_obb(&sb, 4).2);
+            }
+        }
+
+        // The breakpoints, from the very same expressions `sub_bounds` uses, so a
+        // cell's rectangle and its box are fitted to identical numbers.
+        let mut lon = Vec::with_capacity(n + 1);
+        let mut lat = Vec::with_capacity(n + 1);
+        for i in 0..=k {
+            let t = i as f64 / k as f64;
+            lon.push(
+                (b.lon_min + t * (b.lon_max - b.lon_min))
+                    .to_radians()
+                    .sin_cos(),
+            );
+
+            let mut phi = web_mercator_y_to_lat_f64(id.y as f64 + t, id.z);
+            if i == 0 && id.y == 0 {
+                phi = 90.0;
+            }
+            if i == k && id.y == (1_u32 << id.z) - 1 {
+                phi = -90.0;
+            }
+            lat.push(phi.to_radians().sin_cos());
+        }
+
+        Some(SubGrid { k, obbs, lon, lat })
+    }
+
+    fn heap_bytes(&self) -> usize {
+        self.obbs.capacity() * std::mem::size_of::<OrientedBoundingBox>()
+            + (self.lon.capacity() + self.lat.capacity()) * std::mem::size_of::<(f64, f64)>()
+    }
+
+    /// Can **any** sub-patch of this tile be on screen?
+    ///
+    /// A cell is discarded when it is provably invisible on its own: either its
+    /// spherical rectangle is entirely behind the limb (exact, §3.4) or its box is
+    /// separated from the frustum (exact, [`Frustum::intersects_obb`]). Discarding
+    /// every cell proves the tile invisible, because the cells' union is the whole
+    /// drawn patch — so any drawable point lies in some cell, and that cell is
+    /// invisible. Keeping the tile as soon as one cell survives is the conservative
+    /// direction (I-6). ∎
+    ///
+    /// # Two passes, because the third frustum stage is 7× the first
+    ///
+    /// Pass 1 asks only the four planes, which answer `Outside` or `Inside`
+    /// outright for every cell that is not on the frustum boundary. An `Inside`
+    /// cell settles the node immediately; a tile with no straddling cell at all is
+    /// settled too. Pass 2 — the exact separating-axis set — therefore runs only
+    /// for a node that has cells on the frustum boundary and none strictly within
+    /// it, which is the thin band where the answer was ever in doubt.
+    ///
+    /// The limb test comes first in both passes: it is 25 f64 flops against the
+    /// four-plane test's ~92, and its λ half is hoisted out of the inner loop,
+    /// since every cell in column `ui` has the same λ span.
+    fn any_visible(&self, ctx: &CullContext) -> bool {
+        let k = self.k as usize;
+        let mut any_straddling = false;
+
+        for ui in 0..k {
+            let a_star = self.lon_span_max(ctx, ui);
+            for vi in 0..k {
+                if self.occluded(ctx, a_star, vi) {
+                    continue;
+                }
+                let b = &self.obbs[ui * k + vi];
+                let d = ctx.frustum.relative(b.center);
+                match ctx.frustum.classify_box(d, &b.half_axes, b.half_axis_l1) {
+                    BoxVerdict::Inside => return true,
+                    BoxVerdict::Straddling => any_straddling = true,
+                    BoxVerdict::Outside => {}
+                }
+            }
+        }
+        if !any_straddling {
+            return false;
+        }
+
+        for ui in 0..k {
+            let a_star = self.lon_span_max(ctx, ui);
+            for vi in 0..k {
+                if self.occluded(ctx, a_star, vi) {
+                    continue;
+                }
+                if ctx.frustum.intersects_obb(&self.obbs[ui * k + vi]) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// `A*` for sub-column `ui`, shared by every cell in it.
+    #[inline]
+    fn lon_span_max(&self, ctx: &CullContext, ui: usize) -> f64 {
+        super::horizon::lon_span_max(
+            &ctx.horizon,
+            &[self.lon[ui].0, self.lon[ui + 1].0],
+            &[self.lon[ui].1, self.lon[ui + 1].1],
+        )
+    }
+
+    /// Is sub-row `vi` of a column with this `A*` entirely behind the limb?
+    ///
+    /// Index 0 of a span is its low end, and `lat` runs north to south.
+    #[inline]
+    fn occluded(&self, ctx: &CullContext, a_star: f64, vi: usize) -> bool {
+        let s = super::horizon::lat_span_max(
+            &ctx.horizon,
+            a_star,
+            &[self.lat[vi + 1].0, self.lat[vi].0],
+            &[self.lat[vi + 1].1, self.lat[vi].1],
+        );
+        super::horizon::span_is_occluded(&ctx.horizon, s)
+    }
+}
+
 /// Everything the per-node tests need, built once per frame.
 #[derive(Clone, Copy, Debug)]
 pub struct CullContext {
@@ -247,9 +404,8 @@ pub struct QuadtreeNode {
     pub radius: f32,
     pub lod_radius: f32,
     pub obb: OrientedBoundingBox,
-    /// Sub-boxes, only for `z ≤ 4` (see [`sub_boxes_per_axis`]). `None` everywhere
-    /// else, which is the overwhelming majority of the tree.
-    pub sub_obbs: Option<Box<Vec<OrientedBoundingBox>>>,
+    /// The `k × k` sub-patch grid, when `k ≥ 2` (see [`sub_boxes_per_axis`]).
+    pub sub_grid: Option<Box<SubGrid>>,
     /// The eight trig constants of this tile's rectangle, for the horizon test.
     pub patch: TilePatch,
     pub visible: bool,
@@ -268,26 +424,7 @@ impl QuadtreeNode {
         let raw = tile_bounds_unstretched(&id);
         let (_, lod_radius, _) = fit_obb(&raw, 2);
 
-        let k = sub_boxes_per_axis(id.z);
-        let sub_obbs = if k >= 2 {
-            let mut boxes = Vec::with_capacity((k * k) as usize);
-            for ui in 0..k {
-                for vi in 0..k {
-                    let sb = sub_bounds(
-                        &id,
-                        &bounds,
-                        ui as f64 / k as f64,
-                        (ui + 1) as f64 / k as f64,
-                        vi as f64 / k as f64,
-                        (vi + 1) as f64 / k as f64,
-                    );
-                    boxes.push(fit_obb(&sb, 4).2);
-                }
-            }
-            Some(Box::new(boxes))
-        } else {
-            None
-        };
+        let sub_grid = SubGrid::build(&id, &bounds, sub_boxes_per_axis(id.z)).map(Box::new);
 
         QuadtreeNode {
             id,
@@ -295,7 +432,7 @@ impl QuadtreeNode {
             radius,
             lod_radius,
             obb,
-            sub_obbs,
+            sub_grid,
             patch: TilePatch::new(&bounds),
             visible: false,
             children: None,
@@ -304,12 +441,9 @@ impl QuadtreeNode {
 
     /// Heap bytes this node hangs off itself (not counting children).
     pub fn sub_obb_heap_bytes(&self) -> usize {
-        self.sub_obbs
+        self.sub_grid
             .as_ref()
-            .map(|v| {
-                std::mem::size_of::<Vec<OrientedBoundingBox>>()
-                    + v.capacity() * std::mem::size_of::<OrientedBoundingBox>()
-            })
+            .map(|g| std::mem::size_of::<SubGrid>() + g.heap_bytes())
             .unwrap_or(0)
     }
 
@@ -341,32 +475,32 @@ impl QuadtreeNode {
         // ── 2. Camera-relative offset. The f64 subtraction is invariant I-2. ──
         let delta = ctx.frustum.relative(self.obb.center);
 
-        // ── 3. Frustum: four side planes. ────────────────────────────────────
-        if ctx
-            .frustum
-            .separated_from_box(delta, &self.obb.half_axes, self.obb.half_axis_l1)
-            || super::slab::separated_on_box_axes(&ctx.frustum, delta, &self.obb.half_axes)
-        {
+        // ── 3. Frustum, and 4: the sub-patch grid. ───────────────────────────
+        //
+        // With a grid, the node's own box is asked only the four planes: `Inside`
+        // settles the node outright — every sub-cell is inside the frustum too, so
+        // the grid could only cull if *every* sub-patch were behind the limb, and
+        // that is exactly what step 1 already tested, on the whole patch, exactly.
+        // The exact stages then run per cell, where they are both cheaper and far
+        // more selective than on the node's box. Without a grid the node's box
+        // takes the exact test itself.
+        let alive = match &self.sub_grid {
+            Some(grid) => {
+                match ctx
+                    .frustum
+                    .classify_box(delta, &self.obb.half_axes, self.obb.half_axis_l1)
+                {
+                    BoxVerdict::Outside => false,
+                    BoxVerdict::Inside => true,
+                    BoxVerdict::Straddling => grid.any_visible(ctx),
+                }
+            }
+            None => ctx.frustum.intersects_obb(&self.obb),
+        };
+        if !alive {
             self.visible = false;
             self.children = None;
             return;
-        }
-
-        // Coarse nodes (z ≤ 4) only: retest against the sub-boxes, whose union
-        // covers the patch far more tightly than the single OBB. Keeping the node
-        // if *any* sub-box survives is sound; rejecting only when all of them are
-        // separated is the conservative direction.
-        if let Some(boxes) = &self.sub_obbs {
-            let any = boxes.iter().any(|b| {
-                let d = ctx.frustum.relative(b.center);
-                !ctx.frustum.separated_from_box(d, &b.half_axes, b.half_axis_l1)
-                    && !super::slab::separated_on_box_axes(&ctx.frustum, d, &b.half_axes)
-            });
-            if !any {
-                self.visible = false;
-                self.children = None;
-                return;
-            }
         }
 
         self.visible = true;
@@ -405,7 +539,11 @@ impl QuadtreeNode {
     }
 
     pub fn center_f32(&self) -> Vec3 {
-        Vec3::new(self.center.x as f32, self.center.y as f32, self.center.z as f32)
+        Vec3::new(
+            self.center.x as f32,
+            self.center.y as f32,
+            self.center.z as f32,
+        )
     }
 
     pub fn collect_visible_tiles(&self, active_tiles: &mut Vec<(TileId, Vec3, f32)>) {
