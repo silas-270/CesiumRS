@@ -6,8 +6,14 @@ use winit::event_loop::{ControlFlow, EventLoop};
 /// Configuration options for the Globe (terrain, imagery base, caching, performance)
 #[derive(Clone, Debug)]
 pub struct GlobeOptions {
-    /// Maximum number of tiles to keep in the cache
+    /// Upper bound on the number of tiles to keep in the cache. A count, not a
+    /// size — `tile_cache_budget_bytes` is what bounds memory, and the smaller
+    /// of the two wins.
     pub tile_cache_size: usize,
+    /// Memory budget for decoded imagery textures, in bytes. The entry count is
+    /// derived from this once the imagery style's real tile size is known, so
+    /// the ceiling holds for 256x256 and 512x512 styles alike.
+    pub tile_cache_budget_bytes: usize,
     /// Higher values lower visual fidelity but improve performance
     pub maximum_screen_space_error: f32,
     /// Whether the engine should try to fetch tiles before they are strictly needed
@@ -24,6 +30,7 @@ impl Default for GlobeOptions {
     fn default() -> Self {
         Self {
             tile_cache_size: 2048,
+            tile_cache_budget_bytes: TileEngineConfig::default().tile_cache_budget_bytes,
             maximum_screen_space_error: 2.0,
             enable_prefetch: true,
             map_saturation: 0.0,
@@ -46,6 +53,7 @@ impl ViewerOptions {
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
             mesh_cache_size: NonZeroUsize::new(self.globe.tile_cache_size)
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
+            tile_cache_budget_bytes: self.globe.tile_cache_budget_bytes,
             lod_factor: self.globe.maximum_screen_space_error,
             enable_prefetch: self.globe.enable_prefetch,
             map_saturation: self.globe.map_saturation,

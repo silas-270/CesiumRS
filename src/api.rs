@@ -79,6 +79,7 @@ pub struct CameraState {
 /// Builder for the `CesiumViewer`. Obtain one via `CesiumViewer::builder()`.
 pub struct CesiumViewerBuilder {
     tile_cache_size: usize,
+    tile_cache_budget_bytes: usize,
     max_screen_space_error: f32,
     enable_prefetch: bool,
     map_saturation: f32,
@@ -91,6 +92,7 @@ impl Default for CesiumViewerBuilder {
     fn default() -> Self {
         Self {
             tile_cache_size: 2048,
+            tile_cache_budget_bytes: TileEngineConfig::default().tile_cache_budget_bytes,
             max_screen_space_error: 2.0,
             enable_prefetch: true,
             map_saturation: 0.0,
@@ -102,9 +104,21 @@ impl Default for CesiumViewerBuilder {
 }
 
 impl CesiumViewerBuilder {
-    /// Maximum number of tiles held in the GPU cache.
+    /// Upper bound on the number of tiles held in the GPU cache. This is a
+    /// count, not a size — what actually bounds memory is
+    /// [`tile_cache_budget_bytes`](Self::tile_cache_budget_bytes), and the
+    /// smaller of the two wins.
     pub fn tile_cache_size(mut self, size: usize) -> Self {
         self.tile_cache_size = size;
+        self
+    }
+
+    /// Memory budget for decoded imagery textures, in bytes (default 512MB).
+    /// The entry count is derived from this once the imagery style's real tile
+    /// size is known, so the ceiling holds whether a style serves 256x256 or
+    /// 512x512 tiles.
+    pub fn tile_cache_budget_bytes(mut self, bytes: usize) -> Self {
+        self.tile_cache_budget_bytes = bytes;
         self
     }
 
@@ -155,6 +169,7 @@ impl CesiumViewerBuilder {
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
             mesh_cache_size: NonZeroUsize::new(self.tile_cache_size / 4)
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
+            tile_cache_budget_bytes: self.tile_cache_budget_bytes,
             lod_factor: self.max_screen_space_error,
             enable_prefetch: self.enable_prefetch,
             map_saturation: self.map_saturation,
