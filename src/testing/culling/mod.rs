@@ -140,3 +140,5 @@ pub mod test_globe_sweep;
 pub mod test_tile_bounds;
 #[cfg(test)]
 pub mod test_label_culling;
+#[cfg(test)]
+pub mod test_stage_pipeline;

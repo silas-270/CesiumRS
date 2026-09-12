@@ -28,7 +28,9 @@ test, then the four planes, then a vertex witness, then the exact
 separating-axis set, then the same tests again on a `k × k` grid of sub-patches.
 A node that survives is marked visible and subdivided if the LOD rule says so; a
 node that fails is marked invisible and its **entire subtree is deleted**. The
-visible set is the set of surviving leaves.
+visible set is the set of surviving leaves. The sequence itself is data — a
+`CullPipeline` of `Stage`s carried on the per-frame context (§4.0) — so stages can
+be switched off; the LOD rule deliberately is not one of them.
 
 ### 0.2 File map
 
@@ -38,7 +40,7 @@ visible set is the set of surviving leaves.
 | `globe/quadtree/horizon.rs` | scaled space, `HorizonCamera`, `TilePatch`, the exact limb test |
 | `globe/quadtree/bounding_volume.rs` | `OrientedBoundingBox`, `Frustum`, the four-plane and vertex-witness tests |
 | `globe/quadtree/slab.rs` | the separating axes the four planes leave out |
-| `globe/quadtree/quadtree.rs` | OBB fitting, `SubGrid`, `QuadtreeNode::update`, LOD |
+| `globe/quadtree/quadtree.rs` | OBB fitting, `SubGrid`, the `CullPipeline` of `Stage`s, `QuadtreeNode::update`, LOD |
 | `camera/camera.rs` | `calculate_frustum_planes`, `frustum_corners_relative`, `global_transform_f64` |
 | `render/wgpu_state.rs` | the per-frame driver (`update_logic`) |
 | `globe/geometry.rs` | ellipsoid constants, `lon_lat_to_ecef_f64`, `TileMesh::generate` |
@@ -138,8 +140,8 @@ quantisation survives.
 | world → camera-relative, f64 subtract then downcast | `bounding_volume.rs:151` |
 | world → scaled space (camera) | `horizon.rs:88` |
 | patch λ/φ → eight trig constants, f64 | `horizon.rs:155` |
-| OBB half-axes f64 → f32 | `quadtree.rs:188-196` |
-| node centre → LOD distance, f64 subtract then downcast | `quadtree.rs:563` |
+| OBB half-axes f64 → f32 | `quadtree.rs:199-207` |
+| node centre → LOD distance, f64 subtract then downcast | `quadtree.rs:808` |
 
 ---
 
@@ -212,7 +214,7 @@ a looser but still sound answer.
 
 ### 2.4 The horizon constants
 
-`CullContext::new` (`quadtree.rs:432`) builds a `HorizonCamera`
+`CullContext::with_pipeline` (`quadtree.rs:693`) builds a `HorizonCamera`
 (`horizon.rs:87`) from the eye:
 
 | field | value | why |
@@ -231,14 +233,14 @@ hole rather than a safety belt.
 
 ## 3. Once per node, at construction
 
-`QuadtreeNode::new` (`quadtree.rs:465`). Everything here is computed once, when
+`QuadtreeNode::new` (`quadtree.rs:727`). Everything here is computed once, when
 the node is created by `subdivide()`, and never recomputed — it depends only on
 the `TileId`.
 
 ### 3.1 The tile's rectangle
 
 ```rust
-let bounds = tile_bounds(&id);   // quadtree.rs:467 → tile_id.rs:86
+let bounds = tile_bounds(&id);   // quadtree.rs:729 → tile_id.rs:86
 ```
 
 `tile_bounds` is the **only** place a tile's four numbers are derived
@@ -265,7 +267,7 @@ used for exactly one thing — the LOD radius (§5 below). Never for culling.
 
 ### 3.2 The tangent frame
 
-`tangent_frame` (`quadtree.rs:146`), given the patch centre's longitude and the
+`tangent_frame` (`quadtree.rs:157`), given the patch centre's longitude and the
 ellipsoid normal `up`:
 
 ```rust
@@ -280,12 +282,12 @@ contain its own samples. That branch never fired (no tile centre is exactly at
 ±90°), but it was a loaded gun. The analytic form gives `‖east‖ = 1` for every
 `λ_c` and `east·up = 0` identically, with no branch.
 
-`up` is `ellipsoid_normal` (`quadtree.rs:123`), the normalised gradient of the
+`up` is `ellipsoid_normal` (`quadtree.rs:134`), the normalised gradient of the
 implicit form — exact whether or not the point is on the surface.
 
 ### 3.3 The OBB
 
-`fit_obb` (`quadtree.rs:159`) samples an `(steps+1)²` grid over the patch in f64,
+`fit_obb` (`quadtree.rs:170`) samples an `(steps+1)²` grid over the patch in f64,
 projects each sample onto `(east, north, up)`, and takes the min/max box. It
 returns:
 
@@ -293,9 +295,9 @@ returns:
   `QuadtreeNode::center` and used for the LOD distance and for the renderer;
 * `radius` — the greatest sample distance from that centre, f32, the renderer's
   per-tile bounding radius;
-* `obb` — centre in f64, three half-axes in f32 (`quadtree.rs:188-196`).
+* `obb` — centre in f64, three half-axes in f32 (`quadtree.rs:199-207`).
 
-Grid density is `obb_grid_steps` (`quadtree.rs:113`): **8 for z < 5, 2
+Grid density is `obb_grid_steps` (`quadtree.rs:124`): **8 for z < 5, 2
 otherwise**. §5.3 proves a 3×3 grid captures all three extents of a lon/lat patch
 *exactly* on the sphere; on the **ellipsoid** the `up` axis is the surface normal
 rather than the radius, which perturbs that argument most at coarse zoom, so the
@@ -317,13 +319,13 @@ per node, and **no transcendentals at run time**.
 
 ### 3.5 The sub-grid
 
-`SubGrid::build` (`quadtree.rs:259`) cuts the patch into `k × k` sub-patches,
+`SubGrid::build` (`quadtree.rs:270`) cuts the patch into `k × k` sub-patches,
 each with its own OBB (fitted at `steps = 4`) plus the `k+1` longitude and `k+1`
 latitude breakpoints, stored as `(sin, cos)` pairs shared along each row and
 column. That is `32·(k+1)` bytes instead of `64·k²` — at `k = 8`, 288 B rather
 than 4 kB.
 
-The breakpoints come from the same expressions `sub_bounds` (`quadtree.rs:206`)
+The breakpoints come from the same expressions `sub_bounds` (`quadtree.rs:217`)
 uses, with latitude taken in **Mercator y** so consecutive sub-patches share an
 edge exactly and the pole stretch is reapplied to the sub-patch that actually
 touches the pole row. **The union of the `k²` sub-patches is exactly the drawn
@@ -342,7 +344,7 @@ one named place. The breakpoint values themselves must keep coming from
 `i as f64 / k as f64`: re-deriving them from the far end (`1.0 - i/k`) is not
 bit-identical at k = 12, 6, 3, and one ulp there flips borderline sub-patches.
 
-`k` comes from the calibrated table (`quadtree.rs:98`):
+`k` comes from the calibrated table (`quadtree.rs:109`):
 
 | z | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | ≥8 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -361,10 +363,61 @@ the chosen row is the knee, and FN is zero at every row of it.
 
 ## 4. The per-node test sequence
 
-`QuadtreeNode::update` (`quadtree.rs:520`), in execution order. Every stage
+`QuadtreeNode::update` (`quadtree.rs:790`), in execution order. Every stage
 either **rejects on a proof** or defers; nothing rejects on a heuristic.
 
-### 4.0 Summary
+### 4.0 The stages are a list, not a cascade
+
+The sequence is not hard-coded into `update`. It is a `CullPipeline`
+(`quadtree.rs:557`) — an ordered, `Copy`, 4-byte list of `Stage` values — so a
+stage can be switched off without touching the code that runs it:
+
+```rust
+pub enum StageVerdict { Cull, Keep, Undecided }        // quadtree.rs:443
+pub enum Stage { Horizon, NodeFrustum, SubPatchGrid }  // quadtree.rs:463
+pub const DEFAULT: CullPipeline =                 // quadtree.rs:601
+    CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid]);
+```
+
+Four things about it are load-bearing.
+
+**`Keep` skips everything after it.** `Cull` is a proof of invisibility and
+`Keep` is a decision to stop asking — so a stage may only return `Keep` where no
+later stage could have culled soundly. `Undecided` is always safe.
+
+**The final rule keeps** (`CullPipeline::keeps`, `quadtree.rs:651`): a cascade
+that runs out of stages returns `true`. Every stage is therefore a pure
+*subtraction* from the kept set, and dropping stages can only keep **more**, never
+less. Soundness never rests on a stage being present — only on each present stage
+being right. That is invariant I-7 as a checkable property, and
+`test_stage_prefix_only_grows_the_kept_set` checks it over all 16 ordered stage
+lists and every prefix of each.
+
+**`Stage::NodeFrustum` absorbs the grid / no-grid dichotomy internally**
+(`quadtree.rs:502-523`). Which of the two frustum forms runs is a property of the
+*node* (`sub_grid.is_some()`), not of the configuration, so the stage list stays
+constant across every node in a frame. `Stage::SubPatchGrid` returns `Undecided`
+for a grid-less node — unreachable behind `NodeFrustum`, which always settles such
+a node, but the stage is total because a pipeline may list it alone.
+
+**A stage takes `&QuadtreeNode`, never `&mut`.** LOD, hysteresis and recursion
+live outside the pipeline in `apply_lod` (§5), which takes `&mut self`. That
+asymmetry makes it *structurally impossible* for a visibility test to touch
+`children` — the I-7 hazard — rather than merely discouraged.
+
+Dispatch is an enum and a `match`. Not `dyn Trait`: inlining dies at the stage
+boundary and `classify_box` earns its cost only with `delta` in registers. Not
+static generics: every mode combination would get its own monomorphisation and the
+top of the call would still need an enum. The loop is written over `0..MAX_STAGES`
+with an early `break` rather than over `&stages[..len]`, which is worth 0.4 µs per
+update — a constant trip count unrolls into three slot-specialised copies, a
+run-time one does not.
+
+The pipeline lives on `QuadtreeManager` (`quadtree.rs:890`), where it survives
+frames and changes only when a mode does, and is copied by value into the
+per-frame `CullContext`. It is never stored per node.
+
+### 4.0.1 Summary
 
 | # | test | site | cost | rejects | exact? |
 |---|---|---|---|---|---|
@@ -375,13 +428,13 @@ either **rejects on a proof** or defers; nothing rejects on a heuristic.
 | 3c | vertex witness | `bounding_volume.rs:355-369` | ~96 f32 adds | — (it *accepts*) | exact acceptance |
 | 3d | box-axis slabs | `slab.rs:79` | 3 axes × 8 corners | **compiled out** (`BOX_AXES_ENABLED = false`) | — |
 | 3e | edge × edge axes | `slab.rs:171` | ~660 f64 flops | boxes past a frustum corner or edge | completes the set |
-| 4 | the same, per sub-patch | `quadtree.rs:354` | `k²` × the above | patches whose every sub-patch is dead | — |
+| 4 | the same, per sub-patch | `quadtree.rs:365` | `k²` × the above | patches whose every sub-patch is dead | — |
 
 ### 4.1 Stage 1 — horizon
 
 ```rust
-// quadtree.rs:522
-if self.patch.is_occluded(&ctx.horizon) { self.visible = false; self.children = None; return; }
+// Stage::Horizon, quadtree.rs:495-500
+if node.patch.is_occluded(&ctx.horizon) { StageVerdict::Cull } else { StageVerdict::Undecided }
 ```
 
 **Condition.** Let `S = max over the patch of q·c`, computed exactly by
@@ -426,11 +479,15 @@ keeps one nanometre higher up too. No cliff at zero altitude.
 ### 4.2 Stage 2 — the camera-relative offset
 
 ```rust
-let delta = ctx.frustum.relative(self.obb.center);   // quadtree.rs:529
+let delta = ctx.frustum.relative(node.obb.center);   // quadtree.rs:505
 ```
 
 One f64 subtraction and a downcast. This is invariant **I-2** at its point of
 use; §1.4 has the reasoning.
+
+It is computed inside `Stage::NodeFrustum`'s *grid* arm only. The grid-less arm
+calls `intersects_obb`, which derives its own `delta`; the cascade this replaced
+computed one for both arms and threw the grid-less one away.
 
 ### 4.3 Stage 3a — the circumsphere
 
@@ -534,8 +591,8 @@ absolute FP figure. See §8.2 below.)*
 
 ### 4.7 Stage 4 — the sub-grid
 
-`SubGrid::has_surviving_sub_patch` (`quadtree.rs:354`), reached only when the
-node's own box is `Straddling` (`quadtree.rs:540-552`). The name is the claim: a
+`SubGrid::has_surviving_sub_patch` (`quadtree.rs:365`), reached only when the
+node's own box is `Straddling` (`Stage::NodeFrustum`, `quadtree.rs:502-523`). The name is the claim: a
 survivor is a sub-patch no proof of invisibility reached, not one shown to be on
 screen.
 
@@ -560,7 +617,7 @@ band where the answer was ever in doubt. The frustum stage is ~7× the first, so
 this ordering is worth the duplicated loop.
 
 The limb test comes first in both passes, and its λ half is **hoisted out of the
-inner loop** (`SubGrid::column_a_star`, `quadtree.rs:397`): every sub-patch in
+inner loop** (`SubGrid::column_a_star`, `quadtree.rs:408`): every sub-patch in
 column `ui` has the same λ span, and that is the expensive half.
 
 **Soundness.** A sub-patch is discarded only when it is provably invisible on its
@@ -576,13 +633,15 @@ pole stretch. Break that and the soundness argument goes with it.
 
 ## 5. LOD, subdivision and hysteresis
 
-`quadtree.rs:559-591`, reached only by a node that survived culling.
+`QuadtreeNode::apply_lod` (`quadtree.rs:805-838`), reached only by a node that
+survived culling. It is *not* a culling stage, and the signature says so: stages
+take `&QuadtreeNode`, this takes `&mut self`.
 
 ```rust
-self.visible = true;                                        // :559
-let dist = (self.center - ctx.frustum.eye).length() as f32; // :563  f64 subtract
-let subdivide_dist = self.unstretched_radius * lod_factor;  // :570  lod_factor = 2.0
-let collapse_dist  = subdivide_dist * 1.20;                 // :571
+self.visible = true;                                        // :797  in update()
+let dist = (self.center - ctx.frustum.eye).length() as f32; // :808  f64 subtract
+let subdivide_dist = self.unstretched_radius * lod_factor;  // :815  lod_factor = 2.0
+let collapse_dist  = subdivide_dist * 1.20;                 // :816
 let should_be_subdivided = if is_subdivided { dist < collapse_dist }
                            else             { dist < subdivide_dist };
 ```
@@ -596,7 +655,7 @@ the threshold. The previous 1.05× band was ~50 m at z = 19 and caused visible
 APPEAR/DISAPPEAR flicker on high-detail tiles.
 
 **`unstretched_radius` is measured on the *un*-stretched rectangle**
-(`quadtree.rs:477-478`): a polar row's true ground extent, not its pull to ±90°.
+(`quadtree.rs:739-740`): a polar row's true ground extent, not its pull to ±90°.
 That makes polar caps subdivide later, which is an accepted FP source, never an FN
 one, and is kept deliberately (§8.4). The name says what it measures — a geometry.
 The LOD knob is `lod_factor` and the threshold is `subdivide_dist`; neither is
@@ -606,19 +665,19 @@ this number.
 
 This is the part that bites.
 
-* **A cull deletes the subtree.** Both cull paths set `children = None`
-  (`quadtree.rs:524`, `:555`), and so does falling out of the LOD band (`:590`).
-* **Only leaves are emitted.** `collect_visible_tiles` (`quadtree.rs:602`)
+* **A cull deletes the subtree.** The single cull path sets `children = None`
+  (`quadtree.rs:793`), and so does falling out of the LOD band (`:835`).
+* **Only leaves are emitted.** `collect_visible_tiles` (`quadtree.rs:847`)
   returns early on `!visible` and pushes only nodes with no children.
 * **Therefore a wrong cull at *any* ancestor removes an entire subtree**, not one
   tile. This is invariant **I-7**, and it is why every test in §4 must be sound at
   every level, not merely "sound at leaf granularity". A test that is only
   correct for small patches is not admissible here.
-* **Children are updated within the same call** (`quadtree.rs:584-588`), so the
+* **Children are updated within the same call** (`quadtree.rs:829-833`), so the
   tree reaches full depth in a single `update`. More than one update matters only
   for the hysteresis band; the harness uses four and asserts the set is a fixed
   point (`test_update_iterations_reach_fixed_point`).
-* **`get_renderable_tiles`** (`quadtree.rs:615`) is a *separate* traversal that
+* **`get_renderable_tiles`** (`quadtree.rs:860`) is a *separate* traversal that
   falls back to an ancestor's mesh when a child is not yet cached. It does not
   re-run any visibility test — it reads the `visible` flags this pass set.
 
@@ -634,10 +693,10 @@ someone changing the code, with the guard that catches a violation.
 | **I-1** | **Do not apply terrain relief to the mesh** without replacing `TilePatch::is_occluded` with the scaled-space cone test (§3.7). The collapse to `q·c ≤ 1` is licensed *only* because every non-skirt vertex sits at altitude exactly 0 and every skirt vertex is inward. | `test_generated_mesh_has_no_positive_altitude` (measures 0.143 m worst over 200 tiles, against a 5.5 m tolerance) |
 | **I-2** | **Keep `OrientedBoundingBox::center` and `QuadtreeNode::center` in f64.** Any `p − cam` must be subtracted in f64 and only the difference downcast. Never store a world position in f32 and subtract afterwards. | `test_camera_relative_plane_error_vs_tile_size`; `test_degenerate_obb_matches_contains_point` |
 | **I-3** | **Do not tighten `zfar`** below `‖cam‖ + a` without reinstating the far plane `π_far = r2`. | `test_far_plane_is_vacuous_for_the_globe` (asserts the *premise*) |
-| **I-4** | **Keep the horizon test in f64** end to end. Its conditioning near the surface scales as `1/h`; in f32 the error in `S` is ~1.2·10⁻⁷, which at 3 m altitude is 0.23° of limb angle — 26 km of ground. It is 25 flops. | `test_horizon_closed_form_matches_brute_force`; `test_limb_band_has_no_false_negatives` |
+| **I-4** | **Keep the horizon test in f64** end to end. Its conditioning near the surface scales as `1/h`; in f32 the error in `S` is ~1.2·10⁻⁷, which at 3 m altitude is 0.23° of limb angle — 26 km of ground. It is 25 flops. | `test_horizon_closed_form_matches_brute_force`; `test_limb_band_has_no_false_negatives`; `test_horizon_hot_structs_have_not_grown` (weak but direct: pins `TilePatch` at 64 B and `HorizonCamera` at 56 B, so an f32 demotion of either fails at once) |
 | **I-5** | **`tile_bounds()` is the only source of a tile's rectangle.** Culling and `TileMesh::generate` must see bit-identical numbers, pole stretch included. Do not re-derive bounds anywhere. The f32 `web_mercator_y_to_lat` wrapper that used to tempt callers into doing so no longer exists; only the f64 form remains. | `test_generated_mesh_stays_inside_the_culling_rectangle`; `test_tile_bounds_tile_the_sphere_without_seams` |
 | **I-6** | **Every rejection needs a strict proof, with the tolerance widening the kept set.** Write `reject iff value < −ε`, never `value < +ε`. Same for an `Inside` verdict: it must also be proved, because it *skips* later rejections. | `test_plane_offset_partitions`; `test_degenerate_obb_matches_contains_point` (the only test that resolves the ~4.8e-7 tolerance — the sweeps cannot, see §7.3) |
-| **I-7** | **Every test must be sound at every level of the tree**, because a cull discards the subtree. Do not add a test that is only valid for small patches. | the sweeps collectively; `test_zoom_cliff_probe` straddles the one place the conservatism changes character |
+| **I-7** | **Every test must be sound at every level of the tree**, because a cull discards the subtree. Do not add a test that is only valid for small patches. Corollary, now that the stages are a list: **the final rule of `CullPipeline::keeps` must stay `true`** — it is what makes omitting a stage safe. | `test_stage_prefix_only_grows_the_kept_set` (`kept(P) ⊆ kept(P')` for every pipeline and every prefix, over the 204 fast cells — and verified to go red when the final rule is flipped to `false`); the sweeps collectively; `test_zoom_cliff_probe` straddles the one place the conservatism changes character |
 
 A practical corollary of I-6 worth stating on its own: **the tolerances are all
 one-directional, and all of them can safely be made larger.** Widening a

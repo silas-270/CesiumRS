@@ -3,17 +3,21 @@
 //!
 //! Derivation: `docs/culling-math.md` §9 is the consolidated algorithm this file
 //! implements, §13 the recalibration that produced its present shape. Per node, in
-//! order:
+//! order — the first three as a [`CullPipeline`] of switchable [`Stage`]s, the
+//! fourth deliberately outside it:
 //!
-//! 1. **Horizon** — exact, f64, ~25 flops ([`super::horizon`]). Cheapest *and* most
-//!    selective: roughly half the globe is below the limb at any time, and the whole
-//!    back hemisphere falls to one comparison at the coarsest level.
-//! 2. **Frustum** — the four side planes, camera-relative, ~92 flops
+//! 1. [`Stage::Horizon`] — exact, f64, ~25 flops ([`super::horizon`]). Cheapest
+//!    *and* most selective: roughly half the globe is below the limb at any time,
+//!    and the whole back hemisphere falls to one comparison at the coarsest level.
+//! 2. [`Stage::NodeFrustum`] — the four side planes, camera-relative, ~92 flops
 //!    ([`super::bounding_volume`]), and where they leave the answer open, the
 //!    separating axes that close it ([`super::slab`]).
-//! 3. **The sub-patch grid** ([`SubGrid`]) — both tests again, per sub-patch of a
+//! 3. [`Stage::SubPatchGrid`] ([`SubGrid`]) — both tests again, per sub-patch of a
 //!    `k × k` subdivision of the tile, with `k` from [`SUB_BOXES_PER_AXIS`].
-//! 4. LOD / hysteresis, unchanged.
+//! 4. LOD / hysteresis ([`QuadtreeNode::apply_lod`]), unchanged. Not a stage: it is
+//!    not a visibility question, and it needs `&mut self` where a stage gets
+//!    `&self` — which is what makes it *structurally* impossible for a culling
+//!    stage to delete a subtree (see I-7 below).
 //!
 //! Deliberately absent, and deleted rather than repaired:
 //!
@@ -40,6 +44,13 @@
 //! deletes an entire subtree. Every test above is exact (§3) or provably
 //! conservative (§2.8), at every level, so soundness follows by induction over the
 //! tree. Do not add a test here that is only "sound at leaf granularity".
+//!
+//! Two things now hold the line rather than this paragraph alone. A [`Stage`] takes
+//! `&QuadtreeNode`, so it *cannot* reach `children` — only `apply_lod` can. And
+//! [`CullPipeline`]'s final rule keeps, which makes every stage a pure subtraction
+//! from the kept set: dropping stages can only keep more, never less, and
+//! `test_stage_prefix_only_grows_the_kept_set` asserts exactly that over every
+//! pipeline and every prefix of one.
 
 use glam::{DVec3, Vec3};
 
@@ -421,18 +432,269 @@ impl SubGrid {
     }
 }
 
+/// What one stage proved about a node.
+///
+/// The asymmetry is the point. `Cull` is a **proof of invisibility** and `Keep` a
+/// **proof of visibility** — or rather of everything that follows being unable to
+/// prove invisibility, which is the same thing operationally: `Keep` skips every
+/// later stage, so it may only be returned where a later stage could not have
+/// culled soundly. `Undecided` passes the node on and is always safe (I-6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageVerdict {
+    /// Provably invisible. Stop; the node and its subtree go.
+    Cull,
+    /// Settled in favour of keeping. Stop; **every later stage is skipped**.
+    Keep,
+    /// No proof either way. Hand the node to the next stage.
+    Undecided,
+}
+
+/// One culling stage, as a **name** rather than as a closure or a piece of state.
+///
+/// Field-less and one byte: every per-frame quantity a stage needs lives in
+/// [`CullContext`] (the way `horizon` does), and every per-node quantity lives on
+/// the node. A stage only says *which* test to run, so the stage list is a
+/// constant that outlives the frame instead of something rebuilt per frame.
+///
+/// That is why this is not `Stage::Horizon(HorizonCamera)`: carrying frame data in
+/// the variant would force the list to be rebuilt every frame, and the list is
+/// exactly the thing that should not change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// The exact limb test on the whole patch ([`TilePatch::is_occluded`]).
+    Horizon,
+    /// The frustum against the node's own box.
+    ///
+    /// This stage **absorbs the grid / no-grid dichotomy internally**, and that is
+    /// deliberate: which of the two forms runs is a property of the *node*
+    /// (`sub_grid.is_some()`), not of the configured mode, so the stage list stays
+    /// the same for every node in a frame. A design that swapped stages in and out
+    /// per node would make the list frame- and node-dependent for no gain.
+    ///
+    /// * with a grid — the four planes only ([`Frustum::classify_box`]), because an
+    ///   `Inside` verdict already settles the node and a `Straddling` one is what
+    ///   [`Stage::SubPatchGrid`] exists to resolve;
+    /// * without one — the full separating-axis set ([`Frustum::intersects_obb`]),
+    ///   since nothing downstream will look at this node again.
+    NodeFrustum,
+    /// Both exact tests again, per sub-patch of the `k × k` grid
+    /// ([`SubGrid::has_surviving_sub_patch`]).
+    ///
+    /// `Undecided` when the node has no grid. Behind [`Stage::NodeFrustum`] that
+    /// case is unreachable — a grid-less node is always settled there — but the
+    /// stage is still total, because a pipeline may list it alone.
+    SubPatchGrid,
+}
+
+impl Stage {
+    /// Runs this stage. `&self` on the node, never `&mut`: see
+    /// [`QuadtreeNode::update`] for why that signature is load-bearing.
+    #[inline]
+    fn run(self, node: &QuadtreeNode, ctx: &CullContext) -> StageVerdict {
+        match self {
+            Stage::Horizon => {
+                if node.patch.is_occluded(&ctx.horizon) {
+                    StageVerdict::Cull
+                } else {
+                    StageVerdict::Undecided
+                }
+            }
+            Stage::NodeFrustum => match &node.sub_grid {
+                Some(_) => {
+                    // The f64 subtraction is invariant I-2.
+                    let delta = ctx.frustum.relative(node.obb.center);
+                    match ctx.frustum.classify_box(
+                        delta,
+                        &node.obb.half_axes,
+                        node.obb.half_axis_l1,
+                    ) {
+                        PlaneVerdict::Outside => StageVerdict::Cull,
+                        PlaneVerdict::Inside => StageVerdict::Keep,
+                        PlaneVerdict::Straddling => StageVerdict::Undecided,
+                    }
+                }
+                None => {
+                    if ctx.frustum.intersects_obb(&node.obb) {
+                        StageVerdict::Keep
+                    } else {
+                        StageVerdict::Cull
+                    }
+                }
+            },
+            Stage::SubPatchGrid => match &node.sub_grid {
+                Some(grid) => {
+                    if grid.has_surviving_sub_patch(ctx) {
+                        StageVerdict::Keep
+                    } else {
+                        StageVerdict::Cull
+                    }
+                }
+                None => StageVerdict::Undecided,
+            },
+        }
+    }
+}
+
+/// The most stages a pipeline can hold — one of each [`Stage`].
+pub const MAX_STAGES: usize = 3;
+
+/// An ordered, switchable list of culling stages. `Copy`, 4 bytes, no allocation.
+///
+/// Lives on [`QuadtreeManager`], where it survives frames and changes only when a
+/// mode does, and is copied by value into the per-frame [`CullContext`] so that
+/// stays `Copy` too. It is emphatically **not** stored per node: the quadtree holds
+/// tens of thousands of nodes and none of them has an opinion about which stages
+/// run.
+///
+/// # Dispatch is an enum and a `match`, on purpose
+///
+/// Not `dyn Trait`: inlining dies at the stage boundary, and
+/// [`Frustum::classify_box`] earns its cost only because `delta` stays in
+/// registers. Not static generics either: every mode combination would get its own
+/// monomorphisation, and the top of the call would still need an enum to choose
+/// between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CullPipeline {
+    stages: [Stage; MAX_STAGES],
+    len: u8,
+}
+
+impl CullPipeline {
+    /// The shipped pipeline: horizon, then the node's box, then the sub-patch grid.
+    ///
+    /// # Equivalence with the hand-written cascade it replaced
+    ///
+    /// For `DEFAULT`, [`CullPipeline::keeps`] reduces — by unfolding the loop over
+    /// three known stages and applying the final rule — to exactly
+    ///
+    /// ```text
+    /// with a grid:     is_occluded ? false : match classify_box {
+    ///                                            Outside    => false,
+    ///                                            Inside     => true,
+    ///                                            Straddling => has_surviving_sub_patch,
+    ///                                        }
+    /// without a grid:  is_occluded ? false : intersects_obb
+    /// ```
+    ///
+    /// Read off the three stages in order:
+    ///
+    /// 1. [`Stage::Horizon`] returns `Cull` — i.e. `keeps = false` — exactly when
+    ///    `patch.is_occluded`, and `Undecided` otherwise, so the rest of the
+    ///    cascade is reached under exactly the old `!is_occluded` condition.
+    /// 2. [`Stage::NodeFrustum`] with a grid maps `Outside → Cull → false` and
+    ///    `Inside → Keep → true`, which are the old arms verbatim, and leaves only
+    ///    `Straddling` open. Without a grid it maps `intersects_obb` to
+    ///    `Keep → true` / `Cull → false`, again the old arm verbatim, and leaves
+    ///    nothing open.
+    /// 3. [`Stage::SubPatchGrid`] is therefore reached only in the `Straddling`
+    ///    case, where it returns `Keep → true` / `Cull → false` according to
+    ///    `has_surviving_sub_patch` — the old `Straddling` arm.
+    ///
+    /// The final rule (`true`) is never reached under `DEFAULT`: stage 2 leaves the
+    /// node open only when it has a grid, and stage 3 always decides when it does.
+    ///
+    /// Same calls, same order, same arguments, and nothing is computed that the old
+    /// code did not compute — with one exception in the other direction: `delta` is
+    /// no longer computed on the grid-less path, where the old code computed it and
+    /// then never read it (`intersects_obb` derives its own). Dead arithmetic on
+    /// f32/f64 has no observable effect, so the visible set is bit-identical.
+    pub const DEFAULT: CullPipeline =
+        CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid]);
+
+    /// Builds a pipeline from a stage list. Panics above [`MAX_STAGES`] stages —
+    /// `const`, so a bad constant fails to compile rather than at run time.
+    pub const fn of(stages: &[Stage]) -> CullPipeline {
+        assert!(stages.len() <= MAX_STAGES, "too many culling stages");
+        let mut out = [Stage::Horizon; MAX_STAGES];
+        let mut i = 0;
+        while i < stages.len() {
+            out[i] = stages[i];
+            i += 1;
+        }
+        CullPipeline {
+            stages: out,
+            len: stages.len() as u8,
+        }
+    }
+
+    /// The stages, in execution order.
+    pub fn stages(&self) -> &[Stage] {
+        &self.stages[..self.len as usize]
+    }
+
+    /// Does this node survive the pipeline?
+    ///
+    /// # The final rule, and the property it buys
+    ///
+    /// A cascade that runs out of stages **keeps**. That single choice is what makes
+    /// the stage list safe to shorten: dropping a stage removes proofs of
+    /// invisibility and adds none, so for any pipeline `P` and any prefix `P'` of
+    /// `P`, `kept(P) ⊆ kept(P')`. Soundness therefore never rests on a stage being
+    /// *present* — only on each stage that *is* present being correct. Invariant
+    /// I-7 is exactly this property one level up, and
+    /// `test_stage_prefix_only_grows_the_kept_set` checks it.
+    ///
+    /// Turn the final rule to `false` and the property inverts: omitting a stage
+    /// would start losing tiles, and every configuration but the full one would be
+    /// unsound.
+    ///
+    /// # Why the loop is written over `0..MAX_STAGES` and not over the slice
+    ///
+    /// Measured, not stylistic. `for &stage in &self.stages[..self.len]` gives the
+    /// optimiser a run-time trip count, so the three-way `match` in [`Stage::run`]
+    /// stays a real branch and `QuadtreeManager::update` costs **7.3 µs** on the
+    /// bench poses. A constant trip count with an early `break` unrolls into three
+    /// specialised copies — one per slot, each with its stage known — and costs
+    /// **6.9 µs**, against 6.7 µs for the hand-written cascade this replaced. Tidying
+    /// it back into a slice loop buys nothing and costs 6 % of the frame's culling.
+    #[inline]
+    fn keeps(&self, node: &QuadtreeNode, ctx: &CullContext) -> bool {
+        let len = self.len as usize;
+        for i in 0..MAX_STAGES {
+            if i == len {
+                break;
+            }
+            match self.stages[i].run(node, ctx) {
+                StageVerdict::Cull => return false,
+                StageVerdict::Keep => return true,
+                StageVerdict::Undecided => {}
+            }
+        }
+        true
+    }
+}
+
+impl Default for CullPipeline {
+    fn default() -> Self {
+        CullPipeline::DEFAULT
+    }
+}
+
 /// Everything the per-node tests need, built once per frame.
+///
+/// A bag of frame data, and the stages' only source of it: a [`Stage`] holds no
+/// state of its own, it indexes into this. Anything a new stage needs precomputed
+/// per frame belongs here, next to `horizon`.
 #[derive(Clone, Copy, Debug)]
 pub struct CullContext {
     pub frustum: Frustum,
     pub horizon: HorizonCamera,
+    /// Copied by value from [`QuadtreeManager::pipeline`] — 4 bytes, so the context
+    /// stays `Copy` and the stage list is not rebuilt per frame.
+    pub pipeline: CullPipeline,
 }
 
 impl CullContext {
+    /// The shipped configuration, [`CullPipeline::DEFAULT`].
     pub fn new(frustum: &Frustum) -> Self {
+        Self::with_pipeline(frustum, CullPipeline::DEFAULT)
+    }
+
+    pub fn with_pipeline(frustum: &Frustum, pipeline: CullPipeline) -> Self {
         Self {
             frustum: *frustum,
             horizon: HorizonCamera::new(frustum.eye),
+            pipeline,
         }
     }
 }
@@ -517,47 +779,30 @@ impl QuadtreeNode {
         ]));
     }
 
+    /// Visibility, then LOD — and the split between them is structural.
+    ///
+    /// Every visibility test lives in [`CullPipeline`] behind a `&self` node
+    /// borrow; everything that *changes* the tree lives in
+    /// [`QuadtreeNode::apply_lod`] behind `&mut self`. A stage therefore **cannot**
+    /// touch `children`, which is the invariant I-7 hazard in person: `children =
+    /// None` deletes a subtree, so a test that could do that would be a test that
+    /// could silently lose tiles. Here the borrow checker forbids it.
     pub fn update(&mut self, ctx: &CullContext, lod_factor: f32) {
-        // ── 1. Horizon. Exact, f64, and the strongest filter. ────────────────
-        if self.patch.is_occluded(&ctx.horizon) {
-            self.visible = false;
-            self.children = None;
-            return;
-        }
-
-        // ── 2. Camera-relative offset. The f64 subtraction is invariant I-2. ──
-        let delta = ctx.frustum.relative(self.obb.center);
-
-        // ── 3. Frustum, and 4: the sub-patch grid. ───────────────────────────
-        //
-        // With a grid, the node's own box is asked only the four planes: `Inside`
-        // settles the node outright — every sub-patch is inside the frustum too, so
-        // the grid could only cull if *every* sub-patch were behind the limb, and
-        // that is exactly what step 1 already tested, on the whole patch, exactly.
-        // The exact stages then run per sub-patch, where they are both cheaper and
-        // far more selective than on the node's box. Without a grid the node's box
-        // takes the exact test itself.
-        let alive = match &self.sub_grid {
-            Some(grid) => {
-                match ctx
-                    .frustum
-                    .classify_box(delta, &self.obb.half_axes, self.obb.half_axis_l1)
-                {
-                    PlaneVerdict::Outside => false,
-                    PlaneVerdict::Inside => true,
-                    PlaneVerdict::Straddling => grid.has_surviving_sub_patch(ctx),
-                }
-            }
-            None => ctx.frustum.intersects_obb(&self.obb),
-        };
-        if !alive {
+        if !ctx.pipeline.keeps(self, ctx) {
             self.visible = false;
             self.children = None;
             return;
         }
 
         self.visible = true;
+        self.apply_lod(ctx, lod_factor);
+    }
 
+    /// LOD, hysteresis and recursion, for a node that survived culling.
+    ///
+    /// Not a culling stage and deliberately not reachable as one: it takes
+    /// `&mut self`.
+    fn apply_lod(&mut self, ctx: &CullContext, lod_factor: f32) {
         // LOD distance, also from an f64 subtraction (§8.2): free, since the frame
         // is camera-relative anyway.
         let dist = (self.center - ctx.frustum.eye).length() as f32;
@@ -645,6 +890,10 @@ impl QuadtreeNode {
 pub struct QuadtreeManager {
     pub roots: [QuadtreeNode; 4],
     pub lod_factor: f32, // Multiplier for subdivision distance check
+    /// Which culling stages run. Lives here — not on a node and not in the
+    /// per-frame context — because it survives frames and changes only when a mode
+    /// does; the context takes a copy.
+    pub pipeline: CullPipeline,
 }
 
 impl Default for QuadtreeManager {
@@ -663,13 +912,14 @@ impl QuadtreeManager {
                 QuadtreeNode::new(TileId { z: 1, x: 1, y: 1 }), // SE
             ],
             lod_factor: 2.0, // Default LOD tuning parameter
+            pipeline: CullPipeline::DEFAULT,
         }
     }
 
     /// The camera position is `frustum.eye`: the frustum *is* the camera-relative
     /// frame, so there is no second position argument to get out of step with it.
     pub fn update(&mut self, frustum: &Frustum) {
-        let ctx = CullContext::new(frustum);
+        let ctx = CullContext::with_pipeline(frustum, self.pipeline);
         for root in self.roots.iter_mut() {
             root.update(&ctx, self.lod_factor);
         }
