@@ -41,8 +41,8 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use cesium_engine::globe::quadtree::{QuadtreeManager, TileId};
-use glam::{DVec3, Vec3};
+use cesium_engine::globe::quadtree::{Frustum, QuadtreeManager, TileId};
+use glam::DVec3;
 use rayon::prelude::*;
 
 use super::cameras::{build_camera, ViewParams};
@@ -194,12 +194,33 @@ impl CellResult {
     }
 
     /// FP as a fraction of the visible tile set. 0.0 when the set is empty.
+    ///
+    /// Raw ratio, kept unfiltered so the CSV records what actually happened.
+    /// Aggregate statistics must skip degenerate cells — see [`Self::is_degenerate`].
     pub fn fp_rate(&self) -> f64 {
         if self.tiles == 0 {
             0.0
         } else {
             self.false_positive_tiles as f64 / self.tiles as f64
         }
+    }
+
+    /// A cell in which the oracle finds no visible surface at all, so the
+    /// false-positive ratio has no meaningful denominator.
+    ///
+    /// This is not a measurement artifact but exact geometry: for a camera at
+    /// altitude 0 the front-face condition at any other surface point `p` is
+    /// `n_p . (cam - p) = cos(gamma) - 1 <= 0`, with equality only at `p = cam`.
+    /// Standing exactly on the ellipsoid, nothing else on it is visible; below
+    /// the surface, likewise. Every tile the culler keeps there is counted as a
+    /// false positive purely because no tile *could* be correct.
+    ///
+    /// Keeping tiles at such a pose is the conservative behaviour invariant I-6
+    /// demands, so these cells are excluded from FP aggregates and reported
+    /// separately. They remain fully subject to the false-negative check, which
+    /// is the criterion that actually matters there.
+    pub fn is_degenerate(&self) -> bool {
+        self.samples_visible == 0
     }
 }
 
@@ -210,15 +231,11 @@ pub fn visible_tiles_for(params: &ViewParams) -> (Vec<TileId>, VisibilityOracle)
     let frustum_planes = cam.calculate_frustum_planes(aspect as f32);
 
     let (global_pos, _) = cam.global_transform_f64();
-    let cam_pos_f32 = Vec3::new(
-        global_pos.x as f32,
-        global_pos.y as f32,
-        global_pos.z as f32,
-    );
+    let frustum = Frustum::new(frustum_planes, global_pos);
 
     let mut quadtree = QuadtreeManager::new();
     for _ in 0..UPDATE_ITERATIONS {
-        quadtree.update(cam_pos_f32, frustum_planes);
+        quadtree.update(&frustum);
     }
 
     let tiles = quadtree

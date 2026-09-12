@@ -13,7 +13,7 @@
 
 use std::time::Instant;
 
-use cesium_engine::globe::quadtree::{QuadtreeManager, QuadtreeNode};
+use cesium_engine::globe::quadtree::{Frustum, QuadtreeManager, QuadtreeNode};
 
 use super::cameras::{build_camera, ViewParams};
 use super::cells;
@@ -29,15 +29,7 @@ fn bench_cells() -> Vec<ViewParams> {
 /// Resident bytes of one node, including whatever it hangs off the heap.
 fn node_bytes(node: &QuadtreeNode) -> usize {
     let mut total = std::mem::size_of::<QuadtreeNode>();
-    total += node
-        .tight_obbs
-        .as_ref()
-        .map(|v| {
-            std::mem::size_of::<Vec<cesium_engine::globe::quadtree::OrientedBoundingBox>>()
-                + v.capacity()
-                    * std::mem::size_of::<cesium_engine::globe::quadtree::OrientedBoundingBox>()
-        })
-        .unwrap_or(0);
+    total += node.sub_obb_heap_bytes();
     if let Some(children) = &node.children {
         total += std::mem::size_of::<[QuadtreeNode; 4]>() - 4 * std::mem::size_of::<QuadtreeNode>();
         for c in children.iter() {
@@ -72,20 +64,20 @@ fn bench_quadtree_update() {
         let cam = build_camera(p);
         let aspect = p.aspect();
         let planes = cam.calculate_frustum_planes(aspect as f32);
-        let (cam_pos_d, _) = cam.global_transform_f64();
-        let cam_pos = glam::Vec3::new(cam_pos_d.x as f32, cam_pos_d.y as f32, cam_pos_d.z as f32);
+        let (eye, _) = cam.global_transform_f64();
+        let frustum = Frustum::new(planes, eye);
 
         let mut qt = QuadtreeManager::new();
         // Warm-up: build the tree and settle the LOD hysteresis band, so the timed
         // loop measures the steady-state per-frame cost rather than construction.
         for _ in 0..8 {
-            qt.update(cam_pos, planes);
+            qt.update(&frustum);
         }
 
         const ITERS: u32 = 200;
         let t0 = Instant::now();
         for _ in 0..ITERS {
-            qt.update(cam_pos, planes);
+            qt.update(&frustum);
         }
         let elapsed = t0.elapsed();
 

@@ -21,9 +21,11 @@ fn test_all_altitudes() {
             global_pos_dvec.y as f32,
             global_pos_dvec.z as f32,
         );
+        let frustum =
+            cesium_engine::globe::quadtree::Frustum::new(frustum_planes, global_pos_dvec);
         let mut quadtree = QuadtreeManager::new();
         for _ in 0..30 {
-            quadtree.update(global_pos_f32, frustum_planes);
+            quadtree.update(&frustum);
         }
 
         let tiles = quadtree.get_visible_tiles();
@@ -31,7 +33,6 @@ fn test_all_altitudes() {
         let mut ghost_count = 0;
 
         for (id, _, _) in tiles.iter() {
-            let frustum = cesium_engine::globe::quadtree::Frustum::from_planes(frustum_planes);
             let a2 = 6.378137_f32 * 6.378137_f32;
             let b2 = 6.3567524_f32 * 6.3567524_f32;
 
@@ -41,16 +42,8 @@ fn test_all_altitudes() {
             let z_pow = (1_u32 << id.z) as f32;
             let lon_min = -180.0 + (id.x as f32) * 360.0 / z_pow;
             let lon_max = -180.0 + ((id.x + 1) as f32) * 360.0 / z_pow;
-            let mut lat_max =
-                cesium_engine::globe::quadtree::web_mercator_y_to_lat(id.y as f32, id.z);
-            let mut lat_min =
-                cesium_engine::globe::quadtree::web_mercator_y_to_lat((id.y + 1) as f32, id.z);
-            if id.y == 0 {
-                lat_max = 90.0;
-            }
-            if id.y == (1_u32 << id.z) - 1 {
-                lat_min = -90.0;
-            }
+            let b = cesium_engine::globe::quadtree::tile_bounds(id);
+            let (lat_min, lat_max) = (b.lat_min as f32, b.lat_max as f32);
 
             for i in 0..=steps {
                 let u = i as f32 / steps as f32;

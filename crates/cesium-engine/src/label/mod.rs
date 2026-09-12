@@ -2,7 +2,7 @@ pub mod culling;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Quat};
-use crate::globe::quadtree::Frustum;
+use crate::globe::quadtree::{Frustum, HorizonCamera};
 
 #[repr(C, align(4))]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -232,11 +232,10 @@ impl LabelManager {
         
         self.visible_labels.clear();
         
-        // Precompute camera unit-sphere scaling factors
-        let a = 6.378137_f32;
-        let b = 6.356_752_4_f32;
-        let cv = Vec3::new(camera_pos.x / a, camera_pos.y / b, camera_pos.z / a);
-        let vh_mag_sq = cv.length_squared() - 1.0;
+        // Per-frame horizon constants, in f64 and in the scaled space where the
+        // ellipsoid is the unit sphere. The eye comes from the frustum, which is
+        // the camera-relative frame everything else here is expressed in.
+        let horizon = HorizonCamera::new(frustum.eye);
 
         // Dynamic local range threshold based on camera altitude (in Megameters)
         let max_local_dist = altitude * 1.5 + 0.15;
@@ -269,7 +268,7 @@ impl LabelManager {
                 }
 
                 // Check horizon culling first (Branchless math, rejects quickly)
-                if culling::is_behind_horizon(cv, vh_mag_sq, label_pos) {
+                if culling::is_behind_horizon(&horizon, label_pos) {
                     continue;
                 }
                 
