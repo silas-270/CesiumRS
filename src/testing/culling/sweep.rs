@@ -44,7 +44,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use cesium_engine::globe::quadtree::{Frustum, QuadtreeManager, TileId};
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use rayon::prelude::*;
 
 use super::cameras::{build_camera, ViewParams};
@@ -203,6 +203,131 @@ pub fn limb_bucket(deg: f64) -> usize {
         .unwrap_or(LIMB_BUCKET_EDGES_DEG.len() - 1)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Visible-set digest — the bit-exact A/B gate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// # What the digest is for
+///
+/// Every other number this harness produces is an **aggregate**: FN counts, FP
+/// counts, tile counts. Two builds can agree on all of them and still disagree on
+/// *which* tiles they kept — swap one false-positive tile for another and the FP
+/// count is unchanged. Aggregates therefore cannot answer the question a
+/// refactor actually needs answered: *did the visible set stay identical?*
+///
+/// The digest can. It is an order-sensitive hash of the full visible-tile record —
+/// id, bounding-sphere centre and radius — so any change in tile membership,
+/// traversal order, or bounding-volume arithmetic moves it.
+///
+/// # What it covers
+///
+/// Exactly one thing: the output of [`QuadtreeManager::get_visible_tiles`] after
+/// [`UPDATE_ITERATIONS`] updates, for the camera cells that are fed to it. That is
+/// the culling traversal (`QuadtreeNode::update`: horizon, frustum, the
+/// edge-cross separating axes, the sub-patch grid, LOD) plus the bounding
+/// volumes it is driven by (`fit_obb` and the
+/// bounding sphere derived from it). Centre and radius are hashed deliberately:
+/// they extend the gate over the `fit_obb` path, which is not part of the culling
+/// decision itself but which a refactor must not perturb either.
+///
+/// # What it does NOT cover
+///
+/// Read this before treating a green digest as "nothing changed":
+///
+/// * **`get_renderable_tiles`** (`crates/cesium-engine/src/globe/quadtree/quadtree.rs:562`)
+///   is a *separate* traversal with its own readiness predicate and its own
+///   ancestor-substitution rules. It can change while `get_visible_tiles` does
+///   not. Nothing here looks at it.
+/// * **Label culling** (`super::test_label_culling`) runs against a different code
+///   path entirely. A digest match says nothing about it.
+/// * **Rendering captures** — anything downstream of tile selection: tile loading,
+///   mesh generation, shading, the actual pixels. The digest stops at the tile list.
+/// * **Cells that are not measured.** A digest is only as broad as the camera
+///   cells folded into it. [`super::test_globe_sweep::test_visible_set_digest_is_stable`]
+///   pins ~200 cells; the full sweeps cover far more but assert no constants.
+///
+/// # Why FNV-1a and not `DefaultHasher`
+///
+/// `std::collections::hash_map::DefaultHasher`'s output is **explicitly
+/// unspecified across Rust releases** — the standard library documents that the
+/// algorithm may change, and it has. Constants pinned to it would break on a
+/// `rustup update`, which is indistinguishable from a real regression at the point
+/// where the assert fires. FNV-1a is a fixed, fully specified eight-line
+/// algorithm, so the constants in the fast gate are pinned to the *engine's
+/// behaviour* and nothing else, and survive toolchain upgrades.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// FNV-1a's 64-bit prime, `2^40 + 2^8 + 0xb3`.
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+#[inline]
+fn fnv1a_byte(h: u64, b: u8) -> u64 {
+    (h ^ b as u64).wrapping_mul(FNV_PRIME)
+}
+
+#[inline]
+fn fnv1a_u32(h: u64, v: u32) -> u64 {
+    let mut h = h;
+    for b in v.to_le_bytes() {
+        h = fnv1a_byte(h, b);
+    }
+    h
+}
+
+#[inline]
+fn fnv1a_u64(h: u64, v: u64) -> u64 {
+    let mut h = h;
+    for b in v.to_le_bytes() {
+        h = fnv1a_byte(h, b);
+    }
+    h
+}
+
+/// Order-sensitive FNV-1a digest of one cell's visible-tile list.
+///
+/// Floats go in as `to_bits()`, so the comparison is bit-exact rather than
+/// epsilon-tolerant: this is a gate for "did the behaviour change at all", and any
+/// tolerance would be a hole in it. See [`FNV_OFFSET_BASIS`] for scope and for why
+/// the hash is hand-written.
+///
+/// Ordering matters and is meaningful: `get_visible_tiles` returns tiles in
+/// `collect_visible_tiles` traversal order, which is deterministic (fixed root
+/// order, fixed child order, no iteration over a hash container). A reordering of
+/// the same tile set is itself a behaviour change worth catching.
+pub fn tiles_digest(tiles: &[(TileId, Vec3, f32)]) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    for (id, center, radius) in tiles {
+        h = fnv1a_byte(h, id.z);
+        h = fnv1a_u32(h, id.x);
+        h = fnv1a_u32(h, id.y);
+        h = fnv1a_u32(h, center.x.to_bits());
+        h = fnv1a_u32(h, center.y.to_bits());
+        h = fnv1a_u32(h, center.z.to_bits());
+        h = fnv1a_u32(h, radius.to_bits());
+    }
+    h
+}
+
+/// Folds per-cell digests into a single number, in cell order.
+///
+/// Both producers of these vectors — [`measure_cells`] and the fast gate — are
+/// `par_iter().map().collect()`, which is order-preserving, and the cell tables
+/// are fixed literals, so this is a deterministic function of the cell list:
+/// pool width and scheduling cannot reach it.
+pub fn fold_digests(digests: &[u64]) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    for d in digests {
+        h = fnv1a_u64(h, *d);
+    }
+    h
+}
+
+/// Folds a whole sweep's per-cell digests into a single number, in cell order.
+pub fn sweep_digest(results: &[CellResult]) -> u64 {
+    let per_cell: Vec<u64> = results.iter().map(|r| r.tiles_digest).collect();
+    fold_digests(&per_cell)
+}
+
 /// Everything measured for one camera cell.
 #[derive(Clone, Debug)]
 pub struct CellResult {
@@ -226,6 +351,10 @@ pub struct CellResult {
     pub false_positive_tiles: usize,
     /// Tiles whose interior samples were all `Marginal` — scored neither way.
     pub marginal_tiles: usize,
+    /// Order-sensitive digest of the whole visible-tile list — see
+    /// [`tiles_digest`]. This is the only field that distinguishes two runs that
+    /// agree on every count but kept different tiles.
+    pub tiles_digest: u64,
 }
 
 impl CellResult {
@@ -270,7 +399,11 @@ impl CellResult {
 }
 
 /// Builds the visible tile set for a cell, exactly the way the renderer does.
-pub fn visible_tiles_for(params: &ViewParams) -> (Vec<TileId>, VisibilityOracle) {
+///
+/// Returns the tile ids, the oracle for that camera, and the [`tiles_digest`] of
+/// the full tile records. The digest is computed from the same single traversal
+/// that produces the ids — it costs no extra quadtree run.
+pub fn visible_tiles_for(params: &ViewParams) -> (Vec<TileId>, VisibilityOracle, u64) {
     let cam = build_camera(params);
     let aspect = params.aspect();
     let frustum_planes = cam.calculate_frustum_planes(aspect as f32);
@@ -284,13 +417,11 @@ pub fn visible_tiles_for(params: &ViewParams) -> (Vec<TileId>, VisibilityOracle)
         quadtree.update(&frustum);
     }
 
-    let tiles = quadtree
-        .get_visible_tiles()
-        .into_iter()
-        .map(|(id, _, _)| id)
-        .collect();
+    let records = quadtree.get_visible_tiles();
+    let digest = tiles_digest(&records);
+    let tiles = records.into_iter().map(|(id, _, _)| id).collect();
 
-    (tiles, VisibilityOracle::new(&cam, aspect))
+    (tiles, VisibilityOracle::new(&cam, aspect), digest)
 }
 
 /// Measures a whole sweep, parallel across cells inside the harness pool.
@@ -308,7 +439,7 @@ pub fn measure_cell(params: &ViewParams) -> CellResult {
 }
 
 fn measure_cell_inner(params: &ViewParams) -> CellResult {
-    let (tiles, oracle) = visible_tiles_for(params);
+    let (tiles, oracle, digest) = visible_tiles_for(params);
 
     let tile_set: HashSet<TileId> = tiles.iter().copied().collect();
     let mut zooms: Vec<u8> = tile_set.iter().map(|t| t.z).collect();
@@ -418,6 +549,7 @@ fn measure_cell_inner(params: &ViewParams) -> CellResult {
         fn_limb_buckets,
         false_positive_tiles,
         marginal_tiles,
+        tiles_digest: digest,
     }
 }
 
@@ -471,7 +603,7 @@ pub fn measure_limb_bands(cells: &[ViewParams]) -> Vec<LimbBandResult> {
 }
 
 fn measure_limb_band_inner(params: &ViewParams) -> LimbBandResult {
-    let (tiles, oracle) = visible_tiles_for(params);
+    let (tiles, oracle, _digest) = visible_tiles_for(params);
     let tile_set: HashSet<TileId> = tiles.iter().copied().collect();
     let mut zooms: Vec<u8> = tile_set.iter().map(|t| t.z).collect();
     zooms.sort_unstable();

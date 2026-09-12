@@ -125,6 +125,171 @@ fn test_update_iterations_reach_fixed_point() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The bit-exact A/B gate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Expected digest of `cells::nadir_ladder()`. See the test below before touching it.
+const NADIR_LADDER_DIGEST: u64 = 0x367e_7e83_3930_0930;
+
+/// Expected digest of `cells::zoom_cliff_cells()`. See the test below before touching it.
+const ZOOM_CLIFF_DIGEST: u64 = 0x0f0f_8567_c98e_3382;
+
+/// Expected cell counts, so a changed cell table is distinguishable from changed
+/// engine behaviour when the digests go red.
+const NADIR_LADDER_CELLS: usize = 72;
+const ZOOM_CLIFF_CELLS: usize = 132;
+
+/// **The visible tile set must be bit-identical, not merely equally good.**
+///
+/// # Why this test exists
+///
+/// Every other guard in this file asserts an *aggregate*: FN counts, FP counts,
+/// rates. Aggregates are the right acceptance criteria for the culler's
+/// correctness, and they are exactly the wrong instrument for a refactor: swap one
+/// false-positive tile for a different one and every number in this file is
+/// unchanged, while the renderer is now drawing something else. This test closes
+/// that gap. It hashes the full visible-tile record — id, bounding-sphere centre,
+/// radius — in traversal order, and compares against constants compiled in below.
+///
+/// It is meant to be run after **every** hunk of a behaviour-preserving change:
+///
+/// ```text
+/// cargo test --release --lib culling::test_globe_sweep::test_visible_set_digest_is_stable
+/// ```
+///
+/// It skips the oracle entirely — no FN or FP scoring, just the quadtree
+/// traversal — so it costs a couple of seconds against the full gate's ~70.
+///
+/// # Scope, and the limits of a green result
+///
+/// The digest covers `QuadtreeManager::get_visible_tiles` after
+/// [`UPDATE_ITERATIONS`] updates, for these ~200 camera cells, plus the
+/// bounding-volume arithmetic (`fit_obb`) that feeds it. It covers **nothing
+/// else**. In particular it does not cover `get_renderable_tiles`
+/// (`crates/cesium-engine/src/globe/quadtree/quadtree.rs:562`, a separate
+/// traversal with its own readiness and ancestor-substitution rules), the label
+/// culling in [`super::test_label_culling`], or any rendering capture downstream
+/// of tile selection. A green digest means "these cells select the same tiles",
+/// and must not be read as "nothing changed". The full scope note lives on
+/// [`sweep::tiles_digest`].
+///
+/// # When the digests legitimately change
+///
+/// Only when the *visible set is meant to change*. A refactor that claims to
+/// preserve behaviour and moves these numbers has a bug, and the right response is
+/// to find it — not to paste in the new values. If a change is deliberate,
+/// re-derive them by running this test and reading the printed digests, and say in
+/// the commit message what behaviour changed and why. Note that
+/// `src/testing/culling/cells.rs` is bit-stable by convention
+/// (`docs/culling-implementation.md` §8.4), so the inputs will not drift underneath
+/// these constants.
+///
+/// The hash is a hand-written FNV-1a rather than `DefaultHasher` precisely so that
+/// these constants survive toolchain upgrades — see [`sweep::tiles_digest`].
+#[test]
+fn test_visible_set_digest_is_stable() {
+    use rayon::prelude::*;
+
+    let ladder = cells::nadir_ladder();
+    let cliff = cells::zoom_cliff_cells();
+
+    let t0 = std::time::Instant::now();
+    let digest_of = |cells: &[ViewParams]| -> Vec<u64> {
+        sweep::harness_pool()
+            .install(|| cells.par_iter().map(|p| sweep::visible_tiles_for(p).2).collect())
+    };
+    let ladder_per_cell = digest_of(&ladder);
+    let cliff_per_cell = digest_of(&cliff);
+    let elapsed = t0.elapsed();
+
+    let ladder_digest = sweep::fold_digests(&ladder_per_cell);
+    let cliff_digest = sweep::fold_digests(&cliff_per_cell);
+
+    println!(
+        "  [digest gate] nadir_ladder: {} cells -> visible-set digest: 0x{ladder_digest:016x}",
+        ladder.len()
+    );
+    println!(
+        "  [digest gate] zoom_cliff:   {} cells -> visible-set digest: 0x{cliff_digest:016x}",
+        cliff.len()
+    );
+    println!(
+        "  [digest gate] {} cells in {:.2?} ({} rayon threads)",
+        ladder.len() + cliff.len(),
+        elapsed,
+        sweep::harness_pool().current_num_threads()
+    );
+
+    // Cell tables first: if these moved, the digests below are being compared
+    // against a different question and the mismatch means nothing.
+    assert_eq!(
+        ladder.len(),
+        NADIR_LADDER_CELLS,
+        "cells::nadir_ladder() changed size ({} -> {}); cells.rs is bit-stable by \
+         convention (docs/culling-implementation.md §8.4) and the digest constants \
+         are pinned to the old table",
+        NADIR_LADDER_CELLS,
+        ladder.len()
+    );
+    assert_eq!(
+        cliff.len(),
+        ZOOM_CLIFF_CELLS,
+        "cells::zoom_cliff_cells() changed size ({} -> {}); cells.rs is bit-stable by \
+         convention (docs/culling-implementation.md §8.4) and the digest constants \
+         are pinned to the old table",
+        ZOOM_CLIFF_CELLS,
+        cliff.len()
+    );
+
+    // Then the digests, with the first divergent cell named — that is the one to
+    // put under a debugger, and without it the failure is a single opaque u64.
+    for (name, per_cell, cells_list, expected, got) in [
+        (
+            "nadir_ladder",
+            &ladder_per_cell,
+            &ladder,
+            NADIR_LADDER_DIGEST,
+            ladder_digest,
+        ),
+        (
+            "zoom_cliff",
+            &cliff_per_cell,
+            &cliff,
+            ZOOM_CLIFF_DIGEST,
+            cliff_digest,
+        ),
+    ] {
+        if got == expected {
+            continue;
+        }
+        let mut detail = String::new();
+        for (i, (d, p)) in per_cell.iter().zip(cells_list.iter()).enumerate() {
+            detail.push_str(&format!(
+                "\n    cell[{i}] {:<26} mode={:<8} lat={:>8.3} lon={:>9.3} alt={:>12.1}m \
+                 pitch={:>7.2} yaw={:>7.2} roll={:>7.2} {}x{} -> 0x{d:016x}",
+                p.sweep,
+                p.mode_name(),
+                p.lat_deg,
+                p.lon_deg,
+                p.alt_m,
+                p.pitch_deg,
+                p.yaw_deg,
+                p.roll_deg,
+                p.width,
+                p.height,
+            ));
+        }
+        panic!(
+            "visible-set digest for {name} changed: expected 0x{expected:016x}, got 0x{got:016x}.\n  \
+             The visible tile set is no longer bit-identical. If that was not intended, this is a \
+             behaviour regression and the per-cell digests below say where to look. If it was \
+             intended, update the constant and justify the change in the commit message — do not \
+             paste the new number in to make the suite green.\n  per-cell digests:{detail}"
+        );
+    }
+}
+
 /// The oracle's two halves must agree with each other: every surface point found
 /// by unprojecting a viewport position and intersecting the ellipsoid must, when
 /// re-projected, land back at that viewport position.

@@ -43,7 +43,7 @@ pub fn write_csv(name: &str, results: &[CellResult]) -> PathBuf {
         file,
         "sweep,mode,lat_deg,lon_deg,alt_m,pitch_deg,yaw_deg,roll_deg,width,height,\
          tiles,min_z,max_z,samples_considered,samples_visible,samples_marginal,\
-         false_negatives,fn_rate,false_positive_tiles,fp_rate,marginal_tiles,{}",
+         false_negatives,fn_rate,false_positive_tiles,fp_rate,marginal_tiles,tiles_digest,{}",
         limb_cols.join(",")
     );
 
@@ -52,7 +52,7 @@ pub fn write_csv(name: &str, results: &[CellResult]) -> PathBuf {
         let limb: Vec<String> = r.fn_limb_buckets.iter().map(|v| v.to_string()).collect();
         let _ = writeln!(
             file,
-            "{},{},{:.6},{:.6},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.6},{},{:.6},{},{}",
+            "{},{},{:.6},{:.6},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.6},{},{:.6},{},0x{:016x},{}",
             p.sweep,
             p.mode_name(),
             p.lat_deg,
@@ -74,6 +74,7 @@ pub fn write_csv(name: &str, results: &[CellResult]) -> PathBuf {
             r.false_positive_tiles,
             r.fp_rate(),
             r.marginal_tiles,
+            r.tiles_digest,
             limb.join(","),
         );
     }
@@ -204,6 +205,14 @@ pub fn render_report(name: &str, csv: &std::path::Path, results: &[CellResult]) 
         100.0 * pct(s.total_false_positive_tiles, s.total_tiles),
         100.0 * s.worst_fn_rate,
         100.0 * s.worst_fp_rate,
+    ));
+    // The one line that makes two runs bit-comparable. Everything above is an
+    // aggregate and can match while the tile sets differ; this cannot.
+    // See `sweep::tiles_digest` for exactly what it does and does not cover.
+    out.push_str(&format!(
+        "visible-set digest: 0x{:016x}  (order-sensitive FNV-1a, folded over {} cells)\n",
+        sweep::sweep_digest(results),
+        s.cells,
     ));
     if s.degenerate_cells > 0 {
         out.push_str(&format!(
