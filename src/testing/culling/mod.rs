@@ -101,4 +101,6 @@ pub mod test_analytic_planes;
 #[cfg(test)]
 pub mod test_globe_sweep;
 #[cfg(test)]
+pub mod test_tile_bounds;
+#[cfg(test)]
 pub mod test_label_culling;
