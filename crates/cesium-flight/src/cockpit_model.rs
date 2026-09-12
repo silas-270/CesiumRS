@@ -5,8 +5,9 @@
 //!
 //! ## Model conventions
 //! The GLB is Y-up with **-Z forward** — the same convention as the aircraft frame — so
-//! unlike `A350.glb` it needs no yaw correction. Its units are metres, spanning
-//! 3.06 x 2.04 x 3.03 m, with the windshield at `z = -3.03` and the rear bulkhead at `z = 0`.
+//! unlike the exterior model (see [`crate::aircraft_model`]) it needs no yaw correction.
+//! Its units are metres, spanning 3.06 x 2.04 x 3.03 m, with the windshield at
+//! `z = -3.03` and the rear bulkhead at `z = 0`.
 
 use cesium_engine::render::model_pipeline::pipeline::{ModelOptions, ModelRenderer};
 use glam::Vec3;
@@ -46,8 +47,9 @@ pub const MODEL_SCALE: f32 = M_TO_MM;
 /// the replacements; anything not listed falls back to [`FALLBACK_TINT`]. Materials that do
 /// carry a real colour (`Pedestal_Black`, `Pedestal_Red`, ...) are left alone.
 const COCKPIT_TINTS: &[(&str, [f32; 4])] = &[
-    // Instrument screens read as dark glass, not white panels.
-    ("Main_Display", [0.05, 0.07, 0.09, 1.0]),
+    // `Main_Display` used to be listed here as dark glass. It is now handled ahead of this
+    // table entirely, in `material_tint`: it carries the display atlas and has to render
+    // at full value for the painted panels to survive the multiply.
     ("Side_Display", [0.05, 0.07, 0.09, 1.0]),
     ("ModeControl_Panel1", [0.22, 0.23, 0.24, 1.0]),
     ("Console_Glay", [0.42, 0.42, 0.43, 1.0]),
@@ -79,6 +81,13 @@ const FALLBACK_TINT: [f32; 4] = [0.62, 0.62, 0.63, 1.0];
 const WHITE_THRESHOLD: f32 = 0.99;
 
 fn material_tint(name: Option<&str>, base: [f32; 4]) -> [f32; 4] {
+    // The display material is authored at 0.02 — near black — which is right for a screen
+    // with nothing on it and fatal for one with something on it, since the shader
+    // multiplies the texture by this. Full value hands the atlas straight through.
+    if name == Some(crate::cockpit_screens::SCREEN_MATERIAL) {
+        return [1.0, 1.0, 1.0, base[3]];
+    }
+
     let is_white =
         base[0] >= WHITE_THRESHOLD && base[1] >= WHITE_THRESHOLD && base[2] >= WHITE_THRESHOLD;
     if !is_white {
@@ -101,6 +110,7 @@ pub fn load(
     config: &wgpu::SurfaceConfiguration,
     camera_bind_group_layout: &wgpu::BindGroupLayout,
 ) -> Option<ModelRenderer> {
+    let t = std::time::Instant::now();
     let bytes = match crate::assets::load(ASSET_NAME) {
         Some(bytes) => bytes,
         None => {
@@ -108,6 +118,20 @@ pub fn load(
             return None;
         }
     };
+
+    log::info!(
+        "[loadtime] {:<22} {:>7.1} ms ({} bytes)",
+        "asset read",
+        t.elapsed().as_secs_f64() * 1e3,
+        bytes.len()
+    );
+    let t = std::time::Instant::now();
+    let atlas = crate::cockpit_screens::build_atlas();
+    log::info!(
+        "[loadtime] {:<22} {:>7.1} ms",
+        "build_atlas",
+        t.elapsed().as_secs_f64() * 1e3
+    );
 
     let options = ModelOptions {
         // Real-scale interior: keep the GLB's metres and skip the screen-size boost.
@@ -123,10 +147,20 @@ pub fn load(
         // now removed entirely from the GLB itself (a comprehensive Blender-side cleanup,
         // not just this one pair), so there's nothing left to offset.
         primitive_normal_offset: None,
-        // Superseded by the shader's own triplanar surface detail (model_pipeline/shader.wgsl),
-        // which covers every primitive regardless of UVs; this baked grain only ever reached
-        // the ~37% with real UVs.
-        texture_override: None,
+        // The flight deck's display atlas. The GLB's own only image is a 1x1 white pixel,
+        // so without this the screens have nothing to show. See `cockpit_screens`.
+        texture_override: Some(atlas),
+        // Seven other materials have UVs in the same 0..1 space as the display quads and
+        // would sample the atlas too. This parks them on a white texel.
+        uv_override: Some(&crate::cockpit_screens::uv_for_material),
+        // A display is a light source, so it ignores the flight deck's shading entirely.
+        material_unlit: Some(&crate::cockpit_screens::unlit_for_material),
+        // The atlas is authored at the size the panels are drawn at; nothing to cap.
+        max_texture_size: None,
+        // The interior is drawn at true world scale about the glTF's own origin; the
+        // captain's eye point is placed by the camera, not by moving the mesh.
+        origin_offset: [0.0; 3],
+        post_scale: 1.0,
         label: "787 cockpit",
     };
 

@@ -116,12 +116,20 @@ def diff_reports(baseline, current, threshold):
 
 
 def parse_mem_log(path):
-    """Parses the `dumpsys meminfo`-polling fallback log from
-    tools/run_perf_scenario.sh (lines like `ts=<epoch> TOTAL <kb> TK` /
-    `Native Heap <kb> TK`) into a steady-state average and slope (bytes/sec),
-    the leak signal for the long-duration scenario. Best-effort: unparseable
-    lines are skipped rather than failing the whole run."""
-    samples = []  # (timestamp, total_kb)
+    """Parses the `dumpsys meminfo`-polling log from tools/run_perf_scenario.sh
+    into a steady-state average and growth slope, the leak signal for the
+    long-duration scenario. Best-effort: unparseable lines are skipped rather
+    than failing the whole run.
+
+    The value read is **Pss Total** — the first number on the dump's `TOTAL`
+    row. That figure includes graphics/dmabuf memory, which a long flight can
+    grow by hundreds of MB while `/proc` RSS (what a Perfetto
+    `linux.process_stats` trace records as `mem.rss`) stays flat, since GPU
+    allocations never land in VmRSS. The two disagreeing is expected rather
+    than a bug in either, so `Rss Total` is captured alongside and a report can
+    say which one it means.
+    """
+    samples = []  # (timestamp, pss_total_kb, rss_total_kb or None)
     ts = None
     for line in Path(path).read_text().splitlines():
         line = line.strip()
@@ -131,27 +139,63 @@ def parse_mem_log(path):
             except ValueError:
                 ts = None
             continue
-        if "TOTAL" in line and ts is not None:
-            parts = line.split()
-            for i, tok in enumerate(parts):
-                if tok == "TOTAL" and i + 1 < len(parts):
-                    try:
-                        samples.append((ts, int(parts[i + 1])))
-                    except ValueError:
-                        pass
-                    break
+        if ts is None or not line.startswith("TOTAL"):
+            continue
+        # The dump's TOTAL row is `TOTAL <pss> <privDirty> <privClean>
+        # <swapPss> <rss> ...`. The `TOTAL PSS: ... TOTAL RSS: ...` summary
+        # line later in the same dump has a non-numeric second token and drops
+        # out here, so each poll contributes exactly one sample.
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pss_kb = int(parts[1])
+        except ValueError:
+            continue
+        rss_kb = None
+        if len(parts) >= 6:
+            try:
+                rss_kb = int(parts[5])
+            except ValueError:
+                rss_kb = None
+        samples.append((ts, pss_kb, rss_kb))
+
     if len(samples) < 2:
         return None
-    kb_values = [kb for _, kb in samples]
-    avg_kb = sum(kb_values) / len(kb_values)
-    t0, kb0 = samples[0]
-    t1, kb1 = samples[-1]
-    slope_kb_per_sec = (kb1 - kb0) / (t1 - t0) if t1 > t0 else 0.0
-    return {
+
+    def slope_kb_per_sec(series):
+        """Least-squares slope over the whole series.
+
+        The endpoints alone are one noisy sample each: on a 35-minute run they
+        put the growth at 15.9 MB/min where the fit said 19.2, which is the
+        difference between "drifting" and "will exhaust memory on a long
+        flight".
+        """
+        n = len(series)
+        t0 = series[0][0]
+        xs = [t - t0 for t, _ in series]
+        ys = [v for _, v in series]
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        denom = sum((x - mean_x) ** 2 for x in xs)
+        if denom == 0:
+            return 0.0
+        return sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
+
+    pss = [(t, p) for t, p, _ in samples]
+    rss = [(t, r) for t, _, r in samples if r is not None]
+    result = {
         "sample_count": len(samples),
-        "average_total_kb": avg_kb,
-        "slope_kb_per_sec": slope_kb_per_sec,
+        "duration_s": samples[-1][0] - samples[0][0],
+        "average_total_kb": sum(p for _, p in pss) / len(pss),
+        "slope_kb_per_sec": slope_kb_per_sec(pss),
+        "first_total_kb": pss[0][1],
+        "last_total_kb": pss[-1][1],
     }
+    if len(rss) >= 2:
+        result["average_rss_kb"] = sum(r for _, r in rss) / len(rss)
+        result["rss_slope_kb_per_sec"] = slope_kb_per_sec(rss)
+    return result
 
 
 def slice_trace_by_scenario(trace_path):
@@ -171,21 +215,34 @@ def slice_trace_by_scenario(trace_path):
     query = (
         "select name, ts from slice where name like 'cesium.scenario.%' order by ts;"
     )
-    try:
-        result = subprocess.run(
-            [shell, "-q", "-", trace_path],
-            input=query,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        print(f"warning: trace_processor_shell failed: {e}", file=sys.stderr)
-        return None
-    if result.returncode != 0:
-        print(f"warning: trace_processor_shell exited {result.returncode}: {result.stderr}", file=sys.stderr)
-        return None
-    return result.stdout
+    # Perfetto v40+ moved to subcommands (`tp query <trace> -f -`, CSV by
+    # default). The older `-q - <trace>` form doesn't error on those builds —
+    # it prints the help text and exits 0, which looks like an empty result —
+    # so try the new form first and only fall back for genuinely old builds.
+    invocations = (
+        [shell, "query", trace_path, "-f", "-"],
+        [shell, "-q", "-", trace_path],
+    )
+    last_error = None
+    for argv in invocations:
+        try:
+            result = subprocess.run(
+                argv, input=query, capture_output=True, text=True, timeout=120
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            last_error = f"{' '.join(argv[1:2])}: {e}"
+            continue
+        if result.returncode != 0:
+            last_error = f"exited {result.returncode}: {result.stderr.strip()}"
+            continue
+        # A build that didn't understand the invocation prints usage instead of
+        # rows; treat that as a miss so the other form gets its turn.
+        if "Usage:" in result.stdout or not result.stdout.strip():
+            last_error = "no rows (invocation not understood by this build)"
+            continue
+        return result.stdout
+    print(f"warning: trace_processor_shell failed: {last_error}", file=sys.stderr)
+    return None
 
 
 def main():
@@ -244,9 +301,16 @@ def main():
             print(f"\nwarning: could not parse memory samples from {args.mem_log}", file=sys.stderr)
         else:
             print(
-                f"\nMemory: avg TOTAL {mem['average_total_kb']:.0f} KB, "
-                f"slope {mem['slope_kb_per_sec']:+.2f} KB/s over {mem['sample_count']} samples"
+                f"\nMemory (Pss Total): avg {mem['average_total_kb'] / 1024:.0f} MB, "
+                f"{mem['first_total_kb'] / 1024:.0f} -> {mem['last_total_kb'] / 1024:.0f} MB, "
+                f"fitted slope {mem['slope_kb_per_sec'] * 60 / 1024:+.2f} MB/min "
+                f"over {mem['sample_count']} samples / {mem['duration_s'] / 60:.0f} min"
             )
+            if "rss_slope_kb_per_sec" in mem:
+                print(
+                    f"        (Rss Total: avg {mem['average_rss_kb'] / 1024:.0f} MB, "
+                    f"slope {mem['rss_slope_kb_per_sec'] * 60 / 1024:+.2f} MB/min)"
+                )
             output["memory"] = mem
 
     if args.trace:

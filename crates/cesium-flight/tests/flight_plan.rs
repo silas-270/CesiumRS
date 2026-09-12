@@ -950,10 +950,13 @@ fn test_ground_roll_straight_and_bank_zero_on_ground() {
             config: FlightPlanConfig::default(),
         };
         let points = generate(&req);
+        let ground_altitude = points[0].altitude;
         let mut ground_heading_changes = 0;
         let mut max_ground_bank = 0.0_f64;
-        let ground_pts: Vec<&TelemetryPoint> =
-            points.iter().filter(|p| p.altitude <= 5.001).collect();
+        let ground_pts: Vec<&TelemetryPoint> = points
+            .iter()
+            .filter(|p| p.altitude <= ground_altitude + 0.001)
+            .collect();
         for w in ground_pts.windows(2) {
             if (w[1].time_offset_ms - w[0].time_offset_ms) < 30_000 {
                 let diff = (w[1].heading_rad - w[0].heading_rad).abs();

@@ -97,7 +97,7 @@ pub struct FlightRequest {
 }
 
 /// Lifts the rendered path clear of the globe surface so it does not z-fight with it.
-const RENDER_LIFT_M: f64 = 5.0;
+const RENDER_LIFT_M: f64 = 3.0;
 
 /// Distance over which the nose comes up at rotation, and back down after touchdown.
 const ROTATION_DISTANCE_M: f64 = 400.0;
@@ -326,9 +326,12 @@ fn sample(ctx: &TimeContext, schedule: &SpeedSchedule) -> Vec<TelemetryPoint> {
     let total = track.total_length();
 
     // Ground level is whichever field is nearer, so the sun curve reads 1.0 on the
-    // ground whether or not real elevations are in use.
+    // ground whether or not real elevations are in use. The span tops out at the
+    // *initial* cruise level rather than the highest step: on long flights the top
+    // of climb from the final step comes late, and normalizing against it would
+    // keep the curve above zero through most of cruise.
     let ground_ref = profile.dep_elevation_m.min(profile.arr_elevation_m);
-    let sun_span = (profile.cruise_altitude_m - ground_ref).max(1.0);
+    let sun_span = (profile.initial_cruise_altitude_m - ground_ref).max(1.0);
 
     let mut points: Vec<TelemetryPoint> = Vec::new();
     let mut s = 0.0_f64;
