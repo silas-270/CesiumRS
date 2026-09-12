@@ -232,23 +232,65 @@ fn test_screen_to_world_ray_is_not_ground_truth() {
 // Regression guards — clean today, must stay clean.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ## How the false-positive thresholds are calibrated
+//
+// Every FP threshold below was re-measured after
+// [`sweep::TILE_SAMPLE_STEPS`] went from 4 to 32, i.e. from 25 to 1089 sample
+// points per tile. That change moved the whole-harness FP total from 27 103
+// tiles (2.054 %) to 3 264 (0.247 %) without touching one line of engine code:
+// most of what the old density called waste was a tile whose genuinely visible
+// part was a strip thinner than the sample spacing. See `TILE_SAMPLE_STEPS` for
+// the convergence table and the monotonicity argument (more samples can only
+// lower FP, so the reported figure is an upper bound).
+//
+// Two things follow for the thresholds here.
+//
+// **The measured value is now zero on every asserted sweep.** nadir_ladder,
+// axis_sweep and zoom_cliff each score exactly **0 false-positive tiles** at
+// N = 32. The numbers the old doc comments quoted (0.2727, 0.333, 0.0047) were
+// measured on the pre-rework engine; on the current engine they were already
+// 0.0000, 0.0833 and 0.0000 at N = 4.
+//
+// **The worst-*cell* FP rate stopped being a usable statistic.** It is a rate
+// over a per-cell denominator that is routinely tiny — the sparsest cells in
+// these sweeps hold **2** tiles — so a single legitimately conservative tile
+// scores 0.50 there. A worst-cell threshold therefore cannot be tightened below
+// ~0.5 without becoming "zero FP anywhere" in disguise, and at 0.45 it was
+// satisfiable by hundreds of wasted tiles spread across the fatter cells. The
+// guards below assert on the **absolute count of wasted tiles over the sweep**
+// instead, which has no denominator pathology and is two to three orders of
+// magnitude tighter. This is a tightening in every direction, so it cannot cost
+// the suite teeth: any perturbation the old rate guard caught, the count guard
+// catches too.
+//
+// **Headroom rule**, applied uniformly: `round(0.5 % of the sweep's own tile
+// total)`, over a measured 0. That is room for a handful of individually
+// defensible conservative tiles — the OBB of a limb-straddling tile really can
+// bulge past the horizon — while a systematic regression is one to two orders
+// above it (a deliberately broken frustum plane produced a whole-sweep FP rate
+// of 0.24 on nadir_ladder, i.e. ~150 tiles against a budget of 3). The
+// per-sweep totals are recorded in each threshold's doc comment so a future
+// change of cell set forces a re-derivation rather than an inherited number.
+
 /// Nadir views at a range of altitudes and latitudes: the tamest geometry the
 /// engine ever sees, and the case a user spends most of their time in.
 ///
 /// Threshold: **zero** false negatives. This regime is measured clean, so any FN
-/// at all is a regression. The FP threshold is a rate, not zero, because bounding
-/// volumes are conservative by construction — a tile whose OBB pokes over the
-/// horizon or past a screen edge is legitimately scheduled.
+/// at all is a regression. The FP threshold is a small non-zero tile budget, not
+/// zero, because bounding volumes are conservative by construction — a tile whose
+/// OBB pokes over the horizon or past a screen edge is legitimately scheduled.
 #[test]
 fn test_nadir_ladder_has_no_false_negatives() {
     /// Measured: **0 FN** over 3 568 512 visible samples in 72 cells.
     const MAX_FN: usize = 0;
-    /// Measured worst-cell FP rate: **0.2727** (3 tiles of 11, at 20 000 km where
-    /// the visible set is a handful of z=1/z=2 tiles whose OBBs bulge well past
-    /// the limb). 0.45 is ~1.6x headroom — enough for legitimate bounding-volume
-    /// conservatism, still far below the 1.00 a deliberately broken frustum plane
-    /// produced.
-    const MAX_FP_RATE: f64 = 0.45;
+    /// Measured at N = 32: **0 false-positive tiles** of 636 over 72 cells
+    /// (worst-cell rate 0.0000). At N = 4 this sweep also measured 0 — its FP was
+    /// never density-limited; the old `0.2727` in this comment was a pre-rework
+    /// engine number.
+    ///
+    /// Budget: 3 tiles = 0.5 % of the sweep's 636. ~50x below the ~150 tiles a
+    /// deliberately broken frustum plane produced here.
+    const MAX_FP_TILES: usize = 3;
 
     let (results, text) = run("nadir_ladder", cells::nadir_ladder());
     let s = report::summarize(&results);
@@ -259,8 +301,10 @@ fn test_nadir_ladder_has_no_false_negatives() {
         s.total_false_negatives
     );
     assert!(
-        s.worst_fp_rate <= MAX_FP_RATE,
-        "nadir ladder worst-cell false-positive rate {:.4} exceeds {MAX_FP_RATE}.{text}",
+        s.total_false_positive_tiles <= MAX_FP_TILES,
+        "nadir ladder wasted {} tiles of {} (limit {MAX_FP_TILES}, worst cell {:.4}).{text}",
+        s.total_false_positive_tiles,
+        s.total_tiles,
         s.worst_fp_rate
     );
 }
@@ -425,14 +469,21 @@ fn test_clamped_camera_path_has_no_false_negatives() {
 /// False positives are acceptable but not unbounded. This is the waste budget.
 ///
 /// Threshold is a *whole-sweep* rate so a handful of pathological cells cannot
-/// blow it, but a systematic regression (e.g. the tight sub-OBB rejection being
-/// disabled) would.
+/// blow it, but a systematic regression (e.g. the sub-grid rejection being
+/// disabled) would. It runs the same cells as
+/// [`test_nadir_ladder_has_no_false_negatives`] deliberately: that guard bounds
+/// the absolute number of wasted tiles, this one bounds the fraction, so the pair
+/// stays meaningful if the cell set ever grows or shrinks.
 #[test]
 fn test_false_positive_rate_within_budget() {
-    /// Whole-sweep FP budget. Measured: **0.0047** (1 wasted tile of 213).
-    /// 0.10 is ~20x headroom, and still well under the 0.24 a deliberately
-    /// broken frustum plane produced.
-    const MAX_OVERALL_FP_RATE: f64 = 0.10;
+    /// Whole-sweep FP budget. Measured at N = 32: **0.0000** — 0 wasted tiles of
+    /// 636 over 72 cells. (The old `0.0047` here was a pre-rework engine number
+    /// against a 213-tile set; the current engine measures 0 at N = 4 as well.)
+    ///
+    /// 0.005 is the same 0.5 % headroom rule as the count guards above — 3 tiles
+    /// of 636 — and still ~48x under the 0.24 a deliberately broken frustum plane
+    /// produced.
+    const MAX_OVERALL_FP_RATE: f64 = 0.005;
 
     let (results, text) = run("fp_budget", cells::nadir_ladder());
     let s = report::summarize(&results);
@@ -461,8 +512,13 @@ fn test_false_positive_rate_within_budget() {
 #[test]
 fn test_axis_sweep_has_no_false_negatives() {
     const MAX_FN: usize = 0;
-    /// Measured worst-cell FP rate: **0.2727**. 0.45 is ~1.6x headroom.
-    const MAX_FP_RATE: f64 = 0.45;
+    /// Measured at N = 32: **0 false-positive tiles** of 1 365 over the 132
+    /// non-degenerate cells of 153 (worst-cell rate 0.0000). At N = 4 the same
+    /// engine measured 14 tiles / worst cell 0.1111 — every one of those 14 was a
+    /// sampling artifact, not waste.
+    ///
+    /// Budget: 7 tiles = 0.5 % of 1 365.
+    const MAX_FP_TILES: usize = 7;
 
     let (results, text) = run("axis_sweep", cells::axis_sweep());
     let s = report::summarize(&results);
@@ -473,8 +529,10 @@ fn test_axis_sweep_has_no_false_negatives() {
         s.cells
     );
     assert!(
-        s.worst_fp_rate <= MAX_FP_RATE,
-        "axis sweep worst-cell false-positive rate {:.4} exceeds {MAX_FP_RATE}.{text}",
+        s.total_false_positive_tiles <= MAX_FP_TILES,
+        "axis sweep wasted {} tiles of {} (limit {MAX_FP_TILES}, worst cell {:.4}).{text}",
+        s.total_false_positive_tiles,
+        s.total_tiles,
         s.worst_fp_rate
     );
 }
@@ -536,16 +594,23 @@ fn test_horizon_pitch_sweep_has_no_false_negatives() {
 /// and FP rate are printed so the discontinuity stays visible in the log.
 ///
 /// Threshold: **zero** false negatives — measured **0** over 4 033 679 visible
-/// samples, and the FP rate shows **no jump at the z=16/17 boundary**: the tiles
-/// that get flagged are the handful of near-nadir low-altitude cells with only
-/// 3–15 tiles in view, not the z>16 ones.
+/// samples, and at N = 32 sample points per tile the FP column is **identically
+/// zero across the whole ladder**, so there is no discontinuity at the boundary
+/// to explain. (At N = 4 two tiles were flagged, both in near-nadir low-altitude
+/// cells with 3–15 tiles in view, neither above z = 16 — a sampling artifact in
+/// the same place the earlier note attributed to conservatism.)
 #[test]
 fn test_zoom_cliff_probe() {
     const MAX_FN: usize = 0;
-    /// Measured worst-cell FP rate across the ladder: **0.333** (1 tile of 3 at
-    /// 10 m altitude, 20° pitch — a cell with almost nothing in view, where one
-    /// conservative tile is a third of the set). 0.50 is 1.5x headroom.
-    const MAX_FP_RATE: f64 = 0.50;
+    /// Measured at N = 32: **0 false-positive tiles** of 3 286 over 132 cells
+    /// (worst-cell rate 0.0000). At N = 4 the same engine measured 2 tiles /
+    /// worst cell 0.0833; the old `0.333` here was a pre-rework number.
+    ///
+    /// Budget: 16 tiles = 0.5 % of 3 286. This is the sweep that straddles the
+    /// z = 16/17 conservatism change, so the count guard matters more here than a
+    /// worst-cell rate would: it catches a drift spread thinly across the ladder,
+    /// which is exactly the shape a sub-grid regression takes.
+    const MAX_FP_TILES: usize = 16;
 
     let (results, text) = run("zoom_cliff", cells::zoom_cliff_cells());
 
@@ -570,8 +635,10 @@ fn test_zoom_cliff_probe() {
         s.total_false_negatives
     );
     assert!(
-        s.worst_fp_rate <= MAX_FP_RATE,
-        "zoom cliff worst-cell false-positive rate {:.4} exceeds {MAX_FP_RATE}.{text}",
+        s.total_false_positive_tiles <= MAX_FP_TILES,
+        "zoom cliff wasted {} tiles of {} (limit {MAX_FP_TILES}, worst cell {:.4}).{text}",
+        s.total_false_positive_tiles,
+        s.total_tiles,
         s.worst_fp_rate
     );
 }
@@ -801,15 +868,23 @@ fn test_near_ground_high_zoom_has_no_false_negatives() {
 /// | | FP | mean `QuadtreeManager::update` |
 /// |---|---|---|
 /// | before the rework | 5.58 % | 7.7 µs |
-/// | after | **4.18 %** | **4.3 µs** |
+/// | after, before the sub-box taper (`15114a9`) | 4.18 % | 4.3 µs |
+/// | after, at N = 4 sample points | 1.99 % | **4.3 µs** |
+/// | after, at N = 32 sample points | **0.212 %** (1 385 tiles of 654 250) | — |
+///
+/// The last two rows are the *same engine*: only the FP instrument's density
+/// changed. This sweep is where the sampling artifact was largest, because a
+/// uniformly random camera pose lands a large share of tiles in exactly the
+/// limb-straddling geometry that a 5 × 5 grid cannot resolve.
 ///
 /// The FP number is *not* asserted here. It is a rate, bounded deliberately by
-/// [`test_false_positive_rate_within_budget`] and by the per-cell thresholds in
-/// [`test_axis_sweep_has_no_false_negatives`], because a whole-sweep FP assertion
-/// over 100 000 randomised cells would be a threshold nobody could reason about.
-/// Individual cells still reach 100 %: views where the frustum meets a tile's
-/// bounding volume but no part of the tile's surface is visible. That is the
-/// residual floor §5.4 describes and deliberately leaves open.
+/// [`test_false_positive_rate_within_budget`] and by the whole-sweep tile budgets
+/// in [`test_axis_sweep_has_no_false_negatives`] and
+/// [`test_nadir_ladder_has_no_false_negatives`], because a whole-sweep FP
+/// assertion over 100 000 randomised cells would be a threshold nobody could
+/// reason about. Individual cells still reach 100 %: views where the frustum
+/// meets a tile's bounding volume but no part of the tile's surface is visible.
+/// That is the residual floor §5.4 describes and deliberately leaves open.
 #[test]
 fn test_fuzz_sweep_has_no_false_negatives() {
     const MAX_FN: usize = 0;

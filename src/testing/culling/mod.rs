@@ -62,7 +62,13 @@
 //! | run | debug | release |
 //! |-----|-------|---------|
 //! | the gate, before the rework (~40 M visible samples) | 4.6 s | 1.9 s |
-//! | the gate, now (~1.8 G visible samples) | ~2 min 30 s | ~37 s |
+//! | the gate, now (~1.8 G visible samples) | ~2 min 30 s | ~37-50 s |
+//!
+//! Raising [`sweep::TILE_SAMPLE_STEPS`] from 4 to 32 — a 44x increase in
+//! false-positive sample points — cost **nothing** measurable: 53.6 s at N = 4
+//! against 50.3 s at N = 32, measured back to back on the same box, i.e. inside
+//! the run-to-run spread. The FN grids dominate, and the per-tile FP loop
+//! short-circuits on its first `Visible` verdict.
 //!
 //! The heaviest probe — the 100 000-cell fuzz sweep, 1.08 billion oracle
 //! classifications — takes 27 s of wall clock and 47 minutes of CPU in release,
