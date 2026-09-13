@@ -1260,8 +1260,15 @@ most of the tree.
    stretched ones (§6.3). Polar caps therefore stay coarse and loose: an FP
    contribution, not an FN one. Leave it; note it.
 
-5. **No screen-space error.** Nothing in this document depends on the LOD metric
-   being distance-based. If a screen-space-error metric is introduced later,
+5. **Still no screen-space error; the constant is now derived.** The LOD metric
+   remains **distance-based** — WP3 landed only its part 3b, and genuine
+   screen-space error is explicitly deferred (see the WP3 amendment in
+   `docs/pre-terrain-plan.md`). What changed is that the per-level threshold's
+   constant is no longer hand-picked: `lod_factor` is now
+   `quadtree::lod_factor_for(target_texel_ratio, texture_size, viewport_height,
+   fovy)`, calibrated to reproduce the old `2.0` exactly at the default config.
+   Nothing in this document depends on the LOD metric being distance-based, so
+   nothing here moves. If a real screen-space-error metric is introduced later,
    §7.2's budget `θ*` should be re-derived against *its* target error rather
    than against 5 % of screen height.
 

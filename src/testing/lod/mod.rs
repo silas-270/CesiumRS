@@ -1,9 +1,13 @@
 //! LOD-quality measuring instrument, in the idiom of `src/testing/culling/`.
 //!
 //! `QuadtreeNode::apply_lod` decides *which zoom level a tile refines to*, using
-//! `lod_factor = 2.0` — Cesium's `d < G(z)·H / (maxSSE · 2·tan(fovy/2))` collapsed
+//! `lod_factor` — Cesium's `d < G(z)·H / (maxSSE · 2·tan(fovy/2))` collapsed
 //! to one constant (`docs/culling-math.md` §8.5, `docs/pre-terrain-plan.md`
-//! §Context). The culling harness in [`super::culling`] can prove the visibility
+//! §Context). That constant was the literal `2.0` when this harness was written;
+//! WP3/3b unfroze it into [`cesium_engine::globe::quadtree::lod_factor_for`], which
+//! [`sweep::measure_pose`] now calls with the same inputs the renderer uses, so the
+//! two cannot drift apart. At these 204 poses (all `height = 1080`, `mode = Free`)
+//! it still evaluates to exactly `2.0`. The culling harness in [`super::culling`] can prove the visibility
 //! *decision* is right because it has an independent oracle to check against; the
 //! LOD decision has no equivalent, so this module is that instrument. It is a
 //! **measuring device, not a fix**: it reports numbers, it does not assert targets,
@@ -23,8 +27,8 @@
 //! `ratio < 1` is blurry (under-refined: too few texels for the screen area);
 //! `ratio > 1` is wasted bandwidth and memory (over-refined). `texture_size` is
 //! hard-coded to the engine's current default (512, `STANDARD_IMAGERY_URL`'s `@2x`
-//! tiles) — WP3/WP4 are what make it a real, per-style input; here it is frozen,
-//! same as `lod_factor` itself.
+//! tiles) — WP4 is what makes it a real, per-style input; here it is still frozen.
+//! (`lod_factor` no longer is: see above.)
 //!
 //! The patch is sampled the same way `TileMesh::generate` builds the mesh — see
 //! [`sweep::patch_grid_points`] — not via the node's `OrientedBoundingBox`, which

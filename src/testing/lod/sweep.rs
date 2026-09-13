@@ -20,9 +20,13 @@ use super::super::culling::cameras::{build_camera, ViewParams};
 use super::super::culling::sweep::{harness_pool, UPDATE_ITERATIONS};
 
 /// The engine's current default imagery tile size — `STANDARD_IMAGERY_URL`'s `@2x`
-/// tiles (`config.rs`). Frozen here exactly as `lod_factor` is frozen in the
-/// engine: WP3/WP4 are what make this a real per-style input, fed from the texture
-/// manager rather than a constant.
+/// tiles (`config.rs`). Still frozen, and deliberately a separate constant from the
+/// engine's own `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`: the harness must be able to state
+/// its texel-density assumption independently of the engine's. WP4 is what makes this
+/// a real per-style input, fed from the texture manager rather than a constant.
+///
+/// (`lod_factor` is no longer frozen alongside it — WP3/3b derived it; see
+/// [`cesium_engine::globe::quadtree::lod_factor_for`], which `measure_pose` calls.)
 pub const TEXTURE_SIZE_PX: u32 = 512;
 
 /// RGBA8, no mips — matches the byte accounting `config.rs`'s
@@ -297,6 +301,18 @@ pub fn measure_pose(p: &ViewParams) -> PoseResult {
 
     let mut qt = QuadtreeManager::new();
     qt.pipeline = CullPipeline::DEFAULT;
+    // The same derivation the real renderer runs per frame (`wgpu_state::update_logic`),
+    // from the same shared function — not a copy of the arithmetic. At the 204 bench
+    // poses (all `height = 1080`, all `mode = Free`) this is exactly 2.0, i.e. the value
+    // this line replaced, so the WP0/WP1 baseline is untouched. It matters once WP4
+    // builds a viewport ladder that actually varies height and mode: without it the
+    // harness would quietly stop measuring what the renderer does.
+    qt.lod_factor = cesium_engine::globe::quadtree::lod_factor_for(
+        1.0, // target_texel_ratio — the calibrated no-op default; no per-pose config to read
+        TEXTURE_SIZE_PX as f32,
+        p.height as f32,
+        cam.fovy(),
+    );
     for _ in 0..UPDATE_ITERATIONS {
         qt.update(&frustum);
     }

@@ -509,6 +509,17 @@ impl<'a> WgpuState<'a> {
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.quadtree");
             let quadtree_start = Instant::now();
+            // Derived fresh every frame, unconditionally — it is a handful of flops
+            // next to the rest of this function, and `self.size.height` is already
+            // current, so resize-correctness is free and needs no cached value to
+            // invalidate. `self.camera`, never `debug_camera`: see the comment at the
+            // top of this function.
+            self.quadtree_manager.lod_factor = crate::globe::quadtree::lod_factor_for(
+                self.tile_system.config.target_texel_ratio,
+                crate::globe::tiles::config::DEFAULT_IMAGERY_TEXTURE_SIZE_PX,
+                self.size.height as f32,
+                self.camera.fovy(),
+            );
             self.quadtree_manager.update(&frustum_obj);
             self.last_subsystem_timings.quadtree_us =
                 quadtree_start.elapsed().as_secs_f64() * 1_000_000.0;

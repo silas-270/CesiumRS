@@ -15,6 +15,20 @@ pub const SATELLITE_IMAGERY_URL: &str = "https://server.arcgisonline.com/ArcGIS/
 /// against a pathological tile size thrashing the cache down to nothing.
 pub const MIN_TILE_CACHE_ENTRIES: usize = 64;
 
+/// Imagery tile edge length, in texels, that the LOD rule assumes.
+///
+/// Must match what [`STANDARD_IMAGERY_URL`]'s `@2x` suffix actually serves (512x512).
+/// Frozen here on purpose: the LOD rule needs *a* texture size every frame, and the
+/// texture manager only learns the real one after the first tile of a style decodes —
+/// feeding it through is WP4's job ("switching between the 512² Carto basemap and the
+/// 256² Esri satellite layer adjusts LOD instead of silently halving sharpness").
+///
+/// This mirrors, but is deliberately a separate constant from, the LOD test harness's
+/// own `TEXTURE_SIZE_PX` in `src/testing/lod/sweep.rs` — the harness measures texel
+/// density and must be able to state its assumption independently of the engine's.
+/// WP4 unifies them via a real per-style texture-size feed.
+pub const DEFAULT_IMAGERY_TEXTURE_SIZE_PX: f32 = 512.0;
+
 /// How many imagery tiles of `bytes_per_tile` fit in `budget_bytes`, clamped to
 /// [`MIN_TILE_CACHE_ENTRIES`] and to `max_entries`.
 ///
@@ -53,7 +67,24 @@ pub struct TileEngineConfig {
     /// memory ceiling by 4x.
     pub tile_cache_budget_bytes: usize,
     pub mesh_cache_size: NonZeroUsize,
-    pub lod_factor: f32,
+    /// Imagery texels demanded per screen pixel — the LOD target, and the WP1 LOD
+    /// harness's own metric. `1.0` means "one texel per pixel": neither blurry nor
+    /// wasteful. Higher values demand fewer texels per pixel, so tiles stay coarser:
+    /// lower visual fidelity, better performance.
+    ///
+    /// This is **not** a raw distance multiplier any more — it is divided into the
+    /// derived `lod_factor` rather than being it. See
+    /// [`lod_factor_for`](crate::globe::quadtree::lod_factor_for) for the formula and
+    /// the exact calibration that makes the default reproduce the old hard-coded
+    /// `2.0`, and `docs/pre-terrain-plan.md` WP3 (part 3b) for why.
+    ///
+    /// It is also **not** a screen-space error knob, and is not pretending to be one.
+    /// Cesium's SSE bounds *geometric* error in pixels; with zero terrain relief this
+    /// engine has no geometric error to bound, so texel density is the only honest
+    /// thing it can target. Once terrain/relief exists, geometric error reappears and
+    /// a genuine SSE metric becomes the right thing to expose — a separate knob, not a
+    /// rename of this one.
+    pub target_texel_ratio: f32,
     pub prefetch_radius: u32,
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
@@ -79,7 +110,7 @@ impl Default for TileEngineConfig {
             // device that was down to 1.4GB available.
             tile_cache_budget_bytes: 512 * 1024 * 1024,
             mesh_cache_size: NonZeroUsize::new(512).unwrap(),
-            lod_factor: 2.0,
+            target_texel_ratio: 1.0,
             prefetch_radius: 1, // Number of tiles to prefetch in velocity direction
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),

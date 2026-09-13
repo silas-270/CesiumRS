@@ -640,7 +640,7 @@ take `&QuadtreeNode`, this takes `&mut self`.
 ```rust
 self.visible = true;                                        // :797  in update()
 let dist = (self.center - ctx.frustum.eye).length() as f32; // :808  f64 subtract
-let subdivide_dist = self.unstretched_radius * lod_factor;  // :815  lod_factor = 2.0
+let subdivide_dist = self.unstretched_radius * lod_factor;  // :815  lod_factor = lod_factor_for(..)
 let collapse_dist  = subdivide_dist * 1.20;                 // :816
 let should_be_subdivided = if is_subdivided { dist < collapse_dist }
                            else             { dist < subdivide_dist };
@@ -648,6 +648,14 @@ let should_be_subdivided = if is_subdivided { dist < collapse_dist }
 
 **The distance is an f64 subtraction**, free here because the frame is
 camera-relative anyway.
+
+**`lod_factor` is derived, not hand-picked** (WP3/3b). It used to be the literal
+`2.0`; it is now whatever `quadtree::lod_factor_for(target_texel_ratio, texture_size,
+viewport_height, fovy)` returns, recomputed per frame in `wgpu_state::update_logic`
+and calibrated so the *default* configuration still yields exactly `2.0` — exactly, in
+rationals and bit-for-bit in f32, not approximately. `lod_factor_for`'s doc comment
+carries the derivation; it is not repeated here. `dist` above is unchanged: still the
+distance to the node's **centre**.
 
 **The hysteresis band is 20 %.** A node subdivides at `1.0×` but does not
 collapse until `1.2×`, which prevents LOD oscillation when the camera straddles
@@ -658,8 +666,10 @@ APPEAR/DISAPPEAR flicker on high-detail tiles.
 (`quadtree.rs:739-740`): a polar row's true ground extent, not its pull to ±90°.
 That makes polar caps subdivide later, which is an accepted FP source, never an FN
 one, and is kept deliberately (§8.4). The name says what it measures — a geometry.
-The LOD knob is `lod_factor` and the threshold is `subdivide_dist`; neither is
-this number.
+The user-facing LOD knob is `TileEngineConfig::target_texel_ratio` (imagery texels
+per screen pixel, default `1.0`); `lod_factor` is the derived intermediate it feeds,
+still read by `apply_lod` exactly as before, and the threshold is `subdivide_dist`.
+None of the three is this number.
 
 ### 5.1 How visibility interacts with subdivision
 

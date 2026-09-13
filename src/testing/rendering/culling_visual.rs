@@ -174,7 +174,7 @@ fn capture_culling_poses() {
         let mut config = TileEngineConfig::default();
         config.offline_mode = false;
         config.transparent_background = true;
-        config.lod_factor = 2.0;
+        config.target_texel_ratio = 1.0;
         config.mesh_segments = 32;
 
         pollster::block_on(crate::headless::routes_headless_app::run_headless_render(

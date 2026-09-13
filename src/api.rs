@@ -13,7 +13,7 @@
 //!
 //!     let viewer = CesiumViewer::builder()
 //!         .tile_cache_size(2048)
-//!         .max_screen_space_error(2.0)
+//!         .target_texel_ratio(1.0)
 //!         .enable_prefetch(true)
 //!         .with_extension(Box::new(flight_app))
 //!         .build();
@@ -80,7 +80,7 @@ pub struct CameraState {
 pub struct CesiumViewerBuilder {
     tile_cache_size: usize,
     tile_cache_budget_bytes: usize,
-    max_screen_space_error: f32,
+    target_texel_ratio: f32,
     enable_prefetch: bool,
     map_saturation: f32,
     map_contrast: f32,
@@ -93,7 +93,7 @@ impl Default for CesiumViewerBuilder {
         Self {
             tile_cache_size: 2048,
             tile_cache_budget_bytes: TileEngineConfig::default().tile_cache_budget_bytes,
-            max_screen_space_error: 2.0,
+            target_texel_ratio: 1.0,
             enable_prefetch: true,
             map_saturation: 0.0,
             map_contrast: 0.0,
@@ -122,10 +122,17 @@ impl CesiumViewerBuilder {
         self
     }
 
-    /// Higher values trade visual fidelity for performance.
-    /// Default is `2.0`.
-    pub fn max_screen_space_error(mut self, sse: f32) -> Self {
-        self.max_screen_space_error = sse;
+    /// Imagery texels demanded per screen pixel. Higher values trade visual fidelity
+    /// for performance — a higher ratio asks for fewer texels per pixel, so tiles stay
+    /// coarser. Default is `1.0` (one texel per pixel).
+    ///
+    /// This is a **texel-density** target, not a geometric screen-space error: with no
+    /// terrain relief there is no geometric error to bound, so texel density is the
+    /// only thing this engine can honestly measure. A true SSE knob (Cesium-style,
+    /// bounding actual geometric error in pixels) returns once terrain exists; this
+    /// knob is not a placeholder for it.
+    pub fn target_texel_ratio(mut self, ratio: f32) -> Self {
+        self.target_texel_ratio = ratio;
         self
     }
 
@@ -170,7 +177,7 @@ impl CesiumViewerBuilder {
             mesh_cache_size: NonZeroUsize::new(self.tile_cache_size / 4)
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
             tile_cache_budget_bytes: self.tile_cache_budget_bytes,
-            lod_factor: self.max_screen_space_error,
+            target_texel_ratio: self.target_texel_ratio,
             enable_prefetch: self.enable_prefetch,
             map_saturation: self.map_saturation,
             map_contrast: self.map_contrast,

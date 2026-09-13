@@ -280,7 +280,7 @@ mod inner {
             let viewer = cesium_rs::CesiumViewer::builder()
                 .tile_cache_size(2048)
                 .enable_prefetch(true)
-                .max_screen_space_error(2.0)
+                .target_texel_ratio(1.0)
                 .with_extension(Box::new(flight_app))
                 .build();
 
@@ -316,7 +316,7 @@ fn main() {
     let viewer = cesium_rs::CesiumViewer::builder()
         .tile_cache_size(2048)
         .enable_prefetch(true)
-        .max_screen_space_error(2.0)
+        .target_texel_ratio(1.0)
         .with_extension(Box::new(flight_app))
         .build();
 

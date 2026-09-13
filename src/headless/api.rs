@@ -95,7 +95,7 @@ pub extern "C" fn render_routes_headless_custom(
     config.transparent_background = true;
     
     // Lowered mesh subdivision to prevent massive VRAM over-allocation on mobile
-    config.lod_factor = 2.0; 
+    config.target_texel_ratio = 1.0; 
     config.mesh_segments = 32; 
     config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
     config.mesh_cache_size = std::num::NonZeroUsize::new(1024).unwrap();
@@ -191,7 +191,7 @@ pub extern "C" fn render_routes_headless_horizon(
     config.offline_mode = false;
     config.base_imagery_url = STANDARD_IMAGERY_URL.to_string();
     config.transparent_background = true;
-    config.lod_factor = 2.0; 
+    config.target_texel_ratio = 1.0; 
     config.mesh_segments = 32; 
     config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
     config.mesh_cache_size = std::num::NonZeroUsize::new(1024).unwrap();

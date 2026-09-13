@@ -32,7 +32,7 @@ fn main() {
     // 2. Build the CesiumViewer engine
     let viewer = CesiumViewer::builder()
         .tile_cache_size(2048)
-        .max_screen_space_error(2.0)
+        .target_texel_ratio(1.0)
         .enable_prefetch(true)
         .with_extension(Box::new(flight_app))
         .build();

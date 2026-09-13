@@ -129,6 +129,78 @@ fn obb_grid_steps(z: u8) -> u32 {
     }
 }
 
+/// Ground width of a tile, as a multiple of its `unstretched_radius`.
+///
+/// The geometry constant that turns the quadtree's own length scale (the radius of
+/// the sphere-fitted box around an unstretched patch, [`QuadtreeNode::unstretched_radius`])
+/// into the ground width the imagery texture is stretched over. Both halve per zoom
+/// level, so the ratio is level-independent and a single constant covers the tree.
+///
+/// Written as the literal fraction it was derived as, not as a decimal, so the
+/// calibration below can be checked by hand — see [`lod_factor_for`].
+const GROUND_PER_RADIUS: f32 = 256.0 / 315.0;
+
+/// The LOD constant, derived instead of hand-picked — WP3/3b of `docs/pre-terrain-plan.md`.
+///
+/// `QuadtreeNode::apply_lod` refines while `dist < unstretched_radius · lod_factor`.
+/// That is Cesium's rule `d < G(z)·H / (maxSSE · 2·tan(fovy/2))` with every variable
+/// frozen into one number, historically the literal `2.0`. This function unfreezes
+/// them, keeping the rule's shape:
+///
+/// ```text
+/// lod_factor = (GROUND_PER_RADIUS / texture_size)
+///            · viewport_height
+///            / (target_texel_ratio · 2·tan(fovy/2))
+/// ```
+///
+/// `target_texel_ratio` is texels of imagery demanded per screen pixel — the WP1 LOD
+/// harness's own metric, whose natural target is `1.0` (one texel per pixel: neither
+/// blurry nor wasteful). Higher means fewer texels per pixel, i.e. coarser tiles.
+///
+/// # The calibration is exact in rationals, not merely to float precision
+///
+/// At the reference configuration — `texture_size = 512`, `viewport_height = 1080`,
+/// `target_texel_ratio = 1`, and `fovy` at the engine's default `focal_length = 28` mm
+/// on a `sensor_height = 24` mm sensor — this evaluates to **exactly `2`**:
+///
+/// `fovy/2 = atan(sensor_height / (2·focal_length)) = atan(24/56) = atan(3/7)`, and
+/// `tan(atan(x)) ≡ x`, so `tan(fovy/2) = 3/7` *exactly* and `2·tan(fovy/2) = 6/7`.
+/// With `GROUND_PER_RADIUS = 256/315`:
+///
+/// | step                       | exact value           |
+/// |----------------------------|-----------------------|
+/// | `GROUND_PER_RADIUS / 512`  | `(256/315)/512 = 1/630` |
+/// | `· 1080`                   | `1080/630 = 12/7`     |
+/// | `2·tan(fovy/2)`            | `6/7`                 |
+/// | `(12/7) / (1 · 6/7)`       | **`2`**               |
+///
+/// or as one fraction: `(256 · 1080 · 7) / (315 · 512 · 6) = 1935360/967680 = 2/1`.
+/// So this package is a provable no-op at the default config, not an approximate one;
+/// it reproduces the old constant bit-for-bit in f32 (verified), and `apply_lod`'s
+/// `dist` is untouched, so no tile can change level.
+///
+/// **This exactness is a property of `focal_length = 28` / `sensor_height = 24`
+/// specifically.** `atan` of a rational is generally *not* rational — the identity
+/// `tan(atan(x)) = x` is what sidesteps that here, and it only helps because the
+/// engine defines `fovy` *as* an `atan` of the rational `24/56`. If the default
+/// `focal_length` ever changes, `2·tan(fovy/2)` will generally no longer be a clean
+/// rational, [`GROUND_PER_RADIUS`] will need re-deriving against the new default, and
+/// the "exactly `2.0`, bit-identical" claim breaks. Re-run the WP1 LOD harness if so.
+///
+/// Deliberately *not* frozen out of this: 3a (measuring `dist` to the nearest point of
+/// the node's OBB rather than to its centre) was specified alongside this in WP3 and
+/// was measured to be incompatible with a no-op — it is deferred to WP4. See the
+/// "Refuted, moved to WP4" note in `docs/pre-terrain-plan.md`.
+pub fn lod_factor_for(
+    target_texel_ratio: f32,
+    texture_size_px: f32,
+    viewport_height_px: f32,
+    fovy_rad: f32,
+) -> f32 {
+    (GROUND_PER_RADIUS / texture_size_px) * viewport_height_px
+        / (target_texel_ratio * 2.0 * (fovy_rad * 0.5).tan())
+}
+
 /// Outward unit normal of the ellipsoid at `p`, in f64 — the normalised gradient of
 /// the implicit form (1.1). Exact whether or not `p` is on the surface.
 fn ellipsoid_normal(p: DVec3) -> DVec3 {
@@ -710,8 +782,10 @@ pub struct QuadtreeNode {
     /// The same measurement taken on the ***un*-stretched** rectangle
     /// ([`tile_bounds_unstretched`]), and the input to `subdivide_dist` below.
     ///
-    /// A geometry, not an LOD tuning knob: the knob is `lod_factor`, the threshold
-    /// is `subdivide_dist`. See [`QuadtreeNode::new`] for why the un-stretched
+    /// A geometry, not an LOD tuning knob: the knob is
+    /// `TileEngineConfig::target_texel_ratio`, `lod_factor` (from [`lod_factor_for`])
+    /// is what it derives, and the threshold is `subdivide_dist`. None of those is
+    /// this number. See [`QuadtreeNode::new`] for why the un-stretched
     /// rectangle is the deliberate choice.
     pub unstretched_radius: f32,
     pub obb: OrientedBoundingBox,

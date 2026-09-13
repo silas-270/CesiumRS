@@ -134,6 +134,21 @@ Replace `(self.center − ctx.frustum.eye).length()` with the distance to the ne
 
 Of everything in this plan, this is the change most likely to be visible in a screenshot — it directly fixes under-refinement at grazing angles.
 
+> **Refuted, moved to WP4 (2026-09-13).** *The text above is left exactly as originally specified, as the record of what was planned. It did not survive measurement.*
+>
+> 3a was specified as part of a package "calibrated as a no-op", and those two requirements are **mutually exclusive**. The subsection above says so itself, one sentence apart: this is "the change most likely to be visible in a screenshot" *and* WP3's Done-when demands "no tile changed level at any of the 204 poses". Both cannot hold.
+>
+> Measured, holding everything else fixed, 3a alone:
+> - moves **24.3 %** of subdivision decisions across the 204 bench poses;
+> - changes the visible tile count from **3 922 to 6 685**;
+> - breaks `test_visible_set_digest_is_stable`.
+>
+> **No recalibration can absorb this.** The ratio between the old (centre) distance and the new (box) distance is not a constant to be divided out: it runs from ~1.12 at the 5th percentile to **unbounded** — it diverges as the camera approaches the box — and it varies with the camera's angle to the patch, which is *exactly* the dependence 3a exists to introduce. A scalar `GROUND_PER_RADIUS` or `target_texel_ratio` adjustment is one number; it cannot cancel a per-pose, angle-dependent factor uniformly. Any single value that restored the old tile count at one pose would overshoot at another.
+>
+> So 3a does not land here. It moves to **WP4**, reframed as the deliberate tuning trade it actually is (see WP4's "3a returns, as a paired change"). Only **3b** landed in WP3.
+>
+> `bounding_volume.rs::distance_to_point` was still written and committed (additive, documented, **unused**) so WP4 starts with the helper in place; nothing in WP3 calls it.
+
 ### 3b. Derive `lod_factor` instead of hard-coding it
 
 The rule keeps its shape. Only the constant becomes a function:
@@ -148,12 +163,31 @@ lod_factor = (GROUND_PER_RADIUS / texture_size)
 
 Note the naming: `TileEngineConfig.lod_factor` stops being the knob and `target_texel_ratio` becomes it. The doc comments in `config.rs` and `culling-implementation.md` §5 both call `lod_factor` "the LOD knob" and will need to change with it.
 
-**Done when**
-- The culling gate is green and the WP1 harness reports a distribution **identical** to its WP0/WP1 baseline on the default config. Bit-identical is not required; "no tile changed level at any of the 204 poses" is.
-- `docs/culling-math.md` §8.5 and §8.2 and `docs/culling-implementation.md` §5 reflect the new rule.
-- A headless capture shows no visual change on the default config.
+**Done when** *(as landed: 3b only — see the Refuted note above)*
+- The culling gate is green and the WP1 harness reports a distribution identical to its WP0/WP1 baseline on the default config.
 
-**Files.** `globe/quadtree/quadtree.rs`, `globe/quadtree/bounding_volume.rs` (additive only), `globe/tiles/config.rs`, `camera/camera.rs` (a `fovy()` accessor), `render/wgpu_state.rs` (feed viewport height), `docs/*`.
+  With 3a deferred, this clause is **stronger than originally written, and for a dull reason**. The original text settled for "bit-identical is not required; 'no tile changed level' is" because 3a was expected to perturb the metric and need empirical recalibration. 3b alone perturbs nothing: `apply_lod`'s `dist` is *untouched* — still the distance to the node's centre — and the only change is that `lod_factor` is computed rather than typed. The calibration is exact **in rationals**, not merely to float tolerance: `fovy/2 = atan(24/56) = atan(3/7)`, so `tan(fovy/2) = 3/7` exactly, `2·tan(fovy/2) = 6/7`, and with `GROUND_PER_RADIUS = 256/315` the expression is `(256/315 / 512)·1080 / (1 · 6/7) = (1/630)·1080 / (6/7) = (12/7)/(6/7) = 2`. Confirmed to the last representable bit in f32 (`0x40000000`).
+
+  So the observed result is not "no tile changed level" but the full harness output — all 204 pose rows and all 3 922 tile rows of the CSVs, every aggregate, every per-zoom band — **byte-identical**, and `test_visible_set_digest_is_stable` passing against its existing pin with no re-pinning.
+
+  The credit belongs to `dist` being unchanged, not to anything clever in the formula. A future reader should not read this as evidence that the formula is well-chosen — only that it reproduces the old constant. Whether the constant itself is *right* is WP4's question, and is still open.
+- `docs/culling-math.md` §8 item 5 and `docs/culling-implementation.md` §5 reflect the new rule (the metric is still distance-based; only the constant's provenance changed).
+- A headless capture shows no visual change on the default config. All 8 `culling_visual` poses are **byte-identical PNGs** at a 1920×1080 capture.
+
+  **But the no-op is scoped to `viewport_height = 1080`, and this is not a caveat — it is the feature.** `viewport_height` is now a live input, so `lod_factor` scales with it: the same captures at the harness's usual 1280×**720** differ on 5 of 8 poses, because `lod_factor` is `2 · 720/1080 = 1.333` there rather than `2.0`. Inspected by eye, the difference is exactly and only one LOD step coarser — identical framing, identical coverage, no holes, no popping. That is the correct behaviour: a 720-tall viewport genuinely needs less detail than a 1080-tall one, and the old hard-coded `2.0` was over-refining it. WP4's "feed the real viewport height … expect the S23 to ask for meaningfully more detail" is therefore **already live** as of this package; what remains for WP4 is FOV, texture size, and choosing the ratio.
+
+  Anyone re-running a before/after visual check on this commit must do it at 1080 height, or they will be looking at this intended change and mistaking it for a regression.
+
+**Files** *(as landed, 3b only)*.
+- `globe/quadtree/quadtree.rs` — new `pub fn lod_factor_for` + `GROUND_PER_RADIUS`, carrying the derivation; exported from `globe/quadtree/mod.rs`. `apply_lod`'s `dist` line deliberately untouched.
+- `globe/tiles/config.rs` — `lod_factor` → `target_texel_ratio` (default `2.0` → `1.0`), plus the new `DEFAULT_IMAGERY_TEXTURE_SIZE_PX = 512.0`.
+- `camera/camera.rs` — `fovy()` / `fovy_f64()` accessors; both projection builders now call them instead of recomputing the `atan` inline. (`fovy_f64` is not `fovy() as f64`: narrowing would perturb every f64 projection.)
+- `render/wgpu_state.rs` — `update_logic` sets `quadtree_manager.lod_factor` from `lod_factor_for` fresh every frame, unconditionally. `self.size.height` is already current, so resize-correctness comes free with no cache to invalidate.
+- `src/testing/lod/sweep.rs` — `measure_pose` calls the *same* function, so the harness cannot drift from the renderer once WP4 varies height and mode. Evaluates to `2.0` at all 204 poses (`height = 1080`, `mode = Free`), hence the byte-identical baseline.
+- `src/viewer.rs`, `src/api.rs`, `src/headless/api.rs`, `src/main.rs`, `README.md`, `src/testing/rendering/culling_visual.rs` — the public rename `maximum_screen_space_error`/`max_screen_space_error` → `target_texel_ratio`, matching the internal name 1:1. Both were dead before this package (`TileEngineConfig.lod_factor` was never wired to `QuadtreeManager` until now), so the rename was free; the SSE name was a category error, since with zero relief there is no geometric error to bound.
+- `docs/culling-implementation.md` §5, `docs/culling-math.md` §8.
+
+**Not touched.** `globe/quadtree/bounding_volume.rs::distance_to_point` was committed ahead of this package (additive, documented, unused) and stays uncalled — it is WP4's.
 
 ---
 
@@ -162,10 +196,24 @@ Note the naming: `TileEngineConfig.lod_factor` stops being the knob and `target_
 **Goal.** Actually close the gaps the knobs were unfrozen for. This package changes on-screen behaviour deliberately.
 
 **Work**
-- Feed the **real viewport height** through on construction and on resize. Expect the S23 to ask for meaningfully more detail than the desktop default.
+- ~~Feed the **real viewport height** through on construction and on resize.~~ **Done in WP3/3b**: `update_logic` recomputes `lod_factor` from `self.size.height` every frame, so resize is covered with no cached value to invalidate. What is left here is to *measure* the consequence — the S23 should now ask for meaningfully more detail than the desktop default, and that wants confirming rather than assuming.
 - Feed the **per-mode FOV**. Cockpit's `2·tan(30°) = 1.155` against Free's `0.857` means cockpit should refine ~35 % less in distance terms — currently it refines identically, carrying roughly 1.8× the tiles it can resolve.
 - Feed the **imagery texture size** from the texture manager, so switching between the 512² Carto basemap and the 256² Esri satellite layer adjusts LOD instead of silently halving sharpness.
 - Use the WP1 harness to pick `target_texel_ratio`. The theoretical answer is 1.0; measure it rather than assume it, and report the cost curve (tile count and texture bytes against ratio) the way `SUB_BOXES_PER_AXIS`'s doc comment reports its trade.
+
+### 3a returns, as a paired change
+
+Inherited from WP3, where it was refuted as a no-op (see the callout there). The mistake was framing it as a refactor. The question to ask instead is:
+
+> **Is box-distance at a higher `target_texel_ratio` better than centre-distance at a lower one, at a fixed tile/texture budget?**
+
+Box-distance can only *decrease* `dist` (the nearest point of a box is never further than its centre), so it can only trigger **more** subdivision, never less — measured at +70 % tiles (3 922 → 6 685) if adopted alone. It is therefore not separable from the ratio: adopting it while holding tile count roughly constant means **raising `target_texel_ratio` to compensate**, and the two must be tuned as one change.
+
+That makes it the same cost-vs-quality trade this WP already runs for `target_texel_ratio` itself, and it should be measured the same way — tile count and texture bytes against the ratio distribution, across the 204 poses, both variants on one table. The thing to look for is whether box-distance buys a *better shape*: it fixes under-refinement at grazing angles specifically, so the honest comparison is not the aggregate but the tails — does it lift the worst under-refined tiles (`ratio << 1`) at a given budget more than simply lowering the ratio uniformly does? If it does not, it is not worth the +70 % it costs to re-spend.
+
+`bounding_volume.rs::distance_to_point` is already in the tree, unused, waiting for this.
+
+**Procedural note.** Whenever this lands, **re-pinning `test_visible_set_digest_is_stable`'s constants is expected and correct** — the visible set is supposed to change, that is the point of the package. This follows the WP2 draw-order precedent; that test's own doc comment anticipates and welcomes a deliberate digest change. Make the re-pin **its own commit**, with the reason and the before/after digests in the message, rather than folding it silently into a larger one. A digest change buried in a commit that also moves other things is indistinguishable from an accident.
 
 **Done when**
 - Defaults are changed and justified by a table in the docs, in the style the culling docs already use.

@@ -446,6 +446,35 @@ impl Camera {
         (pos_dvec.length() - t) as f32
     }
 
+    /// Vertical field of view, in radians — the one the projection matrix uses.
+    ///
+    /// Free and Tracking derive it from the virtual 35 mm camera
+    /// (`2·atan(sensor_height / (2·focal_length))`, `24 mm` sensor); Cockpit is a
+    /// fixed 60°. Exposed because the LOD rule needs it too — see
+    /// [`lod_factor_for`](crate::globe::quadtree::lod_factor_for) — and a second
+    /// hand-copied `atan` would be a silent way for culling and rendering to disagree
+    /// about the frustum.
+    pub fn fovy(&self) -> f32 {
+        let sensor_height = 24.0;
+        match self.mode {
+            CameraMode::Cockpit => COCKPIT_FOVY_RAD,
+            _ => 2.0 * (sensor_height / (2.0 * self.focal_length)).atan(),
+        }
+    }
+
+    /// [`fovy`](Self::fovy) evaluated in f64.
+    ///
+    /// Not `fovy() as f64`: the f64 projection matrix has always computed its `atan`
+    /// at f64 precision, and narrowing it through f32 would perturb every f64
+    /// projection (the LOD harness projects its patches with exactly this matrix).
+    pub fn fovy_f64(&self) -> f64 {
+        let sensor_height = 24.0_f64;
+        match self.mode {
+            CameraMode::Cockpit => COCKPIT_FOVY_RAD as f64,
+            _ => 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan(),
+        }
+    }
+
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
         let alt = self.altitude().max(0.000002);
         let znear = match self.mode {
@@ -463,12 +492,7 @@ impl Camera {
         let (pos_dvec, _) = self.global_transform();
         let zfar = pos_dvec.length() + 10.0;
 
-        let sensor_height = 24.0;
-        let fovy = match self.mode {
-            CameraMode::Cockpit => COCKPIT_FOVY_RAD,
-            _ => 2.0 * (sensor_height / (2.0 * self.focal_length)).atan(),
-        };
-        let proj = Mat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
+        let proj = Mat4::perspective_rh(self.fovy(), aspect_ratio, znear, zfar);
 
         // Convert to Reverse-Z: map [0, 1] to [1, 0]
         let reverse_z = Mat4::from_cols_array(&[
@@ -490,12 +514,7 @@ impl Camera {
         let (pos_dvec, _) = self.global_transform_f64();
         let zfar = pos_dvec.length() + 10.0;
 
-        let sensor_height = 24.0;
-        let fovy = match self.mode {
-            CameraMode::Cockpit => COCKPIT_FOVY_RAD as f64,
-            _ => 2.0 * (sensor_height / (2.0 * self.focal_length as f64)).atan(),
-        };
-        let proj = glam::DMat4::perspective_rh(fovy, aspect_ratio, znear, zfar);
+        let proj = glam::DMat4::perspective_rh(self.fovy_f64(), aspect_ratio, znear, zfar);
 
         // Convert to Reverse-Z: map [0, 1] to [1, 0]
         let reverse_z = glam::DMat4::from_cols_array(&[
