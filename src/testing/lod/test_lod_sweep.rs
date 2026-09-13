@@ -7,10 +7,10 @@
 //! NaNs leaking into aggregates, every counted tile lands in exactly one bucket).
 
 use cesium_engine::globe::quadtree::{tile_bounds, TileId};
-use glam::DVec3;
+use glam::{DMat4, DVec3};
 
 use super::report;
-use super::sweep::{self, bench_poses, measure_poses, patch_grid_points};
+use super::sweep::{self, bench_poses, measure_poses, patch_grid_points, project_patch, TEXTURE_SIZE_PX};
 
 fn to_dvec3(p: [f64; 3]) -> DVec3 {
     DVec3::new(p[0], p[1], p[2])
@@ -90,5 +90,50 @@ fn test_lod_sweep_produces_sane_aggregates() {
         s.offscreen_tiles + s.sampled_tiles(),
         total_tiles,
         "every tile must be counted exactly once, in sampled or offscreen:\n{text}"
+    );
+}
+
+/// Regression guard on the area-weighted `texels` fix: a tile whose patch is
+/// entirely onscreen, entirely unclipped, and entirely in front of the eye must
+/// still report the full `TEXTURE_SIZE_PX²` texel count — the area-weighting only
+/// ever discounts a quad, never inflates it, so the base case (today's flat
+/// behaviour) has to fall out of the general formula exactly.
+///
+/// Built directly against `project_patch` with a synthetic flat 3×3 grid and a
+/// hand-built orthographic view-projection (`w = 1` for every point, by
+/// construction) rather than a real camera/tile, so the test exercises the
+/// area-weighting formula in isolation instead of real tile-bounds/camera
+/// machinery that could hide a broken formula behind an unrelated pass.
+#[test]
+fn test_project_patch_fully_onscreen_quad_gets_full_texel_count() {
+    // A flat 3x3 grid spanning [-1, 1] x [-1, 1] at z = 0.
+    let samples: [[DVec3; 3]; 3] = [
+        [DVec3::new(-1.0, 1.0, 0.0), DVec3::new(0.0, 1.0, 0.0), DVec3::new(1.0, 1.0, 0.0)],
+        [DVec3::new(-1.0, 0.0, 0.0), DVec3::new(0.0, 0.0, 0.0), DVec3::new(1.0, 0.0, 0.0)],
+        [DVec3::new(-1.0, -1.0, 0.0), DVec3::new(0.0, -1.0, 0.0), DVec3::new(1.0, -1.0, 0.0)],
+    ];
+
+    // Orthographic: w = 1 identically (the last row of the matrix is (0,0,0,1)),
+    // so there is no behind-eye sample by construction. The [-4, 4] extent maps
+    // the grid's [-1, 1] span to NDC [-0.25, 0.25] — comfortably inside [-1, 1]
+    // with margin, so nothing clips against the viewport either.
+    let vp = DMat4::orthographic_rh(-4.0, 4.0, -4.0, 4.0, -1.0, 1.0);
+    let width = 800.0_f64;
+    let height = 600.0_f64;
+
+    let id = TileId { z: 3, x: 1, y: 1 };
+    let metric = project_patch(id, &samples, &vp, width, height);
+
+    assert!(!metric.behind_eye, "synthetic grid must not report any behind-eye sample");
+    assert!(!metric.partly_offscreen, "synthetic grid must not be clipped at all");
+    assert!(metric.screen_px > 0.0, "synthetic grid must project to nonzero area");
+
+    let texels_full = (TEXTURE_SIZE_PX as f64) * (TEXTURE_SIZE_PX as f64);
+    assert!(
+        (metric.texels - texels_full).abs() < 1e-6,
+        "a fully onscreen, unclipped, in-front-of-eye tile must report the full texel \
+         count: got {}, expected {}",
+        metric.texels,
+        texels_full,
     );
 }

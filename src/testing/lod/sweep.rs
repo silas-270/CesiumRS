@@ -50,6 +50,14 @@ pub struct TileMetric {
     /// Projected, viewport-clipped area of the drawn patch, in px². Zero when the
     /// patch clipped away entirely or every sample touching it was behind the eye.
     pub screen_px: f64,
+    /// Area-weighted "effective" texel count: each of the four patch quads
+    /// contributes `(TEXTURE_SIZE_PX² / 4) * (clipped_area / raw_area)`, its fair
+    /// share of the tile's texel budget scaled by how much of *that quad's own*
+    /// projected area actually landed onscreen. A quad skipped for being behind the
+    /// eye contributes zero, same as a quad clipped away entirely — a tile clipped
+    /// at the frustum boundary is not credited with texels for the part of the
+    /// patch that never made it to screen. Equals the flat `TEXTURE_SIZE_PX²` only
+    /// when every quad is fully onscreen and unclipped.
     pub texels: f64,
     /// `texels / screen_px`. `f64::INFINITY` when `screen_px == 0.0` — excluded
     /// from every ratio aggregate, counted separately (see [`super::report`]).
@@ -179,7 +187,15 @@ fn clip_to_viewport(poly: &[(f64, f64)], width: f64, height: f64) -> Vec<(f64, f
 
 /// Projects the patch's 3x3 samples through `vp` and sums the four projected,
 /// viewport-clipped quad areas.
-fn project_patch(
+///
+/// `texels` is accumulated per quad as an area-weighted share of the tile's full
+/// texel budget (`docs/pre-terrain-plan.md` WP1's follow-up fix): a quad that is
+/// entirely onscreen contributes its full quarter-share, a quad half clipped away
+/// contributes half that share, and a quad skipped outright (behind the eye, or
+/// degenerate) contributes none — the same rule `screen_px` already follows, so a
+/// tile that is mostly off-frustum no longer reports the full texel count against
+/// a shrunken `screen_px` and inflates `ratio` upward.
+pub(crate) fn project_patch(
     id: TileId,
     samples: &[[DVec3; 3]; 3],
     vp: &DMat4,
@@ -200,6 +216,9 @@ fn project_patch(
 
     let mut screen_px = 0.0_f64;
     let mut partly_offscreen = false;
+    let full_texels = (TEXTURE_SIZE_PX as f64) * (TEXTURE_SIZE_PX as f64);
+    let quad_texel_share = full_texels / 4.0;
+    let mut effective_texels = 0.0_f64;
 
     for vi in 0..2 {
         for ui in 0..2 {
@@ -210,8 +229,9 @@ fn project_patch(
                 clip[vi + 1][ui],
             ];
             // A quad touching a behind-the-eye sample is excluded from screen_px
-            // rather than perspective-divided by a near-zero or negative w — see
-            // `behind_eye` on TileMetric.
+            // (and, by the same `continue`, from effective_texels) rather than
+            // perspective-divided by a near-zero or negative w — see `behind_eye`
+            // on TileMetric.
             if corners.iter().any(|c| c.w <= CLIP_W_EPS) {
                 continue;
             }
@@ -233,10 +253,18 @@ fn project_patch(
                 partly_offscreen = true;
             }
             screen_px += clipped_area;
+
+            // Guard against a degenerate (collapsed) quad rather than dividing by
+            // ~0; clamp defensively since clipping can only shrink area, so the
+            // fraction should never exceed 1.0 outside of float noise.
+            if raw_area > 1e-9 {
+                let onscreen_fraction = (clipped_area / raw_area).clamp(0.0, 1.0);
+                effective_texels += quad_texel_share * onscreen_fraction;
+            }
         }
     }
 
-    let texels = (TEXTURE_SIZE_PX as f64) * (TEXTURE_SIZE_PX as f64);
+    let texels = effective_texels;
     let ratio = if screen_px > 0.0 {
         texels / screen_px
     } else {
