@@ -9,8 +9,8 @@
 use cesium_engine::camera::camera::Camera;
 use cesium_engine::globe::geometry::lon_lat_to_ecef_f64;
 use cesium_engine::globe::quadtree::{
-    tile_bounds, web_mercator_y_to_lat_f64, CullPipeline, Frustum, QuadtreeManager, TileBounds,
-    TileId,
+    tile_bounds, web_mercator_y_to_lat_f64, CullPipeline, Frustum, LodDistanceMode,
+    QuadtreeManager, TileBounds, TileId,
 };
 use glam::{DMat4, DVec3, DVec4};
 use rayon::prelude::*;
@@ -52,6 +52,10 @@ pub struct LodConfig {
     pub target_texel_ratio: f32,
     pub lod_texture_size_px: f32,
     pub real_texture_size_px: f32,
+    /// WP4/C measurement switch — see [`LodDistanceMode`]. `Centre` (the default)
+    /// in every normal measurement; `Box` only via [`LodConfig::with_distance_mode`],
+    /// for the 3a-at-equal-tile-budget comparison.
+    pub lod_distance_mode: LodDistanceMode,
 }
 
 impl LodConfig {
@@ -60,6 +64,7 @@ impl LodConfig {
             target_texel_ratio,
             lod_texture_size_px: texture_size_px,
             real_texture_size_px: texture_size_px,
+            lod_distance_mode: LodDistanceMode::default(),
         }
     }
 
@@ -76,7 +81,14 @@ impl LodConfig {
             target_texel_ratio,
             lod_texture_size_px: assumed_texture_size_px,
             real_texture_size_px,
+            lod_distance_mode: LodDistanceMode::default(),
         }
+    }
+
+    /// WP4/C only — see [`LodDistanceMode`].
+    pub fn with_distance_mode(mut self, mode: LodDistanceMode) -> Self {
+        self.lod_distance_mode = mode;
+        self
     }
 }
 
@@ -389,6 +401,7 @@ pub fn measure_pose_with_config(p: &ViewParams, cfg: LodConfig) -> PoseResult {
 
     let mut qt = QuadtreeManager::new();
     qt.pipeline = CullPipeline::DEFAULT;
+    qt.lod_distance_mode = cfg.lod_distance_mode;
     // The same derivation the real renderer runs per frame (`wgpu_state::update_logic`),
     // from the same shared function — not a copy of the arithmetic. At the 204 bench
     // poses (all `height = 1080`, all `mode = Free`) `LodConfig::default()` is

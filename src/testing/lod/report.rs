@@ -188,6 +188,13 @@ impl Summary {
         percentile(&self.ratios, 0.05)
     }
 
+    /// WP4/C's own reading of the blurry tail — the general WP1 report already
+    /// carries p5/median/p95; p25 gives WP4/C's centre-vs-box comparison a fourth
+    /// point without redefining what the other three mean.
+    pub fn p25(&self) -> f64 {
+        percentile(&self.ratios, 0.25)
+    }
+
     pub fn p95(&self) -> f64 {
         percentile(&self.ratios, 0.95)
     }

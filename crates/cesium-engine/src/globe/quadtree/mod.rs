@@ -8,8 +8,8 @@ pub mod tile_id;
 pub use bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
 pub use horizon::{point_is_occluded, transform_to_scaled_space, HorizonCamera, TilePatch};
 pub use quadtree::{
-    lod_factor_for, CullContext, CullPipeline, QuadtreeManager, QuadtreeNode, Stage, StageVerdict,
-    MAX_STAGES,
+    lod_factor_for, CullContext, CullPipeline, LodDistanceMode, QuadtreeManager, QuadtreeNode,
+    Stage, StageVerdict, MAX_STAGES,
 };
 pub use tile_id::{
     tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId,

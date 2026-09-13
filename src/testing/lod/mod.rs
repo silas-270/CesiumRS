@@ -107,3 +107,5 @@ pub mod sweep;
 pub mod test_lod_sweep;
 #[cfg(test)]
 pub mod test_viewport_ladder;
+#[cfg(test)]
+pub mod test_wp4c_3a_equal_budget;

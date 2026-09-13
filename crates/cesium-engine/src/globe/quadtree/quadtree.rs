@@ -787,6 +787,32 @@ impl Default for CullPipeline {
 /// A bag of frame data, and the stages' only source of it: a [`Stage`] holds no
 /// state of its own, it indexes into this. Anything a new stage needs precomputed
 /// per frame belongs here, next to `horizon`.
+/// Which distance `QuadtreeNode::apply_lod` measures the camera against —
+/// WP4/C (`docs/pre-terrain-plan.md`), measurement only.
+///
+/// `Centre` is the only mode production code ever selects: [`QuadtreeManager::new`]
+/// defaults to it and nothing in `wgpu_state.rs` sets anything else, so this enum
+/// existing changes no shipped behaviour. `Box` exists purely so the WP4/C harness
+/// comparison can measure 3a (box-distance, refuted as a no-op in WP3 — see the
+/// callout there) against an equal tile budget rather than an equal
+/// `target_texel_ratio`. Whether to adopt `Box` for real is WP4/D's decision, gated
+/// on the product trade C's report lays out — this switch does not make that
+/// decision, it only makes the comparison measurable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LodDistanceMode {
+    /// `(self.center - eye).length()` — today's only production behaviour, and the
+    /// value `subdivide_dist`/`collapse_dist` have always been calibrated against.
+    #[default]
+    Centre,
+    /// Distance to the nearest point of the node's (stretched) `obb` —
+    /// [`OrientedBoundingBox::distance_to_point`], committed unused in `37d5f6f`
+    /// for exactly this. Can only ever be `<=` the centre distance, so it can only
+    /// trigger *more* subdivision, never less (WP3's refutation measured +70% tiles
+    /// at equal `target_texel_ratio`, which is why WP4/C compares at equal tile
+    /// budget instead).
+    Box,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct CullContext {
     pub frustum: Frustum,
@@ -794,6 +820,9 @@ pub struct CullContext {
     /// Copied by value from [`QuadtreeManager::pipeline`] — 4 bytes, so the context
     /// stays `Copy` and the stage list is not rebuilt per frame.
     pub pipeline: CullPipeline,
+    /// WP4/C measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`,
+    /// production's only value.
+    pub lod_distance_mode: LodDistanceMode,
 }
 
 impl CullContext {
@@ -807,7 +836,14 @@ impl CullContext {
             frustum: *frustum,
             horizon: HorizonCamera::new(frustum.eye),
             pipeline,
+            lod_distance_mode: LodDistanceMode::default(),
         }
+    }
+
+    /// WP4/C only — see [`LodDistanceMode`]. Not called anywhere in production.
+    pub fn with_lod_distance_mode(mut self, mode: LodDistanceMode) -> Self {
+        self.lod_distance_mode = mode;
+        self
     }
 }
 
@@ -918,8 +954,14 @@ impl QuadtreeNode {
     /// `&mut self`.
     fn apply_lod(&mut self, ctx: &CullContext, lod_factor: f32) {
         // LOD distance, also from an f64 subtraction (§8.2): free, since the frame
-        // is camera-relative anyway.
-        let dist = (self.center - ctx.frustum.eye).length() as f32;
+        // is camera-relative anyway. `Centre` (the default, and production's only
+        // value) is exactly the pre-WP4/C expression; `Box` is WP4/C's measurement
+        // switch — see `LodDistanceMode`. `OrientedBoundingBox::distance_to_point`
+        // keeps the same f64-subtraction discipline internally.
+        let dist = match ctx.lod_distance_mode {
+            LodDistanceMode::Centre => (self.center - ctx.frustum.eye).length() as f32,
+            LodDistanceMode::Box => self.obb.distance_to_point(ctx.frustum.eye),
+        };
 
         // Hysteresis logic: Subdivide at 1.0x, but don't collapse until 1.2x.
         // A 20% band prevents LOD oscillation when the camera straddles the
@@ -1310,6 +1352,10 @@ pub struct QuadtreeManager {
     /// per-frame context — because it survives frames and changes only when a mode
     /// does; the context takes a copy.
     pub pipeline: CullPipeline,
+    /// WP4/C measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`;
+    /// `wgpu_state.rs` never sets this, so production behaviour is unchanged by its
+    /// existence.
+    pub lod_distance_mode: LodDistanceMode,
 }
 
 impl Default for QuadtreeManager {
@@ -1329,13 +1375,15 @@ impl QuadtreeManager {
             ],
             lod_factor: 2.0, // Default LOD tuning parameter
             pipeline: CullPipeline::DEFAULT,
+            lod_distance_mode: LodDistanceMode::default(),
         }
     }
 
     /// The camera position is `frustum.eye`: the frustum *is* the camera-relative
     /// frame, so there is no second position argument to get out of step with it.
     pub fn update(&mut self, frustum: &Frustum) {
-        let ctx = CullContext::with_pipeline(frustum, self.pipeline);
+        let ctx = CullContext::with_pipeline(frustum, self.pipeline)
+            .with_lod_distance_mode(self.lod_distance_mode);
         for root in self.roots.iter_mut() {
             root.update(&ctx, self.lod_factor);
         }
