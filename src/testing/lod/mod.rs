@@ -97,6 +97,8 @@
 //! CSVs land in `$TMPDIR/cesium_lod_harness/`, never in the repo.
 
 #[cfg(test)]
+pub mod fog_sweep;
+#[cfg(test)]
 pub mod ladder;
 #[cfg(test)]
 pub mod report;
@@ -107,6 +109,8 @@ pub mod sweep;
 
 #[cfg(test)]
 pub mod test_lod_sweep;
+#[cfg(test)]
+pub mod test_wp5_fog;
 #[cfg(test)]
 pub mod test_viewport_ladder;
 #[cfg(test)]

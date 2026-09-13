@@ -246,6 +246,156 @@ this finding needs more confidence before WP4/D acts on it, and is not included
 here — this section reports what was asked for, not everything that could be asked
 next.
 
+## WP4 / E — does the default basemap actually serve z=20?
+
+*Checked 2026-09-13, live against the real tile server, per WP5/E in
+`docs/pre-terrain-plan.md`.* WP4/C found the 12 single worst under-refined tiles
+bit-identical across both LOD distance metrics, all at `MAX_ZOOM = 20` — a zoom
+ceiling, not an LOD-rule problem. The question worth checking cheaply: does
+`STANDARD_IMAGERY_URL` (Carto `dark_nolabels` `@2x`) even have real content at
+z=20, or is the engine dutifully refining toward data that doesn't exist?
+
+Fetched the exact worst-case tile from the WP0-WP4 measurements, `z=20 x=550502
+y=364500` (the zoom-cliff pose at `lat=48 lon=9 alt=10m`), plus its z=19 parent and
+a z=20 neighbour:
+
+| tile | HTTP | size | unique colours |
+|---|---|---|---|
+| z=19 (275251, 182250) — parent | 200 | 566 B | 6 |
+| **z=20 (550502, 364500) — the worst tile itself** | 200 | **126 B** | **1** (flat `#090909`) |
+| z=20 (550500, 364498) — a neighbour | 200 | 245 B | 6, but 99.8% one colour — anti-aliased oversampling of z=19's edges, not new content |
+
+**The server returns `200 OK` at z=20, not `404` — but the worst-case tile is a
+single flat colour, and its neighbour is a z=19 edge oversampled up, not genuine
+z=20-resolution detail.** This style's real cartographic content tops out around
+z=19; z=20 is served (so nothing breaks), but it is not *data*, so nothing the LOD
+rule does can make that specific tile sharper — `p5`'s worst offenders are below
+the data floor, not just below `MAX_ZOOM`. Worth knowing before spending more
+effort chasing this specific tail: even a hypothetical `MAX_ZOOM = 21` would not
+fix it for this basemap.
+
+## WP5 — Fog
+
+*Recorded 2026-09-13. `Stage::Fog` and `apply_lod`'s relaxation exist only in
+`CullPipeline::DEFAULT_WITH_FOG`, which only `wgpu_state.rs` ever selects; every
+number below comes from `src/testing/lod/fog_sweep.rs`'s standalone measurement
+path (never `sweep::measure_pose_with_config`, which stays `CullPipeline::DEFAULT`
+throughout — confirmed by the 204-pose CSVs staying byte-identical to the WP0-WP4
+baseline and the culling gate staying 32/32 green with this landed). Measured with
+`cargo test --release --lib lod::test_wp5_fog:: -- --test-threads=1 --nocapture`.*
+
+### A/B — landed
+
+`Stage::Fog` culls a tile outright when `cesium_fog(dist, density) >= 1.0`.
+`apply_lod` relaxes `subdivide_dist *= (1 - cesium_fog(dist, density))`, derived
+(not copied) from Cesium's `error -= fog·sse` — see `fog.rs` and `apply_lod`'s own
+doc comments for the full derivation and why `FogConfig::sse` is ported but not
+consumed by this relaxation. `CullPipeline::DEFAULT` (what the culling harness
+builds) is untouched; `test_fog_stage_is_not_in_the_default_pipeline` pins that
+directly, on top of the culling gate itself staying green.
+
+### C — fog vs. the WP0-WP4 baseline
+
+| population | poses | tiles (baseline → fogged) | Δtiles | aggregate | median | p95 (baseline → fogged) |
+|---|--:|---|--:|---|---|---|
+| all 204 poses | 204 | 3922 → 3579 | −8.7% | 1.663 → 1.431 | 3.161 → 2.314 | 219.47 → **107.14** |
+| horizon poses (`pitch ≥ 85°`) | 44 | 1723 → 1519 | −11.8% | 5.781 → 4.648 | 12.209 → 7.265 | 312.32 → **162.01** |
+| **cruise altitude (9-15km)** | 21 | 284 → 236 | **−16.9%** | 1.041 → 0.777 | 0.934 → 0.799 | 70.15 → **3.46** |
+
+**Cruise altitude — this product's actual 10-12km operating envelope — sees the
+largest effect on every axis**: the biggest tile-count reduction (−16.9%, vs
+−8.7% overall) and by far the biggest `p95` collapse (70.15 → 3.46, a **95%**
+reduction) of the three populations. `aggregate_ratio` at cruise also drops just
+under 1.0 (1.041 → 0.777) — cruise poses were already close to the target
+resolution before fog, so fog is now trimming genuinely wasteful over-refinement
+there rather than fixing under-refinement. Horizon poses (pitch ≥ 85°, the
+near-limb population `p95` is nominally about) see a smaller but still large `p95`
+drop (312 → 162, −48%) and the largest relative tile-count cut among the three
+(−11.8%… second to cruise's −16.9%). `Stage::Fog` and `apply_lod`'s relaxation
+only ever remove or shrink — `test_wp5c_fog_vs_baseline` asserts fog never
+increases tile count, texture bytes, or `p95` on any of the three populations,
+and it holds everywhere measured.
+
+Across the full WP4/B viewport/mode ladder the reduction holds throughout —
+4-18% fewer tiles, `p95` roughly halved in most rungs (S23 portrait's is cut by
+**82%**, 362.6 → 63.6, the deepest reduction of the six):
+
+| rung | tiles (baseline → fogged) | Δtiles | p95 (baseline → fogged) |
+|---|---|--:|---|
+| 1920x1080 Free (desktop) | 3922 → 3579 | −8.7% | 219.47 → 107.14 |
+| 1280x720 Free | 2406 → 2309 | −4.0% | 274.40 → 222.22 |
+| S23 landscape Free | 4382 → 3952 | −9.8% | 208.59 → 101.93 |
+| S23 landscape Cockpit | 3391 → 3074 | −9.3% | 240.44 → 122.51 |
+| S23 portrait Free | 5640 → 4630 | −17.9% | 362.58 → **63.62** |
+| S23 portrait Cockpit | 4942 → 4261 | −13.8% | 313.35 → 70.74 |
+
+### D — 3a re-run post-fog (measurement only, still not adopted)
+
+The scheduled re-run of WP4/C's equal-tile-budget comparison, now with fog active
+for both variants — not a retry, since WP4/C's own finding predicted the direction
+this should move: box-distance's WP4/C budget was spent almost entirely on the
+near-limb tail fog now removes.
+
+| | centre-distance @ target=1.0 (today) | box-distance @ equal budget |
+|---|---|---|
+| tiles | 3579 | 3582 (target=0.46929) |
+| aggregate | 1.4309 | 1.4320 |
+| p5 | 0.2391 | 0.2001 |
+| p25 | 0.7422 | 0.7918 |
+| median | 2.3139 | 3.1849 |
+| p95 | 107.1398 | 139.9669 |
+
+The predicted shrinkage happened, but did not evaporate. **`box/centre p95`
+ratio: pre-fog 1.713× → post-fog 1.306×** — box-distance still makes the wasteful
+tail meaningfully worse, just less so. **The `p25` gain shrank even more
+sharply**: pre-fog box beat centre by +23.2% (0.9892 vs 0.8030); post-fog the gap
+is +6.7% (0.7918 vs 0.7422) — most of 3a's one selling point in WP4/C was itself
+sitting in the population fog now thins out. `p5` is essentially unchanged in
+absolute terms and box is still not better than centre there (0.2001 vs 0.2391 —
+box is *worse*, same as WP4/C found).
+
+**Recommendation unchanged: do not adopt 3a.** Post-fog, its cost (a worse `p95`
+tail, 3582 vs 3579 tiles to get there) buys even less than it did pre-fog (a `p25`
+gain roughly a third the size), and it still does nothing for `p5`, which WP4/C
+and WP4/E both traced to a `MAX_ZOOM`/data-floor ceiling neither distance metric
+can touch. Fog was the right fix for `p95`; box-distance was not, before or after.
+
+### B — hysteresis and the `maxHeight = 800km` boundary
+
+`apply_lod` applies fog relaxation *before* deriving `collapse_dist =
+subdivide_dist × 1.20`, so the hysteresis band stays exactly 20% of whatever the
+(possibly fog-shrunk) threshold is, at any relaxation factor —
+`test_wp5b_hysteresis_band_stays_proportional_under_fog` checks this algebraically
+at five relaxation factors from `1.0` down to `0.01`.
+
+**The `maxHeight` cutoff step is real — first mismeasured as absent, then
+corrected.** `fog_density_for`'s cutoff is hard, per Cesium's own
+`if (height > maxHeight): disabled` — density *at* `max_height_m` is `6.0×10⁻⁷/m`
+(not `0`), so crossing the boundary drops it to exactly `0` in one step, not a
+fade. A first pass measured this with an altitude ladder built from round numbers
+(799,999 / 800,000 / 800,001m) and found **no step at all** — but `Camera::altitude()`
+(what `fog_density_for` is actually driven by every frame) reads a few metres
+*higher* than the analytic `alt_m` a pose is built from, so all three "round"
+altitudes landed on the same side of the true cutoff without anyone noticing.
+Locating the true crossing by bisecting on the camera's own altitude (rather than
+assuming the nominal constant) and rebuilding the ladder around *that* found a
+real step:
+
+| view | tiles just below the true crossing | tiles just above | step |
+|---|--:|--:|--:|
+| nadir | 8 | 12 | **+50.0%** |
+| grazing (pitch=80°) | 7 | 10 | **+42.9%** |
+
+A headless capture at the corrected altitudes
+(`src/testing/rendering/fog_capture.rs`, `11_just_below_crossing_799995m.png` vs
+`12_just_above_crossing_799997m.png`) shows **no perceptible visual pop** despite
+the step — at 800km the newly-un-fogged tiles are coarse (z=4-6) and either
+peripheral to the framed nadir view or too far to read as a distinct change by
+eye. The discontinuity is real in the underlying computation, not a measurement
+artifact, but its practical consequence is bounded by two things: it requires a
+camera literally at ~800km altitude, far outside this product's 10-12km cruise
+envelope, and where measured, it did not translate into a visible pop.
+
 ## Housekeeping done alongside this baseline
 
 - `culling-pipeline.html` (untracked at the repo root) was **deleted**, not

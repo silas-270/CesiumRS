@@ -56,13 +56,11 @@ fn test_box_distance_matches_wp3s_refutation_measurement_at_equal_target() {
     );
 }
 
-/// Binary search on `target_texel_ratio` for `distance_mode` so `total_tiles` lands
-/// as close as possible to `target_n` — `target_n` is an integer count but
-/// `target_texel_ratio` is continuous and `lod_factor_for`'s relationship to it is
+/// As [`super::sweep::bisect_target_for_tile_count`], specialised to the plain
+/// (non-fog) measurement path with an explicit `distance_mode` and
+/// `texture_size_px`. `target_texel_ratio`'s relationship to `total_tiles` is
 /// monotonic non-decreasing (higher target -> larger `lod_factor` -> equal or more
-/// subdivision -> equal or more tiles), never the reverse, so bisection applies.
-/// Tile count is a step function of a continuous parameter, so exact equality is not
-/// guaranteed; this returns the closest achievable value within `search_hi`'s range.
+/// subdivision), never the reverse, which is what makes bisection meaningful here.
 fn tune_target_for_tile_count(
     poses: &[ViewParams],
     distance_mode: LodDistanceMode,
@@ -70,40 +68,12 @@ fn tune_target_for_tile_count(
     target_n: usize,
     search_hi: f32,
 ) -> (f32, usize) {
-    let cfg_at = |t: f32| LodConfig::new(t, texture_size_px).with_distance_mode(distance_mode);
-
-    let mut lo = 0.01_f32;
-    let mut hi = search_hi;
-    assert!(
-        total_tiles(poses, cfg_at(lo)) <= target_n,
-        "search_hi's lower bound must under-shoot target_n, or the bracket is wrong"
-    );
-    assert!(
-        total_tiles(poses, cfg_at(hi)) >= target_n,
-        "search_hi={search_hi} must over-shoot target_n={target_n}, widen the search range"
-    );
-
-    // 30 halvings of a [0.01, search_hi] bracket resolves target_texel_ratio to
-    // better than 1e-8 — far finer than the tile-count step function can resolve,
-    // so more iterations would not find a better answer.
-    for _ in 0..30 {
-        let mid = (lo + hi) * 0.5;
-        if total_tiles(poses, cfg_at(mid)) < target_n {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-
-    // Compare both bracket ends' achieved tile counts and keep whichever is closer
-    // to target_n, rather than assuming the last-moved bound is best.
-    let n_lo = total_tiles(poses, cfg_at(lo));
-    let n_hi = total_tiles(poses, cfg_at(hi));
-    if n_lo.abs_diff(target_n) <= n_hi.abs_diff(target_n) {
-        (lo, n_lo)
-    } else {
-        (hi, n_hi)
-    }
+    super::sweep::bisect_target_for_tile_count(target_n, search_hi, |t| {
+        total_tiles(
+            poses,
+            LodConfig::new(t, texture_size_px).with_distance_mode(distance_mode),
+        )
+    })
 }
 
 /// One row of the WP4/C comparison table.

@@ -17,3 +17,5 @@ pub mod test_tile_monitor;
 pub mod test_headless;
 #[cfg(test)]
 pub mod light_audit;
+#[cfg(test)]
+pub mod fog_capture;

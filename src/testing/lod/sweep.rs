@@ -173,7 +173,7 @@ pub struct PoseResult {
     pub degenerate: bool,
 }
 
-fn frustum_for(cam: &Camera, aspect: f32) -> Frustum {
+pub(crate) fn frustum_for(cam: &Camera, aspect: f32) -> Frustum {
     let planes = cam.calculate_frustum_planes(aspect);
     let (eye, _) = cam.global_transform_f64();
     Frustum::planes_only(planes, eye).with_corners(cam.frustum_corners_relative(aspect))
@@ -479,4 +479,55 @@ pub fn measure_poses_with_config(poses: &[ViewParams], cfg: LodConfig) -> Vec<Po
             .map(|p| measure_pose_with_config(p, cfg))
             .collect()
     })
+}
+
+/// Binary search on `target_texel_ratio` for whatever `total_tiles_at` measures, so
+/// its result lands as close as possible to `target_n` — WP4/C's "equal tile
+/// budget, not equal `target_texel_ratio`" comparison
+/// (`docs/pre-terrain-plan.md`), generalised so both the plain-harness and the
+/// fog-aware (WP5/D) measurement paths can reuse the same search instead of each
+/// carrying its own copy.
+///
+/// `target_texel_ratio` is continuous but tile count is a step function of it, so
+/// bisection finds the closest *achievable* value, not an exact one — `total_tiles`
+/// must be monotonic non-decreasing in `target_texel_ratio` over `[0.01, search_hi]`
+/// for this to be meaningful (true of `lod_factor_for` post the WP3-follow-up fix:
+/// higher target -> larger `lod_factor` -> equal or more subdivision).
+pub fn bisect_target_for_tile_count(
+    target_n: usize,
+    search_hi: f32,
+    total_tiles_at: impl Fn(f32) -> usize,
+) -> (f32, usize) {
+    let mut lo = 0.01_f32;
+    let mut hi = search_hi;
+    assert!(
+        total_tiles_at(lo) <= target_n,
+        "search_hi's lower bound must under-shoot target_n, or the bracket is wrong"
+    );
+    assert!(
+        total_tiles_at(hi) >= target_n,
+        "search_hi={search_hi} must over-shoot target_n={target_n}, widen the search range"
+    );
+
+    // 30 halvings of a [0.01, search_hi] bracket resolves target_texel_ratio to
+    // better than 1e-8 — far finer than the tile-count step function can resolve,
+    // so more iterations would not find a better answer.
+    for _ in 0..30 {
+        let mid = (lo + hi) * 0.5;
+        if total_tiles_at(mid) < target_n {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Compare both bracket ends' achieved tile counts and keep whichever is closer
+    // to target_n, rather than assuming the last-moved bound is best.
+    let n_lo = total_tiles_at(lo);
+    let n_hi = total_tiles_at(hi);
+    if n_lo.abs_diff(target_n) <= n_hi.abs_diff(target_n) {
+        (lo, n_lo)
+    } else {
+        (hi, n_hi)
+    }
 }

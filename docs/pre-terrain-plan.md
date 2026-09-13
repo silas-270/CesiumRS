@@ -396,6 +396,45 @@ Write that down where someone will find it. A future reader who adds the fog sta
 
 **Files.** `globe/quadtree/quadtree.rs` (a new `Stage` variant), `globe/tiles/config.rs`, `docs/culling-implementation.md` §4.
 
+> **Landed and measured (2026-09-13).** See `docs/culling-baseline.md`'s WP5
+> section for the full numbers; summary here.
+>
+> - **The relaxation is not "subtract `fog·sse` from an error"** — this engine has
+>   no error term, per this section's own framing above ("no error term" is
+>   literally true here, unlike Cesium). The shipped translation, derived rather
+>   than copied: `subdivide_dist *= (1 - fog(dist, density))`, applied *before*
+>   `collapse_dist = subdivide_dist × 1.20` is derived, so the 20% hysteresis band
+>   stays proportional at any fog strength. `FogConfig.sse` is ported (matches
+>   Cesium's default `2.0`) and stored, but **not consumed** by this relaxation —
+>   there is no error term in matching units for it to scale. It is reserved for a
+>   genuine screen-space-error metric once terrain gives this engine a real
+>   geometric error to bound (see `target_texel_ratio`'s own doc comment, which
+>   already anticipated this).
+> - **Fog's target was `p95` (219.5, from WP4's baseline), and it moved it the
+>   most exactly where the product lives**: at cruise altitude (9-15km) `p95`
+>   dropped **95%** (70.15 → 3.46) and tile count **16.9%** — both the largest
+>   effect of any population measured (all-poses: `p95` −51%, tiles −8.7%;
+>   horizon poses pitch≥85°: `p95` −48%, tiles −11.8%).
+> - **3a (WP4/C) was re-run post-fog (WP5/D) as scheduled.** The predicted
+>   shrinkage happened — `box/centre p95` ratio fell from 1.71× to 1.31×, and the
+>   `p25` gain that was 3a's one selling point shrank from +23% to +6.7% — but
+>   neither evaporated to zero, and box-distance still doesn't help `p5`.
+>   **Recommendation stands: do not adopt 3a.**
+> - **The `maxHeight` boundary step is real, not absent** — see the WP5/B
+>   subsection in `docs/culling-baseline.md` for how a first pass's altitude
+>   ladder, built from round numbers, missed a real +42-50% tile-count step by
+>   landing on the wrong side of it (`Camera::altitude()` reads a few metres off
+>   the analytic `alt_m` a pose is built from). Corrected, the step is real but a
+>   headless capture at the true boundary shows no perceptible visual pop from
+>   it, and it requires an altitude (~800km) far outside the 10-12km cruise
+>   envelope to reach at all.
+> - **WP4/E** (does the default basemap serve z=20?) was answered live against
+>   the real tile server: yes, `200 OK`, but the worst-case tile itself is a
+>   single flat colour — this basemap's real content tops out around z=19. `p5`'s
+>   worst offenders are below the data floor, not just below `MAX_ZOOM`; no
+>   amount of LOD tuning fixes that specific tail. See
+>   `docs/culling-baseline.md`'s WP4/E section.
+
 ---
 
 ## WP6 — Node lifetime and load priority
