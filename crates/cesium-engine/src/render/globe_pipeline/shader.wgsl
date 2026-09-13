@@ -13,16 +13,14 @@ var<uniform> camera: CameraUniform;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) uv: vec2<f32>,
+    @location(2) uv: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) normal: vec3<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) world_pos: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) world_pos: vec3<f32>,
 };
 
 struct PushConstants {
@@ -37,7 +35,6 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     let world_pos = model.position + push_constants.relative_center;
     out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.normal = model.normal;
-    out.color = model.color;
     out.uv = model.uv * push_constants.uv_scale_offset.xy + push_constants.uv_scale_offset.zw;
     out.world_pos = world_pos;
     return out;

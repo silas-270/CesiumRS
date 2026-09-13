@@ -12,7 +12,6 @@ const INV_B2_F64: f64 = 1.0 / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64);
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
-    pub color: [f32; 4],
     pub uv: [f32; 2],
 }
 
@@ -35,11 +34,6 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: 24,
                     shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 40,
-                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32x2,
                 },
             ],
@@ -213,7 +207,6 @@ impl TileMesh {
                 vertices.push(Vertex {
                     position: relative_pos,
                     normal,
-                    color: [1.0, 1.0, 1.0, 1.0],
                     uv: [u, v],
                 });
             }
