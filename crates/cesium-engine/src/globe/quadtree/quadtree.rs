@@ -826,6 +826,7 @@ impl QuadtreeNode {
             if self.children.is_none() {
                 self.subdivide();
             }
+            self.reorder_children_near_to_far(ctx.frustum.eye);
             if let Some(children) = &mut self.children {
                 for child in children.iter_mut() {
                     child.update(ctx, lod_factor);
@@ -833,6 +834,109 @@ impl QuadtreeNode {
             }
         } else {
             self.children = None;
+        }
+    }
+
+    /// Reorders `self.children` in place so the quadrant nearest `eye` (measured
+    /// in the tile's own east/north tangent frame) lands at index 0 and the
+    /// diagonally-opposite quadrant lands at index 3 — a camera-relative,
+    /// near-to-far ordering, mirroring Cesium's `visitVisibleChildrenNearToFar`
+    /// (WP2b, `docs/pre-terrain-plan.md`).
+    ///
+    /// # Why this reorders by quadrant *identity*, not by array position
+    ///
+    /// `apply_lod` calls this on **every** update tick a node stays subdivided,
+    /// not only the tick `subdivide()` runs — so `self.children` is not
+    /// reliably in creation order `[TL, TR, BL, BR]` by the time this method is
+    /// called; it may already hold whatever order a previous tick's call left
+    /// it in. A first version of this method assumed a known starting order
+    /// and reordered by swapping fixed *positions* (e.g. "swap slots 0 and 2").
+    /// That is wrong under repeated calls: each of the four cases is a
+    /// self-inverse permutation (a single transposition, or two disjoint
+    /// ones), so applying the *same* case twice in a row — which is exactly
+    /// what happens when the camera doesn't move between ticks — silently
+    /// undoes it, and applying it an even number of times across ticks (four,
+    /// here: [`UPDATE_ITERATIONS`] in the test harness) returns the array to
+    /// its original creation order with **no visible reordering at all**. This
+    /// was caught by comparing an order-sensitive traversal dump before and
+    /// after the change and finding it byte-identical despite the reorder
+    /// firing thousands of times — see the WP2b report for the reproduction.
+    ///
+    /// The fix: identify each child's quadrant from its own [`TileId`] (a
+    /// child's `x`/`y` parity relative to `self.id * 2` is exactly its
+    /// quadrant, regardless of which array slot it currently sits in), then
+    /// move quadrants into their target slots by a selection pass — for each
+    /// output slot, find the *remaining* position holding the quadrant that
+    /// belongs there and swap it in. This is idempotent by construction (a
+    /// call that finds every quadrant already in place performs zero swaps)
+    /// and correct from any starting arrangement, not just a fresh one. It is
+    /// still exactly the four cases below, just expressed as "which quadrant
+    /// goes in which slot" instead of "which positions to swap" — not a
+    /// generic sort.
+    ///
+    /// [`subdivide`](Self::subdivide) always creates children in creation
+    /// order `[TL, TR, BL, BR]` (indices 0..3, Web-Mercator tile-index terms:
+    /// `y` increases southward, `x` eastward); every downstream traversal
+    /// (`collect_visible_tiles`, `collect_renderable_tiles`) walks
+    /// `children.iter()` with no reordering of its own, so whatever order the
+    /// slots hold at the end of the frame's `apply_lod` calls is the order
+    /// tiles are collected and drawn in — this is the entire mechanism, no
+    /// traversal code needs to change.
+    ///
+    /// The two middle slots (1 and 2) end up holding the two edge-adjacent
+    /// quadrants in an unspecified relative order — intentional: this is a
+    /// front-to-back *hint* for early-Z and draw order, not a requirement to
+    /// fully sort all four children.
+    fn reorder_children_near_to_far(&mut self, eye: DVec3) {
+        let bounds = tile_bounds(&self.id);
+        let up = ellipsoid_normal(self.center);
+        let (east_axis, north_axis) = tangent_frame(bounds.center_lon(), up);
+        let to_eye = eye - self.center; // f64 subtraction (I-2).
+        let east = east_axis.dot(to_eye) > 0.0;
+        let north = north_axis.dot(to_eye) > 0.0;
+
+        // TopLeft=0 (west,north), TopRight=1 (east,north), BottomLeft=2
+        // (west,south), BottomRight=3 (east,south) — matches subdivide()'s
+        // creation order exactly.
+        let near_idx = match (east, north) {
+            (false, true) => 0,  // TL
+            (true, true) => 1,   // TR
+            (false, false) => 2, // BL
+            (true, false) => 3,  // BR
+        };
+
+        // Quadrant identity wanted at each output slot, by near_idx. Derived
+        // from the same 4 cases as the position-swap table this replaces:
+        // near_idx 0 -> [TL,TR,BL,BR], 1 -> [TR,TL,BR,BL], 2 -> [BL,BR,TL,TR],
+        // 3 -> [BR,TR,BL,TL].
+        const SLOT_QUADRANT: [[usize; 4]; 4] = [
+            [0, 1, 2, 3],
+            [1, 0, 3, 2],
+            [2, 3, 0, 1],
+            [3, 1, 2, 0],
+        ];
+        let want = SLOT_QUADRANT[near_idx];
+
+        let base_x = self.id.x * 2;
+        let base_y = self.id.y * 2;
+        let quadrant_of = |id: TileId| match (id.x - base_x, id.y - base_y) {
+            (0, 0) => 0, // TL
+            (1, 0) => 1, // TR
+            (0, 1) => 2, // BL
+            (1, 1) => 3, // BR
+            _ => unreachable!("child id is not one of self's 4 quadrants"),
+        };
+
+        if let Some(children) = &mut self.children {
+            for slot in 0..4 {
+                if quadrant_of(children[slot].id) == want[slot] {
+                    continue;
+                }
+                let found = (slot + 1..4)
+                    .find(|&i| quadrant_of(children[i].id) == want[slot])
+                    .expect("all 4 quadrants are present exactly once");
+                children.swap(slot, found);
+            }
         }
     }
 
@@ -884,6 +988,204 @@ impl QuadtreeNode {
 
         active_tiles.push((self.id, self.center_f32(), self.bounding_radius));
         is_ready(&self.id)
+    }
+}
+
+#[cfg(test)]
+mod reorder_children_tests {
+    use super::*;
+
+    /// A z=5 tile away from the poles, the equator and the prime meridian, so
+    /// none of the tangent-frame axes are degenerate.
+    fn make_node() -> QuadtreeNode {
+        QuadtreeNode::new(TileId { z: 5, x: 10, y: 10 })
+    }
+
+    /// For a synthetic eye placed in each of the 4 quadrants relative to the
+    /// node's own tangent frame, the near quadrant must land at index 0 and the
+    /// diagonally-opposite quadrant at index 3 — the two positions the case
+    /// table in [`QuadtreeNode::reorder_children_near_to_far`] fully determines.
+    /// The two middle slots are asserted only as a *set*, since their relative
+    /// order is deliberately unspecified.
+    #[test]
+    fn near_and_far_quadrants_land_at_0_and_3() {
+        // (east, north, expected index at position 0)
+        let cases = [
+            (false, true, 0usize),  // TL near
+            (true, true, 1usize),   // TR near
+            (false, false, 2usize), // BL near
+            (true, false, 3usize),  // BR near
+        ];
+
+        for (east, north, near_idx) in cases {
+            let mut node = make_node();
+            node.subdivide();
+            let ids_before: Vec<TileId> =
+                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+
+            let bounds = tile_bounds(&node.id);
+            let up = ellipsoid_normal(node.center);
+            let (east_axis, north_axis) = tangent_frame(bounds.center_lon(), up);
+            let sx = if east { 1.0 } else { -1.0 };
+            let sy = if north { 1.0 } else { -1.0 };
+            // Far enough that the sign of the dot product is unambiguous; the
+            // exact magnitude is irrelevant, only the sign matters.
+            let eye = node.center + (east_axis * sx + north_axis * sy + up) * 1.0e7;
+
+            node.reorder_children_near_to_far(eye);
+            let ids_after: Vec<TileId> =
+                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+
+            let far_idx = 3 - near_idx;
+            assert_eq!(
+                ids_after[0], ids_before[near_idx],
+                "east={east} north={north}: near quadrant should land at index 0"
+            );
+            assert_eq!(
+                ids_after[3], ids_before[far_idx],
+                "east={east} north={north}: far (diagonally opposite) quadrant \
+                 should land at index 3"
+            );
+
+            let mid_before: std::collections::HashSet<TileId> = [near_idx, far_idx]
+                .iter()
+                .fold(
+                    (0..4).collect::<std::collections::HashSet<usize>>(),
+                    |mut set, i| {
+                        set.remove(i);
+                        set
+                    },
+                )
+                .into_iter()
+                .map(|i| ids_before[i])
+                .collect();
+            let mid_after: std::collections::HashSet<TileId> =
+                [ids_after[1], ids_after[2]].into_iter().collect();
+            assert_eq!(
+                mid_after, mid_before,
+                "east={east} north={north}: middle two slots should hold the \
+                 two edge-adjacent quadrants (order unspecified)"
+            );
+        }
+    }
+
+    /// Regression guard for the bug this method's doc comment describes:
+    /// `apply_lod` calls `reorder_children_near_to_far` on every update tick a
+    /// node stays subdivided, including ticks where `self.children` already
+    /// holds a previous call's result — not only the tick right after
+    /// `subdivide()`. A first implementation reordered by swapping fixed array
+    /// *positions*, which is a self-inverse permutation per case; called twice
+    /// in a row with the same `eye` (the common case: nothing moved between
+    /// ticks) it silently reverted to the pre-reorder order, and over an even
+    /// number of ticks it reverted every time, producing **zero** visible
+    /// reordering despite firing on every tile in the tree. This test calls
+    /// the method repeatedly with a fixed `eye` and asserts the array stops
+    /// changing after the first call.
+    #[test]
+    fn reorder_is_idempotent_under_repeated_calls_with_same_eye() {
+        for (east, north) in [(false, true), (true, true), (false, false), (true, false)] {
+            let mut node = make_node();
+            node.subdivide();
+
+            let bounds = tile_bounds(&node.id);
+            let up = ellipsoid_normal(node.center);
+            let (east_axis, north_axis) = tangent_frame(bounds.center_lon(), up);
+            let sx = if east { 1.0 } else { -1.0 };
+            let sy = if north { 1.0 } else { -1.0 };
+            let eye = node.center + (east_axis * sx + north_axis * sy + up) * 1.0e7;
+
+            node.reorder_children_near_to_far(eye);
+            let after_first: Vec<TileId> =
+                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+
+            // Same tick-over-tick call the real update loop makes when the
+            // camera hasn't moved. UPDATE_ITERATIONS is 4 in the harness, so
+            // simulate a few repeats, not just one.
+            for _ in 0..4 {
+                node.reorder_children_near_to_far(eye);
+                let after_repeat: Vec<TileId> =
+                    node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+                assert_eq!(
+                    after_repeat, after_first,
+                    "east={east} north={north}: reordering with an unchanged eye \
+                     must be a no-op after the first call, not an oscillation"
+                );
+            }
+        }
+    }
+
+    /// A second regression guard, closer to the real bug's shape: the method
+    /// must reach the *same* canonical order regardless of what order the
+    /// array happened to be in beforehand, since in production it is never
+    /// guaranteed to still be in `subdivide()`'s creation order by the time it
+    /// runs.
+    #[test]
+    fn reorder_reaches_same_result_from_any_starting_order() {
+        let bounds_of = |node: &QuadtreeNode| tile_bounds(&node.id);
+        let eye_for = |node: &QuadtreeNode, east: bool, north: bool| {
+            let up = ellipsoid_normal(node.center);
+            let (east_axis, north_axis) = tangent_frame(bounds_of(node).center_lon(), up);
+            let sx = if east { 1.0 } else { -1.0 };
+            let sy = if north { 1.0 } else { -1.0 };
+            node.center + (east_axis * sx + north_axis * sy + up) * 1.0e7
+        };
+
+        // Reference: reorder from a fresh subdivide().
+        let mut reference = make_node();
+        reference.subdivide();
+        let eye = eye_for(&reference, true, false); // BR near, arbitrary choice
+        reference.reorder_children_near_to_far(eye);
+        let expected: Vec<TileId> =
+            reference.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+
+        // Same node, but scrambled into every other starting permutation of
+        // the 4 children before reordering with the same eye.
+        let mut base = make_node();
+        base.subdivide();
+        let original: Vec<TileId> =
+            base.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+
+        let mut permutations: Vec<[usize; 4]> = Vec::new();
+        for a in 0..4 {
+            for b in 0..4 {
+                if b == a {
+                    continue;
+                }
+                for c in 0..4 {
+                    if c == a || c == b {
+                        continue;
+                    }
+                    let d = (0..4).find(|i| *i != a && *i != b && *i != c).unwrap();
+                    permutations.push([a, b, c, d]);
+                }
+            }
+        }
+        assert_eq!(permutations.len(), 24);
+
+        for perm in permutations {
+            let mut node = make_node();
+            node.subdivide();
+            // Force this starting order by reordering position-by-position
+            // via swaps against the known original ids.
+            if let Some(children) = &mut node.children {
+                let ids: Vec<TileId> = perm.iter().map(|&i| original[i]).collect();
+                for target in 0..4 {
+                    let cur = children.iter().position(|c| c.id == ids[target]).unwrap();
+                    children.swap(target, cur);
+                }
+            }
+            let scrambled: Vec<TileId> =
+                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+            assert_eq!(scrambled, perm.iter().map(|&i| original[i]).collect::<Vec<_>>());
+
+            node.reorder_children_near_to_far(eye);
+            let got: Vec<TileId> = node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+            assert_eq!(
+                got, expected,
+                "starting permutation {perm:?} did not converge to the same \
+                 canonical order"
+            );
+        }
     }
 }
 

@@ -807,7 +807,7 @@ impl<'a> WgpuState<'a> {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        _visible_tiles: &[(TileId, Vec3, f32)],
+        visible_tiles: &[(TileId, Vec3, f32)],
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
@@ -867,12 +867,32 @@ impl<'a> WgpuState<'a> {
             render_pass.set_pipeline(&self.solid_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
 
-            // Collect display_state entries to avoid borrow conflict with tile_system.
-            let draw_list: Vec<(TileId, TileId, [f32; 4])> = self
-                .display_state
-                .iter()
-                .map(|(mesh_id, entry)| (*mesh_id, entry.texture_id, entry.uv_scale_offset))
-                .collect();
+            // Draw front-to-back: `visible_tiles` is the ordered (near-to-far,
+            // per WP2b's `QuadtreeNode::reorder_children_near_to_far`) list for
+            // this frame, so walk it first and look each tile up in
+            // display_state. But display_state can also hold tiles that just
+            // left the visible set and are still inside their 200 ms grace
+            // period (see update_display_state's doc comment, "Fix 2") — those
+            // are deliberately not in `visible_tiles` at all, so a plain
+            // filter-and-lookup over `visible_tiles` would silently stop
+            // drawing them, losing the anti-blink protection. Any display_state
+            // entry not covered by the ordered pass is therefore appended
+            // afterward, unordered, same as the old map-iteration draw did for
+            // everything.
+            let mut drawn: HashSet<TileId> = HashSet::with_capacity(visible_tiles.len());
+            let mut draw_list: Vec<(TileId, TileId, [f32; 4])> =
+                Vec::with_capacity(self.display_state.len());
+            for (id, _, _) in visible_tiles {
+                if let Some(entry) = self.display_state.get(id) {
+                    draw_list.push((*id, entry.texture_id, entry.uv_scale_offset));
+                    drawn.insert(*id);
+                }
+            }
+            for (mesh_id, entry) in self.display_state.iter() {
+                if !drawn.contains(mesh_id) {
+                    draw_list.push((*mesh_id, entry.texture_id, entry.uv_scale_offset));
+                }
+            }
 
             for (mesh_id, texture_id, uv_scale_offset) in &draw_list {
                 // Get the GPU texture bind group for the assigned texture (LRU-promoting, correct at draw time).
