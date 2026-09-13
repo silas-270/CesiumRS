@@ -66,6 +66,55 @@ impl OrientedBoundingBox {
             half_axis_l1,
         }
     }
+
+    /// Distance from `p` to the nearest point of this box — zero when `p` is
+    /// inside it.
+    ///
+    /// Additive: nothing above changes, and no culling stage reads this.
+    ///
+    /// **Currently unused.** It exists for `docs/pre-terrain-plan.md` WP3a, which
+    /// wants `QuadtreeNode::apply_lod` to measure `d` to the box rather than to
+    /// [`OrientedBoundingBox::center`] — centre distance over-states `d` at
+    /// grazing angles by up to a tile half-width, and so under-refines there.
+    /// Substituting it is a one-line change at that call site, but it is **not**
+    /// the no-op WP3 is specified as: measured over the 204 bench poses it moves
+    /// 24.3 % of subdivision decisions and breaks
+    /// `test_visible_set_digest_is_stable`. The substitution is therefore held
+    /// back pending a deliberate decision about the threshold it is measured
+    /// against.
+    ///
+    /// **Invariant I-2.** `p − center` is an f64 subtraction of two Earth-scale
+    /// positions and the whole projection/clamp/closest-point construction stays
+    /// in f64; only the final, small scalar distance is downcast — the same
+    /// discipline the frustum test above follows, and the reason this cannot be
+    /// written against the f32 half-axes alone.
+    ///
+    /// The half-axes are **not** unit vectors: `fit_obb` builds each as
+    /// `direction * half_extent`, so `‖h_j‖` *is* the extent along axis `j` and
+    /// `h_j / ‖h_j‖` is the axis direction. A zero-length axis would make that
+    /// division `NaN`; `fit_obb` cannot produce one for a real tile (every tile
+    /// spans a nonzero lon range, a nonzero lat range, and — being a curved patch
+    /// sampled at 3×3 or denser — a nonzero sagitta along `up`; the smallest of
+    /// the three, the `up` extent at `z = MAX_ZOOM = 20`, is the sagitta of a
+    /// ~27 m half-diagonal, ≈ 6e-11 Mm, still ~28 orders of magnitude above
+    /// f32's smallest normal). The guard below is
+    /// therefore unreachable in practice and is kept only so that a future
+    /// degenerate or default-constructed box degrades to "ignore that axis"
+    /// instead of poisoning the LOD distance with `NaN`.
+    pub fn distance_to_point(&self, p: DVec3) -> f32 {
+        let delta = p - self.center;
+        let mut closest = self.center;
+        for h in &self.half_axes {
+            let h = DVec3::new(h.x as f64, h.y as f64, h.z as f64);
+            let extent = h.length();
+            if extent <= 0.0 {
+                continue;
+            }
+            let axis = h / extent;
+            closest += axis * delta.dot(axis).clamp(-extent, extent);
+        }
+        (p - closest).length() as f32
+    }
 }
 
 /// Where a box sits relative to the frustum's four side half-spaces.
