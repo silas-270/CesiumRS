@@ -189,16 +189,122 @@ Note the naming: `TileEngineConfig.lod_factor` stops being the knob and `target_
 
 **Not touched.** `globe/quadtree/bounding_volume.rs::distance_to_point` was committed ahead of this package (additive, documented, unused) and stays uncalled — it is WP4's.
 
+> **Addendum (2026-09-13) — three bugs in the formula above, fixed before WP4.** The
+> `lod_factor` expression printed earlier in this section, and shipped as 3b, was
+> itself wrong in three ways, all invisible at `target_texel_ratio = 1.0`, which is
+> the only value WP0-WP3 ever ran the harness at:
+>
+> 1. **Direction.** `config.rs`'s own doc comment on `target_texel_ratio` contradicted
+>    itself one sentence apart — "texels demanded per screen pixel, higher = sharper"
+>    followed by "higher values demand fewer texels per pixel". The code matched the
+>    second half: `target_texel_ratio` was a *divisor* on `lod_factor`, so turning it
+>    up made tiles *coarser*, backwards from what "more texels demanded" should mean
+>    and backwards from the WP1 harness's own metric, where a higher `ratio` means
+>    *more* texels per screen pixel.
+> 2. **Exponent.** The harness's `ratio` (and hence `target_texel_ratio`, which is
+>    calibrated against it) is `texels / screen_px` — an *area* ratio. `lod_factor`
+>    scales a *linear* distance. Converting one into the other is a square root, not
+>    the first power the shipped formula used (`/ target_texel_ratio`, i.e. the `-1`
+>    power). `sqrt(1.0) == 1.0 == 1.0/1.0`, so this was also invisible at the default.
+> 3. **`GROUND_PER_RADIUS`'s name.** Documented as tile ground width over
+>    `unstretched_radius` — a real geometric ratio, measured at **≈ 1.415**
+>    (essentially `√2`, level-independent for z ≥ 8; see
+>    `test_true_ground_per_radius_is_not_the_calibration_constant`,
+>    `src/testing/lod/test_lod_sweep.rs`). The constant was actually `256/315 ≈
+>    0.8127`, **1.74× off** that geometric value, because it had been
+>    reverse-engineered to reproduce the old hard-coded `2.0`, not derived from tile
+>    geometry. Renamed to `LOD_CALIBRATION_CONSTANT`; value unchanged, so nothing
+>    about the no-op calibration moves.
+>
+> Fixed as one combined change: `/ target_texel_ratio` became
+> `* target_texel_ratio.sqrt()` (fixes 1 and 2 together — a multiplier that is now
+> monotonically increasing in the right direction, at the right power), and
+> `GROUND_PER_RADIUS` was renamed without changing its value (fix 3). The corrected
+> shape:
+>
+> ```text
+> lod_factor = (LOD_CALIBRATION_CONSTANT / texture_size)
+>            · viewport_height
+>            · sqrt(target_texel_ratio)
+>            / (2·tan(fovy/2))
+> ```
+>
+> **Still a no-op at the shipped default.** `sqrt(1.0) == 1.0`, so the rational
+> calibration arithmetic above (`§3b`) is untouched, and `LOD_CALIBRATION_CONSTANT`'s
+> value didn't change, only its name — so the 204-pose CSV stayed **byte-identical**
+> (same md5sums) to the pre-3b baseline, and the culling gate stayed green (32
+> passed, 0 failed, 1 ignored — unchanged from `docs/culling-baseline.md`).
+>
+> **Verified away from the calibration point, not just at it** — per this addendum's
+> own reasoning, invisible-at-default is exactly how these bugs shipped in the first
+> place:
+> - `test_lod_factor_scales_with_sqrt_target_not_inverse_linear` checks the isolated
+>   `lod_factor_for` at `target_texel_ratio ∈ {2, 4, 9}`, at two different
+>   texture-size/viewport/focal-length configurations.
+> - `test_lod_harness_aggregate_ratio_scales_with_target` reruns the full 204-pose
+>   harness at `target_texel_ratio = 4.0`: `Summary::aggregate_ratio` moved from
+>   **1.6625** (the `target = 1.0` baseline, now recorded in
+>   `docs/culling-baseline.md`) to **6.9468**, a **4.18×** move — within the test's
+>   `3x`-`5.5x` tolerance band around the theoretical `4x`, confirming the knob is
+>   tunable in the direction and magnitude its own name promises. (A discrete
+>   quadtree won't land exactly on `4x`; the band is wide enough that a
+>   wrong-direction bug, which would land near `1x`, or a wrong-exponent bug, which
+>   would land near `2x` or `16x`, both fail it clearly.)
+> - `test_true_ground_per_radius_is_not_the_calibration_constant` computes the real
+>   geometric ratio from tile geometry at z = 8, 11, 14, 18 and asserts it is both
+>   level-independent there and far (> 50 % relative) from
+>   `LOD_CALIBRATION_CONSTANT`.
+>
+> **`GROUND_PER_RADIUS` was not re-derived from geometry and `target_texel_ratio`'s
+> default was not changed to absorb the difference** — the alternative this section's
+> own "Done when" clause implicitly left open. Recalibrating to the true `≈ 1.415`
+> would move `lod_factor` away from `2.0` at the default and require picking a new,
+> non-`1.0` default `target_texel_ratio` to cancel it out — defeating the point of a
+> knob whose natural, self-explanatory value is `1.0` texel per pixel. Keeping the
+> residual and renaming it was the smaller, reversible change; WP4 can still choose
+> to re-derive it later if a reason turns up.
+>
+> `docs/culling-implementation.md` §5 and `docs/culling-math.md` §8 item 5 point at
+> `lod_factor_for`'s own doc comment rather than repeating its formula, so neither
+> needed a content change for this addendum — only `config.rs`'s contradictory doc
+> comment did.
+
 ---
 
 ## WP4 — Spend the knobs
 
 **Goal.** Actually close the gaps the knobs were unfrozen for. This package changes on-screen behaviour deliberately.
 
+> **Addendum (2026-09-13) — narrowed by the WP0-WP3 baseline, now that it exists.**
+> `docs/culling-baseline.md`'s recorded LOD numbers (`aggregate_ratio = 1.663`, `p5 =
+> 0.273`, `p95 = 219.5`) change what "pick `target_texel_ratio`" below actually means:
+>
+> - **`aggregate_ratio = 1.663` is fine and is not the thing to tune.** `1.0` is not
+>   the target — mild oversampling is correct for texture filtering. Below, "Use the
+>   WP1 harness to pick `target_texel_ratio`" is superseded by this reading; the text
+>   is left as originally written, above.
+> - **The problem is the spread**: `p5 = 0.273` against `p95 = 219.5` is a ~800×
+>   factor across the population, and no `target_texel_ratio` changes that — the knob
+>   moves the whole distribution rigidly, it does not reshape it. WP4 is spent on the
+>   *shape* of the distribution, not its level.
+> - **The two tails have different owners.** `p5` (blurry, under-refined) is
+>   close-range/grazing-angle geometry — exactly and only what 3a (below) addresses.
+>   `p95` (wasteful, foreshortened near-limb tiles carrying a full texel budget for a
+>   sliver of screen) belongs to WP5's fog work, not the ratio.
+>
+> Reordered into four pieces, done in this order: **A** (live texture size — below,
+> **done**, see `docs/culling-baseline.md`'s WP4/A section), **B** (a viewport/mode
+> ladder in the LOD harness, needed before C can be measured at anything but the
+> desktop default), **C** (the 3a evaluation — "3a returns, as a paired change" below
+> — at *equal tile budget*, ending in a report, not a commit), **D** (only after a
+> product decision on whether to spend C's finding, gated on that decision — not
+> mine or the assistant's to make). A and B land as ordinary commits; C is
+> measurement-only.
+
 **Work**
 - ~~Feed the **real viewport height** through on construction and on resize.~~ **Done in WP3/3b**: `update_logic` recomputes `lod_factor` from `self.size.height` every frame, so resize is covered with no cached value to invalidate. What is left here is to *measure* the consequence — the S23 should now ask for meaningfully more detail than the desktop default, and that wants confirming rather than assuming.
 - Feed the **per-mode FOV**. Cockpit's `2·tan(30°) = 1.155` against Free's `0.857` means cockpit should refine ~35 % less in distance terms — currently it refines identically, carrying roughly 1.8× the tiles it can resolve.
-- Feed the **imagery texture size** from the texture manager, so switching between the 512² Carto basemap and the 256² Esri satellite layer adjusts LOD instead of silently halving sharpness.
+- ~~Feed the **imagery texture size** from the texture manager, so switching between the 512² Carto basemap and the 256² Esri satellite layer adjusts LOD instead of silently halving sharpness.~~ **Done (WP4/A, 2026-09-13)**: `TileTextureManager::current_texture_size_px()` (backed by the new `ObservedTextureSize`, GPU-free and unit-tested) feeds `lod_factor_for` fresh every frame from `wgpu_state::update_logic`, falling back to `DEFAULT_IMAGERY_TEXTURE_SIZE_PX` only until the current style's first tile decodes. Measured both styles — see `docs/culling-baseline.md`'s WP4/A section: pre-fix, Esri's 256px tiles were silently running at `aggregate_ratio ≈ 0.42` (a quarter of Carto's 1.66, exactly `(256/512)²`, verified by construction); post-fix, `≈ 1.74`, comparable to Carto.
 - Use the WP1 harness to pick `target_texel_ratio`. The theoretical answer is 1.0; measure it rather than assume it, and report the cost curve (tile count and texture bytes against ratio) the way `SUB_BOXES_PER_AXIS`'s doc comment reports its trade.
 
 ### 3a returns, as a paired change

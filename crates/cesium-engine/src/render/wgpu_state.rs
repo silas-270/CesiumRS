@@ -513,10 +513,13 @@ impl<'a> WgpuState<'a> {
             // next to the rest of this function, and `self.size.height` is already
             // current, so resize-correctness is free and needs no cached value to
             // invalidate. `self.camera`, never `debug_camera`: see the comment at the
-            // top of this function.
+            // top of this function. `texture_manager.current_texture_size_px()` is
+            // the real decoded tile size once the current style's first tile has
+            // arrived (WP4/A, `docs/pre-terrain-plan.md`) — `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`
+            // only before that, or if imagery is disabled.
             self.quadtree_manager.lod_factor = crate::globe::quadtree::lod_factor_for(
                 self.tile_system.config.target_texel_ratio,
-                crate::globe::tiles::config::DEFAULT_IMAGERY_TEXTURE_SIZE_PX,
+                self.tile_system.texture_manager.current_texture_size_px(),
                 self.size.height as f32,
                 self.camera.fovy(),
             );

@@ -19,15 +19,75 @@ use super::super::culling::bench_update::bench_cells;
 use super::super::culling::cameras::{build_camera, ViewParams};
 use super::super::culling::sweep::{harness_pool, UPDATE_ITERATIONS};
 
-/// The engine's current default imagery tile size — `STANDARD_IMAGERY_URL`'s `@2x`
-/// tiles (`config.rs`). Still frozen, and deliberately a separate constant from the
-/// engine's own `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`: the harness must be able to state
-/// its texel-density assumption independently of the engine's. WP4 is what makes this
-/// a real per-style input, fed from the texture manager rather than a constant.
-///
-/// (`lod_factor` is no longer frozen alongside it — WP3/3b derived it; see
-/// [`cesium_engine::globe::quadtree::lod_factor_for`], which `measure_pose` calls.)
+/// The engine's default imagery tile size — `STANDARD_IMAGERY_URL`'s `@2x` tiles
+/// (`config.rs`). Deliberately a separate constant from the engine's own
+/// `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`: the harness must be able to state its
+/// texel-density assumption independently of the engine's. Used as the *default*
+/// `texture_size_px` in [`LodConfig`] and by [`measure_pose`]/[`measure_poses`];
+/// every measurement function also takes an explicit `texture_size_px` (WP4/A,
+/// `docs/pre-terrain-plan.md`) so `SATELLITE_IMAGERY_URL`'s 256px style can be
+/// measured too — see [`ESRI_TEXTURE_SIZE_PX`].
 pub const TEXTURE_SIZE_PX: u32 = 512;
+
+/// `SATELLITE_IMAGERY_URL`'s tile size (`config.rs`) — the other real style this
+/// engine serves, and the one WP4/A's live texture-size feed exists to stop
+/// silently under-refining.
+pub const ESRI_TEXTURE_SIZE_PX: f32 = 256.0;
+
+/// The knobs `measure_pose_with_config` reads, bundled so a sweep can vary one,
+/// several, or none without every call site growing another positional argument.
+///
+/// `lod_texture_size_px` and `real_texture_size_px` are split on purpose, not
+/// merged into one field: `lod_texture_size_px` is what feeds `lod_factor_for` (what
+/// the LOD rule *assumes* the texture size is), `real_texture_size_px` is what this
+/// harness's own `texels` metric counts (the tile's *actual* decoded size). Every
+/// normal measurement uses [`LodConfig::new`], which sets both to the same value —
+/// that equality is WP4/A's fix (`docs/pre-terrain-plan.md`): before it, the engine's
+/// LOD rule always assumed `DEFAULT_IMAGERY_TEXTURE_SIZE_PX` (512) regardless of the
+/// real decoded style. [`LodConfig::uncompensated`] sets them independently, purely
+/// to reproduce that historical gap for measurement — see
+/// `docs/culling-baseline.md`'s WP4/A section for what it found.
+#[derive(Clone, Copy, Debug)]
+pub struct LodConfig {
+    pub target_texel_ratio: f32,
+    pub lod_texture_size_px: f32,
+    pub real_texture_size_px: f32,
+}
+
+impl LodConfig {
+    pub fn new(target_texel_ratio: f32, texture_size_px: f32) -> Self {
+        Self {
+            target_texel_ratio,
+            lod_texture_size_px: texture_size_px,
+            real_texture_size_px: texture_size_px,
+        }
+    }
+
+    /// Reproduces the pre-WP4/A bug for measurement purposes only: `lod_factor_for`
+    /// runs as if the texture were `assumed_texture_size_px` while the harness counts
+    /// texels at the tile's `real_texture_size_px`. Not a mode the engine itself ever
+    /// runs in post-WP4/A — see the struct doc comment.
+    pub fn uncompensated(
+        target_texel_ratio: f32,
+        assumed_texture_size_px: f32,
+        real_texture_size_px: f32,
+    ) -> Self {
+        Self {
+            target_texel_ratio,
+            lod_texture_size_px: assumed_texture_size_px,
+            real_texture_size_px,
+        }
+    }
+}
+
+impl Default for LodConfig {
+    /// Matches the engine's own shipped default (`target_texel_ratio = 1.0`,
+    /// `texture_size_px = TEXTURE_SIZE_PX = 512`), the WP0-WP3 baseline in
+    /// `docs/culling-baseline.md`.
+    fn default() -> Self {
+        Self::new(1.0, TEXTURE_SIZE_PX as f32)
+    }
+}
 
 /// RGBA8, no mips — matches the byte accounting `config.rs`'s
 /// `tile_cache_budget_bytes` doc comment already uses for the same tiles.
@@ -55,13 +115,14 @@ pub struct TileMetric {
     /// patch clipped away entirely or every sample touching it was behind the eye.
     pub screen_px: f64,
     /// Area-weighted "effective" texel count: each of the four patch quads
-    /// contributes `(TEXTURE_SIZE_PX² / 4) * (clipped_area / raw_area)`, its fair
-    /// share of the tile's texel budget scaled by how much of *that quad's own*
-    /// projected area actually landed onscreen. A quad skipped for being behind the
-    /// eye contributes zero, same as a quad clipped away entirely — a tile clipped
-    /// at the frustum boundary is not credited with texels for the part of the
-    /// patch that never made it to screen. Equals the flat `TEXTURE_SIZE_PX²` only
-    /// when every quad is fully onscreen and unclipped.
+    /// contributes `(texture_size_px² / 4) * (clipped_area / raw_area)` — the
+    /// pose's own [`LodConfig::texture_size_px`], not always [`TEXTURE_SIZE_PX`]
+    /// since WP4/A — its fair share of the tile's texel budget scaled by how much
+    /// of *that quad's own* projected area actually landed onscreen. A quad
+    /// skipped for being behind the eye contributes zero, same as a quad clipped
+    /// away entirely — a tile clipped at the frustum boundary is not credited with
+    /// texels for the part of the patch that never made it to screen. Equals the
+    /// flat `texture_size_px²` only when every quad is fully onscreen and unclipped.
     pub texels: f64,
     /// `texels / screen_px`. `f64::INFINITY` when `screen_px == 0.0` — excluded
     /// from every ratio aggregate, counted separately (see [`super::report`]).
@@ -89,6 +150,11 @@ pub struct PoseResult {
     pub tile_count: usize,
     pub texture_bytes: u64,
     pub deepest_zoom: u8,
+    /// The `texture_size_px` this pose was measured at (WP4/A) — carried per-result
+    /// rather than read back out of a module constant, so a sweep that mixes styles
+    /// (or a report rendering several sweeps side by side) can state honestly what
+    /// each row assumed.
+    pub texture_size_px: f32,
     /// No visible tile at all — a genuinely empty view (e.g. a sub-surface camera
     /// with nothing above the horizon), not a rendering defect on its own but a
     /// case the ratio aggregates must not silently absorb.
@@ -205,6 +271,7 @@ pub(crate) fn project_patch(
     vp: &DMat4,
     width: f64,
     height: f64,
+    texture_size_px: f64,
 ) -> TileMetric {
     let mut clip = [[DVec4::ZERO; 3]; 3];
     let mut behind_eye = false;
@@ -220,7 +287,7 @@ pub(crate) fn project_patch(
 
     let mut screen_px = 0.0_f64;
     let mut partly_offscreen = false;
-    let full_texels = (TEXTURE_SIZE_PX as f64) * (TEXTURE_SIZE_PX as f64);
+    let full_texels = texture_size_px * texture_size_px;
     let quad_texel_share = full_texels / 4.0;
     let mut effective_texels = 0.0_f64;
 
@@ -295,6 +362,27 @@ pub(crate) fn project_patch(
 /// and `test_update_iterations_reach_fixed_point` (in `super::super::culling`) is
 /// what proves that count is enough.
 pub fn measure_pose(p: &ViewParams) -> PoseResult {
+    // The calibrated no-op default; no per-pose config to read.
+    measure_pose_with_config(p, LodConfig::default())
+}
+
+/// As [`measure_pose`], but with an explicit `target_texel_ratio` (at the default
+/// `texture_size_px`) — the WP3 follow-up fixes' own "verify by construction, not
+/// by the default" check (`docs/pre-terrain-plan.md` WP3): running this at, say,
+/// `4.0` and comparing the resulting `Summary::aggregate_ratio` against the
+/// `target = 1.0` baseline exercises the whole pipeline (`lod_factor_for` →
+/// `apply_lod` → this harness's own metric), not just the isolated formula.
+pub fn measure_pose_with_target(p: &ViewParams, target_texel_ratio: f32) -> PoseResult {
+    measure_pose_with_config(p, LodConfig::new(target_texel_ratio, TEXTURE_SIZE_PX as f32))
+}
+
+/// As [`measure_pose`], but with an explicit [`LodConfig`] — WP4/A
+/// (`docs/pre-terrain-plan.md`): the texture size fed to `lod_factor_for` is no
+/// longer implicitly [`TEXTURE_SIZE_PX`], so a sweep can measure
+/// `SATELLITE_IMAGERY_URL`'s 256px style (via [`LodConfig::new`]), or reproduce the
+/// pre-WP4/A engine behaviour via [`LodConfig::uncompensated`] — see
+/// [`ESRI_TEXTURE_SIZE_PX`] and `docs/culling-baseline.md`'s WP4/A section.
+pub fn measure_pose_with_config(p: &ViewParams, cfg: LodConfig) -> PoseResult {
     let cam = build_camera(p);
     let aspect = p.aspect();
     let frustum = frustum_for(&cam, aspect as f32);
@@ -303,13 +391,13 @@ pub fn measure_pose(p: &ViewParams) -> PoseResult {
     qt.pipeline = CullPipeline::DEFAULT;
     // The same derivation the real renderer runs per frame (`wgpu_state::update_logic`),
     // from the same shared function — not a copy of the arithmetic. At the 204 bench
-    // poses (all `height = 1080`, all `mode = Free`) this is exactly 2.0, i.e. the value
-    // this line replaced, so the WP0/WP1 baseline is untouched. It matters once WP4
-    // builds a viewport ladder that actually varies height and mode: without it the
-    // harness would quietly stop measuring what the renderer does.
+    // poses (all `height = 1080`, all `mode = Free`) `LodConfig::default()` is
+    // exactly 2.0, i.e. the old hard-coded value, so the WP0/WP1 baseline is
+    // untouched. It matters once a sweep varies height, mode or texture size: without
+    // it the harness would quietly stop measuring what the renderer does.
     qt.lod_factor = cesium_engine::globe::quadtree::lod_factor_for(
-        1.0, // target_texel_ratio — the calibrated no-op default; no per-pose config to read
-        TEXTURE_SIZE_PX as f32,
+        cfg.target_texel_ratio,
+        cfg.lod_texture_size_px,
         p.height as f32,
         cam.fovy(),
     );
@@ -328,12 +416,19 @@ pub fn measure_pose(p: &ViewParams) -> PoseResult {
         deepest_zoom = deepest_zoom.max(id.z);
         let bounds = tile_bounds(id);
         let samples = patch_grid_points(id, &bounds);
-        tiles.push(project_patch(*id, &samples, &vp, width, height));
+        tiles.push(project_patch(
+            *id,
+            &samples,
+            &vp,
+            width,
+            height,
+            cfg.real_texture_size_px as f64,
+        ));
     }
 
     let tile_count = tiles.len();
-    let texture_bytes =
-        tile_count as u64 * (TEXTURE_SIZE_PX as u64 * TEXTURE_SIZE_PX as u64) * BYTES_PER_TEXEL;
+    let texel_area = cfg.real_texture_size_px as u64 * cfg.real_texture_size_px as u64;
+    let texture_bytes = tile_count as u64 * texel_area * BYTES_PER_TEXEL;
 
     PoseResult {
         params: p.clone(),
@@ -342,6 +437,7 @@ pub fn measure_pose(p: &ViewParams) -> PoseResult {
         tile_count,
         texture_bytes,
         deepest_zoom,
+        texture_size_px: cfg.real_texture_size_px,
     }
 }
 
@@ -349,5 +445,25 @@ pub fn measure_pose(p: &ViewParams) -> PoseResult {
 /// [`super::super::culling::sweep::harness_pool`] for why the global pool is
 /// deliberately not used.
 pub fn measure_poses(poses: &[ViewParams]) -> Vec<PoseResult> {
-    harness_pool().install(|| poses.par_iter().map(measure_pose).collect())
+    measure_poses_with_config(poses, LodConfig::default())
+}
+
+/// As [`measure_poses`], but at an explicit `target_texel_ratio` — see
+/// [`measure_pose_with_target`].
+pub fn measure_poses_with_target(poses: &[ViewParams], target_texel_ratio: f32) -> Vec<PoseResult> {
+    measure_poses_with_config(
+        poses,
+        LodConfig::new(target_texel_ratio, TEXTURE_SIZE_PX as f32),
+    )
+}
+
+/// As [`measure_poses`], but at an explicit [`LodConfig`] — see
+/// [`measure_pose_with_config`].
+pub fn measure_poses_with_config(poses: &[ViewParams], cfg: LodConfig) -> Vec<PoseResult> {
+    harness_pool().install(|| {
+        poses
+            .par_iter()
+            .map(|p| measure_pose_with_config(p, cfg))
+            .collect()
+    })
 }

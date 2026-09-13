@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use super::sweep::{PoseResult, TEXTURE_SIZE_PX};
+use super::sweep::PoseResult;
 
 /// Directory all LOD-harness artefacts are written to.
 pub fn output_dir() -> PathBuf {
@@ -306,12 +306,28 @@ pub fn render_report(
     let s = summarize(results);
     let mut out = String::new();
 
+    // Read back from the results rather than the module's own default constant
+    // (WP4/A, `docs/pre-terrain-plan.md`) — a sweep may have run at
+    // `ESRI_TEXTURE_SIZE_PX` or any other `LodConfig::texture_size_px`, and a report
+    // that always printed `TEXTURE_SIZE_PX` would silently mislabel it.
+    let texture_size_label = match results.first() {
+        Some(first)
+            if results
+                .iter()
+                .all(|r| r.texture_size_px == first.texture_size_px) =>
+        {
+            format!("{}x{}", first.texture_size_px, first.texture_size_px)
+        }
+        Some(_) => "mixed".to_string(),
+        None => "n/a".to_string(),
+    };
+
     out.push_str(&format!("\n=== lod harness: {name} ===\n"));
     out.push_str(&format!("poses CSV: {}\n", poses_csv.display()));
     out.push_str(&format!("tiles CSV: {}\n", tiles_csv.display()));
     out.push_str(&format!(
-        "poses: {}  |  degenerate (no visible tile): {}  |  texture_size: {}x{}\n",
-        s.poses, s.degenerate_poses, TEXTURE_SIZE_PX, TEXTURE_SIZE_PX,
+        "poses: {}  |  degenerate (no visible tile): {}  |  texture_size: {}\n",
+        s.poses, s.degenerate_poses, texture_size_label,
     ));
     out.push_str(&format!(
         "tiles: {}  |  sampled (finite ratio): {}  |  offscreen/clipped-away: {}  |  \

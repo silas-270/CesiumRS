@@ -1,8 +1,44 @@
 use crate::globe::quadtree::TileId;
-use crate::globe::tiles::config::TileEngineConfig;
+use crate::globe::tiles::config::{TileEngineConfig, DEFAULT_IMAGERY_TEXTURE_SIZE_PX};
 use crate::globe::tiles::tile_cache::TileCacheManager;
 use crate::globe::tiles::tile_fetcher::{TileFetcher, TileImage, TilePriority};
 use tokio::sync::mpsc;
+
+/// Tracks the real decoded texel width of the current imagery style, live rather
+/// than the frozen [`DEFAULT_IMAGERY_TEXTURE_SIZE_PX`] this replaces (WP4/A,
+/// `docs/pre-terrain-plan.md`) — deliberately a small, GPU-free struct (no
+/// `wgpu::Device`/`Queue` in its API) so the tracking logic itself is unit-testable
+/// without a GPU, unlike the rest of [`TileTextureManager`].
+///
+/// Assumes square tiles: every imagery style this engine serves (`STANDARD_IMAGERY_URL`
+/// at 512x512, `SATELLITE_IMAGERY_URL` at 256x256) is, and `lod_factor_for` takes a
+/// single scalar `texture_size_px`, not separate width/height.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ObservedTextureSize {
+    last_seen_px: Option<f32>,
+}
+
+impl ObservedTextureSize {
+    /// Records a freshly decoded tile's size. Called on every decode, not only the
+    /// first, so a style whose tiles differ in size still converges — matching
+    /// [`TileTextureManager::apply_budget`]'s own "re-checked per tile" rule for the
+    /// byte budget, which this mirrors.
+    pub fn record(&mut self, width: u32, height: u32) {
+        debug_assert_eq!(
+            width, height,
+            "imagery tiles are assumed square; got {width}x{height}"
+        );
+        self.last_seen_px = Some(width as f32);
+    }
+
+    /// The live size once a tile has decoded, or [`DEFAULT_IMAGERY_TEXTURE_SIZE_PX`]
+    /// before that — the same bootstrapping gap `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`'s
+    /// own doc comment already describes ("the texture manager only learns the real
+    /// one after the first tile of a style decodes").
+    pub fn current_px(&self) -> f32 {
+        self.last_seen_px.unwrap_or(DEFAULT_IMAGERY_TEXTURE_SIZE_PX)
+    }
+}
 
 pub struct TileTextureManager {
     pub cache: TileCacheManager<(wgpu::Texture, wgpu::BindGroup)>,
@@ -21,6 +57,9 @@ pub struct TileTextureManager {
     /// uniform, so this settles after the first one; it's re-checked per tile
     /// only so a style whose tiles differ in size still converges.
     bytes_per_tile: Option<usize>,
+    /// Live texel width of the current imagery style — WP4/A. See
+    /// [`ObservedTextureSize`].
+    texture_size: ObservedTextureSize,
 }
 
 impl TileTextureManager {
@@ -120,7 +159,17 @@ impl TileTextureManager {
             budget_bytes: config.tile_cache_budget_bytes,
             max_entries: config.max_cache_size,
             bytes_per_tile: None,
+            texture_size: ObservedTextureSize::default(),
         }
+    }
+
+    /// The live imagery texel width — [`crate::globe::quadtree::lod_factor_for`]'s
+    /// `texture_size_px` input, fed fresh every frame from `wgpu_state::update_logic`
+    /// instead of the frozen `DEFAULT_IMAGERY_TEXTURE_SIZE_PX` (WP4/A). See
+    /// [`ObservedTextureSize`] for the bootstrapping behaviour before any tile of the
+    /// current style has decoded.
+    pub fn current_texture_size_px(&self) -> f32 {
+        self.texture_size.current_px()
     }
 
     pub fn request_tile(&mut self, id: TileId, priority: TilePriority) {
@@ -157,6 +206,7 @@ impl TileTextureManager {
 
         match result {
             Ok((width, height, rgba)) => {
+                self.texture_size.record(width, height);
                 let size = wgpu::Extent3d {
                     width,
                     height,

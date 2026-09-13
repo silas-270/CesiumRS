@@ -15,18 +15,25 @@ pub const SATELLITE_IMAGERY_URL: &str = "https://server.arcgisonline.com/ArcGIS/
 /// against a pathological tile size thrashing the cache down to nothing.
 pub const MIN_TILE_CACHE_ENTRIES: usize = 64;
 
-/// Imagery tile edge length, in texels, that the LOD rule assumes.
+/// Imagery tile edge length, in texels, that the LOD rule falls back to before it
+/// has any better information.
 ///
-/// Must match what [`STANDARD_IMAGERY_URL`]'s `@2x` suffix actually serves (512x512).
-/// Frozen here on purpose: the LOD rule needs *a* texture size every frame, and the
-/// texture manager only learns the real one after the first tile of a style decodes —
-/// feeding it through is WP4's job ("switching between the 512² Carto basemap and the
-/// 256² Esri satellite layer adjusts LOD instead of silently halving sharpness").
+/// Matches what [`STANDARD_IMAGERY_URL`]'s `@2x` suffix actually serves (512x512).
+/// **No longer the value the LOD rule always runs at** — WP4/A
+/// (`docs/pre-terrain-plan.md`) feeds the real decoded tile size through live, via
+/// [`crate::globe::tiles::texture_manager::TileTextureManager::current_texture_size_px`],
+/// called fresh every frame from `wgpu_state::update_logic`. This constant is now
+/// only the *bootstrap* value: the texture manager doesn't know a style's real size
+/// until its first tile has decoded, and this is what `lod_factor_for` runs at until
+/// then (or if imagery is disabled). Before WP4/A this was the value used
+/// unconditionally, silently halving effective sharpness on any 256² style
+/// (`SATELLITE_IMAGERY_URL`) with no LOD compensation.
 ///
 /// This mirrors, but is deliberately a separate constant from, the LOD test harness's
 /// own `TEXTURE_SIZE_PX` in `src/testing/lod/sweep.rs` — the harness measures texel
-/// density and must be able to state its assumption independently of the engine's.
-/// WP4 unifies them via a real per-style texture-size feed.
+/// density and must be able to state its assumption independently of the engine's,
+/// and now takes `texture_size_px` as an explicit parameter so it can measure either
+/// style rather than assuming one.
 pub const DEFAULT_IMAGERY_TEXTURE_SIZE_PX: f32 = 512.0;
 
 /// How many imagery tiles of `bytes_per_tile` fit in `budget_bytes`, clamped to
@@ -68,15 +75,16 @@ pub struct TileEngineConfig {
     pub tile_cache_budget_bytes: usize,
     pub mesh_cache_size: NonZeroUsize,
     /// Imagery texels demanded per screen pixel — the LOD target, and the WP1 LOD
-    /// harness's own metric. `1.0` means "one texel per pixel": neither blurry nor
-    /// wasteful. Higher values demand fewer texels per pixel, so tiles stay coarser:
-    /// lower visual fidelity, better performance.
+    /// harness's own metric (`texels / screen_px`). `1.0` means "one texel per
+    /// pixel": neither blurry nor wasteful. **Higher values demand more texels per
+    /// pixel, so tiles stay sharper**: higher visual fidelity, worse performance.
     ///
-    /// This is **not** a raw distance multiplier any more — it is divided into the
-    /// derived `lod_factor` rather than being it. See
-    /// [`lod_factor_for`](crate::globe::quadtree::lod_factor_for) for the formula and
-    /// the exact calibration that makes the default reproduce the old hard-coded
-    /// `2.0`, and `docs/pre-terrain-plan.md` WP3 (part 3b) for why.
+    /// This is **not** a raw distance multiplier any more — it feeds into the
+    /// derived `lod_factor` as `sqrt(target_texel_ratio)` rather than being it
+    /// directly (the ratio above is an *area* ratio; `lod_factor` scales a *linear*
+    /// distance). See [`lod_factor_for`](crate::globe::quadtree::lod_factor_for) for
+    /// the formula and the exact calibration that makes the default reproduce the
+    /// old hard-coded `2.0`, and `docs/pre-terrain-plan.md` WP3 for why.
     ///
     /// It is also **not** a screen-space error knob, and is not pretending to be one.
     /// Cesium's SSE bounds *geometric* error in pixels; with zero terrain relief this

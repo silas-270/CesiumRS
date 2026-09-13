@@ -7,4 +7,6 @@ pub mod test_tile_fetcher;
 #[cfg(test)]
 pub mod test_tile_system_stress;
 #[cfg(test)]
+pub mod test_texture_size;
+#[cfg(test)]
 pub mod tile_system_tests;
