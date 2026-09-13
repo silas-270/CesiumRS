@@ -129,18 +129,32 @@ fn obb_grid_steps(z: u8) -> u32 {
     }
 }
 
-/// Ground width of a tile, as a multiple of its `unstretched_radius`.
+/// Calibration constant, *not* a geometry constant, despite the name this constant
+/// had before the pre-WP4 fixes documented on [`lod_factor_for`] (`GROUND_PER_RADIUS`).
 ///
-/// The geometry constant that turns the quadtree's own length scale (the radius of
-/// the sphere-fitted box around an unstretched patch, [`QuadtreeNode::unstretched_radius`])
-/// into the ground width the imagery texture is stretched over. Both halve per zoom
-/// level, so the ratio is level-independent and a single constant covers the tree.
+/// The quantity that name claimed — tile ground width over the sphere-fitted
+/// [`QuadtreeNode::unstretched_radius`] — is a real, level-independent geometric
+/// ratio, but it measures **≈ 1.415** (essentially `√2 ≈ 1.4142`, the corner-to-centre
+/// half-diagonal relation for a roughly square patch; both halve per zoom level, so
+/// the ratio is level-independent — verified numerically at z = 8, 11, 14, 18 by
+/// `test_true_ground_per_radius_is_not_the_calibration_constant` in
+/// `src/testing/lod/test_lod_sweep.rs`, converging as the flat-chord approximation's
+/// curvature error shrinks; coarser tiles, z ≤ 5, read measurably lower for the same
+/// reason the WP1 harness's own 3×3-grid curvature note describes). `256.0 / 315.0 ≈
+/// 0.8127` is not that number — it is ~1.74× off — because it was reverse-engineered
+/// to reproduce the old hard-coded `lod_factor = 2.0` at one reference configuration,
+/// not derived from the tile geometry. It is kept as a residual, not replaced with
+/// the true geometric
+/// ratio, specifically so [`lod_factor_for`]'s no-op calibration at
+/// `target_texel_ratio = 1.0` survives untouched — see that function's doc comment.
 ///
-/// Written as the literal fraction it was derived as, not as a decimal, so the
-/// calibration below can be checked by hand — see [`lod_factor_for`].
-const GROUND_PER_RADIUS: f32 = 256.0 / 315.0;
+/// Written as the literal fraction it was fitted as, not as a decimal, so the
+/// calibration can still be checked by hand — see [`lod_factor_for`].
+const LOD_CALIBRATION_CONSTANT: f32 = 256.0 / 315.0;
 
-/// The LOD constant, derived instead of hand-picked — WP3/3b of `docs/pre-terrain-plan.md`.
+/// The LOD constant, derived instead of hand-picked — WP3/3b of `docs/pre-terrain-plan.md`,
+/// with the direction/exponent/naming fixes from the follow-up pass documented in that
+/// file's WP3 section.
 ///
 /// `QuadtreeNode::apply_lod` refines while `dist < unstretched_radius · lod_factor`.
 /// That is Cesium's rule `d < G(z)·H / (maxSSE · 2·tan(fovy/2))` with every variable
@@ -148,14 +162,25 @@ const GROUND_PER_RADIUS: f32 = 256.0 / 315.0;
 /// them, keeping the rule's shape:
 ///
 /// ```text
-/// lod_factor = (GROUND_PER_RADIUS / texture_size)
+/// lod_factor = (LOD_CALIBRATION_CONSTANT / texture_size)
 ///            · viewport_height
-///            / (target_texel_ratio · 2·tan(fovy/2))
+///            · sqrt(target_texel_ratio)
+///            / (2·tan(fovy/2))
 /// ```
 ///
 /// `target_texel_ratio` is texels of imagery demanded per screen pixel — the WP1 LOD
-/// harness's own metric, whose natural target is `1.0` (one texel per pixel: neither
-/// blurry nor wasteful). Higher means fewer texels per pixel, i.e. coarser tiles.
+/// harness's own metric (`texels / screen_px`, an *area* ratio), whose natural target
+/// is `1.0` (one texel per pixel: neither blurry nor wasteful). **Higher means more
+/// texels demanded per pixel, i.e. sharper, more-subdivided tiles** — `target_texel_ratio`
+/// is a multiplier on `lod_factor`, not a divisor: turning the knob up asks for more
+/// resolution, and more resolution means refining out to a *larger* distance, i.e. a
+/// *larger* `lod_factor`. (An earlier version of this function and its doc comment
+/// disagreed with itself on this — dividing by `target_texel_ratio` while documenting
+/// "higher = sharper" one sentence after "higher = fewer texels per pixel". Division
+/// also had the wrong degree: `target_texel_ratio` is an *area* ratio (texels² over
+/// px²) but `lod_factor` scales a *linear* distance, so the conversion is a square
+/// root, not the first power. Both were invisible at the shipped default, because
+/// `sqrt(1.0) == 1.0 == 1.0/1.0`.)
 ///
 /// # The calibration is exact in rationals, not merely to float precision
 ///
@@ -165,27 +190,40 @@ const GROUND_PER_RADIUS: f32 = 256.0 / 315.0;
 ///
 /// `fovy/2 = atan(sensor_height / (2·focal_length)) = atan(24/56) = atan(3/7)`, and
 /// `tan(atan(x)) ≡ x`, so `tan(fovy/2) = 3/7` *exactly* and `2·tan(fovy/2) = 6/7`.
-/// With `GROUND_PER_RADIUS = 256/315`:
+/// `sqrt(target_texel_ratio) = sqrt(1) = 1`, so it drops out and the rational
+/// arithmetic is identical to the pre-fix version. With `LOD_CALIBRATION_CONSTANT = 256/315`:
 ///
-/// | step                       | exact value           |
-/// |----------------------------|-----------------------|
-/// | `GROUND_PER_RADIUS / 512`  | `(256/315)/512 = 1/630` |
-/// | `· 1080`                   | `1080/630 = 12/7`     |
-/// | `2·tan(fovy/2)`            | `6/7`                 |
-/// | `(12/7) / (1 · 6/7)`       | **`2`**               |
+/// | step                              | exact value              |
+/// |------------------------------------|--------------------------|
+/// | `LOD_CALIBRATION_CONSTANT / 512`  | `(256/315)/512 = 1/630`  |
+/// | `· 1080`                          | `1080/630 = 12/7`        |
+/// | `· sqrt(1)`                       | `12/7` (unchanged)       |
+/// | `2·tan(fovy/2)`                   | `6/7`                    |
+/// | `(12/7) / (6/7)`                  | **`2`**                  |
 ///
 /// or as one fraction: `(256 · 1080 · 7) / (315 · 512 · 6) = 1935360/967680 = 2/1`.
-/// So this package is a provable no-op at the default config, not an approximate one;
-/// it reproduces the old constant bit-for-bit in f32 (verified), and `apply_lod`'s
-/// `dist` is untouched, so no tile can change level.
+/// So this remains a provable no-op at the default config, not an approximate one; it
+/// reproduces the old constant bit-for-bit in f32 (verified), and `apply_lod`'s `dist`
+/// is untouched, so no tile can change level.
 ///
 /// **This exactness is a property of `focal_length = 28` / `sensor_height = 24`
 /// specifically.** `atan` of a rational is generally *not* rational — the identity
 /// `tan(atan(x)) = x` is what sidesteps that here, and it only helps because the
 /// engine defines `fovy` *as* an `atan` of the rational `24/56`. If the default
 /// `focal_length` ever changes, `2·tan(fovy/2)` will generally no longer be a clean
-/// rational, [`GROUND_PER_RADIUS`] will need re-deriving against the new default, and
-/// the "exactly `2.0`, bit-identical" claim breaks. Re-run the WP1 LOD harness if so.
+/// rational, [`LOD_CALIBRATION_CONSTANT`] will need re-deriving against the new default,
+/// and the "exactly `2.0`, bit-identical" claim breaks. Re-run the WP1 LOD harness if so.
+///
+/// # Away from the calibration point
+///
+/// The calibration above only pins `target_texel_ratio = 1.0` at one viewport/focal
+/// length. `test_lod_factor_scales_with_sqrt_target_not_inverse_linear` and
+/// `test_lod_harness_aggregate_ratio_scales_with_target` (in
+/// `src/testing/lod/test_lod_sweep.rs`) check the `sqrt` relationship — both in the
+/// isolated function and end-to-end through the real quadtree and the WP1 harness's
+/// own `texels/screen_px` metric — at `target_texel_ratio = 4.0`, where a `/target`
+/// bug or a linear-in-`target` bug would both disagree with the measured result but
+/// agree with it at `target = 1.0`.
 ///
 /// Deliberately *not* frozen out of this: 3a (measuring `dist` to the nearest point of
 /// the node's OBB rather than to its centre) was specified alongside this in WP3 and
@@ -197,8 +235,10 @@ pub fn lod_factor_for(
     viewport_height_px: f32,
     fovy_rad: f32,
 ) -> f32 {
-    (GROUND_PER_RADIUS / texture_size_px) * viewport_height_px
-        / (target_texel_ratio * 2.0 * (fovy_rad * 0.5).tan())
+    (LOD_CALIBRATION_CONSTANT / texture_size_px)
+        * viewport_height_px
+        * target_texel_ratio.sqrt()
+        / (2.0 * (fovy_rad * 0.5).tan())
 }
 
 /// Outward unit normal of the ellipsoid at `p`, in f64 — the normalised gradient of
