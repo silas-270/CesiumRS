@@ -101,6 +101,8 @@ pub mod ladder;
 #[cfg(test)]
 pub mod report;
 #[cfg(test)]
+pub mod test_fog_math;
+#[cfg(test)]
 pub mod sweep;
 
 #[cfg(test)]

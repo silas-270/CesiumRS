@@ -93,6 +93,15 @@ pub struct TileEngineConfig {
     /// a genuine SSE metric becomes the right thing to expose — a separate knob, not a
     /// rename of this one.
     pub target_texel_ratio: f32,
+    /// Atmospheric fog — WP5 of `docs/pre-terrain-plan.md`, ported from CesiumJS's
+    /// `Scene/Fog.js` defaults. Consumed by `wgpu_state::update_logic` to derive
+    /// this frame's fog density (`crate::globe::quadtree::fog_density_for`) from
+    /// camera altitude, which drives both `Stage::Fog` (an outright cull, present
+    /// only in `CullPipeline::DEFAULT_WITH_FOG` — **never** in `DEFAULT`, which the
+    /// culling harness builds and every FN = 0 guarantee is proved against) and
+    /// `QuadtreeNode::apply_lod`'s threshold relaxation. See
+    /// `crate::globe::quadtree::fog`'s module doc comment for the full story.
+    pub fog: crate::globe::quadtree::FogConfig,
     pub prefetch_radius: u32,
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
@@ -119,6 +128,7 @@ impl Default for TileEngineConfig {
             tile_cache_budget_bytes: 512 * 1024 * 1024,
             mesh_cache_size: NonZeroUsize::new(512).unwrap(),
             target_texel_ratio: 1.0,
+            fog: crate::globe::quadtree::FogConfig::default(),
             prefetch_radius: 1, // Number of tiles to prefetch in velocity direction
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),

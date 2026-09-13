@@ -1,5 +1,5 @@
 use crate::camera::camera::Camera;
-use crate::globe::quadtree::{QuadtreeManager, TileId};
+use crate::globe::quadtree::{CullPipeline, QuadtreeManager, TileId};
 use crate::render::camera_uniform::CameraUniform;
 use crate::render::tile_display::{TileBuffers, TileDisplayEntry, TilePushConstants};
 #[cfg(feature = "debug_panel")]
@@ -343,7 +343,15 @@ impl<'a> WgpuState<'a> {
             egui_state,
             #[cfg(feature = "debug_panel")]
             egui_renderer,
-            quadtree_manager: QuadtreeManager::new(),
+            quadtree_manager: {
+                // WP5 (`docs/pre-terrain-plan.md`): production runs DEFAULT + Fog.
+                // The culling harness never constructs a `WgpuState`, so this is the
+                // only place `DEFAULT_WITH_FOG` is ever selected — see that
+                // constant's doc comment before changing it.
+                let mut qt = QuadtreeManager::new();
+                qt.pipeline = CullPipeline::DEFAULT_WITH_FOG;
+                qt
+            },
             tile_system,
             extension,
             display_state: HashMap::new(),
@@ -506,6 +514,11 @@ impl<'a> WgpuState<'a> {
         let frustum_obj = crate::globe::quadtree::Frustum::planes_only(frustum, camera_pos_dvec)
             .with_corners(self.camera.frustum_corners_relative(aspect_ratio));
 
+        // Hoisted above the quadtree block (WP5): both the fog density below and
+        // the label zoom bucket further down need it, and it is one cheap call
+        // either way.
+        let altitude = self.camera.altitude();
+
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.quadtree");
             let quadtree_start = Instant::now();
@@ -523,12 +536,19 @@ impl<'a> WgpuState<'a> {
                 self.size.height as f32,
                 self.camera.fovy(),
             );
+            // WP5: fog density from camera altitude alone, recomputed fresh every
+            // frame like `lod_factor` above. `altitude` is megameters (this
+            // engine's world frame); `fog_density_for` takes metres — see
+            // `globe::quadtree::fog`'s module doc comment's Units section.
+            self.quadtree_manager.fog_density = crate::globe::quadtree::fog_density_for(
+                altitude * crate::globe::quadtree::MEGAMETERS_TO_METERS,
+                &self.tile_system.config.fog,
+            );
             self.quadtree_manager.update(&frustum_obj);
             self.last_subsystem_timings.quadtree_us =
                 quadtree_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
 
-        let altitude = self.camera.altitude();
         let zoom = ((-altitude.max(0.0001).log2() + 4.0) as isize).clamp(0, 15) as usize;
 
         {

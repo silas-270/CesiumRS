@@ -55,6 +55,7 @@
 use glam::{DVec3, Vec3};
 
 use super::bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
+use super::fog::{cesium_fog, MEGAMETERS_TO_METERS};
 use super::horizon::{HorizonCamera, TilePatch};
 use super::tile_id::{
     tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
@@ -596,6 +597,17 @@ pub enum Stage {
     /// case is unreachable — a grid-less node is always settled there — but the
     /// stage is still total, because a pipeline may list it alone.
     SubPatchGrid,
+    /// Outright atmospheric-fog cull — WP5 of `docs/pre-terrain-plan.md`. `Cull`
+    /// when [`cesium_fog`] of the node's distance to the eye reaches `1.0`;
+    /// `Undecided` otherwise (including whenever `ctx.fog_density == 0.0`, i.e. no
+    /// fog set, or the camera is above `FogConfig::max_height_m`). Never `Keep`:
+    /// fog only ever *removes* geometry that other stages already proved visible,
+    /// it is never itself proof that something is visible.
+    ///
+    /// **Not geometrically sound, and not in [`CullPipeline::DEFAULT`].** See the
+    /// warning on [`super::fog`]'s module doc comment before touching this stage's
+    /// placement in any pipeline.
+    Fog,
 }
 
 impl Stage {
@@ -643,12 +655,29 @@ impl Stage {
                 }
                 None => StageVerdict::Undecided,
             },
+            Stage::Fog => {
+                if ctx.fog_density <= 0.0 {
+                    return StageVerdict::Undecided;
+                }
+                // The tile's own nearest-point distance, in metres — same choice
+                // `QuadtreeNode::apply_lod`'s fog relaxation makes, and independent
+                // of `LodDistanceMode` (a separate, orthogonal WP4/C experiment):
+                // fog concealment is a property of the tile's own geometry, not of
+                // which LOD distance metric happens to be active.
+                let dist_m = node.obb.distance_to_point(ctx.frustum.eye)
+                    * MEGAMETERS_TO_METERS;
+                if cesium_fog(dist_m, ctx.fog_density) >= 1.0 {
+                    StageVerdict::Cull
+                } else {
+                    StageVerdict::Undecided
+                }
+            }
         }
     }
 }
 
 /// The most stages a pipeline can hold — one of each [`Stage`].
-pub const MAX_STAGES: usize = 3;
+pub const MAX_STAGES: usize = 4;
 
 /// An ordered, switchable list of culling stages. `Copy`, 4 bytes, no allocation.
 ///
@@ -712,6 +741,24 @@ impl CullPipeline {
     /// f32/f64 has no observable effect, so the visible set is bit-identical.
     pub const DEFAULT: CullPipeline =
         CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid]);
+
+    /// `DEFAULT` plus [`Stage::Fog`] — WP5 of `docs/pre-terrain-plan.md`. **This is
+    /// what `wgpu_state.rs` actually runs in production**; `DEFAULT` alone is not.
+    ///
+    /// # Do not use this in the culling harness. Ever.
+    ///
+    /// Fog culling is not geometrically sound — it deliberately discards tiles that
+    /// are genuinely visible, so `Stage::Fog` makes false negatives non-zero *by
+    /// design*. Every FN = 0 guarantee in `docs/culling-math.md`, and every sweep in
+    /// `src/testing/culling/`, is proved against `CullPipeline::DEFAULT` — put this
+    /// constant in place of it (in the harness, in `all_pipelines()`, in a bench) and
+    /// every one of those sweeps goes red, correctly, because the thing they check
+    /// (nothing visible is ever culled) is no longer true and was never supposed to
+    /// be while measuring this pipeline. That is not a bug to fix; it is the reason
+    /// `Stage::Fog` exists as an *addition* on top of `DEFAULT` rather than a change
+    /// to it. See [`super::fog`]'s module doc comment for the full story.
+    pub const DEFAULT_WITH_FOG: CullPipeline =
+        CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid, Stage::Fog]);
 
     /// Builds a pipeline from a stage list. Panics above [`MAX_STAGES`] stages —
     /// `const`, so a bad constant fails to compile rather than at run time.
@@ -823,6 +870,13 @@ pub struct CullContext {
     /// WP4/C measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`,
     /// production's only value.
     pub lod_distance_mode: LodDistanceMode,
+    /// This frame's atmospheric fog density (WP5) — `0.0` (the default) means "no
+    /// fog effect", which is both the harness's only value and what a camera above
+    /// `FogConfig::max_height_m` computes. Read by [`Stage::Fog`] (only ever
+    /// present in [`CullPipeline::DEFAULT_WITH_FOG`]) and by
+    /// `QuadtreeNode::apply_lod`'s relaxation. See [`super::fog`]'s module doc
+    /// comment.
+    pub fog_density: f32,
 }
 
 impl CullContext {
@@ -837,12 +891,19 @@ impl CullContext {
             horizon: HorizonCamera::new(frustum.eye),
             pipeline,
             lod_distance_mode: LodDistanceMode::default(),
+            fog_density: 0.0,
         }
     }
 
     /// WP4/C only — see [`LodDistanceMode`]. Not called anywhere in production.
     pub fn with_lod_distance_mode(mut self, mode: LodDistanceMode) -> Self {
         self.lod_distance_mode = mode;
+        self
+    }
+
+    /// WP5 only — see [`super::fog::FogConfig`] and this struct's `fog_density` field.
+    pub fn with_fog_density(mut self, fog_density: f32) -> Self {
+        self.fog_density = fog_density;
         self
     }
 }
@@ -963,12 +1024,45 @@ impl QuadtreeNode {
             LodDistanceMode::Box => self.obb.distance_to_point(ctx.frustum.eye),
         };
 
+        // Fog relaxation — WP5. Cesium subtracts `fog(dist, density) * fog.sse`
+        // from its screen-space-error term, so a partly-fogged tile's error sits
+        // closer to (or under) the refine threshold and it refines less. This
+        // engine has no error term to subtract from — it refines while `dist <
+        // subdivide_dist` — so the derived equivalent shrinks `subdivide_dist`
+        // itself by the same fraction the tile is fogged:
+        //
+        //   subdivide_dist' = subdivide_dist * (1 - fog(dist, density))
+        //
+        // At `fog = 0` (no fog, or this node outside it) the threshold is
+        // unchanged. At `fog -> 1` — the boundary `Stage::Fog` culls the node
+        // outright at, in `CullPipeline::DEFAULT_WITH_FOG` — the threshold shrinks
+        // to 0, so a heavily-fogged node stops accepting further refinement in the
+        // frames just before it disappears rather than staying maximally refined
+        // right up to the cull. `fog.sse` is deliberately **not** used here: it is
+        // a pixel-space screen-space-error constant, and this formula has no error
+        // term in those units to scale — see `FogConfig::sse`'s doc comment for
+        // where it is reserved instead. Distance is the node's own nearest-point
+        // distance (`obb.distance_to_point`), matching `Stage::Fog`'s choice and
+        // independent of `LodDistanceMode` — fog concealment is a property of the
+        // tile's own geometry, not of which experimental LOD distance metric is
+        // active.
+        let fog_relaxation = if ctx.fog_density > 0.0 {
+            let fog_dist_m = self.obb.distance_to_point(ctx.frustum.eye) * MEGAMETERS_TO_METERS;
+            1.0 - cesium_fog(fog_dist_m, ctx.fog_density)
+        } else {
+            1.0
+        };
+
         // Hysteresis logic: Subdivide at 1.0x, but don't collapse until 1.2x.
         // A 20% band prevents LOD oscillation when the camera straddles the
         // subdivision threshold. The old 1.05x band (~50 m at z=19) was too
         // narrow and caused rapid APPEAR/DISAPPEAR flicker on high-detail tiles.
+        // `fog_relaxation` is applied before the band is derived, not after, so
+        // the 20% band stays a constant *fraction* of the (possibly fog-shrunk)
+        // threshold rather than a fixed absolute margin that would narrow, and
+        // therefore oscillate more easily, as fog thickens.
         let is_subdivided = self.children.is_some();
-        let subdivide_dist = self.unstretched_radius * lod_factor;
+        let subdivide_dist = self.unstretched_radius * lod_factor * fog_relaxation;
         let collapse_dist = subdivide_dist * 1.20;
 
         let should_be_subdivided = if is_subdivided {
@@ -1356,6 +1450,13 @@ pub struct QuadtreeManager {
     /// `wgpu_state.rs` never sets this, so production behaviour is unchanged by its
     /// existence.
     pub lod_distance_mode: LodDistanceMode,
+    /// This frame's fog density — WP5. `0.0` (the default) is a true no-op: every
+    /// caller that never sets this field gets exactly pre-WP5 behaviour, in both
+    /// [`Stage::Fog`] (undecided, never culls) and `QuadtreeNode::apply_lod`'s
+    /// relaxation (multiplies by `1.0`). `wgpu_state.rs` is the only production
+    /// caller that sets it, recomputed fresh every frame from camera altitude — see
+    /// [`super::fog::fog_density_for`].
+    pub fog_density: f32,
 }
 
 impl Default for QuadtreeManager {
@@ -1376,6 +1477,7 @@ impl QuadtreeManager {
             lod_factor: 2.0, // Default LOD tuning parameter
             pipeline: CullPipeline::DEFAULT,
             lod_distance_mode: LodDistanceMode::default(),
+            fog_density: 0.0,
         }
     }
 
@@ -1383,7 +1485,8 @@ impl QuadtreeManager {
     /// frame, so there is no second position argument to get out of step with it.
     pub fn update(&mut self, frustum: &Frustum) {
         let ctx = CullContext::with_pipeline(frustum, self.pipeline)
-            .with_lod_distance_mode(self.lod_distance_mode);
+            .with_lod_distance_mode(self.lod_distance_mode)
+            .with_fog_density(self.fog_density);
         for root in self.roots.iter_mut() {
             root.update(&ctx, self.lod_factor);
         }
