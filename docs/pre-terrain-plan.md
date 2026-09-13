@@ -295,15 +295,25 @@ Note the naming: `TileEngineConfig.lod_factor` stops being the knob and `target_
 > Reordered into four pieces, done in this order: **A** (live texture size — below,
 > **done**, see `docs/culling-baseline.md`'s WP4/A section), **B** (a viewport/mode
 > ladder in the LOD harness, needed before C can be measured at anything but the
-> desktop default), **C** (the 3a evaluation — "3a returns, as a paired change" below
-> — at *equal tile budget*, ending in a report, not a commit), **D** (only after a
-> product decision on whether to spend C's finding, gated on that decision — not
-> mine or the assistant's to make). A and B land as ordinary commits; C is
-> measurement-only.
+> desktop default — **done**, see the WP4/B section), **C** (the 3a evaluation —
+> "3a returns, as a paired change" below — at *equal tile budget*, ending in a
+> report, not a commit), **D** (only after a product decision on whether to spend
+> C's finding, gated on that decision — not mine or the assistant's to make). A and
+> B land as ordinary commits; C is measurement-only.
+>
+> **B also found the per-mode-FOV bullet below already stale**, not just the
+> texture-size one: `cam.fovy()` — mode-aware since `Camera::fovy()` was introduced
+> in WP3/3b — was already the value `update_logic` passed to `lod_factor_for`, before
+> any WP4 change. "currently it refines identically" (below) was not true even at the
+> top of this package. What WP4/B actually contributed is *measuring* that this
+> works, and by how much: Cockpit vs Free at equal height differs by exactly
+> `2·tan(fovy_free/2) / 2·tan(fovy_cockpit/2) ≈ 0.742`, i.e. **~25.8 %** less
+> refinement — not the ~35 %/1.8× estimated below, which this measured figure now
+> supersedes. See `docs/culling-baseline.md`'s WP4/B section for the full ladder.
 
 **Work**
-- ~~Feed the **real viewport height** through on construction and on resize.~~ **Done in WP3/3b**: `update_logic` recomputes `lod_factor` from `self.size.height` every frame, so resize is covered with no cached value to invalidate. What is left here is to *measure* the consequence — the S23 should now ask for meaningfully more detail than the desktop default, and that wants confirming rather than assuming.
-- Feed the **per-mode FOV**. Cockpit's `2·tan(30°) = 1.155` against Free's `0.857` means cockpit should refine ~35 % less in distance terms — currently it refines identically, carrying roughly 1.8× the tiles it can resolve.
+- ~~Feed the **real viewport height** through on construction and on resize.~~ **Done in WP3/3b**: `update_logic` recomputes `lod_factor` from `self.size.height` every frame, so resize is covered with no cached value to invalidate. ~~What is left here is to *measure* the consequence — the S23 should now ask for meaningfully more detail than the desktop default, and that wants confirming rather than assuming.~~ **Measured, WP4/B (2026-09-13)**: true for S23 **portrait** (height 2340 — `aggregate_ratio` 1.84, 5 640 tiles vs the desktop's 3 922) and **false for landscape** (height 1080, identical to the desktop's — `lod_factor` is bit-identical since the formula depends only on height, not width or physical pixel density). See `docs/culling-baseline.md`'s WP4/B section.
+- ~~Feed the **per-mode FOV**. Cockpit's `2·tan(30°) = 1.155` against Free's `0.857` means cockpit should refine ~35 % less in distance terms — currently it refines identically, carrying roughly 1.8× the tiles it can resolve.~~ **Already done before this package** (WP3/3b's `Camera::fovy()` was already mode-aware and already what `update_logic` passed in) — this bullet was stale when WP4 opened. **Measured, WP4/B**: the actual ratio is `2·tan(fovy_free/2) / 2·tan(fovy_cockpit/2) ≈ 0.742`, i.e. Cockpit refines **~25.8 %** less, not ~35 %/1.8×. See `docs/culling-baseline.md`'s WP4/B section and `test_lod_factor_matches_hand_derivation_at_every_rung`.
 - ~~Feed the **imagery texture size** from the texture manager, so switching between the 512² Carto basemap and the 256² Esri satellite layer adjusts LOD instead of silently halving sharpness.~~ **Done (WP4/A, 2026-09-13)**: `TileTextureManager::current_texture_size_px()` (backed by the new `ObservedTextureSize`, GPU-free and unit-tested) feeds `lod_factor_for` fresh every frame from `wgpu_state::update_logic`, falling back to `DEFAULT_IMAGERY_TEXTURE_SIZE_PX` only until the current style's first tile decodes. Measured both styles — see `docs/culling-baseline.md`'s WP4/A section: pre-fix, Esri's 256px tiles were silently running at `aggregate_ratio ≈ 0.42` (a quarter of Carto's 1.66, exactly `(256/512)²`, verified by construction); post-fix, `≈ 1.74`, comparable to Carto.
 - Use the WP1 harness to pick `target_texel_ratio`. The theoretical answer is 1.0; measure it rather than assume it, and report the cost curve (tile count and texture bytes against ratio) the way `SUB_BOXES_PER_AXIS`'s doc comment reports its trade.
 

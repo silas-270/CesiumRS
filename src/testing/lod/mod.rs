@@ -79,6 +79,7 @@
 //! |------|---------|
 //! | [`sweep`]  | per-pose measurement: project the patch, clip to the viewport, score every visible tile |
 //! | [`report`] | CSV (into the temp dir) and the human-readable summary |
+//! | [`ladder`] | WP4/B: re-labels the 204 bench pose geometries at other viewport/mode combinations |
 //!
 //! Test cases live in `test_*.rs` and contain no measurement logic of their own.
 //!
@@ -96,9 +97,13 @@
 //! CSVs land in `$TMPDIR/cesium_lod_harness/`, never in the repo.
 
 #[cfg(test)]
+pub mod ladder;
+#[cfg(test)]
 pub mod report;
 #[cfg(test)]
 pub mod sweep;
 
 #[cfg(test)]
 pub mod test_lod_sweep;
+#[cfg(test)]
+pub mod test_viewport_ladder;

@@ -135,6 +135,51 @@ silent quarter of it. `test_lod_factor_scales_inversely_with_texture_size` pins 
 underlying `lod_factor_for` relationship (halving `texture_size_px` doubles
 `lod_factor`) at a second target and viewport away from this calibration point.
 
+## WP4 / B — viewport and mode ladder
+
+*Recorded 2026-09-13. `src/testing/lod/ladder.rs` re-labels the same 204 bench pose
+geometries at other viewport/mode combinations (`bench_cells()` itself is frozen and
+untouched). Measured with
+`cargo test --release --lib lod::test_viewport_ladder:: -- --test-threads=1 --nocapture`,
+`target_texel_ratio = 1.0`, `texture_size_px = 512` throughout — only viewport and
+mode vary.*
+
+| rung | tiles | aggregate_ratio | median | p5 | p95 | texture MiB | deepest z |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| 1920x1080 Free (desktop default) | 3 922 | 1.6625 | 3.1610 | 0.2728 | 219.47 | 3922.0 | 20 |
+| 1280x720 Free | 2 406 | 1.8411 | 2.7981 | 0.2275 | 274.40 | 2406.0 | 20 |
+| S23 landscape (2340x1080) Free | 4 382 | 1.5835 | 3.0621 | 0.2469 | 208.59 | 4382.0 | 20 |
+| S23 landscape Cockpit | 3 391 | 1.1822 | 1.6160 | 0.1330 | 240.44 | 3391.0 | 20 |
+| S23 portrait (1080x2340) Free | 5 640 | 1.8361 | 5.1167 | 0.3766 | 362.58 | 5640.0 | 20 |
+| S23 portrait Cockpit | 4 942 | 1.5939 | 3.1854 | 0.3631 | 313.35 | 4942.0 | 20 |
+
+**What this confirms, and one thing it refutes.** `lod_factor_for` depends on
+viewport *height* and mode's `fovy` — never width — which
+`test_lod_factor_matches_hand_derivation_at_every_rung` checks bit-for-bit
+(1280x720's `lod_factor` is exactly `desktop × 720/1080`; S23 landscape's is
+*bit-identical* to the desktop default's, since both are 1080 tall and `Free`;
+Cockpit vs Free at equal height differs by exactly `2·tan(fovy_free/2) /
+2·tan(fovy_cockpit/2) ≈ 0.742`, i.e. Cockpit refines **~25.8 %** less in distance
+terms — measurably different from `docs/pre-terrain-plan.md`'s original ~35 %
+estimate, which this now supersedes with an exact figure).
+
+`docs/pre-terrain-plan.md` WP3/3b's own text says *"the S23 should now ask for
+meaningfully more detail than the desktop default"* — **true for portrait
+(height 2340, aggregate_ratio 1.84 and 5 640 tiles vs the desktop's 3 922), false
+for landscape** (height 1080, identical to desktop — 1.58 aggregate_ratio, and the
+tile-count difference that does show up, 4 382 vs 3 922, comes entirely from the
+wider frustum's aspect ratio letting more tiles pass culling, not from any change in
+`lod_factor`). The formula is purely height-driven; it has no notion of physical
+pixel density, so a phone held sideways at the same logical height as a desktop
+window gets the desktop's detail level, not the phone's. Worth knowing before WP4/C
+and D pick numbers that assume otherwise — the cockpit interior is normally viewed
+in landscape, which is the orientation this formula does *not* sharpen.
+
+Cockpit mode's lower `aggregate_ratio` at both S23 orientations (1.18 landscape,
+1.59 portrait, both below their Free counterparts) is the wider Cockpit FOV working
+as intended — fewer, coarser tiles for the same viewport, matching the plan's
+"cockpit should refine less" expectation, now measured rather than assumed.
+
 ## Housekeeping done alongside this baseline
 
 - `culling-pipeline.html` (untracked at the repo root) was **deleted**, not
