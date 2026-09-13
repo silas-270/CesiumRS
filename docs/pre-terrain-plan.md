@@ -297,9 +297,13 @@ Note the naming: `TileEngineConfig.lod_factor` stops being the knob and `target_
 > ladder in the LOD harness, needed before C can be measured at anything but the
 > desktop default — **done**, see the WP4/B section), **C** (the 3a evaluation —
 > "3a returns, as a paired change" below — at *equal tile budget*, ending in a
-> report, not a commit), **D** (only after a product decision on whether to spend
-> C's finding, gated on that decision — not mine or the assistant's to make). A and
-> B land as ordinary commits; C is measurement-only.
+> report, not a commit — **measured, see the WP4/C section**; recommendation:
+> **do not adopt as specified**), **D** (only after a product decision on whether to
+> spend C's finding, gated on that decision — not mine or the assistant's to make —
+> **not started, awaiting that decision**). A and B land as ordinary commits; C is
+> measurement-only — the measurement *infrastructure* (`LodDistanceMode`, additive
+> and off by default) is committed, but no default changed and
+> `test_visible_set_digest_is_stable` was not touched.
 >
 > **B also found the per-mode-FOV bullet below already stale**, not just the
 > texture-size one: `cam.fovy()` — mode-aware since `Camera::fovy()` was introduced
@@ -330,6 +334,36 @@ That makes it the same cost-vs-quality trade this WP already runs for `target_te
 `bounding_volume.rs::distance_to_point` is already in the tree, unused, waiting for this.
 
 **Procedural note.** Whenever this lands, **re-pinning `test_visible_set_digest_is_stable`'s constants is expected and correct** — the visible set is supposed to change, that is the point of the package. This follows the WP2 draw-order precedent; that test's own doc comment anticipates and welcomes a deliberate digest change. Make the re-pin **its own commit**, with the reason and the before/after digests in the message, rather than folding it silently into a larger one. A digest change buried in a commit that also moves other things is indistinguishable from an accident.
+
+> **Measured (2026-09-13) — do not adopt as specified.** Full table and reasoning in
+> `docs/culling-baseline.md`'s WP4/C section; summary here.
+>
+> Box-distance tuned to centre-distance's own tile count (`N = 3 922` at
+> `target_texel_ratio = 1.0`) needs `target_texel_ratio ≈ 0.428` — **lower**, not
+> higher. The paragraph above says "raising `target_texel_ratio` to compensate",
+> which was correct *only* against the pre-fix formula (`target_texel_ratio` as a
+> divisor, backwards direction — see the `fix(lod)` commit and
+> `docs/culling-baseline.md`'s WP3 addendum): under that broken semantics, a higher
+> target shrank `lod_factor`. Post-fix, higher target *grows* `lod_factor`, so the
+> compensating direction is the opposite of what this section originally assumed.
+> This is left as further confirmation that the direction fix was real, not just a
+> passed unit test.
+>
+> At that equal budget, box-distance does **not** lift the worst under-refined
+> tiles — this section's own question. `p5` is *worse* (0.2003 vs centre's 0.2728),
+> and the single worst 20 tiles are 12-deep bit-identical between the two variants:
+> the true worst cases here are capped by `MAX_ZOOM = 20`, not limited by the
+> distance metric, so 3a has nothing to fix in them. What it does buy — `p25` moving
+> from 0.80 toward 0.99 — comes at the cost of a markedly worse `p95` (219 → 376)
+> and median (3.16 → 4.78), redirecting budget into the tail WP5's fog work already
+> owns rather than the one this package targeted.
+>
+> **Recommendation: do not adopt.** It does not solve the problem it was proposed
+> for on this bench pose set, and it worsens a tail that has its own dedicated
+> fix already planned (WP5). The measurement infrastructure (`LodDistanceMode`,
+> additive, off by default, no production code sets it) is committed regardless —
+> WP4/D can revisit with it if a reason turns up (a different pose distribution, a
+> paired change with WP5, etc.), but nothing here spends it.
 
 **Done when**
 - Defaults are changed and justified by a table in the docs, in the style the culling docs already use.

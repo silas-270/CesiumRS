@@ -180,6 +180,72 @@ Cockpit mode's lower `aggregate_ratio` at both S23 orientations (1.18 landscape,
 as intended — fewer, coarser tiles for the same viewport, matching the plan's
 "cockpit should refine less" expectation, now measured rather than assumed.
 
+## WP4 / C — 3a at equal tile budget (measurement only — not adopted)
+
+*Recorded 2026-09-13. Measured with
+`cargo test --release --lib lod::test_wp4c_3a_equal_budget:: -- --test-threads=1 --nocapture`.
+**This section reports a finding. It does not adopt anything** — no default changed,
+`test_visible_set_digest_is_stable` was not re-pinned (it doesn't need to be: the
+`LodDistanceMode` switch this measurement uses is off by default and unreachable
+from `wgpu_state.rs`), and whether to spend the +70% tile cost 3a requires is a
+product decision this document does not make. See WP4/D in
+`docs/pre-terrain-plan.md` for what happens after that decision, whichever way it
+goes.*
+
+**The question**, per WP3's refutation and WP4's reframing: not "is box-distance a
+free upgrade" (WP3 already answered that — no, it costs +70% tiles at equal
+`target_texel_ratio`), but *"is box-distance at a higher `target_texel_ratio` better
+than centre-distance at a lower one, at the **same** tile budget?"*
+
+**Method.** `N` is centre-distance's own tile count at `target_texel_ratio = 1.0`
+(3 922 — "today"). A bisection search
+(`tune_target_for_tile_count`) finds the `target_texel_ratio` at which box-distance
+also produces `≈ N` tiles: `0.42844`, landing at 3 918 tiles (−0.10% off `N`).
+`test_box_distance_matches_wp3s_refutation_measurement_at_equal_target` first
+confirms the `LodDistanceMode` plumbing itself reproduces WP3's +70% figure exactly
+(+70.4% measured here vs. +70.5% in the WP3 refutation) before trusting anything
+built on top of it.
+
+| | centre-distance (today) | box-distance (equal budget) |
+|---|---:|---:|
+| `target_texel_ratio` | 1.00000 | 0.42844 |
+| tiles | 3 922 | 3 918 |
+| `aggregate_ratio` | 1.6625 | 1.6659 |
+| p5 (blurry tail) | **0.2728** | **0.2003** |
+| p25 | 0.8030 | 0.9892 |
+| median | 3.1610 | 4.7787 |
+| p95 (wasteful tail) | 219.47 | 375.86 |
+
+**Finding: box-distance does not lift the blurry tail at equal budget — if
+anything it is measurably worse.** `p5` is `0.2003` for box vs. `0.2728` for
+centre: *lower*, not higher. The single worst 20 under-refined tiles are listed in
+both variants' test output; **the 12 single worst ranks are bit-identical between
+them**, both centre and box putting the single worst tile at exactly `z=20
+x=550502 y=364500`, ratio `0.0135` — because that tile is already at `MAX_ZOOM =
+20`, the hard subdivision ceiling neither distance metric can refine past. The
+grazing-angle cases 3a exists to fix are real (WP3 measured the centre/box distance
+ratio diverging without bound as the camera nears the box), but at *this* bench
+pose set, the very worst offenders are already zoom-capped, not distance-starved —
+so 3a has nothing left to spend its budget on there. What it *does* buy: `p25`
+improves (`0.80 → 0.99`, genuinely closer to the "ideal" 1.0), at the cost of a
+markedly worse `p95` (`219 → 376`) and median (`3.16 → 4.78`) — box-distance's
+extra subdivision (visible in the per-zoom table: box shifts tiles from z=2,4-8,11
+toward z=3,9-10,12-15) buys some mid-distribution improvement by making the
+already-over-refined near-limb tail *more* over-refined, which is exactly the tail
+WP5's fog work owns, not this one.
+
+**Recommendation: do not adopt 3a as specified, at least not as a blanket
+distance-metric swap.** It does not solve the problem it was proposed for (the
+worst blurry tiles are zoom-capped, not distance-metric-limited) and it makes the
+already-known-bad wasteful tail worse for a `p25` improvement that a uniformly
+lower `target_texel_ratio` — the "simply lowering the ratio uniformly" comparison
+WP4's own text asks for — might buy just as well without the redistribution cost.
+That further comparison (box-distance's *shape* vs. a plain lower-ratio
+centre-distance's *shape*, both at equal `N`) is the natural next measurement if
+this finding needs more confidence before WP4/D acts on it, and is not included
+here — this section reports what was asked for, not everything that could be asked
+next.
+
 ## Housekeeping done alongside this baseline
 
 - `culling-pipeline.html` (untracked at the repo root) was **deleted**, not
