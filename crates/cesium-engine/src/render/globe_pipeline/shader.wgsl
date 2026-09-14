@@ -2,6 +2,60 @@
 const EARTH_RADIUS_MM: f32 = 6.378137;      // Mm
 const ATMOSPHERE_THICKNESS_MM: f32 = 0.15;  // Mm; 150km shell for the sky raymarch
 
+// ── Shared sky palette ──────────────────────────────────────────────────
+// MUST match sky_pipeline/sky.wgsl / globe_pipeline/shader.wgsl exactly (this
+// is the other one). See docs/lighting.md, "The sky must agree with the
+// globe at the horizon." Both files call these with the same sun_elevation
+// (camera.sun_dir.w) so the seam is enforced by construction. Edit both
+// copies in the same commit; verify with light_audit_sweep before trusting.
+
+const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
+const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
+const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.012, 0.012, 0.014);
+const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.055, 0.057, 0.062);
+
+// Relative Rayleigh scattering weight per channel (R,G,B), normalised to
+// green = 1, from inverse-4th-power-of-wavelength coefficients for
+// 680/550/440nm air. Used only as a relative HUE weight below, not as a real
+// extinction term — see the plan's "design decision" note for why a literal
+// Beer-Lambert transmittance here would darken toward black instead of glow.
+const RAYLEIGH_WEIGHT: vec3<f32> = vec3<f32>(0.43, 1.0, 2.45);
+
+/// `sun_elevation` is sin(elevation), carried on camera.sun_dir.w
+/// (render/celestial.rs), not radians. Returns [zenith, horizon].
+fn sky_palette(sun_elevation: f32) -> array<vec3<f32>, 2> {
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
+    let zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
+    let horizon = mix(NOON_HORIZON, NIGHT_HORIZON, night_amount);
+    return array<vec3<f32>, 2>(zenith, horizon);
+}
+
+/// The dusk glow as a multiplicative tint on the horizon colour.
+///
+/// **Deviation from the plan as written:** the plan's snippet computed
+/// `twilight` as `day_amount * (1-day_amount) * 4`, a bell curve entirely
+/// inside `sun_elevation` ∈ [0, DAY_ELEVATION]. That's zero for the whole
+/// negative-elevation dusk-to-night band (DUSK_ELEVATION..NIGHT_ELEVATION in
+/// celestial.rs) — exactly the regime the old hand-authored
+/// `dusk_horizon_color` used to dominate — so light_audit_sweep's
+/// `02_sunset` frames rendered with no warmth at all (flat blue). The
+/// trapezoid below is "not day AND not night", which is what the old
+/// sequential day/dusk/night mix actually produced as its dusk weight; at
+/// full weight (twilight=1) it reproduces the old dusk_horizon_color to
+/// within ~0.005 per channel against NOON_HORIZON, confirming the 1.35/2.3256
+/// scale below was tuned assuming this shape. Verified against
+/// light_audit_sweep. MUST match the other file's copy of this function.
+fn sky_warm_tint(sun_elevation: f32) -> vec3<f32> {
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
+    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+    // 1/RAYLEIGH_WEIGHT rescaled so the reddest channel lands on the old
+    // hand-picked tint's peak (1.35) — the one number here still tuned by
+    // eye, down from a whole extra hand-authored RGB key.
+    let warm = (1.0 / RAYLEIGH_WEIGHT) * (1.35 / 2.3256);
+    return mix(vec3<f32>(1.0), warm, twilight);
+}
+
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
@@ -110,51 +164,44 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     
     let shaded_color = tex_color_rgb * (ambient + diffuse) * key_tint;
     
-    let pixel_dist = length(in.world_pos);
-    let dist_dx = dpdx(pixel_dist);
-    let dist_dy = dpdy(pixel_dist);
-    let dist_grad = sqrt(dist_dx * dist_dx + dist_dy * dist_dy);
-    
-    let horizon_metric = dist_grad / sqrt(max(pixel_dist, 0.0001));
-    
-    let HORIZON_BLUR_WIDTH = 2.0; 
-    let lower_thresh = 0.015 / HORIZON_BLUR_WIDTH;
-    let upper_thresh = 0.06 / HORIZON_BLUR_WIDTH;
-    
-    var blur_factor = smoothstep(lower_thresh, upper_thresh, horizon_metric);
-    
-    let dist_fade = smoothstep(0.0, 0.0001, pixel_dist);
-    blur_factor = blur_factor * dist_fade;
-    
+    // Grazing angle between the view ray and the local surface normal: 1.0
+    // looking straight down, 0.0 exactly edge-on at the true visual horizon of a
+    // smooth sphere (same geometric fact culling's own horizon test relies on —
+    // zero terrain relief today). Two dot products, resolution/FOV-independent,
+    // replacing a screen-space-derivative heuristic.
+    let cam_to_frag = camera.camera_pos.xyz - in.world_pos;
+    let frag_dist = length(cam_to_frag);
+    let to_camera = cam_to_frag / max(frag_dist, 1e-6);
+    let grazing_cos = max(dot(normalize(in.normal), to_camera), 0.0);
+
+    let HORIZON_HAZE_LOWER: f32 = 0.03; // full haze below this — tune against light_audit_sweep
+    let HORIZON_HAZE_UPPER: f32 = 0.20; // no haze above this
+    // smoothstep needs low < high (docs/lighting.md's WGSL gotchas) — invert with
+    // 1.0 - … rather than swapping the arguments.
+    var horizon_blend = 1.0 - smoothstep(HORIZON_HAZE_LOWER, HORIZON_HAZE_UPPER, grazing_cos);
+
     let earth_radius = EARTH_RADIUS_MM;
     let r_cam = max(length(camera.camera_pos.xyz), earth_radius);
     let altitude = max(r_cam - earth_radius, 0.0);
-    
+
     // The haze at the limb has to agree with the sky drawn behind it, so it follows the
     // sun's elevation on the same ramp rather than the altitude scalar.
     let sun_elevation = camera.sun_dir.w;
-    // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT.
-    let day_amount = smoothstep(0.0, 0.10, sun_elevation);
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
-    let day_horizon_color = vec3<f32>(0.65, 0.75, 0.85);
-    let dusk_horizon_color = vec3<f32>(0.92, 0.44, 0.22);
-    let night_horizon_color = vec3<f32>(0.055, 0.057, 0.062);
-    var horizon_color = mix(dusk_horizon_color, day_horizon_color, day_amount);
-    horizon_color = mix(horizon_color, night_horizon_color, night_amount);
+    var horizon_haze_color = sky_palette(sun_elevation)[1] * sky_warm_tint(sun_elevation);
     // MUST match sky.wgsl exactly. The terrain's limb haze and the sky behind it meet at
     // the horizon, so any difference between them shows up as a hard line across the
     // whole view. They used to agree for free by both keying off the altitude scalar;
     // once the sky moved to a time-of-day ramp, this had to be dimmed the same way.
-    horizon_color = mix(horizon_color * 0.25, horizon_color, altitude_scalar);
-    
+    horizon_haze_color = mix(horizon_haze_color * 0.25, horizon_haze_color, altitude_scalar);
+
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
     let space_fade = clamp(
         (altitude - ATMOSPHERE_THICKNESS_MM / 3.0) / (ATMOSPHERE_THICKNESS_MM * 3.0),
         0.0, 1.0);
-    let current_fog_color = mix(horizon_color, space_color, space_fade);
-    
-    let final_color = mix(shaded_color, current_fog_color, blur_factor);
-    
+    horizon_haze_color = mix(horizon_haze_color, space_color, space_fade);
+
+    let final_color = mix(shaded_color, horizon_haze_color, horizon_blend);
+
     return vec4<f32>(final_color, tex_color_raw.a);
 }
 

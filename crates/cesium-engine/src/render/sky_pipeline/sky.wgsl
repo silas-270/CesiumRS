@@ -49,6 +49,60 @@ const MOON_ANGULAR_RADIUS: f32 = 0.0212;
 const SUN_ANGULAR_RADIUS: f32 = 0.00863;
 const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
 
+// ── Shared sky palette ──────────────────────────────────────────────────
+// MUST match sky_pipeline/sky.wgsl / globe_pipeline/shader.wgsl exactly (this
+// is the other one). See docs/lighting.md, "The sky must agree with the
+// globe at the horizon." Both files call these with the same sun_elevation
+// (camera.sun_dir.w) so the seam is enforced by construction. Edit both
+// copies in the same commit; verify with light_audit_sweep before trusting.
+
+const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
+const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
+const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.012, 0.012, 0.014);
+const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.055, 0.057, 0.062);
+
+// Relative Rayleigh scattering weight per channel (R,G,B), normalised to
+// green = 1, from inverse-4th-power-of-wavelength coefficients for
+// 680/550/440nm air. Used only as a relative HUE weight below, not as a real
+// extinction term — see the plan's "design decision" note for why a literal
+// Beer-Lambert transmittance here would darken toward black instead of glow.
+const RAYLEIGH_WEIGHT: vec3<f32> = vec3<f32>(0.43, 1.0, 2.45);
+
+/// `sun_elevation` is sin(elevation), carried on camera.sun_dir.w
+/// (render/celestial.rs), not radians. Returns [zenith, horizon].
+fn sky_palette(sun_elevation: f32) -> array<vec3<f32>, 2> {
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
+    let zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
+    let horizon = mix(NOON_HORIZON, NIGHT_HORIZON, night_amount);
+    return array<vec3<f32>, 2>(zenith, horizon);
+}
+
+/// The dusk glow as a multiplicative tint on the horizon colour.
+///
+/// **Deviation from the plan as written:** the plan's snippet computed
+/// `twilight` as `day_amount * (1-day_amount) * 4`, a bell curve entirely
+/// inside `sun_elevation` ∈ [0, DAY_ELEVATION]. That's zero for the whole
+/// negative-elevation dusk-to-night band (DUSK_ELEVATION..NIGHT_ELEVATION in
+/// celestial.rs) — exactly the regime the old hand-authored
+/// `dusk_horizon_color` used to dominate — so light_audit_sweep's
+/// `02_sunset` frames rendered with no warmth at all (flat blue). The
+/// trapezoid below is "not day AND not night", which is what the old
+/// sequential day/dusk/night mix actually produced as its dusk weight; at
+/// full weight (twilight=1) it reproduces the old dusk_horizon_color to
+/// within ~0.005 per channel against NOON_HORIZON, confirming the 1.35/2.3256
+/// scale below was tuned assuming this shape. Verified against
+/// light_audit_sweep. MUST match the other file's copy of this function.
+fn sky_warm_tint(sun_elevation: f32) -> vec3<f32> {
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
+    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+    // 1/RAYLEIGH_WEIGHT rescaled so the reddest channel lands on the old
+    // hand-picked tint's peak (1.35) — the one number here still tuned by
+    // eye, down from a whole extra hand-authored RGB key.
+    let warm = (1.0 / RAYLEIGH_WEIGHT) * (1.35 / 2.3256);
+    return mix(vec3<f32>(1.0), warm, twilight);
+}
+
 fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
     let b = 2.0 * dot(rd, r0);
     let c = dot(r0, r0) - radius * radius;
@@ -195,35 +249,17 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
 
-    // Three daylight palettes, chosen by how high the sun is rather than by a clock.
-    let day_horizon_color   = vec3<f32>(0.70, 0.80, 0.90);
-    let day_zenith_color    = vec3<f32>(0.15, 0.35, 0.75);
-    let dusk_horizon_color  = vec3<f32>(0.95, 0.45, 0.22);
-    let dusk_zenith_color   = vec3<f32>(0.18, 0.20, 0.42);
-    // Grey rather than blue: the cruise is the quiet part and must not read as a colour.
-    let night_horizon_color = vec3<f32>(0.055, 0.057, 0.062);
-    let night_zenith_color  = vec3<f32>(0.012, 0.012, 0.014);
+    // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT (used inside sky_palette).
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation);
 
-    // Below the horizon the sky fades to night; above it, the warmth burns off as the sun
-    // climbs. Twilight is the band in between and is where all the colour lives.
-    // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT.
-    let day_amount   = smoothstep(0.0, 0.10, sun_elevation);
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
-
-    var horizon_color = mix(dusk_horizon_color, day_horizon_color, day_amount);
-    var zenith_color  = mix(dusk_zenith_color, day_zenith_color, day_amount);
-    horizon_color = mix(horizon_color, night_horizon_color, night_amount);
-    zenith_color  = mix(zenith_color, night_zenith_color, night_amount);
+    let palette = sky_palette(sun_elevation);
+    var zenith_color = palette[0];
+    var horizon_color = palette[1];
 
     // The warm half of the sky is the half the sun is in. Without this a sunset is an
     // even orange band all the way round, which is the giveaway of a faked sky.
     let toward_sun = smoothstep(-0.2, 0.9, cos_sun);
-    let twilight = day_amount * (1.0 - day_amount) * 4.0; // peaks mid-twilight
-    horizon_color = mix(
-        horizon_color,
-        horizon_color * vec3<f32>(1.35, 0.95, 0.75),
-        toward_sun * twilight
-    );
+    horizon_color = mix(horizon_color, horizon_color * sky_warm_tint(sun_elevation), toward_sun);
 
     // Altitude is a second, independent axis: the flight climbing into cruise drains the
     // sky toward space regardless of the hour. Dropping this broke the "deep dive" the
