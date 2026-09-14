@@ -1,61 +1,113 @@
 // MUST match the other file exactly — see docs/lighting.md.
 const EARTH_RADIUS_MM: f32 = 6.378137;      // Mm
-const ATMOSPHERE_THICKNESS_MM: f32 = 0.15;  // Mm; 150km shell for the sky raymarch
+
+const PI: f32 = 3.14159265;
 
 /// Semi-minor (polar) axis of the WGS84 ellipsoid, in Mm. `y` is the polar axis in this
-/// engine's world space — see `Camera::altitude`, whose formula this file's
-/// `height_above_ellipsoid` reproduces. Not part of the must-match pair above: the sky
-/// dome is a shell around the whole planet and has no use for a local surface height.
+/// engine's world space — see `Camera::altitude`, whose formula `ellipsoid_frame`
+/// reproduces. Not part of the must-match constant above: the sky dome is a shell around
+/// the whole planet and has no use for a local surface height.
 const EARTH_RADIUS_B_MM: f32 = 6.3567523142;
 
-/// Height of an absolute world-space point above the ellipsoid, in Mm.
-///
-/// A sphere of EARTH_RADIUS_MM is NOT good enough for this: the two axes differ by 21km,
-/// which is more than two scale heights of air, so at European latitudes a spherical
-/// height puts both the camera and the ground *below* the surface — every height clamps
-/// to zero, every view ray is then sea-level dense along its whole length, and the haze
-/// comes out far too strong. (Only `space_fade`, which is measured in hundreds of
-/// kilometres, could afford to ignore this.)
-fn height_above_ellipsoid(p: vec3<f32>) -> f32 {
-    let r = length(p);
-    let dir = p / max(r, 1e-6);
-    let inv_a2 = 1.0 / (EARTH_RADIUS_MM * EARTH_RADIUS_MM);
-    let inv_b2 = 1.0 / (EARTH_RADIUS_B_MM * EARTH_RADIUS_B_MM);
-    let surface_radius = 1.0
-        / sqrt(dir.x * dir.x * inv_a2 + dir.y * dir.y * inv_b2 + dir.z * dir.z * inv_a2);
-    return r - surface_radius;
-}
-
-/// Scale height of the air, in Mm: the height over which density falls by a factor
-/// of e. 8km is the standard figure for Earth's troposphere, and it — not
-/// ATMOSPHERE_THICKNESS_MM — is what sets how much air a view ray actually crosses.
-/// See `aerial_blend` in fs_solid.
+/// Scale height of the air, in Mm: the height over which density falls by a factor of e.
+/// 8km is the standard figure for Earth's troposphere, and it is the ONLY length that
+/// sets how much air a view ray crosses. See `air_path_length`.
 const HAZE_SCALE_HEIGHT_MM: f32 = 0.008;
 
-/// Length of air, in Mm at sea-level density, that a view ray crosses on its way from
-/// the camera down to a fragment — the only thing distance haze may be driven by.
+/// Where a point sits relative to the ellipsoid: `xyz` is the local up (the ellipsoid
+/// normal, which is NOT the direction to the Earth's centre — they differ by up to 11
+/// arcminutes), `w` is the height above the surface in Mm.
 ///
-/// Density falls off exponentially with height, so this is the analytic integral of
-/// exp(-h / HAZE_SCALE_HEIGHT_MM) along the ray, taking the height to vary linearly
-/// between its two endpoints (ignoring the Earth's curvature, which over any distance
-/// where haze is visible at all lifts the middle of the ray by a couple of kilometres
-/// — it makes this a slight over-estimate at the horizon, where the haze is saturated
-/// anyway). The whole point is that it is bounded by the air, not by the geometry:
-/// straight down from orbit it returns one scale height (8km — clear), however far out
-/// the camera is zoomed, while a horizontal look at sea level returns the full ray
-/// length. The previous version measured the raw path through the 150km shell instead,
-/// which grows without limit as the camera pulls back and buried the whole globe in
-/// haze when zoomed out.
-fn air_path_length(length_mm: f32, height_a: f32, height_b: f32) -> f32 {
-    let h = HAZE_SCALE_HEIGHT_MM;
-    let delta = height_a - height_b;
-    // The integral has a removable singularity at height_a == height_b (a ray at
-    // constant height); below a metre of height difference, evaluate the limit
-    // directly rather than dividing by ~0.
-    if (abs(delta) < 1e-6) {
-        return length_mm * exp(-height_b / h);
+/// A sphere of EARTH_RADIUS_MM is not good enough here: the two axes differ by 21km,
+/// which is more than two scale heights of air, so at European latitudes a spherical
+/// height puts both the camera and the ground *below* the surface — every height clamps
+/// to zero, every view ray comes out sea-level dense along its whole length, and the
+/// haze is far too strong.
+fn ellipsoid_frame(p: vec3<f32>) -> vec4<f32> {
+    let inv_a2 = 1.0 / (EARTH_RADIUS_MM * EARTH_RADIUS_MM);
+    let inv_b2 = 1.0 / (EARTH_RADIUS_B_MM * EARTH_RADIUS_B_MM);
+    let r = length(p);
+    let dir = p / max(r, 1e-6);
+    let surface_radius = 1.0
+        / sqrt(dir.x * dir.x * inv_a2 + dir.y * dir.y * inv_b2 + dir.z * dir.z * inv_a2);
+    let up = normalize(vec3<f32>(p.x * inv_a2, p.y * inv_b2, p.z * inv_a2));
+    return vec4<f32>(up, r - surface_radius);
+}
+
+/// `exp(z^2) * erfc(z)`, the scaled complementary error function.
+///
+/// Numerical Recipes' `erfcc` rational-exponential fit, kept in scaled form: fractional
+/// error below 1.2e-7 over the whole range, one `exp` and a Horner chain. The scaling
+/// matters — the textbook Abramowitz & Stegun 7.1.26 polynomial bounds its error on
+/// `erfc` itself, which is ABSOLUTE, so dividing by the vanishing `exp(-z^2)` leaves it
+/// 38% wrong for the large arguments this is called with.
+///
+/// Negative `z` is the analytic continuation `2*exp(z^2) - erfcx(-z)`, and it is not an
+/// edge case to be clamped away: it is exactly what `air_path_length` needs when the ray
+/// dips to its lowest point *between* the camera and the fragment rather than at one of
+/// them (a camera near the ground looking at distant ground). Verified against numerical
+/// integration for that case too. `|z|` never exceeds ~2 for any real view.
+fn erfcx(z: f32) -> f32 {
+    let a = abs(z);
+    let t = 1.0 / (1.0 + 0.5 * a);
+    let poly = -1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418
+             + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587
+             + t * (-0.82215223 + t * 0.17087277))))))));
+    let scaled = t * exp(poly);
+    if (z >= 0.0) {
+        return scaled;
     }
-    return length_mm * (h / delta) * (exp(-height_b / h) - exp(-height_a / h));
+    return 2.0 * exp(min(z * z, 60.0)) - scaled;
+}
+
+/// Chapman function: how many *vertical* columns of air a ray leaving a point at radius
+/// `radius_mm` and local zenith angle `chi` crosses on its way out of the atmosphere.
+///
+/// This is the curved-atmosphere generalisation of the schoolbook `1 / cos(chi)` air
+/// mass, and the whole reason it is here is that `1 / cos(chi)` diverges at the horizon
+/// while the real answer does not: at `chi = 90 degrees` it is `sqrt(pi * X / 2)` — about
+/// 35 columns, ~280km of sea-level air. Everything that looks right about a horizon is in
+/// that number being large but finite.
+fn chapman(radius_mm: f32, cos_chi: f32) -> f32 {
+    let x = radius_mm / HAZE_SCALE_HEIGHT_MM;
+    return sqrt(0.5 * PI * x) * erfcx(sqrt(0.5 * x) * cos_chi);
+}
+
+/// Length of air, in Mm at sea-level density, between the camera and a fragment — the
+/// only quantity distance haze may be driven by.
+///
+/// Air density falls off exponentially with height, so the air along a ray is bounded in
+/// a way the ray's *length* is not: straight down from any altitude this returns one
+/// scale height (8km — clear) however far out the camera is zoomed, while a look along
+/// the ground accumulates hundreds of kilometres. Two earlier versions measured geometry
+/// instead — first the raw camera-to-fragment distance, then the part of it inside a
+/// 150km shell — and both grew without limit as the camera pulled back, painting the
+/// whole globe with `horizon_haze_color` (which at that altitude was the space colour, so
+/// the map simply vanished) the moment the user zoomed out.
+///
+/// The integral is `column(fragment) - column(camera)`, each column being the optical
+/// depth from that point out of the atmosphere along the same line, which is what the
+/// Chapman function gives. Exact for a spherical exponential atmosphere, so it holds for
+/// the grazing rays a flat-slab approximation gets badly wrong: checked against numerical
+/// integration from ground level to 2000km and from nadir to the horizon, worst case
+/// 1.2%. Cost is two `exp`s and two `sqrt`s, no loop and no raymarch.
+fn air_path_length(camera_pos: vec3<f32>, frag_pos: vec3<f32>) -> f32 {
+    let to_frag = frag_pos - camera_pos;
+    let ray = normalize(to_frag);
+
+    let cam = ellipsoid_frame(camera_pos);
+    let frag = ellipsoid_frame(frag_pos);
+    let cam_height = max(cam.w, 0.0);
+    let frag_height = max(frag.w, 0.0);
+
+    // Both angles are measured on the ray pointing back up out of the atmosphere, so
+    // both are zenith angles of an outgoing ray, which is what `chapman` expects.
+    let column_frag = exp(-frag_height / HAZE_SCALE_HEIGHT_MM)
+        * chapman(length(frag_pos), dot(-ray, frag.xyz));
+    let column_cam = exp(-cam_height / HAZE_SCALE_HEIGHT_MM)
+        * chapman(length(camera_pos), dot(-ray, cam.xyz));
+
+    return HAZE_SCALE_HEIGHT_MM * max(column_frag - column_cam, 0.0);
 }
 
 // ── Shared sky palette ──────────────────────────────────────────────────
@@ -251,63 +303,40 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     
     let shaded_color = tex_color_rgb * (ambient + diffuse) * key_tint;
     
-    // Grazing angle between the view ray and the local surface normal: 1.0
-    // looking straight down, 0.0 exactly edge-on at the true visual horizon of a
-    // smooth sphere (same geometric fact culling's own horizon test relies on —
-    // zero terrain relief today). Two dot products, resolution/FOV-independent,
-    // replacing a screen-space-derivative heuristic.
-    let cam_to_frag = camera.camera_pos.xyz - in.world_pos;
-    let frag_dist = length(cam_to_frag);
-    let to_camera = cam_to_frag / max(frag_dist, 1e-6);
-    let grazing_cos = max(dot(normalize(in.normal), to_camera), 0.0);
-
-    let HORIZON_HAZE_LOWER: f32 = 0.03; // full haze below this — tune against light_audit_sweep
-    let HORIZON_HAZE_UPPER: f32 = 0.20; // no haze above this
-    // smoothstep needs low < high (docs/lighting.md's WGSL gotchas) — invert with
-    // 1.0 - … rather than swapping the arguments.
-    var horizon_blend = 1.0 - smoothstep(HORIZON_HAZE_LOWER, HORIZON_HAZE_UPPER, grazing_cos);
-
-    // `in.world_pos` is already camera-relative (vs_main adds push_constants.relative_center,
+    // `in.world_pos` is camera-relative (vs_main adds push_constants.relative_center,
     // which wgpu_state.rs sets to tile_center - camera_pos — see TilePushConstants), so it
-    // IS the true camera-to-fragment vector directly. This is deliberately a second,
-    // separate pair from `cam_to_frag`/`frag_dist`/`to_camera` above: those mix that
-    // camera-relative position with the *absolute* `camera.camera_pos.xyz`, which is only
-    // meaningful as a direction (for the grazing test above, which only ever normalizes it)
-    // — their `frag_dist` is actually close to the camera's own distance from the Earth's
-    // centre, not the distance to this fragment, so it can't be reused for a real
-    // distance-based effect. Used below for both the aerial haze and the terrain's
-    // sun-relative direction.
+    // IS the camera-to-fragment vector, and `camera.camera_pos.xyz + in.world_pos` is the
+    // fragment's absolute position. Mixing the two frames up is the trap here: the
+    // previous grazing-angle term did exactly that, and the note below is what it cost.
+    let frag_pos = camera.camera_pos.xyz + in.world_pos;
     let true_frag_dist = length(in.world_pos);
     let view_dir_terrain = in.world_pos / max(true_frag_dist, 1e-6);
 
-    // Aerial perspective: distance haze independent of viewing angle, layered on top of
-    // the grazing-angle ring above, which alone left far terrain crisp until a sudden
-    // fog wall right at the silhouette — terrain is visible 50-370km away at cruise
-    // (horizon distance from ~10.7km altitude), so that ring alone isn't enough.
+    // ── Aerial perspective ───────────────────────────────────────────────────────
     //
-    // Measured as the length of AIR the ray crosses (`air_path_length`), not as the raw
-    // camera-to-fragment distance and not as the raw path through the 150km shell: both
-    // of those grow with how far the camera is zoomed out, and each in turn buried the
-    // whole globe in haze from orbit — the shell version paints the entire visible disc
-    // with `horizon_haze_color`, which at that altitude is the space colour, so the map
-    // vanished completely. Air, unlike geometry, is bounded: the 8km scale height caps
-    // a look straight down from any altitude at a clear 8km of it, while a grazing look
-    // still accumulates hundreds of kilometres, which is what makes the horizon haze.
-    let altitude = max(height_above_ellipsoid(camera.camera_pos.xyz), 0.0);
-    // `in.world_pos` is camera-relative (see above), so the sum is the fragment's absolute
-    // position; zero terrain relief today makes this ~0, but taking it from the geometry
-    // keeps the integral honest once there is relief.
-    let frag_height = max(height_above_ellipsoid(camera.camera_pos.xyz + in.world_pos), 0.0);
-    let haze_path_length = air_path_length(true_frag_dist, altitude, frag_height);
+    // ONE term, not two. There used to be a second, `horizon_blend`, that hazed the
+    // terrain by the grazing angle `dot(normal, to_camera)` — sound geometry, but its
+    // `to_camera` was built as `camera_pos - world_pos` with a camera-RELATIVE
+    // `world_pos`, making it `2*camera - fragment`: not the direction to the camera at
+    // all. Measured consequence: at the true visual horizon from 10km up it returned
+    // 0.996 where the real grazing cosine is 0, so the term it gated never fired. It was
+    // dead code at every altitude a flight ever reaches, and past ~7500km it woke up and
+    // drew a 1-2px ring of space colour around the globe — the only thing it ever did.
+    //
+    // Fixing the vector was not the answer either. A grazing-angle ring is a proxy for
+    // "this ray passes through a lot of air", and `air_path_length` now measures that
+    // quantity directly and correctly for exactly the grazing geometry the proxy was
+    // invented for — the Chapman function's whole job. Two mechanisms combined with
+    // `max()`, one of them a proxy for the other, is one mechanism too many: the proxy is
+    // gone and the physics decides.
+    let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
 
-    // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km); onset/full below
-    // are tuned to real haze becoming noticeable over tens of km. They are ~0.57x the
-    // numbers the raw-distance version used, which is exactly the fraction of a full
-    // sea-level path a ray from cruise altitude down to the horizon works out to, so the
-    // Tracking/Cockpit views this was originally tuned against are unchanged: haze still
-    // starts about 50km out and saturates about 300km out from 10km up.
+    // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km). Tuned by eye
+    // against light_audit_sweep, not derived: from 10km up, haze starts about 50km out
+    // (29km of air) and saturates about 300km out (198km of air), which is what the
+    // Tracking and Cockpit frames were already set to.
     let AERIAL_HAZE_ONSET_MM: f32 = 0.03; // tune against light_audit_sweep / haze_capture_sweep
-    let AERIAL_HAZE_FULL_MM: f32 = 0.17;
+    let AERIAL_HAZE_FULL_MM: f32 = 0.19;
     let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, haze_path_length);
 
     // The haze at the limb has to agree with the sky drawn behind it, so it follows the
@@ -326,17 +355,17 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // the horizon, so any difference between them shows up as a hard line across the
     // whole view. They used to agree for free by both keying off the altitude scalar;
     // once the sky moved to a time-of-day ramp, this had to be dimmed the same way.
+    //
+    // There was also a `space_fade` here that pulled this colour toward the space colour
+    // as the camera climbed. It went with the two haze bugs it was born alongside: haze
+    // that saturated everywhere when zoomed out needed *something* to stop the globe
+    // glowing pale blue, and fading it to the colour of space was that something. With
+    // the haze bounded by the air, what is left at orbital altitude is a thin rim at the
+    // limb — and the limb is precisely where this colour has to match the sky drawn
+    // behind it, which is atmosphere, not space.
     horizon_haze_color = mix(horizon_haze_color * 0.25, horizon_haze_color, altitude_scalar);
 
-    let space_color = vec3<f32>(0.02, 0.02, 0.04);
-    let space_fade = clamp(
-        (altitude - ATMOSPHERE_THICKNESS_MM / 3.0) / (ATMOSPHERE_THICKNESS_MM * 3.0),
-        0.0, 1.0);
-    horizon_haze_color = mix(horizon_haze_color, space_color, space_fade);
-
-    // max(), not add or sequential mix: a fragment that's both far away AND near the
-    // grazing-angle silhouette gets one full haze blend, not a stacked double-fade.
-    let final_color = mix(shaded_color, horizon_haze_color, max(horizon_blend, aerial_blend));
+    let final_color = mix(shaded_color, horizon_haze_color, aerial_blend);
 
     return vec4<f32>(final_color, tex_color_raw.a);
 }
