@@ -168,16 +168,23 @@ Beer-Lambert opacity. Added to it:
   and independent of the bump's shape, rather than relying on an algebraic identity between
   two interpolation curves.
 
-  The same "bright line hanging in the air" came back a second time, from the other
-  direction, and the fix is worth remembering because it generalises: **an overlay has to be
-  dimmed on the same schedule as what it is laid over.** Both ends of the base gradient are
-  dimmed by altitude (`* 0.12` at the zenith, `* 0.25` at the horizon, see below), but the
-  glow anchors are hand-picked constants that were not, so as the flight climbed the sky
-  behind drained toward space while the band stayed at full brightness — leaving a pale
-  stripe floating well above the terrain, detached from the horizon it belongs to. It is now
-  dimmed by `mix(0.12, 0.25, color_mix)`: the same two factors, interpolated at the same
-  position in the gradient the base colour is taken from, so the overlay can never sit
-  brighter against its own background than it does on the runway.
+  The same "bright line hanging in the air" came back a second time anyway, and the fix for
+  it is the rule worth remembering: **the glow band changes the sky's hue, never its
+  brightness.** A line in the sky is not a kink in a curve — it is a local *maximum* of
+  luminance, which the eye reads as an edge however smoothly the ramp leads into it, and
+  laying hand-picked constants over the gradient at their own brightness put one right in
+  the middle of the sky. Altitude made it worse (the gradient is dimmed by `* 0.12` at the
+  zenith and `* 0.25` at the horizon, the constants were not), so the higher the flight
+  climbed the more the band detached from the horizon it belongs to.
+
+  Dimming the anchors on the same altitude schedule was the first attempt and only shrank
+  the peak — measured on `02_sunset`, a `+55` bump above the surrounding sky became `+14`,
+  which is still a line. The anchor is now rescaled to the exact luminance of the pixel it
+  is replacing before being mixed in, so the sky's luminance profile from zenith to horizon
+  stays monotonic *by construction*, at any altitude and for any anchor colour anyone picks
+  later. Same measurement: `+2` or less, which is dither. What survives is a band of colour
+  — peach on the sun's side, Belt-of-Venus pink opposite — which is what was wanted in the
+  first place.
 - **A sun disc**, its angular radius a named, derived constant (`SUN_ANGULAR_RADIUS`,
   mirroring the already-documented `MOON_ANGULAR_RADIUS` below it) rather than a pair of
   unexplained cosine thresholds, with a two-lobe forward-scatter halo, drawn *before* the
@@ -340,6 +347,14 @@ cargo test --release --lib haze_capture -- --ignored --nocapture
 It shoots a nadir ladder from 10km out to 30 000km (`Camera::max_distance`, as far as the
 user can ever zoom) plus grazing looks at three altitudes. The map must stay legible in
 every frame of the nadir ladder; the grazing frames are the ones that must keep their haze.
+
+The measurement behind "there is no fog on the surface from space": render the ladder
+twice, once normally and once with `final_color = shaded_color` (haze disabled), and diff.
+Over 21 altitudes from 10km to 30 000km, nadir and 45°, every ground pixel is bit-identical
+except two places — the top ~16 rows of the 300km tilted frame, which is the atmospheric
+limb seen edge-on and *should* haze, and a 1-2px rim on the globe's outline past ~7 500km,
+which is `horizon_blend`, not `aerial_blend`. Do this diff again after any change here; a
+veil that creeps back in is invisible frame-by-frame and obvious in the difference.
 
 **Use it.** This work was reported as finished twice on the strength of compiling cleanly
 and passing tests, and both times it was visibly wrong. Rendering frames and measuring
