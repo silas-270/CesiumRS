@@ -167,6 +167,17 @@ Beer-Lambert opacity. Added to it:
   zero weight at twilight=0 also makes "noon and full-night renders are unaffected" automatic
   and independent of the bump's shape, rather than relying on an algebraic identity between
   two interpolation curves.
+
+  The same "bright line hanging in the air" came back a second time, from the other
+  direction, and the fix is worth remembering because it generalises: **an overlay has to be
+  dimmed on the same schedule as what it is laid over.** Both ends of the base gradient are
+  dimmed by altitude (`* 0.12` at the zenith, `* 0.25` at the horizon, see below), but the
+  glow anchors are hand-picked constants that were not, so as the flight climbed the sky
+  behind drained toward space while the band stayed at full brightness — leaving a pale
+  stripe floating well above the terrain, detached from the horizon it belongs to. It is now
+  dimmed by `mix(0.12, 0.25, color_mix)`: the same two factors, interpolated at the same
+  position in the gradient the base colour is taken from, so the overlay can never sit
+  brighter against its own background than it does on the runway.
 - **A sun disc**, its angular radius a named, derived constant (`SUN_ANGULAR_RADIUS`,
   mirroring the already-documented `MOON_ANGULAR_RADIUS` below it) rather than a pair of
   unexplained cosine thresholds, with a two-lobe forward-scatter halo, drawn *before* the
@@ -209,25 +220,43 @@ relaxation that shares only the English word "fog" and touches no colour.
 That grazing-angle ring alone left distant-but-not-silhouette terrain crisp until a sudden
 fog wall right at the edge — terrain is visible 50-370km away at cruise (horizon distance
 from ~10.7km altitude), well beyond where the ring has any effect. `aerial_blend`, a
-distance-based fade (onset ~50km, full ~300km — both tuned by eye, not derived), is layered on
-top of `horizon_blend` via `max()` so a fragment that's both far away and near the silhouette
-gets one full haze blend rather than a stacked double-fade.
+distance-based fade, is layered on top of `horizon_blend` via `max()` so a fragment that's
+both far away and near the silhouette gets one full haze blend rather than a stacked
+double-fade.
 
-That distance is deliberately *not* the raw camera-to-fragment distance. A camera looking
-near-straight down from high altitude (zoomed far out) has a huge straight-line distance to
-the ground below it — almost all of it through vacuum above the 150km atmosphere shell, not
-through haze-producing air — and the first version of this used that raw distance directly,
-which saturated `aerial_blend` to 1 across virtually the whole visible globe the moment the
-camera zoomed out past a few hundred kilometres: the entire disc read as a flat, featureless
-haze colour, continents included. `haze_path_length` fixes this by reusing `sky.wgsl`'s own
-`ray_sphere_intersect` against the same atmosphere shell to find where the camera-to-fragment
-ray actually *enters* the atmosphere, and measuring distance from there (or from the camera,
-if it's already inside the shell) rather than from empty space above it. At real flight
-altitudes — always inside the shell — the entry point is the camera itself, so this is
-identical to the old raw distance and nothing changes for Tracking/Cockpit views. Zoomed out
-to orbit, it keeps the haze bounded to what a line of sight actually passes through, which is
-why the globe still shows continents through a thin, realistic atmospheric rim-glow at any
-zoom level instead of disappearing into fog.
+**Haze is measured in air, not in distance.** This is the one rule that matters here, and
+two earlier versions broke it and had to be replaced, each time with the same symptom: zoom
+out, and the entire globe turns into a flat, featureless sheet of `horizon_haze_color` —
+which at that altitude is the space colour, so the map simply disappears.
+
+- The first version used the raw camera-to-fragment distance, which from orbit is thousands
+  of kilometres of mostly vacuum.
+- The second bounded that to the part of the ray inside the 150km atmosphere shell (via
+  `ray_sphere_intersect`, shared with `sky.wgsl`). That is *also* unbounded in the only way
+  that counts: a ray grazing the shell crosses far more of it than the shell is thick, and
+  even a vertical look crosses the whole 150km. It made the sums smaller without making them
+  scale-invariant, so the whiteout came back a little further out — a Free-camera view from
+  ~110km, which is where that camera sits by default, was already a solid grey wash.
+
+What is actually bounded is the *air*. Density falls off exponentially with height on a
+scale height of 8km (`HAZE_SCALE_HEIGHT_MM`), so `air_path_length` integrates
+`exp(-h / 8km)` along the ray analytically (the integral is exact for a height that varies
+linearly between the endpoints; the Earth's curvature lifts the middle of a long ray by a
+couple of kilometres, which makes it a slight over-estimate at the horizon, where the haze
+is saturated anyway) and returns a length of *sea-level-density* air. Straight down from any
+altitude, that is one scale height — 8km, clear — however far out the camera is zoomed.
+Along the ground it is the full ray length. The onset/full constants (0.03 / 0.17 Mm of air,
+tuned by eye against `light_audit_sweep` and `haze_capture_sweep`, not derived) are ~0.57x
+the raw-distance numbers they replaced, that being the fraction a ray from 10km down to the
+horizon works out to, so the Tracking and Cockpit frames the effect was originally tuned
+against are unchanged to within a couple of 8-bit levels.
+
+One trap worth keeping in mind if you touch this: the heights must come from
+`height_above_ellipsoid`, not from `length(p) - EARTH_RADIUS_MM`. The WGS84 axes differ by
+21km — more than two scale heights — so at European latitudes the spherical version puts
+both the camera and the ground below the surface, every height clamps to zero, every ray
+comes out sea-level dense along its whole length, and the haze is far too strong. Only
+`space_fade`, measured in hundreds of kilometres, can afford to ignore the difference.
 
 ### Stars, in detail
 
@@ -299,6 +328,18 @@ camera modes to PNGs and prints the depth scalar for each frame:
 ```
 cargo test --lib light_audit_sweep -- --ignored --nocapture
 ```
+
+`src/testing/rendering/haze_capture.rs` (also `#[ignore]`d) is the zoom-out counterpart —
+the sweep `light_audit_sweep` does not cover, and the one that catches the haze failure
+described above, since every camera the flight itself uses sits at flight altitudes:
+
+```
+cargo test --release --lib haze_capture -- --ignored --nocapture
+```
+
+It shoots a nadir ladder from 10km out to 30 000km (`Camera::max_distance`, as far as the
+user can ever zoom) plus grazing looks at three altitudes. The map must stay legible in
+every frame of the nadir ladder; the grazing frames are the ones that must keep their haze.
 
 **Use it.** This work was reported as finished twice on the strength of compiling cleanly
 and passing tests, and both times it was visibly wrong. Rendering frames and measuring

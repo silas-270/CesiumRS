@@ -347,7 +347,18 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         // identity between two interpolation curves.
         let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
         let twilight = (1.0 - day_amount) * (1.0 - night_amount);
-        let glow_anchor = mix(BELT_OF_VENUS_PINK, TWILIGHT_GLOW_PEACH, toward_sun);
+        // The glow is an overlay ON the zenith-to-horizon gradient, so it has to be
+        // dimmed by altitude on exactly the same schedule that gradient's two ends are
+        // (the 0.12 / 0.25 factors above) — interpolated at the same `color_mix` the
+        // base colour is, so the overlay never sits brighter against its own background
+        // than it does on the ground. Missing that was a bug you could see: as the
+        // flight climbed, the sky behind drained toward space while this stayed at its
+        // full hand-picked brightness, leaving a pale band hanging in mid-air well above
+        // the terrain, detached from the horizon it is supposed to belong to (the
+        // 02_sunset frames of light_audit_sweep).
+        let glow_dim = mix(0.12, 0.25, color_mix);
+        let glow_full = mix(BELT_OF_VENUS_PINK, TWILIGHT_GLOW_PEACH, toward_sun);
+        let glow_anchor = mix(glow_full * glow_dim, glow_full, altitude_scalar);
         let rise = smoothstep(0.0, GLOW_BAND_POSITION, color_mix);
         let fall = smoothstep(GLOW_BAND_POSITION, 1.0, color_mix);
         let glow_bump = rise * (1.0 - fall);
