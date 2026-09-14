@@ -283,6 +283,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
 
     // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT (used inside sky_palette).
     let day_amount = smoothstep(0.0, 0.10, sun_elevation);
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
 
     let palette = sky_palette(sun_elevation);
     var zenith_color = palette[0];
@@ -325,7 +326,8 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // Attenuated by the air, but on a far gentler curve than the sky's own opacity.
     // Smoothly reaches low towards the horizon at night without a hard horizontal cutoff.
     let star_extinction = exp(-optical_depth * 0.35);
-    base_color += star_field(view_dir, clamp(day_amount, 0.0, 1.0)) * star_extinction;
+    let star_cutoff = 1.0 - night_amount;
+    base_color += star_field(view_dir, clamp(star_cutoff, 0.0, 1.0)) * star_extinction;
 
     // ── The sun and the moon themselves ──────────────────────────────────────
     //
