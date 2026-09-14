@@ -1,3 +1,7 @@
+// MUST match the other file exactly — see docs/lighting.md.
+const EARTH_RADIUS_MM: f32 = 6.378137;      // Mm
+const ATMOSPHERE_THICKNESS_MM: f32 = 0.15;  // Mm; 150km shell for the sky raymarch
+
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
@@ -122,7 +126,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let dist_fade = smoothstep(0.0, 0.0001, pixel_dist);
     blur_factor = blur_factor * dist_fade;
     
-    let earth_radius = 6.378137;
+    let earth_radius = EARTH_RADIUS_MM;
     let r_cam = max(length(camera.camera_pos.xyz), earth_radius);
     let altitude = max(r_cam - earth_radius, 0.0);
     
@@ -144,7 +148,9 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     horizon_color = mix(horizon_color * 0.25, horizon_color, altitude_scalar);
     
     let space_color = vec3<f32>(0.02, 0.02, 0.04);
-    let space_fade = clamp((altitude - 0.05) / 0.45, 0.0, 1.0);
+    let space_fade = clamp(
+        (altitude - ATMOSPHERE_THICKNESS_MM / 3.0) / (ATMOSPHERE_THICKNESS_MM * 3.0),
+        0.0, 1.0);
     let current_fog_color = mix(horizon_color, space_color, space_fade);
     
     let final_color = mix(shaded_color, current_fog_color, blur_factor);

@@ -31,12 +31,23 @@ fn vs_sky(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
     return out;
 }
 
+// MUST match the other file exactly — see docs/lighting.md.
+const EARTH_RADIUS_MM: f32 = 6.378137;      // Mm
+const ATMOSPHERE_THICKNESS_MM: f32 = 0.15;  // Mm; 150km shell for the sky raymarch
+
 /// Angular radius of the moon's disc, in radians.
 ///
 /// The real one is 0.00454 (a quarter of a degree). This is that, enlarged — first to
 /// about 0.81 degrees so it was visible at all, and then half again on top, which is
 /// roughly what it takes for an aircraft to read as crossing it rather than passing a dot.
 const MOON_ANGULAR_RADIUS: f32 = 0.0212;
+
+/// Angular radius of the sun's disc, in radians. The real value is 0.00466
+/// (~0.267°, i.e. 0.53° diameter); enlarged to ~0.49° radius for visibility —
+/// smaller than the moon's enlargement since the sun is already the
+/// brightest thing in frame.
+const SUN_ANGULAR_RADIUS: f32 = 0.00863;
+const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
 
 fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
     let b = 2.0 * dot(rd, r0);
@@ -159,8 +170,8 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let sun_elevation = camera.sun_dir.w;
     let cos_sun = dot(view_dir, sun_dir);
     
-    let earth_radius = 6.378137;
-    let atmosphere_thickness = 0.15; // 150km boundary for the ray marcher
+    let earth_radius = EARTH_RADIUS_MM;
+    let atmosphere_thickness = ATMOSPHERE_THICKNESS_MM;
     let atmosphere_radius = earth_radius + atmosphere_thickness;
     
     let t_atm = ray_sphere_intersect(origin, view_dir, atmosphere_radius);
@@ -227,7 +238,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         // The band tightens with altitude, but only a little: taken too far the gradient
         // collapses into a visible edge, which looks like a seam rather than a horizon.
         let band_low  = mix(1.8, 1.5, altitude_scalar);
-        let band_high = mix(2.7, 2.7, altitude_scalar);
+        let band_high = 2.7;
         let color_mix = smoothstep(band_low, band_high, optical_depth);
         let atmosphere_color = mix(zenith_color, horizon_color, color_mix);
 
@@ -253,7 +264,8 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     // reddened and dimmed by the air it is seen through, as it should be.
 
     // The sun's disc is about half a degree across, so its cosine sits very close to 1.
-    let sun_disc = smoothstep(0.99993, 0.99997, cos_sun);
+    let cos_sun_edge = cos(SUN_ANGULAR_RADIUS);
+    let sun_disc = smoothstep(cos_sun_edge - SUN_DISC_SOFT_EDGE, cos_sun_edge, cos_sun);
     // A wide, faint forward-scatter halo. This is most of what sells a sun in a sky.
     let sun_glow = pow(max(cos_sun, 0.0), 350.0) * 0.6
                  + pow(max(cos_sun, 0.0), 12.0) * 0.05;
