@@ -134,17 +134,6 @@ fn sky_hue_rotation(sun_elevation: f32, toward_sun: f32) -> vec3<f32> {
     return mix(vec3<f32>(1.0), side_tint, twilight);
 }
 
-// ── Twilight glow band (sky.wgsl only — fs_solid has no mid-sky concept) ──
-//
-// A third stop between zenith and horizon: clear sunset photographs show a
-// multi-band sky (burnt-orange horizon -> gold -> pale peach/pink ->
-// lavender -> deep blue-violet zenith), not a flat 2-stop blend. These are
-// NOT part of the sky_palette/sky_hue_rotation must-match contract and must
-// not be copied into globe_pipeline/shader.wgsl — fs_solid only ever needs a
-// horizon colour, never a mid-sky one.
-const TWILIGHT_GLOW_PEACH: vec3<f32> = vec3<f32>(0.95, 0.62, 0.45); // sun side
-const BELT_OF_VENUS_PINK: vec3<f32> = vec3<f32>(0.80, 0.52, 0.58);  // antisolar side
-const GLOW_BAND_POSITION: f32 = 0.55; // where it sits between zenith(0) and horizon(1)
 
 fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
     let b = 2.0 * dot(rd, r0);
@@ -323,55 +312,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         let band_high = 2.7;
         let color_mix = smoothstep(band_low, band_high, optical_depth);
 
-        // ── Twilight glow band ──────────────────────────────────────────────
-        // An extra glow colour laid over the plain zenith-to-horizon gradient — see
-        // TWILIGHT_GLOW_PEACH above. `glow_anchor` is chosen by `toward_sun` the same
-        // way the horizon hue rotation is: warm peach/gold on the sun's side, the pink
-        // Belt of Venus on the antisolar side.
-        //
-        // `glow_bump` is a smooth 0->1->0 overlay weight peaking at GLOW_BAND_POSITION,
-        // built from two smoothsteps meeting at that point — NOT a piecewise-linear (or
-        // piecewise-smoothstep) SPLIT of color_mix itself. An earlier version stitched
-        // two separately-interpolated segments together at GLOW_BAND_POSITION; the
-        // colour was continuous there but its slope wasn't (each segment aims at a very
-        // differently-coloured anchor), which read as a distinct bright line hovering
-        // in the sky parallel to the horizon — visible in light_audit_sweep's
-        // 02_sunset frames. A smoothstep's derivative is exactly zero at both of its
-        // own edges, so `rise` and `fall` are both flat exactly at GLOW_BAND_POSITION,
-        // making their product flat (no kink) at the peak too.
-        //
-        // Overlaying on top of the ALWAYS-computed base `mix(zenith_color,
-        // horizon_color, color_mix)` also makes "pixel-identical outside twilight"
-        // automatic and independent of the bump's exact shape: at twilight=0 the
-        // overlay weight is zero, full stop, rather than relying on an algebraic
-        // identity between two interpolation curves.
-        let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-        let twilight = (1.0 - day_amount) * (1.0 - night_amount);
-        let rise = smoothstep(0.0, GLOW_BAND_POSITION, color_mix);
-        let fall = smoothstep(GLOW_BAND_POSITION, 1.0, color_mix);
-        let glow_bump = rise * (1.0 - fall);
-
         var atmosphere_color = mix(zenith_color, horizon_color, color_mix);
-
-        // ── Hue only, never brightness ──────────────────────────────────────
-        // The anchors are hand-picked constants, and laying them over the gradient at
-        // their own brightness put a local MAXIMUM of luminance in the middle of the
-        // sky. That is what a "bright line hovering in the air" actually is — the eye
-        // reads any local brightness peak as an edge, however smooth the ramp into it,
-        // and the higher the flight climbed the worse it got, because the sky behind was
-        // dimmed by altitude (the 0.12 / 0.25 factors above) and the constants were not.
-        //
-        // So the anchor is rescaled to the exact luminance of the colour it is replacing
-        // before being mixed in. The overlay can then only ever rotate the sky's hue
-        // toward peach or Belt-of-Venus pink, never add brightness, so the sky's
-        // luminance profile stays monotonic from zenith to horizon by construction — no
-        // local peak, at any altitude, for any anchor anyone picks later. Dimming the
-        // anchors on the same altitude schedule as the gradient (the first attempt) only
-        // shrank the peak; this removes the mechanism.
-        let glow_full = mix(BELT_OF_VENUS_PINK, TWILIGHT_GLOW_PEACH, toward_sun);
-        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
-        let glow_anchor = glow_full * (dot(atmosphere_color, luma) / max(dot(glow_full, luma), 1e-4));
-        atmosphere_color = mix(atmosphere_color, glow_anchor, glow_bump * twilight);
 
         // True optical absorption/scattering (Beer-Lambert law approximation)
         let opacity = 1.0 - exp(-optical_depth * 10.0); 

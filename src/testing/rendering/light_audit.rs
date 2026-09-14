@@ -7,7 +7,7 @@ use cesium_engine::camera::camera::CameraMode;
 use cesium_engine::globe::tiles::config::TileEngineConfig;
 use cesium_engine::render::wgpu_state::WgpuState;
 
-async fn shoot(mode: CameraMode, progress: f64, out: &str) {
+async fn shoot(mode: CameraMode, progress: f64, out: &str, turn_orbit_rad: Option<f32>) {
     let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
         std::sync::Arc::new(std::sync::Mutex::new(progress)),
     ));
@@ -40,7 +40,12 @@ async fn shoot(mode: CameraMode, progress: f64, out: &str) {
     .await;
 
     let aspect = state.size.width as f32 / state.size.height as f32;
-    for _ in 0..10 {
+    for i in 0..10 {
+        if i == 1 {
+            if let Some(angle) = turn_orbit_rad {
+                state.camera.orbit_anchor(glam::Quat::from_rotation_y(angle));
+            }
+        }
         let vp = state.camera.get_projection_matrix(aspect) * state.camera.get_view_matrix();
         let visible = state.update_logic(aspect, vp);
         state
@@ -69,6 +74,19 @@ async fn shoot(mode: CameraMode, progress: f64, out: &str) {
 
 #[test]
 #[ignore = "writes PNGs; run explicitly"]
+fn light_audit_sunset_track_turn_45() {
+    let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    pollster::block_on(shoot(
+        CameraMode::Tracking,
+        0.17,
+        &format!("{dir}/02_sunset_track.png"),
+        Some(std::f32::consts::FRAC_PI_4),
+    ));
+}
+
+#[test]
+#[ignore = "writes PNGs; run explicitly"]
 fn light_audit_sweep() {
     let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
     std::fs::create_dir_all(&dir).unwrap();
@@ -87,7 +105,7 @@ fn light_audit_sweep() {
             ("cockpit", CameraMode::Cockpit),
         ] {
             let out = format!("{dir}/{label}_{mname}.png");
-            pollster::block_on(shoot(mode, progress, &out));
+            pollster::block_on(shoot(mode, progress, &out, None));
         }
     }
 }
