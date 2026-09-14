@@ -32,6 +32,9 @@ pub struct GlobeOptions {
     pub map_contrast: f32,
     /// Image adjustment: -1.0 (pitch black) to 1.0 (bright white). Default 0.0.
     pub map_brightness: f32,
+    /// Maximum quadtree zoom level supported. Subdivision will not proceed past
+    /// this zoom level. Defaults to 19 for the standard basemap.
+    pub max_zoom: u8,
 }
 
 impl Default for GlobeOptions {
@@ -44,6 +47,7 @@ impl Default for GlobeOptions {
             map_saturation: 0.0,
             map_contrast: 0.0,
             map_brightness: 0.5,
+            max_zoom: TileEngineConfig::default().max_zoom,
         }
     }
 }
@@ -67,6 +71,7 @@ impl ViewerOptions {
             map_saturation: self.globe.map_saturation,
             map_contrast: self.globe.map_contrast,
             map_brightness: self.globe.map_brightness,
+            max_zoom: self.globe.max_zoom,
             ..TileEngineConfig::default()
         }
     }

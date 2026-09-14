@@ -877,6 +877,8 @@ pub struct CullContext {
     /// `QuadtreeNode::apply_lod`'s relaxation. See [`super::fog`]'s module doc
     /// comment.
     pub fog_density: f32,
+    /// Maximum zoom level to refine down to. Defaults to [`MAX_ZOOM`].
+    pub max_zoom: u8,
 }
 
 impl CullContext {
@@ -892,6 +894,7 @@ impl CullContext {
             pipeline,
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
+            max_zoom: MAX_ZOOM,
         }
     }
 
@@ -904,6 +907,12 @@ impl CullContext {
     /// WP5 only — see [`super::fog::FogConfig`] and this struct's `fog_density` field.
     pub fn with_fog_density(mut self, fog_density: f32) -> Self {
         self.fog_density = fog_density;
+        self
+    }
+
+    /// Sets the maximum zoom level for quadtree subdivision.
+    pub fn with_max_zoom(mut self, max_zoom: u8) -> Self {
+        self.max_zoom = max_zoom;
         self
     }
 }
@@ -1072,7 +1081,7 @@ impl QuadtreeNode {
         };
 
         // Subdivide condition
-        if should_be_subdivided && self.id.z < MAX_ZOOM {
+        if should_be_subdivided && self.id.z < ctx.max_zoom {
             if self.children.is_none() {
                 self.subdivide();
             }
@@ -1437,6 +1446,24 @@ mod reorder_children_tests {
             );
         }
     }
+
+    #[test]
+    fn subdivision_caps_at_max_zoom() {
+        let mut qt = QuadtreeManager::new();
+        qt.max_zoom = 3;
+        // Place camera right on top of root 0
+        let frustum = Frustum::planes_only(
+            [DVec3::ZERO; 4],
+            qt.roots[0].center,
+        );
+        qt.lod_factor = 1000.0; // Force maximum subdivision
+        qt.update(&frustum);
+        let visible = qt.get_visible_tiles();
+        assert!(!visible.is_empty());
+        for (id, _, _) in visible {
+            assert!(id.z <= 3, "Tile zoom {} exceeded max_zoom 3", id.z);
+        }
+    }
 }
 
 pub struct QuadtreeManager {
@@ -1457,6 +1484,8 @@ pub struct QuadtreeManager {
     /// caller that sets it, recomputed fresh every frame from camera altitude — see
     /// [`super::fog::fog_density_for`].
     pub fog_density: f32,
+    /// Maximum zoom level to refine down to. Defaults to [`MAX_ZOOM`].
+    pub max_zoom: u8,
 }
 
 impl Default for QuadtreeManager {
@@ -1478,6 +1507,7 @@ impl QuadtreeManager {
             pipeline: CullPipeline::DEFAULT,
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
+            max_zoom: MAX_ZOOM,
         }
     }
 
@@ -1486,7 +1516,8 @@ impl QuadtreeManager {
     pub fn update(&mut self, frustum: &Frustum) {
         let ctx = CullContext::with_pipeline(frustum, self.pipeline)
             .with_lod_distance_mode(self.lod_distance_mode)
-            .with_fog_density(self.fog_density);
+            .with_fog_density(self.fog_density)
+            .with_max_zoom(self.max_zoom);
         for root in self.roots.iter_mut() {
             root.update(&ctx, self.lod_factor);
         }

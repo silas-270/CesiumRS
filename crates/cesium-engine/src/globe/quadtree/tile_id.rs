@@ -34,7 +34,7 @@ pub fn web_mercator_y_to_lat_f64(y: f64, z: u8) -> f64 {
         .to_degrees()
 }
 
-pub(super) const MAX_ZOOM: u8 = 20;
+pub const MAX_ZOOM: u8 = 20;
 
 /// The geographic rectangle a tile covers, in **degrees**, pole stretch included.
 ///

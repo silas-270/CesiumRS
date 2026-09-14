@@ -106,6 +106,11 @@ pub struct TileEngineConfig {
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
     pub base_imagery_url: String,
+    /// Maximum quadtree zoom level supported by this imagery source.
+    /// Prevents subdividing beyond the source's actual content depth, avoiding
+    /// wasted fetches and cache space for flat-colour or missing tiles.
+    /// Defaults to `19` for the standard basemap whose content stops at z=19.
+    pub max_zoom: u8,
     pub base_color: [u8; 4],
     pub offline_mode: bool,
     pub map_saturation: f32,
@@ -133,6 +138,7 @@ impl Default for TileEngineConfig {
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),
             base_imagery_url: STANDARD_IMAGERY_URL.to_string(),
+            max_zoom: 19,
             base_color: [20, 20, 20, 255],
             offline_mode: false,
             map_saturation: 0.0,
@@ -216,5 +222,11 @@ mod tests {
             config.max_cache_size,
         );
         assert_eq!(entries.get() * 512 * 512 * 4, config.tile_cache_budget_bytes);
+    }
+
+    #[test]
+    fn default_config_max_zoom_is_19() {
+        let config = TileEngineConfig::default();
+        assert_eq!(config.max_zoom, 19);
     }
 }

@@ -14,5 +14,5 @@ pub use quadtree::{
     Stage, StageVerdict, MAX_STAGES,
 };
 pub use tile_id::{
-    tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId,
+    tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
 };

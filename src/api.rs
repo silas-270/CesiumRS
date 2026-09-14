@@ -85,6 +85,7 @@ pub struct CesiumViewerBuilder {
     map_saturation: f32,
     map_contrast: f32,
     map_brightness: f32,
+    max_zoom: u8,
     extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
 }
 
@@ -98,6 +99,7 @@ impl Default for CesiumViewerBuilder {
             map_saturation: 0.0,
             map_contrast: 0.0,
             map_brightness: 0.5,
+            max_zoom: TileEngineConfig::default().max_zoom,
             extension: None,
         }
     }
@@ -133,6 +135,13 @@ impl CesiumViewerBuilder {
     /// knob is not a placeholder for it.
     pub fn target_texel_ratio(mut self, ratio: f32) -> Self {
         self.target_texel_ratio = ratio;
+        self
+    }
+
+    /// Maximum quadtree zoom level supported. Subdivision will not proceed past
+    /// this zoom level.
+    pub fn max_zoom(mut self, max_zoom: u8) -> Self {
+        self.max_zoom = max_zoom;
         self
     }
 
@@ -182,6 +191,7 @@ impl CesiumViewerBuilder {
             map_saturation: self.map_saturation,
             map_contrast: self.map_contrast,
             map_brightness: self.map_brightness,
+            max_zoom: self.max_zoom,
             ..TileEngineConfig::default()
         };
 

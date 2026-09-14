@@ -350,6 +350,7 @@ impl<'a> WgpuState<'a> {
                 // constant's doc comment before changing it.
                 let mut qt = QuadtreeManager::new();
                 qt.pipeline = CullPipeline::DEFAULT_WITH_FOG;
+                qt.max_zoom = tile_system.config.max_zoom;
                 qt
             },
             tile_system,
@@ -540,6 +541,7 @@ impl<'a> WgpuState<'a> {
             // frame like `lod_factor` above. `altitude` is megameters (this
             // engine's world frame); `fog_density_for` takes metres — see
             // `globe::quadtree::fog`'s module doc comment's Units section.
+            self.quadtree_manager.max_zoom = self.tile_system.config.max_zoom;
             self.quadtree_manager.fog_density = crate::globe::quadtree::fog_density_for(
                 altitude * crate::globe::quadtree::MEGAMETERS_TO_METERS,
                 &self.tile_system.config.fog,
