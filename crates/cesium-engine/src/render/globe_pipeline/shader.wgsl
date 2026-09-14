@@ -340,7 +340,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let diffuse_twilight = (from_sun_twilight + from_moon) * mix(0.0, 0.4, altitude_scalar) * key_strength;
     let diffuse_rgb = vec3<f32>(diffuse_twilight) * key_color;
 
-    let twilight_floor = sky_irradiance * twilight * 0.08 * mix(0.4, 0.9, altitude_scalar);
+    let twilight_floor = sky_irradiance * twilight * 0.02 * mix(0.4, 0.9, altitude_scalar);
 
     let shaded_color = tex_color_rgb * (ambient_rgb + diffuse_rgb) + twilight_floor;
 
@@ -348,10 +348,10 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
 
     // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km).
-    // Tuned so distant terrain smoothly and completely blends into horizon_haze_color near
-    // the horizon without a razor-sharp cutoff edge, while keeping vertical views clear.
-    let AERIAL_HAZE_ONSET_MM: f32 = 0.015;
-    let AERIAL_HAZE_FULL_MM: f32 = 0.085;
+    // Pushed further out so near and mid-distance terrain stays crisp and clear,
+    // while distant terrain smoothly transitions into horizon_haze_color at the horizon.
+    let AERIAL_HAZE_ONSET_MM: f32 = 0.035;
+    let AERIAL_HAZE_FULL_MM: f32 = 0.160;
     let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, haze_path_length);
 
     let final_color = mix(shaded_color, horizon_haze_color, aerial_blend);
