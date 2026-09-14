@@ -316,6 +316,15 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
         * sky_hue_rotation(sun_elevation, toward_sun_terrain);
     horizon_haze_color = mix(horizon_haze_color * 0.25, horizon_haze_color, altitude_scalar);
 
+    // Forward-scatter sun glow matching sky.wgsl so distant terrain merges smoothly into the solar halo
+    let sun_glow_terrain = pow(max(cos_sun_terrain, 0.0), 350.0) * 0.6
+                         + pow(max(cos_sun_terrain, 0.0), 12.0) * 0.05;
+    let sun_tint_terrain = mix(vec3<f32>(1.0, 0.45, 0.2), vec3<f32>(1.0, 0.96, 0.9),
+                               smoothstep(0.0, 0.25, sun_elevation));
+    let celestial_fade = mix(0.55, 1.0, altitude_scalar);
+    horizon_haze_color += sun_tint_terrain * sun_glow_terrain
+        * smoothstep(-0.08, 0.02, sun_elevation) * celestial_fade;
+
     let zenith_color = mix(sky_palette(sun_elevation)[0] * 0.12, sky_palette(sun_elevation)[0], altitude_scalar);
     let sky_irradiance = mix(zenith_color, horizon_haze_color, 0.4);
 
