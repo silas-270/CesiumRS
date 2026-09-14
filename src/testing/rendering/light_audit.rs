@@ -147,6 +147,21 @@ fn light_audit_night_360() {
 
 #[test]
 #[ignore = "writes PNGs; run explicitly"]
+fn light_audit_progress_021() {
+    let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    pollster::block_on(shoot(
+        CameraMode::Tracking,
+        0.21,
+        &format!("{dir}/progress_021_tracking.png"),
+        Some(-1.8),
+        Some(0.40),
+        Some(0.5),
+    ));
+}
+
+#[test]
+#[ignore = "writes PNGs; run explicitly"]
 fn light_audit_cockpit_03533() {
     let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
     std::fs::create_dir_all(&dir).unwrap();

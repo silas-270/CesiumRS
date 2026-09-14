@@ -218,16 +218,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let detail_noise = triplanar_detail(in.local_pos, normalize(in.local_normal));
     let detail = 1.0 + (detail_noise - 0.5) * push.detail_strength;
 
+    // Schlick Fresnel approximation for dielectric clearcoat (F0 ~ 0.04 for polyurethane gloss paint).
+    let f0 = 0.04;
+    let n_dot_v = max(dot(normal, view_dir), 0.0);
+    let fresnel_grazing = f0 + (1.0 - f0) * pow(1.0 - n_dot_v, 5.0);
+
     // Crisp Blinn-Phong specular catch-light (push.specular_strength = 0.0 disables it),
-    // masked to lit surfaces so highlights do not appear on backfaces.
+    // modulated by Schlick Fresnel and masked to lit surfaces so highlights do not appear on backfaces.
     let half_sun = normalize(camera.sun_dir.xyz + view_dir);
     let half_moon = normalize(camera.moon_dir.xyz + view_dir);
-    let spec_sun = pow(max(dot(normal, half_sun), 0.0), 32.0) * step(0.001, n_dot_l_sun) * (1.0 - night_key);
-    let spec_moon = pow(max(dot(normal, half_moon), 0.0), 32.0) * step(0.001, n_dot_l_moon) * night_key;
+    let v_dot_h_sun = max(dot(view_dir, half_sun), 0.0);
+    let v_dot_h_moon = max(dot(view_dir, half_moon), 0.0);
+    let fresnel_sun = f0 + (1.0 - f0) * pow(1.0 - v_dot_h_sun, 5.0);
+    let fresnel_moon = f0 + (1.0 - f0) * pow(1.0 - v_dot_h_moon, 5.0);
+
+    // Gloss exponent 64.0 produces a sharp, sleek glint along the fuselage and wing curves.
+    let spec_sun = pow(max(dot(normal, half_sun), 0.0), 64.0) * (fresnel_sun / f0) * step(0.001, n_dot_l_sun) * (1.0 - night_key);
+    let spec_moon = pow(max(dot(normal, half_moon), 0.0), 64.0) * (fresnel_moon / f0) * step(0.001, n_dot_l_moon) * night_key;
     let spec = (spec_sun + spec_moon) * push.specular_strength * key_strength;
 
-    // Rim light: surfaces turning away from the eye catch the sky behind them.
-    let rim = pow(1.0 - max(dot(normal, view_dir), 0.0), 3.0) * push.rim_strength * key_strength;
+    // Clearcoat grazing sheen / rim light: surfaces turning away from the eye catch ambient sky light.
+    let rim = fresnel_grazing * push.rim_strength * key_strength;
 
     let shaded = tex_color * in.color.rgb * total_light * detail
         + key_color * spec + rim * key_color;
