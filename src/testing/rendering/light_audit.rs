@@ -121,6 +121,32 @@ fn light_audit_sunset_360() {
 
 #[test]
 #[ignore = "writes PNGs; run explicitly"]
+fn light_audit_night_360() {
+    let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    for deg in [0, 45, 90, 135, 180, 225, 270, 315] {
+        let rad = (deg as f32) * std::f32::consts::PI / 180.0;
+        pollster::block_on(shoot(
+            CameraMode::Tracking,
+            0.50,
+            &format!("{dir}/03_night_track_{deg}deg.png"),
+            Some(rad),
+            Some(-0.26),
+            Some(0.5),
+        ));
+    }
+    pollster::block_on(shoot(
+        CameraMode::Cockpit,
+        0.50,
+        &format!("{dir}/03_night_cockpit.png"),
+        None,
+        None,
+        None,
+    ));
+}
+
+#[test]
+#[ignore = "writes PNGs; run explicitly"]
 fn light_audit_sweep() {
     let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
     std::fs::create_dir_all(&dir).unwrap();

@@ -61,8 +61,8 @@ const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
 
 const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
 const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
-const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.012, 0.012, 0.014);
-const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.055, 0.057, 0.062);
+const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.002, 0.002, 0.004);
+const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.008, 0.009, 0.014);
 
 /// Deep blue-violet the zenith picks up during civil twilight, instead of
 /// just fading toward the near-black NIGHT_ZENITH — a clear dusk zenith
@@ -279,7 +279,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let boundary_softener = smoothstep(1.0, 0.8, h_normalized);
     let optical_depth = density_at_d * dist_in_atm * boundary_softener * 2.0;
     
-    let space_color = vec3<f32>(0.02, 0.02, 0.04);
+    let space_color = vec3<f32>(0.002, 0.002, 0.004);
 
     // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT (used inside sky_palette).
     let day_amount = smoothstep(0.0, 0.10, sun_elevation);
@@ -322,12 +322,9 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
 
     // ── Stars ────────────────────────────────────────────────────────────────
     //
-    // Attenuated by the air, but on a far gentler curve than the sky's own opacity: that
-    // figure describes how much scattered light the atmosphere *adds*, which at three
-    // kilometres is already 90% and would extinguish every star. What matters to a point
-    // source is how much it absorbs, which is much less. The long slant path near the
-    // horizon still puts them out, which is what you actually see.
-    let star_extinction = exp(-optical_depth * 1.5);
+    // Attenuated by the air, but on a far gentler curve than the sky's own opacity.
+    // Smoothly reaches low towards the horizon at night without a hard horizontal cutoff.
+    let star_extinction = exp(-optical_depth * 0.35);
     base_color += star_field(view_dir, clamp(day_amount, 0.0, 1.0)) * star_extinction;
 
     // ── The sun and the moon themselves ──────────────────────────────────────

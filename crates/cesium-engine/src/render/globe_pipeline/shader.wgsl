@@ -122,8 +122,8 @@ fn air_path_length(camera_pos: vec3<f32>, frag_pos: vec3<f32>) -> f32 {
 
 const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
 const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
-const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.012, 0.012, 0.014);
-const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.055, 0.057, 0.062);
+const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.002, 0.002, 0.004);
+const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.008, 0.009, 0.014);
 
 /// Deep blue-violet the zenith picks up during civil twilight, instead of
 /// just fading toward the near-black NIGHT_ZENITH — a clear dusk zenith

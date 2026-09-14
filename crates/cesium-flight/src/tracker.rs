@@ -450,19 +450,12 @@ impl FlightTrackerApp {
             * glam::Mat4::from_quat(rot_f32)
             * glam::Mat4::from_scale(glam::Vec3::splat(crate::cockpit_model::MODEL_SCALE));
 
-        // Dim the cockpit toward night without ever going fully black, reusing the same
-        // flight-progress-driven sun intensity the exterior lighting already derives from.
+        // Dim the cockpit toward night so the interior structure sits in deep shadow
+        // and the emissive display panels brightly illuminate the flight deck.
         let sun = self
             .get_sun_intensity_at(*self.progress.lock().unwrap())
             .unwrap_or(1.0) as f32;
-        // Ambient is the *floor* the key light fills up from, not a term added to it, so
-        // this is the darkest the interior ever gets. Kept low deliberately: an airliner
-        // flight deck in daylight is mostly shadow with a few brilliantly lit surfaces.
-        // Tuned against captures rather than by eye: at 0.42 the interior sat about 20%
-        // brighter than it used to, which is the wrong direction for a frame that was
-        // already too bright. This lands the window posts back at their previous value
-        // while leaving the panel deeper in shadow than before.
-        let ambient_override = 0.34 * (0.6 + 0.4 * sun);
+        let ambient_override = 0.05 + 0.29 * sun.powf(1.5);
 
         use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
         let push = ModelPushConstants {
@@ -1035,29 +1028,35 @@ impl GlobeExtension for FlightTrackerApp {
 
                 let model_matrix = translation * rotation * scale * model_correction;
 
-                use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
-                let push = ModelPushConstants {
-                    model_matrix_0: model_matrix.x_axis.to_array(),
-                    model_matrix_1: model_matrix.y_axis.to_array(),
-                    model_matrix_2: model_matrix.z_axis.to_array(),
-                    model_matrix_3: model_matrix.w_axis.to_array(),
-                    camera_pos: [
-                        camera_pos_f64[0] as f32,
-                        camera_pos_f64[1] as f32,
-                        camera_pos_f64[2] as f32,
-                        1.0,
-                    ],
-                    viewport_size,
-                    min_pixel_size: 100.0,
-                    depth_bias: 0.0,
-                    // Ambient floor provides soft shadow fill while directional key light
-                    // creates realistic golden hour contrast and Blinn-Phong specular glints.
-                    ambient_override: 0.18,
-                    specular_strength: 0.35,
-                    detail_strength: 0.0,
-                    rim_strength: 0.25,
-                    diffuse_weight: 1.0,
-                };
+                    let sun = self
+                        .get_sun_intensity_at(current_progress)
+                        .unwrap_or(1.0) as f32;
+                    let ambient_override = 0.03 + 0.15 * sun;
+                    let rim_strength = 0.08 + 0.17 * sun;
+
+                    use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
+                    let push = ModelPushConstants {
+                        model_matrix_0: model_matrix.x_axis.to_array(),
+                        model_matrix_1: model_matrix.y_axis.to_array(),
+                        model_matrix_2: model_matrix.z_axis.to_array(),
+                        model_matrix_3: model_matrix.w_axis.to_array(),
+                        camera_pos: [
+                            camera_pos_f64[0] as f32,
+                            camera_pos_f64[1] as f32,
+                            camera_pos_f64[2] as f32,
+                            1.0,
+                        ],
+                        viewport_size,
+                        min_pixel_size: 100.0,
+                        depth_bias: 0.0,
+                        // Ambient floor and rim scale with daylight, keeping the aircraft
+                        // dark in nighttime silhouettes while rich in sunset and daylight.
+                        ambient_override,
+                        specular_strength: 0.35,
+                        detail_strength: 0.0,
+                        rim_strength,
+                        diffuse_weight: 1.0,
+                    };
 
                 airplane.draw(render_pass, camera_bind_group, push);
             }
