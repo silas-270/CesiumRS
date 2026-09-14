@@ -328,12 +328,21 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let zenith_color = mix(sky_palette(sun_elevation)[0] * 0.12, sky_palette(sun_elevation)[0], altitude_scalar);
     let sky_irradiance = mix(zenith_color, horizon_haze_color, 0.4);
 
-    // Ground ambient receives subtle twilight illumination matching the sky dome
-    let twilight_ambient = sky_irradiance * twilight * mix(0.4, 0.8, altitude_scalar);
-    let ambient_vec = vec3<f32>(ambient) + twilight_ambient * 2.2;
-    let twilight_floor = sky_irradiance * twilight * 0.06 * mix(0.5, 1.0, altitude_scalar);
+    // Ground ambient receives twilight chromaticity and subtle sky bounce matching the sky dome
+    let sky_lum = dot(sky_irradiance, vec3<f32>(0.299, 0.587, 0.114));
+    let sky_chroma = sky_irradiance / max(sky_lum, 0.001);
+    let ambient_rgb = mix(vec3<f32>(ambient), vec3<f32>(ambient) * sky_chroma, twilight * 0.70);
+    
+    // Soft terminator wrap for low sun grazing terrain at sunset/twilight
+    let n_dot_sun = dot(in.normal, camera.sun_dir.xyz);
+    let wrap_sun = max((n_dot_sun + 0.12) / 1.12, 0.0);
+    let from_sun_twilight = mix(from_sun, wrap_sun * (1.0 - night_key), twilight);
+    let diffuse_twilight = (from_sun_twilight + from_moon) * mix(0.0, 0.4, altitude_scalar) * key_strength;
+    let diffuse_rgb = vec3<f32>(diffuse_twilight) * key_color;
 
-    let shaded_color = tex_color_rgb * (ambient_vec + vec3<f32>(diffuse)) * key_tint + twilight_floor;
+    let twilight_floor = sky_irradiance * twilight * 0.08 * mix(0.4, 0.9, altitude_scalar);
+
+    let shaded_color = tex_color_rgb * (ambient_rgb + diffuse_rgb) + twilight_floor;
 
     // ── Aerial perspective ───────────────────────────────────────────────────────
     let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
