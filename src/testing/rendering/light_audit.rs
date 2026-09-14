@@ -15,6 +15,18 @@ async fn shoot(
     pitch_orbit_rad: Option<f32>,
     zoom_factor: Option<f32>,
 ) {
+    shoot_with_config(mode, progress, out, turn_orbit_rad, pitch_orbit_rad, zoom_factor, TileEngineConfig::default()).await;
+}
+
+async fn shoot_with_config(
+    mode: CameraMode,
+    progress: f64,
+    out: &str,
+    turn_orbit_rad: Option<f32>,
+    pitch_orbit_rad: Option<f32>,
+    zoom_factor: Option<f32>,
+    tile_config: TileEngineConfig,
+) {
     let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
         std::sync::Arc::new(std::sync::Mutex::new(progress)),
     ));
@@ -41,7 +53,7 @@ async fn shoot(
     let mut state = WgpuState::new(
         None,
         Some(winit::dpi::PhysicalSize::new(960, 540)),
-        TileEngineConfig::default(),
+        tile_config,
         Some(flight_app),
     )
     .await;
@@ -197,5 +209,48 @@ fn light_audit_sweep() {
             let out = format!("{dir}/{label}_{mname}.png");
             pollster::block_on(shoot(mode, progress, &out, None, None, None));
         }
+    }
+}
+
+#[test]
+#[ignore = "writes PNGs; run explicitly"]
+fn light_audit_dark_vs_satellite_sweep() {
+    use cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL;
+
+    let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let progresses = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+
+    // 1. Dark Matter (Standard) Map
+    for &p in &progresses {
+        let out = format!("{dir}/dark_{:.1}.png", p);
+        pollster::block_on(shoot_with_config(
+            CameraMode::Tracking,
+            p,
+            &out,
+            None,
+            None,
+            None,
+            TileEngineConfig::default(),
+        ));
+    }
+
+    // 2. Satellite (Esri) Map
+    let sat_config = TileEngineConfig {
+        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        ..Default::default()
+    };
+    for &p in &progresses {
+        let out = format!("{dir}/sat_{:.1}.png", p);
+        pollster::block_on(shoot_with_config(
+            CameraMode::Tracking,
+            p,
+            &out,
+            None,
+            None,
+            None,
+            sat_config.clone(),
+        ));
     }
 }
