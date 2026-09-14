@@ -204,9 +204,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let from_moon = n_dot_l_moon * night_key;
     let lit = (from_sun + from_moon) * key_strength * push.diffuse_weight;
 
+    // Hemispherical ambient occlusion / ground bounce:
+    // Upper surfaces facing the sky hemisphere receive the full ambient floor,
+    // while downward-facing underbelly and cavity surfaces receive reduced ambient
+    // (ground bounce ratio ~ 0.40) to produce natural contact shading and depth.
+    // Cockpit views (push.rim_strength == 0.0) retain uniform isotropic ambient.
+    let world_pos = push.camera_pos.xyz + in.view_pos;
+    let world_up = normalize(world_pos);
+    let up_factor = dot(normal, world_up);
+    let ground_ratio = 0.40;
+    let hemi_sky = 0.5 * up_factor + 0.5;
+    let hemi_factor = mix(ground_ratio, 1.0, clamp(hemi_sky, 0.0, 1.0));
+    let is_exterior = step(0.001, push.rim_strength);
+    let ambient_factor = mix(1.0, hemi_factor, is_exterior);
+
     // Direct key light carries the warm golden / cool moon hue, while ambient provides
     // a soft neutral illumination floor to maintain rich contrast without muddy tinting.
-    let ambient_light = vec3<f32>(push.ambient_override);
+    let ambient_light = vec3<f32>(push.ambient_override * ambient_factor);
     let direct_light = lit * key_color;
     let total_light = ambient_light + direct_light;
 
