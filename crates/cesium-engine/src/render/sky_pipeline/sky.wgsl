@@ -352,5 +352,12 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    // Hash-based dither, about one 8-bit ULP. The sky's gradient is smooth and
+    // mostly monochrome, and this runs for hours in the background — banding
+    // gets more obvious the longer it's on screen, not less. Screen-space
+    // (not per-frame) so it doesn't flicker over a session; reuses hash2 already
+    // written for the star field.
+    let dither = (hash2(in.clip_pos_xy * 0.5 + vec2<f32>(17.0, 41.0)) - 0.5) / 255.0;
+    base_color = max(base_color + vec3<f32>(dither), vec3<f32>(0.0));
     return vec4<f32>(base_color, 1.0);
 }
