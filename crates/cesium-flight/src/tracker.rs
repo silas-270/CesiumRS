@@ -288,7 +288,10 @@ impl FlightTrackerApp {
             let time = cesium_engine::time::SimulationTime::new(current_time_seconds);
 
             use cesium_engine::property::Property;
-            flight.sun_intensity_property.evaluate(time)
+            flight
+                .sun_intensity_property
+                .evaluate(time)
+                .map(|v| v.clamp(0.0, 1.0))
         } else {
             None
         }
@@ -454,7 +457,8 @@ impl FlightTrackerApp {
         // and the emissive display panels brightly illuminate the flight deck.
         let sun = self
             .get_sun_intensity_at(*self.progress.lock().unwrap())
-            .unwrap_or(1.0) as f32;
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0) as f32;
         let ambient_override = 0.05 + 0.29 * sun.powf(1.5);
 
         use cesium_engine::render::model_pipeline::pipeline::ModelPushConstants;
