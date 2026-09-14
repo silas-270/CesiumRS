@@ -272,7 +272,7 @@ impl<'a> WgpuState<'a> {
                 &tile_system.texture_manager.bind_group_layout,
             );
 
-        let sky_pipeline = crate::render::globe_pipeline::pipeline::create_sky_pipeline(
+        let sky_pipeline = crate::render::sky_pipeline::create_sky_pipeline(
             &device,
             &config,
             &sky_shader,
