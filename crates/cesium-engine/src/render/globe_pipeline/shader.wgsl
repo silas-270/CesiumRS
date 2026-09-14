@@ -252,19 +252,34 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let key_color = camera.light_color.rgb;
     let key_strength = camera.light_color.a;
 
-    // Sun and moon summed with smooth weights, never switched between — see the note in
-    // model_pipeline/shader.wgsl. The moon is exactly opposite the sun, so a threshold
-    // here would swing the terrain's shading right round in a single frame.
-    let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
-    let from_sun = max(dot(in.normal, camera.sun_dir.xyz), 0.0) * (1.0 - night_key);
-    let from_moon = max(dot(in.normal, camera.moon_dir.xyz), 0.0) * night_key;
+    let sun_elevation = camera.sun_dir.w;
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation);
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
+    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
 
-    let ambient = mix(1.0, 0.8, altitude_scalar);
-    let diffuse = (from_sun + from_moon) * mix(0.0, 0.4, altitude_scalar) * key_strength;
-    // Tinting only the directional term keeps a shaded slope neutral while a sunlit one
-    // goes warm — the ground then agrees with the sky instead of fighting it.
-    let key_tint = mix(vec3<f32>(1.0, 1.0, 1.0), key_color, diffuse);
-    
+    // Sun and moon directions with smooth weighted blend
+    let night_key = smoothstep(-0.02, -0.22, sun_elevation);
+    let n_dot_sun = dot(in.normal, camera.sun_dir.xyz);
+    let n_dot_moon = dot(in.normal, camera.moon_dir.xyz);
+
+    // Soft terminator wrap for low sun grazing terrain at sunset/twilight
+    let wrap_sun = max((n_dot_sun + 0.12) / 1.12, 0.0);
+    let from_sun = mix(max(n_dot_sun, 0.0), wrap_sun, twilight) * (1.0 - night_key);
+    let from_moon = max(n_dot_moon, 0.0) * night_key;
+
+    // Energy-conserving ambient & diffuse balance:
+    // In daylight: ambient ~0.60, diffuse up to ~0.38 (total <= 0.98, preventing concrete/roof blowout).
+    // At night: ambient smoothly transitions to a soft moonlit floor (~0.12 at cruise), direct moonlight adds ~0.08.
+    let day_ambient = mix(0.70, 0.58, altitude_scalar);
+    let night_ambient = mix(0.18, 0.26, altitude_scalar);
+    let base_ambient = mix(day_ambient, night_ambient, night_amount);
+
+    let day_diffuse_max = 0.38 * mix(0.2, 1.0, altitude_scalar);
+    let night_diffuse_max = 0.08;
+    let max_diffuse = mix(day_diffuse_max, night_diffuse_max, night_amount);
+    let diffuse_intensity = (from_sun + from_moon) * max_diffuse * key_strength;
+    let diffuse_rgb = vec3<f32>(diffuse_intensity) * key_color;
+
     let tex_color_raw = textureSample(t_diffuse, s_diffuse, in.uv);
     
     // Extract map color grading parameters from the uniform (-1.0 to 1.0)
@@ -274,7 +289,27 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     
     var tex_color_rgb = tex_color_raw.rgb;
     
-    // Performance optimization: skip color grading entirely if all adjustments are 0.0
+    // 1. Daytime highlight compression: gently roll off extreme whites (runway concrete/roofs)
+    // so textures preserve surface detail without blowing out into blinding white patches.
+    let highlight_excess = max(tex_color_rgb - vec3<f32>(0.75), vec3<f32>(0.0));
+    tex_color_rgb = tex_color_rgb - highlight_excess * 0.45 * day_amount;
+
+    // 2. Realistic Night Tone Curve (Mesopic human eye response):
+    // In real night vision, daytime satellite sun-patches are suppressed,
+    // and the landscape takes on a soft, dark, monotone moonlit presence.
+    // We gate the highlight compression to brighter textures (photographic satellite tiles)
+    // while leaving dark vector basemaps (Dark Matter) untouched so roads remain legible.
+    let night_lum = dot(tex_color_rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let photo_gate = smoothstep(0.04, 0.35, night_lum);
+    let night_gamma = mix(1.0, 1.35, night_amount * photo_gate);
+    tex_color_rgb = pow(tex_color_rgb, vec3<f32>(night_gamma));
+    
+    // At night, desaturate toward a cool slate-blue moonlit monochrome rather than harsh black/white
+    let moon_tint = vec3<f32>(0.75, 0.82, 0.95);
+    let moonlit_gray = mix(vec3<f32>(night_lum), vec3<f32>(night_lum) * moon_tint, 0.65);
+    tex_color_rgb = mix(tex_color_rgb, moonlit_gray, night_amount * 0.80 * photo_gate);
+
+    // Performance optimization: skip explicit color grading entirely if all adjustments are 0.0
     if (saturation_adj != 0.0 || contrast_adj != 0.0 || brightness_adj != 0.0) {
         
         // 1. Brightness (-1 to 1) -> multiplicative scaling
@@ -284,27 +319,19 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         
         // 2. Contrast (-1 to 1) 
-        // We map -1 to 1 into a multiplier: >0 scales up (e.g., 1.0 -> factor 2.0), <0 scales down.
         if (contrast_adj != 0.0) {
             let contrast_factor = max(1.0 + contrast_adj, 0.0);
             tex_color_rgb = (tex_color_rgb - 0.5) * contrast_factor + 0.5;
         }
         
         // 3. Saturation (-1 to 1)
-        // Convert to grayscale using luminance weights, then interpolate based on saturation factor.
         if (saturation_adj != 0.0) {
             let luminance = dot(tex_color_rgb, vec3<f32>(0.299, 0.587, 0.114));
             let saturation_factor = max(1.0 + saturation_adj, 0.0);
             tex_color_rgb = mix(vec3<f32>(luminance), tex_color_rgb, saturation_factor);
         }
-        
-        tex_color_rgb = clamp(tex_color_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    
-    let sun_elevation = camera.sun_dir.w;
-    let day_amount = smoothstep(0.0, 0.10, sun_elevation);
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
-    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+    tex_color_rgb = clamp(tex_color_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
 
     let frag_pos = camera.camera_pos.xyz + in.world_pos;
     let true_frag_dist = length(in.world_pos);
@@ -328,17 +355,10 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let zenith_color = mix(sky_palette(sun_elevation)[0] * 0.12, sky_palette(sun_elevation)[0], altitude_scalar);
     let sky_irradiance = mix(zenith_color, horizon_haze_color, 0.4);
 
-    // Ground ambient receives twilight chromaticity and subtle sky bounce matching the sky dome
+    // Ground ambient receives twilight chromaticity and moonlight tint
     let sky_lum = dot(sky_irradiance, vec3<f32>(0.299, 0.587, 0.114));
     let sky_chroma = sky_irradiance / max(sky_lum, 0.001);
-    let ambient_rgb = mix(vec3<f32>(ambient), vec3<f32>(ambient) * sky_chroma, twilight * 0.70);
-    
-    // Soft terminator wrap for low sun grazing terrain at sunset/twilight
-    let n_dot_sun = dot(in.normal, camera.sun_dir.xyz);
-    let wrap_sun = max((n_dot_sun + 0.12) / 1.12, 0.0);
-    let from_sun_twilight = mix(from_sun, wrap_sun * (1.0 - night_key), twilight);
-    let diffuse_twilight = (from_sun_twilight + from_moon) * mix(0.0, 0.4, altitude_scalar) * key_strength;
-    let diffuse_rgb = vec3<f32>(diffuse_twilight) * key_color;
+    let ambient_rgb = mix(vec3<f32>(base_ambient), vec3<f32>(base_ambient) * sky_chroma, twilight * 0.70);
 
     let twilight_floor = sky_irradiance * twilight * 0.02 * mix(0.4, 0.9, altitude_scalar);
 
