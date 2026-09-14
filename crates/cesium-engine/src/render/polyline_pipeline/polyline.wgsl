@@ -55,6 +55,7 @@ struct VertexOutput {
     @location(3) cam_rel_pos:  vec3<f32>,
     @location(4) tangent:      vec3<f32>,
     @location(5) distance:     f32,
+    @location(6) normal:       vec3<f32>,
 };
 
 // ── Vertex shader ─────────────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
     out.distance   = cp.distance;
     out.cam_rel_pos = extruded;
     out.tangent    = tangent;
+    out.normal     = up_3d;
     out.face_shade = 1.0; // ribbon is always top-face
 
     return out;
@@ -210,5 +212,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return vec4<f32>(base_color * in.face_shade, alpha);
+    // ── Scene Lighting ───────────────────────────────────────────────────────────
+    // Route line responds to scene lighting, sunset/golden hour, and day/night cycle:
+    let normal = normalize(in.normal);
+    let key_color = camera.light_color.rgb;
+    let key_strength = camera.light_color.a;
+
+    let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
+    let n_dot_l_sun = max(dot(normal, camera.sun_dir.xyz), 0.0);
+    let n_dot_l_moon = max(dot(normal, camera.moon_dir.xyz), 0.0);
+    let from_sun = n_dot_l_sun * (1.0 - night_key);
+    let from_moon = n_dot_l_moon * night_key;
+
+    // Ambient floor provides baseline visibility that gently dims from day to night.
+    let ambient_level = mix(0.22, 0.45, key_strength);
+    // Key color tint applies golden-hour warmth and moon lighting to ambient and direct light.
+    let light_tint = mix(vec3<f32>(1.0), key_color, 0.65);
+    let direct_term = (from_sun + from_moon) * 0.55 * key_strength;
+    let total_light = (vec3<f32>(ambient_level) + direct_term * key_color) * light_tint;
+
+    let shaded_color = base_color * in.face_shade * total_light;
+
+    return vec4<f32>(shaded_color, alpha);
 }
