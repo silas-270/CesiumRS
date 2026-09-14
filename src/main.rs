@@ -113,6 +113,10 @@ mod inner {
         #[arg(long)]
         pub free_routes: bool,
 
+        /// Base map imagery style: 'standard' (Carto dark) or 'satellite' (Esri satellite)
+        #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
+        pub map_style: cesium_rs::MapStyle,
+
         /// Initial flight route to load on startup: preset name (e.g. 'FRA-STR', 'LHR-NRT', 'JFK-LHR')
         /// or coordinates 'lat1,lon1,lat2,lon2'.
         #[arg(long, default_value = "FRA-STR")]
@@ -281,6 +285,7 @@ mod inner {
                 .tile_cache_size(2048)
                 .enable_prefetch(true)
                 .target_texel_ratio(1.0)
+                .map_style(cli.map_style)
                 .with_extension(Box::new(flight_app))
                 .build();
 
@@ -299,6 +304,21 @@ fn main() {
 
 #[cfg(not(feature = "testing"))]
 fn main() {
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    #[command(author, version, about, long_about = None)]
+    struct Cli {
+        /// Base map imagery style: 'standard' (Carto dark) or 'satellite' (Esri satellite)
+        #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
+        pub map_style: cesium_rs::MapStyle,
+
+        /// Initial flight route to load on startup: preset name (e.g. 'FRA-STR', 'LHR-NRT', 'JFK-LHR')
+        /// or coordinates 'lat1,lon1,lat2,lon2'.
+        #[arg(long, default_value = "FRA-STR")]
+        pub route: String,
+    }
+
     cfg_if::cfg_if! {
         if #[cfg(not(target_os = "android"))] {
             env_logger::Builder::from_default_env()
@@ -308,15 +328,21 @@ fn main() {
         }
     }
 
+    let cli = Cli::parse();
     let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
 
-    let default_route = cesium_flight::preset::parse_route("FRA-STR").unwrap();
-    flight_handle.load_route_def(&default_route);
+    let route_def = cesium_flight::preset::parse_route(&cli.route)
+        .unwrap_or_else(|e| {
+            eprintln!("Warning: Failed to parse route '{}': {}. Falling back to FRA-STR.", cli.route, e);
+            cesium_flight::preset::parse_route("FRA-STR").unwrap()
+        });
+    flight_handle.load_route_def(&route_def);
 
     let viewer = cesium_rs::CesiumViewer::builder()
         .tile_cache_size(2048)
         .enable_prefetch(true)
         .target_texel_ratio(1.0)
+        .map_style(cli.map_style)
         .with_extension(Box::new(flight_app))
         .build();
 

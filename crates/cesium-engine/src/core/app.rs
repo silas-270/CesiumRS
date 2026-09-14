@@ -157,6 +157,34 @@ impl<'a> App<'a> {
                 }
 
                 ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Map Style:");
+                    let current_url = &state.tile_system.config.base_imagery_url;
+                    let is_sat = current_url == crate::globe::tiles::config::SATELLITE_IMAGERY_URL;
+                    let mut selected_sat = is_sat;
+                    if ui.radio_value(&mut selected_sat, false, "Standard (Carto Dark)").changed() {
+                        state.tile_system.config.base_imagery_url =
+                            crate::globe::tiles::config::STANDARD_IMAGERY_URL.to_string();
+                        state.tile_system.texture_manager =
+                            crate::globe::tiles::texture_manager::TileTextureManager::new(
+                                &state.device,
+                                &state.queue,
+                                &state.tile_system.config,
+                            );
+                    }
+                    if ui.radio_value(&mut selected_sat, true, "Satellite (Esri)").changed() {
+                        state.tile_system.config.base_imagery_url =
+                            crate::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string();
+                        state.tile_system.texture_manager =
+                            crate::globe::tiles::texture_manager::TileTextureManager::new(
+                                &state.device,
+                                &state.queue,
+                                &state.tile_system.config,
+                            );
+                    }
+                });
+
+                ui.separator();
                 ui.collapsing("Map Labels Settings", |ui| {
                     ui.checkbox(&mut state.label_manager.enabled, "Enable Labels");
                     if state.label_manager.enabled {

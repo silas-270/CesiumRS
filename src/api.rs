@@ -57,11 +57,14 @@ pub enum CameraMode {
 }
 
 /// Base imagery style for the globe's tile layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum MapStyle {
     /// Default dark, label-free vector-style basemap.
+    #[default]
+    #[value(name = "standard", alias = "carto", alias = "dark")]
     Standard,
     /// Satellite aerial imagery.
+    #[value(name = "satellite", alias = "esri", alias = "sat")]
     Satellite,
 }
 
@@ -82,6 +85,7 @@ pub struct CesiumViewerBuilder {
     tile_cache_budget_bytes: usize,
     target_texel_ratio: f32,
     enable_prefetch: bool,
+    map_style: MapStyle,
     map_saturation: f32,
     map_contrast: f32,
     map_brightness: f32,
@@ -96,6 +100,7 @@ impl Default for CesiumViewerBuilder {
             tile_cache_budget_bytes: TileEngineConfig::default().tile_cache_budget_bytes,
             target_texel_ratio: 1.0,
             enable_prefetch: true,
+            map_style: MapStyle::default(),
             map_saturation: 0.0,
             map_contrast: 0.0,
             map_brightness: 0.5,
@@ -151,6 +156,12 @@ impl CesiumViewerBuilder {
         self
     }
 
+    /// Set the base map imagery style (e.g. Standard CARTO dark basemap vs. Esri Satellite).
+    pub fn map_style(mut self, style: MapStyle) -> Self {
+        self.map_style = style;
+        self
+    }
+
     /// Map imagery saturation adjustment. `-1.0` = greyscale, `0.0` = neutral, `1.0` = oversaturated.
     pub fn map_saturation(mut self, value: f32) -> Self {
         self.map_saturation = value;
@@ -180,6 +191,11 @@ impl CesiumViewerBuilder {
 
     /// Consume the builder and produce a `CesiumViewer`.
     pub fn build(self) -> CesiumViewer {
+        let base_imagery_url = match self.map_style {
+            MapStyle::Standard => STANDARD_IMAGERY_URL.to_string(),
+            MapStyle::Satellite => SATELLITE_IMAGERY_URL.to_string(),
+        };
+
         let config = TileEngineConfig {
             max_cache_size: NonZeroUsize::new(self.tile_cache_size)
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
@@ -188,6 +204,7 @@ impl CesiumViewerBuilder {
             tile_cache_budget_bytes: self.tile_cache_budget_bytes,
             target_texel_ratio: self.target_texel_ratio,
             enable_prefetch: self.enable_prefetch,
+            base_imagery_url,
             map_saturation: self.map_saturation,
             map_contrast: self.map_contrast,
             map_brightness: self.map_brightness,
