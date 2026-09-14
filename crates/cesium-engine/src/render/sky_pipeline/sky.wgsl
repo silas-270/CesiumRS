@@ -307,10 +307,11 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     if (optical_depth > 0.0) {
         // The bright band tightens toward the horizon as the air thins, which is what
         // the sky actually does from the flight levels.
-        // The band tightens with altitude, but only a little: taken too far the gradient
-        // collapses into a visible edge, which looks like a seam rather than a horizon.
-        let band_low  = mix(1.8, 1.5, altitude_scalar);
-        let band_high = 2.7;
+        // Smooth continuous transition across the full sky dome from zenith to horizon.
+        // band_low covers the zenith optical depth (~0.15 at cruise to ~0.30 on ground),
+        // while band_high anchors at the dense horizon (~2.5).
+        let band_low  = mix(0.35, 0.15, altitude_scalar);
+        let band_high = mix(2.6, 2.2, altitude_scalar);
         let color_mix = smoothstep(band_low, band_high, optical_depth);
 
         var atmosphere_color = mix(zenith_color, horizon_color, color_mix);
@@ -323,10 +324,15 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
 
     // ── Stars ────────────────────────────────────────────────────────────────
     //
-    // Attenuated by the air, but on a far gentler curve than the sky's own opacity.
-    // Smoothly reaches low towards the horizon at night without a hard horizontal cutoff.
-    let star_extinction = exp(-optical_depth * 0.35);
-    let star_cutoff = 1.0 - night_amount;
+    // Attenuated by the air column (optical depth) and extinguished by background
+    // sky luminance (twilight glow, daylight, and atmospheric scattering).
+    // In bright regions (daylight or orange twilight glow band), stars are completely
+    // suppressed; as the local sky darkens to night, the brightest stars emerge first
+    // at the zenith and progressively fill the sky down to the horizon.
+    let sky_luminance = dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let lum_factor = smoothstep(0.005, 0.08, sky_luminance);
+    let star_cutoff = lum_factor;
+    let star_extinction = exp(-optical_depth * 0.35) * (1.0 - lum_factor);
     base_color += star_field(view_dir, clamp(star_cutoff, 0.0, 1.0)) * star_extinction;
 
     // ── The sun and the moon themselves ──────────────────────────────────────
