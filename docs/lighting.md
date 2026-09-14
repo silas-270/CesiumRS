@@ -129,17 +129,36 @@ Beer-Lambert opacity. Added to it:
 
 - **A shared palette function.** `sky_palette(sun_elevation)` returns a `[zenith, horizon]`
   pair, mixed from four anchors — `NOON_ZENITH`/`NOON_HORIZON`/`NIGHT_ZENITH`/
-  `NIGHT_HORIZON` — on the same day/night ramp as `celestial.rs`. `sky_warm_tint
-  (sun_elevation)` is a separate multiplicative tint, derived from the Rayleigh channel
-  weights used only as a relative hue (not a real extinction term — seeing what a literal
-  Beer-Lambert transmittance does to a horizon sunset was the reason this wasn't attempted:
-  it computes to a near-black smear, not a glow, because a real sunset's brightness is
-  dominated by inscattered light along the view path, which this engine doesn't integrate).
-  `sky.wgsl` gates the tint by `toward_sun`, so the warm half of the sky is the half the sun
-  is in — without that a sunset is an even orange band all the way round, which is the
-  giveaway of a faked sky. `globe_pipeline/shader.wgsl`'s horizon haze applies the same tint
-  *unconditionally* instead, since a per-pixel terrain fragment has no clean "toward the
-  sun" direction the way the sky dome's view ray does.
+  `NIGHT_HORIZON` — on the same day/night ramp as `celestial.rs`, plus a twilight-only violet
+  cast on the zenith (`TWILIGHT_ZENITH_VIOLET`) so a clear dusk zenith reads as a saturated
+  blue-violet rather than just fading toward the near-black night colour.
+  `sky_hue_rotation(sun_elevation, toward_sun)` (renamed from `sky_warm_tint`) is a separate
+  multiplicative tint on the horizon colour, bidirectional: on the sun's side of the sky
+  (`toward_sun` near 1) it warms, derived from the Rayleigh channel weights used only as a
+  relative hue (not a real extinction term — seeing what a literal Beer-Lambert transmittance
+  does to a horizon sunset was the reason this wasn't attempted: it computes to a near-black
+  smear, not a glow, because a real sunset's brightness is dominated by inscattered light
+  along the view path, which this engine doesn't integrate); on the antisolar side
+  (`toward_sun` near 0) it instead cools toward a hand-picked saturated blue — the "Earth's
+  shadow" band a clear dusk sky shows opposite the sun. `sky.wgsl` builds `toward_sun` from
+  `cos_sun`, so the warm half of the sky is the half the sun is in — without that a sunset is
+  an even orange band all the way round, which is the giveaway of a faked sky.
+  `globe_pipeline/shader.wgsl` used to apply the old tint *unconditionally*, on the claim that
+  a per-pixel terrain fragment has no clean "toward the sun" direction the way the sky dome's
+  view ray does. That claim doesn't hold: `-to_camera` (already computed there for the
+  horizon-haze grazing test) *is* that fragment's view ray, so `cos_sun_terrain =
+  dot(-to_camera, sun_dir)` gives the same signal, and the terrain's horizon ring now gets the
+  same direction-aware hue rotation the sky dome does. Both files' `toward_sun` remap
+  (`-0.2, 0.9`) is now part of the byte-identical-function contract below, not just the
+  function bodies themselves — it's a local at each call site, not inside the shared function.
+
+  `sky.wgsl` alone (not shared — `fs_solid` only ever needs a horizon colour, never a mid-sky
+  one) also adds a third gradient stop between zenith and horizon: a twilight-only "glow"
+  band (`TWILIGHT_GLOW_PEACH` on the sun's side, `BELT_OF_VENUS_PINK` on the antisolar side)
+  for the pale peach/gold and pink Belt-of-Venus colours a clear sunset shows that a plain
+  2-stop gradient can't represent. It's placed with a linear (not smoothstep) split of the
+  existing `color_mix` so it's algebraically exact to the old 2-stop blend when fully faded
+  out — noon and full-night renders are unaffected.
 - **A sun disc**, its angular radius a named, derived constant (`SUN_ANGULAR_RADIUS`,
   mirroring the already-documented `MOON_ANGULAR_RADIUS` below it) rather than a pair of
   unexplained cosine thresholds, with a two-lobe forward-scatter halo, drawn *before* the
@@ -161,11 +180,12 @@ Beer-Lambert opacity. Added to it:
 **The sky must agree with the globe at the horizon.** This used to be enforced only by a
 comment in each file asking whoever edited one to remember the other — and it had already
 failed, with the two horizon colours drifted apart by up to 0.05 per channel. Now it's
-enforced by construction: `sky_palette`/`sky_warm_tint` are textually identical functions in
-both files (there is no shared-WGSL-include mechanism in this codebase, so "identical" means
-copy-pasted, not `#include`d — edit both copies in the same commit), called with the same
-`camera.sun_dir.w` input, so the horizon colour they compute cannot drift apart without the
-source itself drifting, which is visible in a diff. Both also carry the same
+enforced by construction: `sky_palette`/`sky_hue_rotation` are textually identical functions
+in both files (there is no shared-WGSL-include mechanism in this codebase, so "identical"
+means copy-pasted, not `#include`d — edit all copies in the same commit), called with the
+same `camera.sun_dir.w` input and, now, matching `toward_sun`/`toward_sun_terrain` remap
+constants at each call site, so the horizon colour they compute cannot drift apart without
+the source itself drifting, which is visible in a diff. Both also carry the same
 `EARTH_RADIUS_MM`/`ATMOSPHERE_THICKNESS_MM` constants and the same altitude dimming.
 
 `globe_pipeline/shader.wgsl`'s side of the seam — the haze near the terrain's visual
@@ -177,6 +197,13 @@ subsystem's own horizon test relies on — zero terrain relief today), so no per
 derivative is needed. The blended colour is named `horizon_haze_color` and the blend weight
 `horizon_blend` — this is unrelated to `Stage::Fog` in `quadtree.rs`, a culling/LOD
 relaxation that shares only the English word "fog" and touches no colour.
+
+That grazing-angle ring alone left distant-but-not-silhouette terrain crisp until a sudden
+fog wall right at the edge — terrain is visible 50-370km away at cruise (horizon distance
+from ~10.7km altitude), well beyond where the ring has any effect. `aerial_blend`, a
+distance-based fade keyed on `frag_dist` (onset ~50km, full ~300km — both tuned by eye, not
+derived), is layered on top of `horizon_blend` via `max()` so a fragment that's both far away
+and near the silhouette gets one full haze blend rather than a stacked double-fade.
 
 ### Stars, in detail
 

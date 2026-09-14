@@ -6,13 +6,27 @@ const ATMOSPHERE_THICKNESS_MM: f32 = 0.15;  // Mm; 150km shell for the sky rayma
 // MUST match sky_pipeline/sky.wgsl / globe_pipeline/shader.wgsl exactly (this
 // is the other one). See docs/lighting.md, "The sky must agree with the
 // globe at the horizon." Both files call these with the same sun_elevation
-// (camera.sun_dir.w) so the seam is enforced by construction. Edit both
-// copies in the same commit; verify with light_audit_sweep before trusting.
+// (camera.sun_dir.w) and, for sky_hue_rotation, the same toward_sun remap
+// constants (-0.2, 0.9) at each call site — that remap is a local, not part
+// of the shared function body, so it has to be kept in sync by hand too.
+// Edit all copies in the same commit; verify with light_audit_sweep before
+// trusting.
 
 const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
 const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
 const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.012, 0.012, 0.014);
 const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.055, 0.057, 0.062);
+
+/// Deep blue-violet the zenith picks up during civil twilight, instead of
+/// just fading toward the near-black NIGHT_ZENITH — a clear dusk zenith
+/// stays saturated blue-violet for a while after sunset, which a straight
+/// day-to-night fade can't show. Hand-picked from clear dusk reference
+/// photographs (Wikimedia Commons, inspected during this work).
+const TWILIGHT_ZENITH_VIOLET: vec3<f32> = vec3<f32>(0.10, 0.08, 0.28);
+/// How far toward TWILIGHT_ZENITH_VIOLET the zenith moves at full twilight.
+/// Not 1.0: a full replacement read as an unmotivated colour swap against
+/// light_audit_sweep — starting point for tuning, not a derived number.
+const TWILIGHT_ZENITH_MIX: f32 = 0.6;
 
 // Relative Rayleigh scattering weight per channel (R,G,B), normalised to
 // green = 1, from inverse-4th-power-of-wavelength coefficients for
@@ -24,28 +38,39 @@ const RAYLEIGH_WEIGHT: vec3<f32> = vec3<f32>(0.43, 1.0, 2.45);
 /// `sun_elevation` is sin(elevation), carried on camera.sun_dir.w
 /// (render/celestial.rs), not radians. Returns [zenith, horizon].
 fn sky_palette(sun_elevation: f32) -> array<vec3<f32>, 2> {
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-    let zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
+    var zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
     let horizon = mix(NOON_HORIZON, NIGHT_HORIZON, night_amount);
+
+    // Twilight-only violet cast — see TWILIGHT_ZENITH_VIOLET above. Same
+    // "not day AND not night" trapezoid sky_hue_rotation gates on below, so
+    // it appears and disappears on the same schedule as the rest of the
+    // twilight-only colour and vanishes at noon and at full night.
+    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+    zenith = mix(zenith, TWILIGHT_ZENITH_VIOLET, twilight * TWILIGHT_ZENITH_MIX);
+
     return array<vec3<f32>, 2>(zenith, horizon);
 }
 
-/// The dusk glow as a multiplicative tint on the horizon colour.
+/// Multiplicative hue rotation on the horizon colour, split by which side of
+/// the sky a fragment is on relative to the sun (`toward_sun`: 1 = the sun's
+/// half, 0 = the antisolar half).
 ///
-/// **Deviation from the plan as written:** the plan's snippet computed
-/// `twilight` as `day_amount * (1-day_amount) * 4`, a bell curve entirely
-/// inside `sun_elevation` ∈ [0, DAY_ELEVATION]. That's zero for the whole
-/// negative-elevation dusk-to-night band (DUSK_ELEVATION..NIGHT_ELEVATION in
-/// celestial.rs) — exactly the regime the old hand-authored
-/// `dusk_horizon_color` used to dominate — so light_audit_sweep's
-/// `02_sunset` frames rendered with no warmth at all (flat blue). The
-/// trapezoid below is "not day AND not night", which is what the old
-/// sequential day/dusk/night mix actually produced as its dusk weight; at
-/// full weight (twilight=1) it reproduces the old dusk_horizon_color to
-/// within ~0.005 per channel against NOON_HORIZON, confirming the 1.35/2.3256
-/// scale below was tuned assuming this shape. Verified against
-/// light_audit_sweep. MUST match the other file's copy of this function.
-fn sky_warm_tint(sun_elevation: f32) -> vec3<f32> {
+/// Replaces the old direction-blind `sky_warm_tint`, which only ever warmed
+/// the sun's side and left the antisolar side untouched. A real dusk sky
+/// also cools toward a saturated blue opposite the sun — the "Earth's
+/// shadow" band sitting under the pink "Belt of Venus" the glow band puts
+/// higher in the sky (see fs_sky's glow-band code below). Both sides fade to
+/// neutral (1,1,1) outside the twilight window via the same trapezoid the
+/// old function used — verified against light_audit_sweep to reproduce the
+/// old dusk timing exactly on the sun side.
+///
+/// MUST match the other file's copy of this function, AND the `-0.2, 0.9`
+/// remap used to build `toward_sun` at every call site (sky.wgsl's
+/// `toward_sun`, globe_pipeline/shader.wgsl's `toward_sun_terrain`) — see
+/// docs/lighting.md.
+fn sky_hue_rotation(sun_elevation: f32, toward_sun: f32) -> vec3<f32> {
     let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
     let twilight = (1.0 - day_amount) * (1.0 - night_amount);
@@ -53,7 +78,13 @@ fn sky_warm_tint(sun_elevation: f32) -> vec3<f32> {
     // hand-picked tint's peak (1.35) — the one number here still tuned by
     // eye, down from a whole extra hand-authored RGB key.
     let warm = (1.0 / RAYLEIGH_WEIGHT) * (1.35 / 2.3256);
-    return mix(vec3<f32>(1.0), warm, twilight);
+    // Earth's-shadow blue — hand-tuned from reference photographs, not
+    // derived from RAYLEIGH_WEIGHT: the shadow band is the daytime sky's own
+    // colour seen through the Earth's shadow, not a scattering-hue
+    // relationship, so there's no channel weight to invert here.
+    let shadow = vec3<f32>(0.55, 0.62, 0.95);
+    let side_tint = mix(shadow, warm, toward_sun);
+    return mix(vec3<f32>(1.0), side_tint, twilight);
 }
 
 struct CameraUniform {
@@ -180,6 +211,30 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // 1.0 - … rather than swapping the arguments.
     var horizon_blend = 1.0 - smoothstep(HORIZON_HAZE_LOWER, HORIZON_HAZE_UPPER, grazing_cos);
 
+    // `in.world_pos` is already camera-relative (vs_main adds push_constants.relative_center,
+    // which wgpu_state.rs sets to tile_center - camera_pos — see TilePushConstants), so it
+    // IS the true camera-to-fragment vector directly. This is deliberately a second,
+    // separate pair from `cam_to_frag`/`frag_dist`/`to_camera` above: those mix that
+    // camera-relative position with the *absolute* `camera.camera_pos.xyz`, which is only
+    // meaningful as a direction (for the grazing test above, which only ever normalizes it)
+    // — their `frag_dist` is actually close to the camera's own distance from the Earth's
+    // centre, not the distance to this fragment, so it can't be reused for a real
+    // distance-based effect. Used below for both the aerial haze and the terrain's
+    // sun-relative direction.
+    let true_frag_dist = length(in.world_pos);
+    let view_dir_terrain = in.world_pos / max(true_frag_dist, 1e-6);
+
+    // Aerial perspective: distance haze independent of viewing angle, layered on top of
+    // the grazing-angle ring above, which alone left far terrain crisp until a sudden
+    // fog wall right at the silhouette — terrain is visible 50-370km away at cruise
+    // (horizon distance from ~10.7km altitude), so that ring alone isn't enough.
+    // true_frag_dist is in Mm (1.0 = 1000km); onset/full below are tuned to real haze
+    // becoming noticeable over tens of km, not to ATMOSPHERE_THICKNESS_MM (that's the
+    // sky dome's raymarch shell, a different scale).
+    let AERIAL_HAZE_ONSET_MM: f32 = 0.05; // 50km — tune against light_audit_sweep
+    let AERIAL_HAZE_FULL_MM: f32 = 0.30;  // 300km
+    let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, true_frag_dist);
+
     let earth_radius = EARTH_RADIUS_MM;
     let r_cam = max(length(camera.camera_pos.xyz), earth_radius);
     let altitude = max(r_cam - earth_radius, 0.0);
@@ -187,7 +242,15 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // The haze at the limb has to agree with the sky drawn behind it, so it follows the
     // sun's elevation on the same ramp rather than the altitude scalar.
     let sun_elevation = camera.sun_dir.w;
-    var horizon_haze_color = sky_palette(sun_elevation)[1] * sky_warm_tint(sun_elevation);
+
+    // `view_dir_terrain` (computed above) is the camera's true view ray toward this
+    // fragment, so this is exactly the "which half of the sky is the sun in" signal
+    // sky.wgsl's `cos_sun`/`toward_sun` give the dome. MUST match sky.wgsl's toward_sun
+    // remap (-0.2, 0.9) — see docs/lighting.md.
+    let cos_sun_terrain = dot(view_dir_terrain, camera.sun_dir.xyz);
+    let toward_sun_terrain = smoothstep(-0.2, 0.9, cos_sun_terrain);
+    var horizon_haze_color = sky_palette(sun_elevation)[1]
+        * sky_hue_rotation(sun_elevation, toward_sun_terrain);
     // MUST match sky.wgsl exactly. The terrain's limb haze and the sky behind it meet at
     // the horizon, so any difference between them shows up as a hard line across the
     // whole view. They used to agree for free by both keying off the altitude scalar;
@@ -200,7 +263,9 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
         0.0, 1.0);
     horizon_haze_color = mix(horizon_haze_color, space_color, space_fade);
 
-    let final_color = mix(shaded_color, horizon_haze_color, horizon_blend);
+    // max(), not add or sequential mix: a fragment that's both far away AND near the
+    // grazing-angle silhouette gets one full haze blend, not a stacked double-fade.
+    let final_color = mix(shaded_color, horizon_haze_color, max(horizon_blend, aerial_blend));
 
     return vec4<f32>(final_color, tex_color_raw.a);
 }

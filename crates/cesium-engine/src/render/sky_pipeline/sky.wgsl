@@ -53,13 +53,27 @@ const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
 // MUST match sky_pipeline/sky.wgsl / globe_pipeline/shader.wgsl exactly (this
 // is the other one). See docs/lighting.md, "The sky must agree with the
 // globe at the horizon." Both files call these with the same sun_elevation
-// (camera.sun_dir.w) so the seam is enforced by construction. Edit both
-// copies in the same commit; verify with light_audit_sweep before trusting.
+// (camera.sun_dir.w) and, for sky_hue_rotation, the same toward_sun remap
+// constants (-0.2, 0.9) at each call site — that remap is a local, not part
+// of the shared function body, so it has to be kept in sync by hand too.
+// Edit all copies in the same commit; verify with light_audit_sweep before
+// trusting.
 
 const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
 const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
 const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.012, 0.012, 0.014);
 const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.055, 0.057, 0.062);
+
+/// Deep blue-violet the zenith picks up during civil twilight, instead of
+/// just fading toward the near-black NIGHT_ZENITH — a clear dusk zenith
+/// stays saturated blue-violet for a while after sunset, which a straight
+/// day-to-night fade can't show. Hand-picked from clear dusk reference
+/// photographs (Wikimedia Commons, inspected during this work).
+const TWILIGHT_ZENITH_VIOLET: vec3<f32> = vec3<f32>(0.10, 0.08, 0.28);
+/// How far toward TWILIGHT_ZENITH_VIOLET the zenith moves at full twilight.
+/// Not 1.0: a full replacement read as an unmotivated colour swap against
+/// light_audit_sweep — starting point for tuning, not a derived number.
+const TWILIGHT_ZENITH_MIX: f32 = 0.6;
 
 // Relative Rayleigh scattering weight per channel (R,G,B), normalised to
 // green = 1, from inverse-4th-power-of-wavelength coefficients for
@@ -71,28 +85,39 @@ const RAYLEIGH_WEIGHT: vec3<f32> = vec3<f32>(0.43, 1.0, 2.45);
 /// `sun_elevation` is sin(elevation), carried on camera.sun_dir.w
 /// (render/celestial.rs), not radians. Returns [zenith, horizon].
 fn sky_palette(sun_elevation: f32) -> array<vec3<f32>, 2> {
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-    let zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
+    var zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
     let horizon = mix(NOON_HORIZON, NIGHT_HORIZON, night_amount);
+
+    // Twilight-only violet cast — see TWILIGHT_ZENITH_VIOLET above. Same
+    // "not day AND not night" trapezoid sky_hue_rotation gates on below, so
+    // it appears and disappears on the same schedule as the rest of the
+    // twilight-only colour and vanishes at noon and at full night.
+    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+    zenith = mix(zenith, TWILIGHT_ZENITH_VIOLET, twilight * TWILIGHT_ZENITH_MIX);
+
     return array<vec3<f32>, 2>(zenith, horizon);
 }
 
-/// The dusk glow as a multiplicative tint on the horizon colour.
+/// Multiplicative hue rotation on the horizon colour, split by which side of
+/// the sky a fragment is on relative to the sun (`toward_sun`: 1 = the sun's
+/// half, 0 = the antisolar half).
 ///
-/// **Deviation from the plan as written:** the plan's snippet computed
-/// `twilight` as `day_amount * (1-day_amount) * 4`, a bell curve entirely
-/// inside `sun_elevation` ∈ [0, DAY_ELEVATION]. That's zero for the whole
-/// negative-elevation dusk-to-night band (DUSK_ELEVATION..NIGHT_ELEVATION in
-/// celestial.rs) — exactly the regime the old hand-authored
-/// `dusk_horizon_color` used to dominate — so light_audit_sweep's
-/// `02_sunset` frames rendered with no warmth at all (flat blue). The
-/// trapezoid below is "not day AND not night", which is what the old
-/// sequential day/dusk/night mix actually produced as its dusk weight; at
-/// full weight (twilight=1) it reproduces the old dusk_horizon_color to
-/// within ~0.005 per channel against NOON_HORIZON, confirming the 1.35/2.3256
-/// scale below was tuned assuming this shape. Verified against
-/// light_audit_sweep. MUST match the other file's copy of this function.
-fn sky_warm_tint(sun_elevation: f32) -> vec3<f32> {
+/// Replaces the old direction-blind `sky_warm_tint`, which only ever warmed
+/// the sun's side and left the antisolar side untouched. A real dusk sky
+/// also cools toward a saturated blue opposite the sun — the "Earth's
+/// shadow" band sitting under the pink "Belt of Venus" the glow band puts
+/// higher in the sky (see fs_sky's glow-band code below). Both sides fade to
+/// neutral (1,1,1) outside the twilight window via the same trapezoid the
+/// old function used — verified against light_audit_sweep to reproduce the
+/// old dusk timing exactly on the sun side.
+///
+/// MUST match the other file's copy of this function, AND the `-0.2, 0.9`
+/// remap used to build `toward_sun` at every call site (sky.wgsl's
+/// `toward_sun`, globe_pipeline/shader.wgsl's `toward_sun_terrain`) — see
+/// docs/lighting.md.
+fn sky_hue_rotation(sun_elevation: f32, toward_sun: f32) -> vec3<f32> {
     let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
     let twilight = (1.0 - day_amount) * (1.0 - night_amount);
@@ -100,8 +125,26 @@ fn sky_warm_tint(sun_elevation: f32) -> vec3<f32> {
     // hand-picked tint's peak (1.35) — the one number here still tuned by
     // eye, down from a whole extra hand-authored RGB key.
     let warm = (1.0 / RAYLEIGH_WEIGHT) * (1.35 / 2.3256);
-    return mix(vec3<f32>(1.0), warm, twilight);
+    // Earth's-shadow blue — hand-tuned from reference photographs, not
+    // derived from RAYLEIGH_WEIGHT: the shadow band is the daytime sky's own
+    // colour seen through the Earth's shadow, not a scattering-hue
+    // relationship, so there's no channel weight to invert here.
+    let shadow = vec3<f32>(0.55, 0.62, 0.95);
+    let side_tint = mix(shadow, warm, toward_sun);
+    return mix(vec3<f32>(1.0), side_tint, twilight);
 }
+
+// ── Twilight glow band (sky.wgsl only — fs_solid has no mid-sky concept) ──
+//
+// A third stop between zenith and horizon: clear sunset photographs show a
+// multi-band sky (burnt-orange horizon -> gold -> pale peach/pink ->
+// lavender -> deep blue-violet zenith), not a flat 2-stop blend. These are
+// NOT part of the sky_palette/sky_hue_rotation must-match contract and must
+// not be copied into globe_pipeline/shader.wgsl — fs_solid only ever needs a
+// horizon colour, never a mid-sky one.
+const TWILIGHT_GLOW_PEACH: vec3<f32> = vec3<f32>(0.95, 0.62, 0.45); // sun side
+const BELT_OF_VENUS_PINK: vec3<f32> = vec3<f32>(0.80, 0.52, 0.58);  // antisolar side
+const GLOW_BAND_POSITION: f32 = 0.55; // where it sits between zenith(0) and horizon(1)
 
 fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
     let b = 2.0 * dot(rd, r0);
@@ -256,10 +299,13 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     var zenith_color = palette[0];
     var horizon_color = palette[1];
 
-    // The warm half of the sky is the half the sun is in. Without this a sunset is an
-    // even orange band all the way round, which is the giveaway of a faked sky.
+    // The warm half of the sky is the half the sun is in; the antisolar half cools
+    // toward the Earth's-shadow blue instead of staying neutral. Without the warm
+    // side an even orange band all the way round would be the giveaway of a faked
+    // sky. MUST match globe_pipeline/shader.wgsl's toward_sun_terrain remap
+    // (-0.2, 0.9) — see docs/lighting.md.
     let toward_sun = smoothstep(-0.2, 0.9, cos_sun);
-    horizon_color = mix(horizon_color, horizon_color * sky_warm_tint(sun_elevation), toward_sun);
+    horizon_color = horizon_color * sky_hue_rotation(sun_elevation, toward_sun);
 
     // Altitude is a second, independent axis: the flight climbing into cruise drains the
     // sky toward space regardless of the hour. Dropping this broke the "deep dive" the
@@ -276,7 +322,32 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         let band_low  = mix(1.8, 1.5, altitude_scalar);
         let band_high = 2.7;
         let color_mix = smoothstep(band_low, band_high, optical_depth);
-        let atmosphere_color = mix(zenith_color, horizon_color, color_mix);
+
+        // ── Twilight glow band ──────────────────────────────────────────────
+        // A third stop between zenith and horizon — see TWILIGHT_GLOW_PEACH above.
+        // `glow_anchor` is chosen by `toward_sun` the same way the horizon hue
+        // rotation is: warm peach/gold on the sun's side, the pink Belt of Venus on
+        // the antisolar side. It fades to `straight_mid` (what the plain 2-stop
+        // gradient already gives at this position) outside the twilight window, via
+        // the same trapezoid sky_hue_rotation uses.
+        //
+        // t_lower/t_upper are a LINEAR split, not smoothstep, on purpose:
+        // mix(Z, mix(Z,H,m), smoothstep(0,m,c)) != mix(Z,H,c) in general, because
+        // smoothstep isn't linear in c — using it here would perturb the gradient
+        // even with the glow band fully faded out. The linear split is algebraically
+        // exact: when glow_color == straight_mid it reduces to mix(Z,H,c) for every
+        // c, so noon and full-night renders are pixel-identical to before this band
+        // existed.
+        let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
+        let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+        let glow_anchor = mix(BELT_OF_VENUS_PINK, TWILIGHT_GLOW_PEACH, toward_sun);
+        let straight_mid = mix(zenith_color, horizon_color, GLOW_BAND_POSITION);
+        let glow_color = mix(straight_mid, glow_anchor, twilight);
+
+        let t_lower = clamp(color_mix / GLOW_BAND_POSITION, 0.0, 1.0);
+        let t_upper = clamp((color_mix - GLOW_BAND_POSITION) / (1.0 - GLOW_BAND_POSITION), 0.0, 1.0);
+        var atmosphere_color = mix(zenith_color, glow_color, t_lower);
+        atmosphere_color = mix(atmosphere_color, horizon_color, t_upper);
 
         // True optical absorption/scattering (Beer-Lambert law approximation)
         let opacity = 1.0 - exp(-optical_depth * 10.0); 
