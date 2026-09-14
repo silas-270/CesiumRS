@@ -227,9 +227,13 @@ impl<'a> App<'a> {
         let proj_matrix = state.camera.get_projection_matrix(aspect_ratio);
         let view_proj = proj_matrix * view_matrix;
 
+        let (cam_pos, _) = state.camera.global_transform();
         let altitude = state.camera.altitude().max(0.0001);
         // Max distance at which a rank-0 label is visible (Megameters)
         let max_render_dist = (altitude * 1.5 + 0.15).max(0.15);
+        let r_earth = 6.378137_f32;
+        let horizon_dist = (2.0 * r_earth * altitude + altitude * altitude).sqrt();
+        let max_dist_rank02 = horizon_dist.max(max_render_dist);
 
         // Paint above the globe scene but below egui windows
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -254,14 +258,27 @@ impl<'a> App<'a> {
                 continue;
             }
 
-            let screen_x = (ndc_x + 1.0) * 0.5 * width;
-            let screen_y = (1.0 - ndc_y) * 0.5 * height;
+            let dist = (ecef - cam_pos).length();
+            let max_dist = if label.label_rank <= 2 {
+                max_dist_rank02
+            } else {
+                max_render_dist
+            };
 
-            // Compute a proximity factor [0.0 = at max range, 1.0 = very close]
-            // Use clip_pos.w as a reliable depth proxy (larger = further away)
-            let depth = clip_pos.w.max(0.001);
-            // depth is in the same units as the scene; normalize against max_render_dist
-            let proximity = 1.0 - (depth / (max_render_dist + depth)).clamp(0.0, 1.0);
+            // Relative distance normalized across visible range [altitude .. max_dist]
+            let dist_span = (max_dist - altitude).max(0.01);
+            let rel_dist = ((dist - altitude) / dist_span).clamp(0.0, 1.0);
+
+            // Proximity factor [0.0 = at max range / horizon, 1.0 = near nadir / camera]
+            let proximity = 1.0 - rel_dist;
+
+            // Continuous distance & atmospheric haze fade:
+            // Labels stay at full opacity for the nearest ~35% of the range, then smoothly fade to 0
+            // using a cubic Hermite smoothstep between fade_start and fade_end.
+            let fade_start = 0.35_f32;
+            let fade_end = 0.95_f32;
+            let t = ((rel_dist - fade_start) / (fade_end - fade_start)).clamp(0.0, 1.0);
+            let dist_fade = 1.0 - t * t * (3.0 - 2.0 * t);
 
             // Rank-based font size boost: capitals and major cities are larger
             let rank_scale = if label.label_rank <= 2 {
@@ -275,14 +292,26 @@ impl<'a> App<'a> {
             // Dynamic font size: ranges from 9px (distant) to 14px (near), scaled by rank and size_scale
             let font_size = (9.0 + proximity * 5.0) * rank_scale * state.label_manager.size_scale;
 
-            // Dynamic opacity for text and backdrop
-            let text_alpha = ((160.0 + proximity * 95.0) as u8).max(100);
-            let bg_alpha   = ((90.0  + proximity * 90.0) as u8).max(60);
+            // Dynamic opacity for text, background pill, and anchor dot with continuous distance fade
+            let text_alpha_f = (180.0 + proximity * 75.0) * dist_fade;
+            let bg_alpha_f = (100.0 + proximity * 70.0) * dist_fade;
+            let shadow_alpha_f = 120.0 * dist_fade;
+
+            let text_alpha = text_alpha_f.round() as u8;
+            let bg_alpha = bg_alpha_f.round() as u8;
+            let shadow_alpha = shadow_alpha_f.round() as u8;
+
+            // Skip rendering nearly invisible labels to save CPU font layout and GPU UI painter overhead
+            if text_alpha < 3 && bg_alpha < 3 {
+                continue;
+            }
+
             let dot_radius = 1.5 + proximity * 1.5;
-
             let text_color = egui::Color32::from_white_alpha(text_alpha);
-            let bg_color   = egui::Color32::from_rgba_unmultiplied(8, 12, 18, bg_alpha);
+            let bg_color = egui::Color32::from_rgba_unmultiplied(8, 12, 18, bg_alpha);
 
+            let screen_x = (ndc_x + 1.0) * 0.5 * width;
+            let screen_y = (1.0 - ndc_y) * 0.5 * height;
             let anchor_pos = egui::pos2(screen_x, screen_y);
 
             // --- Draw label text with backdrop ---
@@ -318,7 +347,7 @@ impl<'a> App<'a> {
 
             // Anchor dot
             if state.label_manager.show_anchor_dots {
-                painter.circle_filled(anchor_pos, dot_radius + 0.5, egui::Color32::from_black_alpha(120));
+                painter.circle_filled(anchor_pos, dot_radius + 0.5, egui::Color32::from_black_alpha(shadow_alpha));
                 painter.circle_filled(anchor_pos, dot_radius, egui::Color32::from_white_alpha(text_alpha));
             }
         }
