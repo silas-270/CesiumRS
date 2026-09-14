@@ -301,69 +301,40 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
         tex_color_rgb = clamp(tex_color_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     
-    let shaded_color = tex_color_rgb * (ambient + diffuse) * key_tint;
-    
-    // `in.world_pos` is camera-relative (vs_main adds push_constants.relative_center,
-    // which wgpu_state.rs sets to tile_center - camera_pos — see TilePushConstants), so it
-    // IS the camera-to-fragment vector, and `camera.camera_pos.xyz + in.world_pos` is the
-    // fragment's absolute position. Mixing the two frames up is the trap here: the
-    // previous grazing-angle term did exactly that, and the note below is what it cost.
+    let sun_elevation = camera.sun_dir.w;
+    let day_amount = smoothstep(0.0, 0.10, sun_elevation);
+    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
+    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+
     let frag_pos = camera.camera_pos.xyz + in.world_pos;
     let true_frag_dist = length(in.world_pos);
     let view_dir_terrain = in.world_pos / max(true_frag_dist, 1e-6);
 
-    // ── Aerial perspective ───────────────────────────────────────────────────────
-    //
-    // ONE term, not two. There used to be a second, `horizon_blend`, that hazed the
-    // terrain by the grazing angle `dot(normal, to_camera)` — sound geometry, but its
-    // `to_camera` was built as `camera_pos - world_pos` with a camera-RELATIVE
-    // `world_pos`, making it `2*camera - fragment`: not the direction to the camera at
-    // all. Measured consequence: at the true visual horizon from 10km up it returned
-    // 0.996 where the real grazing cosine is 0, so the term it gated never fired. It was
-    // dead code at every altitude a flight ever reaches, and past ~7500km it woke up and
-    // drew a 1-2px ring of space colour around the globe — the only thing it ever did.
-    //
-    // Fixing the vector was not the answer either. A grazing-angle ring is a proxy for
-    // "this ray passes through a lot of air", and `air_path_length` now measures that
-    // quantity directly and correctly for exactly the grazing geometry the proxy was
-    // invented for — the Chapman function's whole job. Two mechanisms combined with
-    // `max()`, one of them a proxy for the other, is one mechanism too many: the proxy is
-    // gone and the physics decides.
-    let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
-
-    // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km). Tuned by eye
-    // against light_audit_sweep, not derived: from 10km up, haze starts about 50km out
-    // (29km of air) and saturates about 300km out (198km of air), which is what the
-    // Tracking and Cockpit frames were already set to.
-    let AERIAL_HAZE_ONSET_MM: f32 = 0.03; // tune against light_audit_sweep / haze_capture_sweep
-    let AERIAL_HAZE_FULL_MM: f32 = 0.19;
-    let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, haze_path_length);
-
-    // The haze at the limb has to agree with the sky drawn behind it, so it follows the
-    // sun's elevation on the same ramp rather than the altitude scalar.
-    let sun_elevation = camera.sun_dir.w;
-
-    // `view_dir_terrain` (computed above) is the camera's true view ray toward this
-    // fragment, so this is exactly the "which half of the sky is the sun in" signal
-    // sky.wgsl's `cos_sun`/`toward_sun` give the dome. MUST match sky.wgsl's toward_sun
-    // remap (-0.2, 0.9) — see docs/lighting.md.
     let cos_sun_terrain = dot(view_dir_terrain, camera.sun_dir.xyz);
     let toward_sun_terrain = smoothstep(-0.2, 0.9, cos_sun_terrain);
     var horizon_haze_color = sky_palette(sun_elevation)[1]
         * sky_hue_rotation(sun_elevation, toward_sun_terrain);
-    // MUST match sky.wgsl exactly. The terrain's limb haze and the sky behind it meet at
-    // the horizon, so any difference between them shows up as a hard line across the
-    // whole view. They used to agree for free by both keying off the altitude scalar;
-    // once the sky moved to a time-of-day ramp, this had to be dimmed the same way.
-    //
-    // There was also a `space_fade` here that pulled this colour toward the space colour
-    // as the camera climbed. It went with the two haze bugs it was born alongside: haze
-    // that saturated everywhere when zoomed out needed *something* to stop the globe
-    // glowing pale blue, and fading it to the colour of space was that something. With
-    // the haze bounded by the air, what is left at orbital altitude is a thin rim at the
-    // limb — and the limb is precisely where this colour has to match the sky drawn
-    // behind it, which is atmosphere, not space.
     horizon_haze_color = mix(horizon_haze_color * 0.25, horizon_haze_color, altitude_scalar);
+
+    let zenith_color = mix(sky_palette(sun_elevation)[0] * 0.12, sky_palette(sun_elevation)[0], altitude_scalar);
+    let sky_irradiance = mix(zenith_color, horizon_haze_color, 0.4);
+
+    // Ground ambient receives subtle twilight illumination matching the sky dome
+    let twilight_ambient = sky_irradiance * twilight * mix(0.4, 0.8, altitude_scalar);
+    let ambient_vec = vec3<f32>(ambient) + twilight_ambient * 2.2;
+    let twilight_floor = sky_irradiance * twilight * 0.06 * mix(0.5, 1.0, altitude_scalar);
+
+    let shaded_color = tex_color_rgb * (ambient_vec + vec3<f32>(diffuse)) * key_tint + twilight_floor;
+
+    // ── Aerial perspective ───────────────────────────────────────────────────────
+    let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
+
+    // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km).
+    // Tuned so distant terrain smoothly and completely blends into horizon_haze_color near
+    // the horizon without a razor-sharp cutoff edge, while keeping vertical views clear.
+    let AERIAL_HAZE_ONSET_MM: f32 = 0.015;
+    let AERIAL_HAZE_FULL_MM: f32 = 0.085;
+    let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, haze_path_length);
 
     let final_color = mix(shaded_color, horizon_haze_color, aerial_blend);
 

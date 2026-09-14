@@ -144,8 +144,8 @@ pub fn compute(depth: f32, observer_up: Vec3) -> Celestial {
     let hue_night = smoothstep(HUE_DUSK_ELEVATION, HUE_NIGHT_ELEVATION, sun_elevation);
     let light_color = sun_hue.lerp(moon_hue, hue_night);
 
-    // A low sun is a dim one as well as a red one.
-    let sun_strength = (1.0 - night_amount) * (0.55 + 0.45 * day_amount);
+    // A low sun stays an effective directional light source throughout golden hour.
+    let sun_strength = (1.0 - night_amount) * (0.85 + 0.15 * day_amount);
     let moon_strength = night_amount * (0.05 + 0.15 * MOON_ILLUMINATION);
     let total = sun_strength + moon_strength;
     let peak = light_color.max_element().max(1e-4);

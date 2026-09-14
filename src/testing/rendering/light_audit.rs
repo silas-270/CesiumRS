@@ -13,6 +13,7 @@ async fn shoot(
     out: &str,
     turn_orbit_rad: Option<f32>,
     pitch_orbit_rad: Option<f32>,
+    zoom_factor: Option<f32>,
 ) {
     let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
         std::sync::Arc::new(std::sync::Mutex::new(progress)),
@@ -54,6 +55,9 @@ async fn shoot(
             if let Some(pitch) = pitch_orbit_rad {
                 state.camera.orbit_anchor(glam::Quat::from_rotation_x(pitch));
             }
+            if let Some(zf) = zoom_factor {
+                state.camera.local_pos *= zf;
+            }
         }
         let vp = state.camera.get_projection_matrix(aspect) * state.camera.get_view_matrix();
         let visible = state.update_logic(aspect, vp);
@@ -92,6 +96,7 @@ fn light_audit_sunset_track_turn_45() {
         &format!("{dir}/02_sunset_track.png"),
         Some(std::f32::consts::FRAC_PI_4),
         None,
+        None,
     ));
 }
 
@@ -102,13 +107,14 @@ fn light_audit_sunset_360() {
     std::fs::create_dir_all(&dir).unwrap();
     for deg in [0, 45, 90, 135, 180, 225, 270, 315] {
         let rad = (deg as f32) * std::f32::consts::PI / 180.0;
-        // Pitch up by 15 degrees (-0.26 rad) so the horizon is well centered in the frame
+        // Pitch up by 15 degrees (-0.26 rad) and bring camera 2x closer (0.5 zoom factor)
         pollster::block_on(shoot(
             CameraMode::Tracking,
             0.17,
             &format!("{dir}/02_sunset_track_{deg}deg.png"),
             Some(rad),
             Some(-0.26),
+            Some(0.5),
         ));
     }
 }
@@ -133,7 +139,7 @@ fn light_audit_sweep() {
             ("cockpit", CameraMode::Cockpit),
         ] {
             let out = format!("{dir}/{label}_{mname}.png");
-            pollster::block_on(shoot(mode, progress, &out, None, None));
+            pollster::block_on(shoot(mode, progress, &out, None, None, None));
         }
     }
 }

@@ -1050,16 +1050,12 @@ impl GlobeExtension for FlightTrackerApp {
                     viewport_size,
                     min_pixel_size: 100.0,
                     depth_bias: 0.0,
-                    // Was 0.5, which with the old additive shading summed to 1.2 and
-                    // clipped — the aircraft could never be darker than mid-grey and its
-                    // lit side burned out flat. As a floor, this is a lightly sunlit
-                    // fuselage against sky.
-                    ambient_override: 0.22,
-                    specular_strength: 0.20,
+                    // Ambient floor provides soft shadow fill while directional key light
+                    // creates realistic golden hour contrast and Blinn-Phong specular glints.
+                    ambient_override: 0.18,
+                    specular_strength: 0.35,
                     detail_strength: 0.0,
-                    // The aircraft is nearly always seen against the sky, so the edge
-                    // light is what separates it from the background at a low sun.
-                    rim_strength: 0.30,
+                    rim_strength: 0.25,
                     diffuse_weight: 1.0,
                 };
 

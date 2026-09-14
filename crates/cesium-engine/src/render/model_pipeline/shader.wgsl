@@ -198,14 +198,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // pair of light sources actually does, and it has no edge to fall off. The weights run
     // on the same dusk-to-night ramp as the sky.
     let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
-    let from_sun = max(dot(normal, camera.sun_dir.xyz), 0.0) * (1.0 - night_key);
-    let from_moon = max(dot(normal, camera.moon_dir.xyz), 0.0) * night_key;
+    let n_dot_l_sun = max(dot(normal, camera.sun_dir.xyz), 0.0);
+    let n_dot_l_moon = max(dot(normal, camera.moon_dir.xyz), 0.0);
+    let from_sun = n_dot_l_sun * (1.0 - night_key);
+    let from_moon = n_dot_l_moon * night_key;
     let lit = (from_sun + from_moon) * key_strength * push.diffuse_weight;
-    // Ambient is a floor the key light fills up to, so the two always sum to exactly 1.
-    // Adding them instead ran to 1.2 and clipped: nothing could be darker than the floor,
-    // and every surface facing the light blew out to flat white. That is what made the
-    // cockpit window frames glow.
-    let light_intensity = push.ambient_override + (1.0 - push.ambient_override) * lit;
+
+    // Direct key light carries the warm golden / cool moon hue, while ambient provides
+    // a soft neutral illumination floor to maintain rich contrast without muddy tinting.
+    let ambient_light = vec3<f32>(push.ambient_override);
+    let direct_light = lit * key_color;
+    let total_light = ambient_light + direct_light;
 
     // Sample texture
     let tex_color = textureSample(t_diffuse, s_diffuse, in.uv).rgb;
@@ -215,23 +218,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let detail_noise = triplanar_detail(in.local_pos, normalize(in.local_normal));
     let detail = 1.0 + (detail_noise - 0.5) * push.detail_strength;
 
-    // Soft Blinn-Phong catch-light (push.specular_strength = 0.0 disables it), blended
-    // across the same two lights so the highlight does not jump either.
+    // Crisp Blinn-Phong specular catch-light (push.specular_strength = 0.0 disables it),
+    // masked to lit surfaces so highlights do not appear on backfaces.
     let half_sun = normalize(camera.sun_dir.xyz + view_dir);
     let half_moon = normalize(camera.moon_dir.xyz + view_dir);
-    let spec = (pow(max(dot(normal, half_sun), 0.0), 28.0) * (1.0 - night_key)
-        + pow(max(dot(normal, half_moon), 0.0), 28.0) * night_key)
-        * push.specular_strength * key_strength;
+    let spec_sun = pow(max(dot(normal, half_sun), 0.0), 32.0) * step(0.001, n_dot_l_sun) * (1.0 - night_key);
+    let spec_moon = pow(max(dot(normal, half_moon), 0.0), 32.0) * step(0.001, n_dot_l_moon) * night_key;
+    let spec = (spec_sun + spec_moon) * push.specular_strength * key_strength;
 
-    // Rim light: surfaces turning away from the eye catch the sky behind them. Costs one
-    // dot product and is most of what makes an aircraft read as lit from outside rather
-    // than painted, especially with a low sun.
+    // Rim light: surfaces turning away from the eye catch the sky behind them.
     let rim = pow(1.0 - max(dot(normal, view_dir), 0.0), 3.0) * push.rim_strength * key_strength;
 
-    // Everything is tinted by the key light, which is near-white by day, amber at sunset
-    // and blue by moonlight. The hue is normalised so it never adds brightness of its own.
-    let shaded = tex_color * in.color.rgb * light_intensity * detail * key_color
-        + key_color * (spec + rim);
+    let shaded = tex_color * in.color.rgb * total_light * detail
+        + key_color * spec + rim * key_color;
 
     // A self-lit surface is its own light source: it takes none of the key light's
     // direction, none of the ambient floor, and none of the key light's hue, so a display
