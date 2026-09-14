@@ -37,3 +37,6 @@ stress_results*.csv
 sweep.log
 cargo_build.log
 routes_test.png
+light_audit/
+haze_capture/
+
