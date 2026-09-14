@@ -123,14 +123,28 @@ placeholders, which is what it was written for.
 
 ## The sky
 
-`sky_pipeline/sky.wgsl` is a full-screen triangle that reconstructs a world-space ray and
-ray-marches an atmosphere shell with a Beer-Lambert opacity. Added to it:
+`sky_pipeline/mod.rs` owns both `sky.wgsl` and the pipeline that runs it — a full-screen
+triangle that reconstructs a world-space ray and ray-marches an atmosphere shell with a
+Beer-Lambert opacity. Added to it:
 
-- **A three-way palette** — day, dusk, night — ramped on sun elevation, plus azimuthal
-  warmth toward the sun during twilight. Without that last part a sunset is an even orange
-  band all the way round, which is the giveaway of a faked sky.
-- **A sun disc** with a two-lobe forward-scatter halo, drawn *before* the atmosphere is
-  composited so a low sun is reddened and dimmed by the air it is seen through.
+- **A shared palette function.** `sky_palette(sun_elevation)` returns a `[zenith, horizon]`
+  pair, mixed from four anchors — `NOON_ZENITH`/`NOON_HORIZON`/`NIGHT_ZENITH`/
+  `NIGHT_HORIZON` — on the same day/night ramp as `celestial.rs`. `sky_warm_tint
+  (sun_elevation)` is a separate multiplicative tint, derived from the Rayleigh channel
+  weights used only as a relative hue (not a real extinction term — seeing what a literal
+  Beer-Lambert transmittance does to a horizon sunset was the reason this wasn't attempted:
+  it computes to a near-black smear, not a glow, because a real sunset's brightness is
+  dominated by inscattered light along the view path, which this engine doesn't integrate).
+  `sky.wgsl` gates the tint by `toward_sun`, so the warm half of the sky is the half the sun
+  is in — without that a sunset is an even orange band all the way round, which is the
+  giveaway of a faked sky. `globe_pipeline/shader.wgsl`'s horizon haze applies the same tint
+  *unconditionally* instead, since a per-pixel terrain fragment has no clean "toward the
+  sun" direction the way the sky dome's view ray does.
+- **A sun disc**, its angular radius a named, derived constant (`SUN_ANGULAR_RADIUS`,
+  mirroring the already-documented `MOON_ANGULAR_RADIUS` below it) rather than a pair of
+  unexplained cosine thresholds, with a two-lobe forward-scatter halo, drawn *before* the
+  atmosphere is composited so a low sun is reddened and dimmed by the air it is seen
+  through.
 - **A moon** with a procedural surface: value-noise maria, finer speckle for craters, and a
   touch of limb darkening so it does not read as a sticker. Procedural rather than a
   texture because this pipeline binds nothing but the camera uniform — an image would mean
@@ -139,11 +153,30 @@ ray-marches an atmosphere shell with a Beer-Lambert opacity. Added to it:
   a degree it is a handful of pixels and reads as a stray dot.
 - **Stars**, hashed off the world-space ray so the field is pinned to the celestial sphere
   and stays put as the aircraft flies and turns.
+- **A hash-based dither**, about one 8-bit ULP, added just before the final return. The
+  gradient is smooth and mostly monochrome and this renders for hours in the background, so
+  banding gets more visible the longer a session runs, not less. Screen-space rather than
+  per-frame, so it doesn't flicker over a session.
 
-**The sky must agree with the globe at the horizon.** Both carry the same altitude dimming
-and the same day/dusk/night ramp, with a comment in each saying so. They used to agree for
-free by both keying off the depth scalar; once the sky moved to a time-of-day ramp, any
-difference between them showed up as a hard line drawn across the whole view.
+**The sky must agree with the globe at the horizon.** This used to be enforced only by a
+comment in each file asking whoever edited one to remember the other — and it had already
+failed, with the two horizon colours drifted apart by up to 0.05 per channel. Now it's
+enforced by construction: `sky_palette`/`sky_warm_tint` are textually identical functions in
+both files (there is no shared-WGSL-include mechanism in this codebase, so "identical" means
+copy-pasted, not `#include`d — edit both copies in the same commit), called with the same
+`camera.sun_dir.w` input, so the horizon colour they compute cannot drift apart without the
+source itself drifting, which is visible in a diff. Both also carry the same
+`EARTH_RADIUS_MM`/`ATMOSPHERE_THICKNESS_MM` constants and the same altitude dimming.
+
+`globe_pipeline/shader.wgsl`'s side of the seam — the haze near the terrain's visual
+horizon — used to be detected with an `fwidth`-based screen-space heuristic (how fast
+distance-from-Earth-centre changes per pixel), a resolution- and FOV-sensitive proxy. It's
+now a direct geometric measure: `grazing_cos = dot(normalize(in.normal), to_camera)` is
+exactly 0 at the true visual horizon of a smooth sphere (the same fact the culling
+subsystem's own horizon test relies on — zero terrain relief today), so no per-pixel
+derivative is needed. The blended colour is named `horizon_haze_color` and the blend weight
+`horizon_blend` — this is unrelated to `Stage::Fog` in `quadtree.rs`, a culling/LOD
+relaxation that shares only the English word "fog" and touches no colour.
 
 ### Stars, in detail
 
