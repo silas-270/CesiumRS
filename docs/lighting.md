@@ -153,12 +153,20 @@ Beer-Lambert opacity. Added to it:
   function bodies themselves — it's a local at each call site, not inside the shared function.
 
   `sky.wgsl` alone (not shared — `fs_solid` only ever needs a horizon colour, never a mid-sky
-  one) also adds a third gradient stop between zenith and horizon: a twilight-only "glow"
-  band (`TWILIGHT_GLOW_PEACH` on the sun's side, `BELT_OF_VENUS_PINK` on the antisolar side)
-  for the pale peach/gold and pink Belt-of-Venus colours a clear sunset shows that a plain
-  2-stop gradient can't represent. It's placed with a linear (not smoothstep) split of the
-  existing `color_mix` so it's algebraically exact to the old 2-stop blend when fully faded
-  out — noon and full-night renders are unaffected.
+  one) also overlays a twilight-only "glow" band (`TWILIGHT_GLOW_PEACH` on the sun's side,
+  `BELT_OF_VENUS_PINK` on the antisolar side) between zenith and horizon, for the pale
+  peach/gold and pink Belt-of-Venus colours a clear sunset shows that a plain 2-stop gradient
+  can't represent. It's a smooth `rise * (1 - fall)` bump (two smoothsteps meeting at
+  `GLOW_BAND_POSITION`) laid additively over the always-computed `mix(zenith, horizon,
+  color_mix)`, not a piecewise split of `color_mix` itself. An earlier version *did* split
+  `color_mix` into two separately-interpolated segments; the colour was continuous at the
+  join but its slope wasn't (the two segments aim at very different anchors), which read as a
+  distinct bright line hovering in the sky parallel to the horizon — caught by eye in
+  `light_audit_sweep`'s `02_sunset` frames. A smoothstep's derivative is exactly zero at both
+  of its own edges, so the bump is flat (no kink) exactly at its peak. Being an overlay with
+  zero weight at twilight=0 also makes "noon and full-night renders are unaffected" automatic
+  and independent of the bump's shape, rather than relying on an algebraic identity between
+  two interpolation curves.
 - **A sun disc**, its angular radius a named, derived constant (`SUN_ANGULAR_RADIUS`,
   mirroring the already-documented `MOON_ANGULAR_RADIUS` below it) rather than a pair of
   unexplained cosine thresholds, with a two-lobe forward-scatter halo, drawn *before* the
@@ -201,9 +209,25 @@ relaxation that shares only the English word "fog" and touches no colour.
 That grazing-angle ring alone left distant-but-not-silhouette terrain crisp until a sudden
 fog wall right at the edge — terrain is visible 50-370km away at cruise (horizon distance
 from ~10.7km altitude), well beyond where the ring has any effect. `aerial_blend`, a
-distance-based fade keyed on `frag_dist` (onset ~50km, full ~300km — both tuned by eye, not
-derived), is layered on top of `horizon_blend` via `max()` so a fragment that's both far away
-and near the silhouette gets one full haze blend rather than a stacked double-fade.
+distance-based fade (onset ~50km, full ~300km — both tuned by eye, not derived), is layered on
+top of `horizon_blend` via `max()` so a fragment that's both far away and near the silhouette
+gets one full haze blend rather than a stacked double-fade.
+
+That distance is deliberately *not* the raw camera-to-fragment distance. A camera looking
+near-straight down from high altitude (zoomed far out) has a huge straight-line distance to
+the ground below it — almost all of it through vacuum above the 150km atmosphere shell, not
+through haze-producing air — and the first version of this used that raw distance directly,
+which saturated `aerial_blend` to 1 across virtually the whole visible globe the moment the
+camera zoomed out past a few hundred kilometres: the entire disc read as a flat, featureless
+haze colour, continents included. `haze_path_length` fixes this by reusing `sky.wgsl`'s own
+`ray_sphere_intersect` against the same atmosphere shell to find where the camera-to-fragment
+ray actually *enters* the atmosphere, and measuring distance from there (or from the camera,
+if it's already inside the shell) rather than from empty space above it. At real flight
+altitudes — always inside the shell — the entry point is the camera itself, so this is
+identical to the old raw distance and nothing changes for Tracking/Cockpit views. Zoomed out
+to orbit, it keeps the haze bounded to what a line of sight actually passes through, which is
+why the globe still shows continents through a thin, realistic atmospheric rim-glow at any
+zoom level instead of disappearing into fog.
 
 ### Stars, in detail
 

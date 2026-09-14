@@ -324,30 +324,36 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         let color_mix = smoothstep(band_low, band_high, optical_depth);
 
         // ── Twilight glow band ──────────────────────────────────────────────
-        // A third stop between zenith and horizon — see TWILIGHT_GLOW_PEACH above.
-        // `glow_anchor` is chosen by `toward_sun` the same way the horizon hue
-        // rotation is: warm peach/gold on the sun's side, the pink Belt of Venus on
-        // the antisolar side. It fades to `straight_mid` (what the plain 2-stop
-        // gradient already gives at this position) outside the twilight window, via
-        // the same trapezoid sky_hue_rotation uses.
+        // An extra glow colour laid over the plain zenith-to-horizon gradient — see
+        // TWILIGHT_GLOW_PEACH above. `glow_anchor` is chosen by `toward_sun` the same
+        // way the horizon hue rotation is: warm peach/gold on the sun's side, the pink
+        // Belt of Venus on the antisolar side.
         //
-        // t_lower/t_upper are a LINEAR split, not smoothstep, on purpose:
-        // mix(Z, mix(Z,H,m), smoothstep(0,m,c)) != mix(Z,H,c) in general, because
-        // smoothstep isn't linear in c — using it here would perturb the gradient
-        // even with the glow band fully faded out. The linear split is algebraically
-        // exact: when glow_color == straight_mid it reduces to mix(Z,H,c) for every
-        // c, so noon and full-night renders are pixel-identical to before this band
-        // existed.
+        // `glow_bump` is a smooth 0->1->0 overlay weight peaking at GLOW_BAND_POSITION,
+        // built from two smoothsteps meeting at that point — NOT a piecewise-linear (or
+        // piecewise-smoothstep) SPLIT of color_mix itself. An earlier version stitched
+        // two separately-interpolated segments together at GLOW_BAND_POSITION; the
+        // colour was continuous there but its slope wasn't (each segment aims at a very
+        // differently-coloured anchor), which read as a distinct bright line hovering
+        // in the sky parallel to the horizon — visible in light_audit_sweep's
+        // 02_sunset frames. A smoothstep's derivative is exactly zero at both of its
+        // own edges, so `rise` and `fall` are both flat exactly at GLOW_BAND_POSITION,
+        // making their product flat (no kink) at the peak too.
+        //
+        // Overlaying on top of the ALWAYS-computed base `mix(zenith_color,
+        // horizon_color, color_mix)` also makes "pixel-identical outside twilight"
+        // automatic and independent of the bump's exact shape: at twilight=0 the
+        // overlay weight is zero, full stop, rather than relying on an algebraic
+        // identity between two interpolation curves.
         let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
         let twilight = (1.0 - day_amount) * (1.0 - night_amount);
         let glow_anchor = mix(BELT_OF_VENUS_PINK, TWILIGHT_GLOW_PEACH, toward_sun);
-        let straight_mid = mix(zenith_color, horizon_color, GLOW_BAND_POSITION);
-        let glow_color = mix(straight_mid, glow_anchor, twilight);
+        let rise = smoothstep(0.0, GLOW_BAND_POSITION, color_mix);
+        let fall = smoothstep(GLOW_BAND_POSITION, 1.0, color_mix);
+        let glow_bump = rise * (1.0 - fall);
 
-        let t_lower = clamp(color_mix / GLOW_BAND_POSITION, 0.0, 1.0);
-        let t_upper = clamp((color_mix - GLOW_BAND_POSITION) / (1.0 - GLOW_BAND_POSITION), 0.0, 1.0);
-        var atmosphere_color = mix(zenith_color, glow_color, t_lower);
-        atmosphere_color = mix(atmosphere_color, horizon_color, t_upper);
+        var atmosphere_color = mix(zenith_color, horizon_color, color_mix);
+        atmosphere_color = mix(atmosphere_color, glow_anchor, glow_bump * twilight);
 
         // True optical absorption/scattering (Beer-Lambert law approximation)
         let opacity = 1.0 - exp(-optical_depth * 10.0); 
