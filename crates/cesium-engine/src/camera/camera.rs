@@ -129,6 +129,35 @@ pub struct Camera {
     ground_height: Option<f32>,
 }
 
+/// Above this height above the **ellipsoid**, the camera stops testing itself against the
+/// terrain. Megametres; 15 km.
+///
+/// Cesium's `ScreenSpaceCameraController.minimumCollisionTerrainHeight`, same value and
+/// the same two reasons for a threshold rather than an unconditional test:
+///
+/// 1. **The sample is only as good as what has landed.** Far from the ground the deepest
+///    resident ancestor is a z4-z6 tile and its height is a continental average. Enforcing
+///    a floor against that would shove a cruising camera around by hundreds of metres as
+///    tiles stream in and the average changes — a floor that moves is worse than no floor.
+///    Below 15 km the camera is over ground it is drawing at depth, so the sample is the
+///    real one.
+/// 2. **15 km clears the planet.** Everest is 8 849 m; with `exaggeration` at its default
+///    1.0 no terrain on Earth reaches the threshold, so nothing that could be collided
+///    with is skipped.
+///
+/// Note the asymmetry with `exaggeration`: at an exaggeration high enough to lift a summit
+/// past 15 km the camera could pass through it. That is a debug setting doing what a debug
+/// setting does, and the alternative — scaling the threshold — would make the flat path's
+/// constant depend on a terrain field.
+pub const MIN_COLLISION_TERRAIN_HEIGHT: f32 = 0.015;
+
+/// How far the camera is kept off whatever it is standing on, in megametres (2 m).
+///
+/// The same clearance `enforce_bounds` has always kept off the ellipsoid, reused verbatim
+/// for the ground so that switching terrain on does not change how close the camera can
+/// get to the surface — only *which* surface.
+const SURFACE_CLEARANCE: f64 = 0.000002;
+
 impl Camera {
     pub fn new(position: Vec3, target: Vec3) -> Self {
         let mut cam = Self {
@@ -255,7 +284,16 @@ impl Camera {
                 + dir.y * dir.y * INV_B2_F64
                 + dir.z * dir.z * INV_A2_F64)
                 .sqrt();
-        let dynamic_min_distance = t + 0.000002;
+        // Phase E3.3 (`docs/terrain-plan.md` §8): the floor is the ground when there is
+        // ground to stand on and the camera is low enough for the sample to be worth
+        // trusting, and the ellipsoid otherwise. `terrain_collision_floor` returns `None`
+        // whenever `ground_height` is `None`, which with terrain off is every frame — so
+        // the flat path evaluates the same `t + 0.000002` it always did, unchanged and
+        // unreachable-from.
+        let dynamic_min_distance = match self.terrain_collision_floor(t, dist) {
+            Some(floor) => floor,
+            None => t + 0.000002,
+        };
 
         if dist < dynamic_min_distance {
             let new_global_pos_dvec = dir * dynamic_min_distance;
@@ -276,6 +314,30 @@ impl Camera {
                 local_pos_dvec.z as f32,
             );
         }
+    }
+
+    /// The distance from the Earth's centre the camera may not come below, when the
+    /// terrain is what sets it — `None` when the ellipsoid still does.
+    ///
+    /// `None` on three counts, in the order they are cheapest to decide:
+    ///
+    /// - no ground height is known (terrain off, or nothing has streamed in yet);
+    /// - the camera is above [`MIN_COLLISION_TERRAIN_HEIGHT`], where the sample is a
+    ///   coarse average and a floor built on it would wander;
+    /// - the ground is at or below the ellipsoid, where the ellipsoid floor is already
+    ///   the higher of the two and the old expression is exactly right. The Dead Sea
+    ///   shore at −430 m is the case this covers: nothing should let the camera descend
+    ///   *further* than it could before because the DEM says the ground is low.
+    ///
+    /// `ellipsoid_radius` is `t`, the ellipsoid's radius along the camera's own
+    /// direction, already computed by the caller; `dist` is the camera's distance from
+    /// the centre. Both megametres.
+    fn terrain_collision_floor(&self, ellipsoid_radius: f64, dist: f64) -> Option<f64> {
+        let ground = self.ground_height? as f64;
+        if dist - ellipsoid_radius > MIN_COLLISION_TERRAIN_HEIGHT as f64 || ground <= 0.0 {
+            return None;
+        }
+        Some(ellipsoid_radius + ground + SURFACE_CLEARANCE)
     }
 
     // --- CONVENIENCE INPUT WRAPPERS ---
@@ -515,8 +577,19 @@ impl Camera {
     /// `TileSystem::ground_height_at(camera_position)`, which is `None` whenever terrain
     /// is off. Passing `None` restores the pre-Phase-E3 camera exactly, which is what
     /// running flat does on every frame.
+    ///
+    /// A *rising* floor is enforced immediately: a camera parked in a valley when the
+    /// z15 tile under it finally arrives, or panned into a hillside a frame ago, is
+    /// pushed out by [`enforce_bounds`] here rather than on the next input event. The
+    /// call is skipped entirely when the new value is `None`, so on the flat path this
+    /// setter is one field write per frame and `enforce_bounds` runs exactly where it
+    /// always ran.
     pub fn set_ground_height(&mut self, ground_height: Option<f32>) {
+        let changed = self.ground_height != ground_height;
         self.ground_height = ground_height;
+        if changed && ground_height.is_some() {
+            self.enforce_bounds();
+        }
     }
 
     /// Vertical field of view, in radians — the one the projection matrix uses.

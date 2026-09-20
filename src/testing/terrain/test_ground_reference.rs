@@ -1,7 +1,7 @@
-//! Phase E3.2 of `docs/terrain-plan.md` §8: the engine stops assuming the surface is
-//! the ellipsoid, starting with the near plane.
+//! Phase E3.2 and E3.3 of `docs/terrain-plan.md` §8: the engine stops assuming the
+//! surface is the ellipsoid — first the near plane, then the floor the camera stands on.
 //!
-//! Three things are checked here, and the third is the load-bearing one.
+//! Four things are checked here, and the third is the load-bearing one.
 //!
 //! 1. **The geodetic query lands where the mesh does.** `ecef_to_lon_lat_f64` inverts
 //!    this engine's own ECEF map (parametric latitude, not geodetic — 11 km of ground
@@ -13,6 +13,9 @@
 //!    from the old formula rather than recorded from a run. With terrain off
 //!    `TileSystem::ground_height_at` returns `None` on every frame, so case 3 *is* the
 //!    flat path.
+//! 4. **The ground is a floor.** `enforce_bounds` stops flying the camera through the
+//!    Alps, on Cesium's `minimumCollisionTerrainHeight` shape — and with terrain off
+//!    keeps the same 2 m ellipsoid clearance, to the bit.
 
 use std::sync::Arc;
 
@@ -417,9 +420,10 @@ fn the_projection_matrix_is_bitwise_unchanged_when_no_ground_is_known() {
     }
 }
 
-/// The change itself. At 900 m over an Inn valley whose floor is at 574 m, the old
-/// near plane is `0.1 × 900 m = 90 m` and the wall of rock across the valley is well
-/// inside it; the new one is `0.1 × 326 m = 33 m`.
+/// The change itself. At 900 m over the Inn valley, whose floor the Terrarium source
+/// puts at 583 m under `(11.40 E, 47.26 N)`, the old near plane is
+/// `0.1 × 900 m = 90 m` and the wall of rock across the valley is well inside it; the
+/// new one is `0.1 × 317 m = 32 m`.
 #[test]
 fn the_near_plane_follows_the_ground_not_the_ellipsoid() {
     let p = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(11.40, 47.26, 900.0);
@@ -431,15 +435,15 @@ fn the_near_plane_follows_the_ground_not_the_ellipsoid() {
     let flat_znear = cam.get_projection_matrix(1.0);
     let ellipsoid_alt = cam.altitude();
 
-    cam.set_ground_height(Some((574.0 * M_TO_MM) as f32));
+    cam.set_ground_height(Some((583.0 * M_TO_MM) as f32));
     let agl = cam.altitude_agl();
     assert!(
-        (agl - (ellipsoid_alt - (574.0 * M_TO_MM) as f32)).abs() < 1e-9,
+        (agl - (ellipsoid_alt - (583.0 * M_TO_MM) as f32)).abs() < 1e-9,
         "agl came out {agl} Mm"
     );
     assert!(
-        (agl / M_TO_MM as f32 - 326.0).abs() < 2.0,
-        "expected about 326 m of clearance, got {} m",
+        (agl / M_TO_MM as f32 - 317.0).abs() < 2.0,
+        "expected about 317 m of clearance, got {} m",
         agl / M_TO_MM as f32
     );
 
@@ -463,22 +467,218 @@ fn the_near_plane_follows_the_ground_not_the_ellipsoid() {
     }
 }
 
-/// A camera below the sampled ground — which happens, because the sample is bilinear
-/// over 30 m posts and the drawn mesh is a 16×16 patch of the same field, so they
-/// disagree by metres — must not ask for a negative near plane.
+/// A camera below the sampled ground must not ask for a negative near plane.
+///
+/// E3.3's collision floor makes this hard to reach — `set_ground_height` pushes the
+/// camera out — but not impossible: `set_eye_with_up` deliberately does not enforce
+/// bounds, so a pose placed after the ground is known lands wherever it was told to.
+/// The clamp in `altitude_agl` is what stands behind that.
 #[test]
 fn a_camera_below_the_sampled_ground_still_has_a_positive_near_plane() {
-    let p = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(11.40, 47.26, 600.0);
-    let e = Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32);
-    let mut cam = Camera::new(e, Vec3::ZERO);
-    cam.set_eye(e, Vec3::ZERO);
+    let mut cam = camera_at(11.40, 47.26, 900.0);
     cam.mode = CameraMode::Free;
     cam.set_ground_height(Some((900.0 * M_TO_MM) as f32));
+    // Placed *after* the ground is known, so nothing pushes it back out.
+    cam.set_eye(eye_at(11.40, 47.26, 600.0), Vec3::ZERO);
 
     assert_eq!(cam.altitude_agl(), 0.0, "clearance should clamp at zero");
     let m = cam.get_projection_matrix(1.0);
     assert!(
         m.to_cols_array().iter().all(|x| x.is_finite()),
         "projection matrix is not finite below ground: {m:?}"
+    );
+}
+
+// ── 4. E3.3: the ground is a floor, not a suggestion ─────────────────────────
+
+/// The distance from the Earth's centre to the ellipsoid along a given direction —
+/// `t` in `enforce_bounds`, recomputed here from the same expression so the floor
+/// assertions below are against the engine's ellipsoid and not a sphere.
+fn ellipsoid_radius_at(p: glam::DVec3) -> f64 {
+    const INV_A2: f64 = 1.0 / (6.378137 * 6.378137);
+    const INV_B2: f64 = 1.0 / (6.3567523142 * 6.3567523142);
+    let d = p.normalize_or_zero();
+    1.0 / (d.x * d.x * INV_A2 + d.y * d.y * INV_B2 + d.z * d.z * INV_A2).sqrt()
+}
+
+fn ellipsoid_radius_under(cam: &Camera) -> f64 {
+    ellipsoid_radius_at(cam.global_transform_f64().0)
+}
+
+fn eye_at(lon: f64, lat: f64, alt_m: f64) -> Vec3 {
+    let p = cesium_engine::globe::geometry::lon_lat_alt_to_ecef_f64(lon, lat, alt_m);
+    Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32)
+}
+
+fn camera_at(lon: f64, lat: f64, alt_m: f64) -> Camera {
+    let e = eye_at(lon, lat, alt_m);
+    let mut cam = Camera::new(e, Vec3::ZERO);
+    cam.set_eye(e, Vec3::ZERO);
+    cam
+}
+
+/// `enforce_bounds`'s clamp arm, written out: where a camera pointing this way ends up
+/// when it is pushed out to `floor` megametres from the centre.
+///
+/// The comparison has to be made in `local_pos`, which is `f32`. The clamp's own
+/// arithmetic is f64 down to one `as f32` per component, so comparing `p.length()`
+/// against an f64 floor would be comparing against a number the camera cannot represent
+/// — 0.76 m of quantisation at Earth radius. Reproducing the narrowing here instead
+/// makes the assertion exact.
+fn clamped_local_pos(cam: &Camera, floor: f64) -> Vec3 {
+    clamped_local_pos_from(cam, cam.global_transform_f64().0, floor)
+}
+
+/// [`clamped_local_pos`] for a camera that is about to be *moved* to `global` — the
+/// clamp reads the direction of the position it is given, not the one it had.
+fn clamped_local_pos_from(cam: &Camera, global: glam::DVec3, floor: f64) -> Vec3 {
+    let placed = global.normalize_or_zero() * floor;
+    let local = cam.anchor_ori.inverse() * (placed - cam.anchor_pos);
+    Vec3::new(local.x as f32, local.y as f32, local.z as f32)
+}
+
+/// A position `alt_m` metres from the ellipsoid — negative altitudes included, which is
+/// how the tests below get a camera underground without going through a clamp on the
+/// way — returned both as the `f32` the camera will store and as the `f64` the clamp
+/// will read back out of it.
+///
+/// Both, and from the same narrowing, because `local_pos` is `f32`: an expectation
+/// derived from the un-narrowed f64 differs in the last bit, which is 0.4 m at Earth
+/// radius and enough to fail a bitwise assertion for no reason at all.
+fn placed_at(lon: f64, lat: f64, alt_m: f64) -> (Vec3, glam::DVec3) {
+    let v = eye_at(lon, lat, alt_m);
+    (v, glam::DVec3::new(v.x as f64, v.y as f64, v.z as f64))
+}
+
+/// Ground below the camera changes nothing — and changes it to the bit.
+#[test]
+fn ground_below_the_camera_does_not_move_it() {
+    let mut cam = camera_at(11.40, 47.26, 900.0);
+    let before = cam.local_pos;
+    cam.set_ground_height(Some((583.0 * M_TO_MM) as f32));
+    assert_eq!(
+        cam.local_pos.to_array().map(f32::to_bits),
+        before.to_array().map(f32::to_bits),
+        "a camera 317 m above the valley floor was moved"
+    );
+}
+
+/// The one this phase exists for: a camera inside the Nordkette comes out onto it.
+///
+/// Before E3.3 `enforce_bounds` kept the camera 2 m off the *ellipsoid*, so a pose at
+/// 600 m under a 2 000 m ridge sat 1 400 m inside solid rock and the globe was drawn
+/// from within the mountain.
+#[test]
+fn a_camera_inside_a_mountain_is_pushed_onto_its_surface() {
+    let mut cam = camera_at(11.3833, 47.3167, 600.0);
+    assert!(cam.altitude() < (700.0 * M_TO_MM) as f32);
+
+    let floor = ellipsoid_radius_under(&cam) + 2_000.0 * M_TO_MM + 2.0 * M_TO_MM;
+    let want = clamped_local_pos(&cam, floor);
+    cam.set_ground_height(Some((2_000.0 * M_TO_MM) as f32));
+
+    assert_eq!(
+        cam.local_pos.to_array().map(f32::to_bits),
+        want.to_array().map(f32::to_bits),
+        "did not come to rest on the 2 002 m floor"
+    );
+    // And, stated the way it matters: it is out of the rock, 1.4 km higher than it was.
+    assert!(
+        (cam.altitude() / M_TO_MM as f32 - 2_002.0).abs() < 1.0,
+        "ended at {} m",
+        cam.altitude() / M_TO_MM as f32
+    );
+}
+
+/// Cesium's `minimumCollisionTerrainHeight`, ported: above 15 km the terrain floor is
+/// not enforced at all, because up there the sample is a coarse ancestor's average and
+/// a floor built on it would move as tiles land.
+#[test]
+fn above_the_threshold_the_terrain_floor_is_not_enforced() {
+    // 16 km of (exaggerated) ground, a camera at 20 km: above the gate, left alone.
+    let mut high = camera_at(11.3833, 47.3167, 20_000.0);
+    let before = high.local_pos;
+    high.set_ground_height(Some((16_000.0 * M_TO_MM) as f32));
+    assert_eq!(
+        high.local_pos.to_array().map(f32::to_bits),
+        before.to_array().map(f32::to_bits),
+        "a camera at 20 km was moved by a terrain floor it is above the gate for"
+    );
+
+    // The same ground, a camera at 14 km: under the gate, so the floor applies.
+    let mut low = camera_at(11.3833, 47.3167, 14_000.0);
+    let floor = ellipsoid_radius_under(&low) + 16_000.0 * M_TO_MM + 2.0 * M_TO_MM;
+    let want = clamped_local_pos(&low, floor);
+    low.set_ground_height(Some((16_000.0 * M_TO_MM) as f32));
+    assert_eq!(
+        low.local_pos.to_array().map(f32::to_bits),
+        want.to_array().map(f32::to_bits),
+        "the camera under the gate was not lifted onto the floor"
+    );
+}
+
+/// Ground below sea level must never *lower* the floor. The Dead Sea shore is at
+/// −430 m; a DEM that says so should not license the camera to descend further than
+/// the ellipsoid floor ever allowed it to.
+#[test]
+fn ground_below_sea_level_never_lowers_the_floor() {
+    let mut cam = camera_at(35.5, 31.5, 0.0);
+    cam.set_ground_height(Some((-430.0 * M_TO_MM) as f32));
+
+    // Put it 5 km under the Dead Sea shore. `set_local_transform` writes the position
+    // and then enforces bounds, so the clamp sees exactly this direction.
+    let (sunk_v, sunk) = placed_at(35.5, 31.5, -5_000.0);
+    let want = clamped_local_pos_from(&cam, sunk, ellipsoid_radius_at(sunk) + 0.000002);
+    let ori = cam.local_ori;
+    cam.set_local_transform(sunk_v, ori);
+
+    assert_eq!(
+        cam.local_pos.to_array().map(f32::to_bits),
+        want.to_array().map(f32::to_bits),
+        "a sub-sea-level DEM reading changed where the camera may descend to"
+    );
+}
+
+/// With terrain off, `enforce_bounds` keeps the 2 m ellipsoid clearance it always kept
+/// — checked by driving a camera into the surface and comparing against the pre-E3
+/// expression, bit for bit.
+#[test]
+fn the_ellipsoid_floor_is_bitwise_unchanged_with_no_ground_known() {
+    for (lon, lat) in [(11.40, 47.26), (-104.99, 39.74), (0.0, 0.0), (0.0, 89.0)] {
+        let mut cam = camera_at(lon, lat, 50.0);
+        assert!(cam.ground_height().is_none());
+
+        // 5 km underground, placed through the setter that enforces bounds.
+        let (sunk_v, sunk) = placed_at(lon, lat, -5_000.0);
+        // `t + 0.000002`, the pre-E3 expression, spelled out on the same operands.
+        let want = clamped_local_pos_from(&cam, sunk, ellipsoid_radius_at(sunk) + 0.000002);
+        let ori = cam.local_ori;
+        cam.set_local_transform(sunk_v, ori);
+
+        assert_eq!(
+            cam.local_pos.to_array().map(f32::to_bits),
+            want.to_array().map(f32::to_bits),
+            "({lon}, {lat}): did not come to rest on the pre-E3 ellipsoid floor"
+        );
+    }
+}
+
+/// The flat path must not acquire an `enforce_bounds` call it did not have. A camera
+/// placed outside its own distance clamp — which `set_eye` allows, because it does not
+/// enforce anything — must still be exactly there after any number of `None` frames.
+#[test]
+fn feeding_none_every_frame_never_clamps_a_flat_camera() {
+    let mut cam = camera_at(11.40, 47.26, 900.0);
+    // Well past `max_distance` (6.378137 + 30 Mm), a state `set_eye` can leave behind
+    // and `enforce_bounds` would silently correct.
+    cam.set_eye(Vec3::new(0.0, 0.0, 100.0), Vec3::ZERO);
+    let before = cam.local_pos;
+    for _ in 0..240 {
+        cam.set_ground_height(None);
+    }
+    assert_eq!(
+        cam.local_pos.to_array().map(f32::to_bits),
+        before.to_array().map(f32::to_bits),
+        "a flat frame moved the camera"
     );
 }
