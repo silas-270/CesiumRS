@@ -1248,6 +1248,27 @@ The flat pin is `the_ellipsoid_floor_is_bitwise_unchanged_with_no_ground_known`:
 operands, in `local_pos`'s own `f32` — comparing an f64 floor against an f32 field would fail
 on a 0.4 m quantisation that is not a behaviour change.
 
+**4. Labels on the ground.** `LabelManager::update` takes an `Option<&dyn GroundHeights>` — a
+one-method trait in `label/mod.rs`, implemented by `TileSystem`, so the label pass does not
+grow a dependency on the terrain stack in either build. Denver's label stops sitting 1.6 km
+underground.
+
+The lift happens **after** culling, at the `visible_labels.push`, and that placement is the
+design and not an optimisation. §8 already observed that `label::culling` uses the exact
+*point* test (Theorem 3.1), which handles points off the surface correctly, so lifting before
+culling would have been sound — but it would have made the visible set depend on the height
+cache, i.e. on which tiles happened to be resident. Lifting after it means what is visible is
+bit-for-bit what was visible before, and only where it is drawn changed.
+`the_lift_does_not_change_which_labels_are_visible` checks that at four ground heights,
+including a sub-sea-level one. It also keeps the query off the hundreds of candidates about to
+be rejected.
+
+"Up" is the ellipsoid normal (`ellipsoid_up`, the normalised gradient of the implicit
+function), not the radius — 0.19° apart at mid-latitude. The test that checks the lift is
+vertical measures the sideways component in f64 as a rejection: an `acos` of two f32 unit
+vectors near 1 has no significant digits left and reports ~2 km of drift for a pair one ulp
+apart.
+
 ---
 
 ## 9. Phase F — turn it on

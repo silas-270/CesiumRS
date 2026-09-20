@@ -613,7 +613,23 @@ impl<'a> WgpuState<'a> {
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.label_manager");
             let label_start = Instant::now();
-            self.label_manager.update(camera_pos_f32, camera_ori_f32, altitude, zoom, &frustum_obj);
+            // Phase E3.4: the ground the labels stand on. `None` unless terrain is on,
+            // so the flat path builds no `&dyn` and the lift branch inside is never
+            // taken — the label pass runs the code it always ran.
+            let ground: Option<&dyn crate::label::GroundHeights> =
+                if self.tile_system.has_terrain() {
+                    Some(&self.tile_system)
+                } else {
+                    None
+                };
+            self.label_manager.update(
+                camera_pos_f32,
+                camera_ori_f32,
+                altitude,
+                zoom,
+                &frustum_obj,
+                ground,
+            );
             self.last_timings.label_manager_us = label_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
 

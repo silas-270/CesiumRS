@@ -682,3 +682,143 @@ fn feeding_none_every_frame_never_clamps_a_flat_camera() {
         "a flat frame moved the camera"
     );
 }
+
+// ── 5. E3.4: labels stand on the ground ──────────────────────────────────────
+
+/// A stand-in height field: one answer everywhere, or nothing anywhere.
+///
+/// Synthetic on purpose. A real DEM would make the assertions below depend on what
+/// Terrarium served that morning; what is under test is the lift, not the elevation.
+struct FlatGround(Option<f32>);
+
+impl cesium_engine::label::GroundHeights for FlatGround {
+    fn ground_height_above_ellipsoid(&self, _pos: Vec3) -> Option<f32> {
+        self.0
+    }
+}
+
+/// A camera high over Denver, and the frustum the label pass culls against.
+fn denver_view() -> (Camera, cesium_engine::globe::quadtree::Frustum) {
+    let cam = camera_at(-104.9903, 39.7392, 900_000.0);
+    let aspect = 16.0 / 9.0_f32;
+    let (eye, _) = cam.global_transform_f64();
+    let frustum = cesium_engine::globe::quadtree::Frustum::planes_only(
+        cam.calculate_frustum_planes(aspect),
+        eye,
+    )
+    .with_corners(cam.frustum_corners_relative(aspect));
+    (cam, frustum)
+}
+
+/// Runs one label pass and returns `(name, position)` for everything visible.
+///
+/// A fresh `LabelManager` each time: the real one throttles itself to one update per
+/// six frames unless the camera moves, so a second call on the same instance would
+/// hand back the first call's answer.
+fn labels_with(
+    ground: Option<&dyn cesium_engine::label::GroundHeights>,
+) -> Vec<(&'static str, Vec3)> {
+    let (cam, frustum) = denver_view();
+    let (pos, ori) = cam.global_transform();
+    let mut labels = cesium_engine::label::LabelManager::new();
+    labels.update(pos, ori, cam.altitude(), 15, &frustum, ground);
+    labels
+        .visible_labels
+        .iter()
+        .map(|l| (l.name, l.ecef_pos))
+        .collect()
+}
+
+/// Height above the ellipsoid of an arbitrary point, in metres — `Camera::altitude`'s
+/// expression, applied to something that is not a camera.
+fn altitude_of(p: Vec3) -> f64 {
+    let p = glam::DVec3::new(p.x as f64, p.y as f64, p.z as f64);
+    (p.length() - ellipsoid_radius_at(p)) / M_TO_MM
+}
+
+#[test]
+fn a_label_pass_with_no_ground_places_labels_exactly_where_it_always_did() {
+    let flat = labels_with(None);
+    assert!(
+        flat.len() > 20,
+        "only {} labels visible over Denver from 900 km; the fixture is not exercising anything",
+        flat.len()
+    );
+
+    // Every one of them is on the ellipsoid, which is where the packed database puts
+    // them — the lift did not run.
+    for (name, p) in &flat {
+        assert!(
+            altitude_of(*p).abs() < 1.0,
+            "{name} is {} m off the ellipsoid with no ground supplied",
+            altitude_of(*p)
+        );
+    }
+
+    // And a ground source that knows nothing is the same thing, to the bit.
+    let unknown = labels_with(Some(&FlatGround(None)));
+    assert_eq!(flat.len(), unknown.len());
+    for ((n0, p0), (n1, p1)) in flat.iter().zip(unknown.iter()) {
+        assert_eq!(n0, n1);
+        assert_eq!(
+            p0.to_array().map(f32::to_bits),
+            p1.to_array().map(f32::to_bits),
+            "{n0} moved when the height query returned None"
+        );
+    }
+}
+
+/// Denver's label sat 1 609 m underground. It does not any more.
+#[test]
+fn a_label_is_lifted_onto_the_ground_beneath_it() {
+    let flat = labels_with(None);
+    let lifted = labels_with(Some(&FlatGround(Some((1_609.0 * M_TO_MM) as f32))));
+
+    assert_eq!(
+        flat.len(),
+        lifted.len(),
+        "the lift changed which labels are visible; it is only supposed to change where"
+    );
+
+    for ((name, before), (_, after)) in flat.iter().zip(lifted.iter()) {
+        let rise = altitude_of(*after) - altitude_of(*before);
+        // f32 positions at Earth radius resolve to ~0.4 m, and the lift is applied in
+        // f32, so a metre of tolerance is the floor of what is observable.
+        assert!(
+            (rise - 1_609.0).abs() < 2.0,
+            "{name} rose {rise:.1} m rather than 1609 m"
+        );
+        // Straight up, where "up" is the ellipsoid normal and not the radius: those
+        // differ by up to 0.19°, so a 1 609 m lift carries a few metres of sideways
+        // motion by construction. Anything beyond that is the lift being applied along
+        // the wrong vector. Measured in f64 as a rejection, not as an `acos` of two
+        // f32 unit vectors — near 1 that arccosine has no significant digits left and
+        // reports ~2 km of drift for a pair that differ by one ulp.
+        let b = glam::DVec3::new(before.x as f64, before.y as f64, before.z as f64);
+        let a = glam::DVec3::new(after.x as f64, after.y as f64, after.z as f64);
+        let radial = b.normalize();
+        let d = a - b;
+        let sideways = (d - radial * d.dot(radial)).length() / M_TO_MM;
+        assert!(
+            sideways < 20.0,
+            "{name} moved {sideways:.1} m sideways for a 1 609 m lift"
+        );
+    }
+}
+
+/// The lift is applied after culling, so what is *visible* cannot depend on it — the
+/// same set, in the same order, whatever the ground says.
+#[test]
+fn the_lift_does_not_change_which_labels_are_visible() {
+    let names = |v: Vec<(&'static str, Vec3)>| v.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+    let flat = names(labels_with(None));
+    for h in [0.0_f32, 1_609.0, 8_849.0, -430.0] {
+        let got = names(labels_with(Some(&FlatGround(Some(
+            (h as f64 * M_TO_MM) as f32,
+        )))));
+        assert_eq!(
+            got, flat,
+            "the visible set changed with a ground height of {h} m"
+        );
+    }
+}
