@@ -242,9 +242,26 @@ If any of these moves in Phase A, the design is wrong and it gets fixed here, no
   budget (`config.rs:45-59`), so the height cache takes a declared slice of it rather than
   silently doubling the total.
 
-**Acceptance.** Decoder unit tests reproduce the §2 numbers (Everest, Dead Sea, Pacific) as
-regression pins. `offline_mode` yields a flat zero field so every existing headless test runs
-with terrain on and no network. Flat mode still passes Phase A's acceptance list.
+**Acceptance.** Decoder unit tests pin the *full-tile* extrema of committed fixtures.
+`offline_mode` yields a flat zero field so every existing headless test runs with terrain on
+and no network. Flat mode still passes Phase A's acceptance list.
+
+### Three things Phase B found
+
+**`offline_mode` cannot be shared with imagery.** `TileFetcher`'s offline stub returns an
+all-255 RGBA image — white, which is a sensible fake basemap tile. Under the terrarium
+encoding those same bytes decode to `255·256 + 255 + 255/256 − 32768 = +32 768 m`: a
+worldwide 32 km wall, in exactly the mode meant to make headless tests run without a network.
+Handled in `HeightTileManager::request_tile` (synchronous `HeightTile::flat_zero()`) rather
+than by touching the shared fetcher.
+
+**The height cache is 132 096 B per tile, not 128 kB** — 65 536 × i16 plus the 16×16 min/max
+mip. At a 32 MiB slice that is 254 resident tiles, not 256.
+
+**Decoding runs on the caller thread** (`HeightTileManager::update`), because `TileFetcher` is
+shared verbatim and hands back RGBA. 65 536 texels of integer arithmetic plus the mip, a few
+times per frame. Acceptable now; it is the first place to look if Phase F sees hitching during
+a descent, when many height tiles land at once.
 
 ---
 
