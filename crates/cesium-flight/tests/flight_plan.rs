@@ -843,15 +843,65 @@ fn the_longer_runway_wins_when_the_wind_does_not_care() {
 }
 
 // ---------------------------------------------------------------------------
-// Terrain elevation, which stays off until the globe can render it
+// Terrain elevation, honoured by default since the globe can render it
+// (Phase E3, `docs/terrain-plan.md` §8)
 // ---------------------------------------------------------------------------
 
+/// The default config supplies no elevation, so a plan built from it still starts at
+/// sea level. This is what the old `field_elevation_is_ignored_by_default` actually
+/// tested: not that the flag was off, but that `dep_elevation_m` defaults to zero.
+/// It stayed true across the flip, which is the point of keeping it.
 #[test]
-fn field_elevation_is_ignored_by_default() {
+fn a_field_with_no_elevation_supplied_still_starts_at_sea_level() {
     let points = plan_with(FRA, STR, 55, FlightPlanConfig::default());
     assert!(
         points[0].altitude < 20.0,
-        "started at {:.0} m with terrain disabled",
+        "started at {:.0} m with no field elevation supplied",
+        points[0].altitude
+    );
+}
+
+/// The flip itself: a caller that supplies elevations and touches nothing else gets
+/// them. Before Phase E3 this plan started and ended at sea level.
+#[test]
+fn field_elevation_is_honoured_by_default() {
+    assert!(
+        FlightPlanConfig::default().terrain_elevation,
+        "the globe renders terrain now; elevations are honoured unless asked otherwise"
+    );
+    let config = FlightPlanConfig {
+        dep_elevation_m: 2_548.0, // Bogota
+        arr_elevation_m: 1_640.0, // Mexico City
+        ..FlightPlanConfig::default()
+    };
+    let points = plan_with((4.7016, -74.1469), (19.4363, -99.0721), 4 * 60 + 30, config);
+    assert!(
+        (points[0].altitude - 2_548.0).abs() < 30.0,
+        "started at {:.0} m rather than the field elevation",
+        points[0].altitude
+    );
+    assert!(
+        (points.last().unwrap().altitude - 1_640.0).abs() < 30.0,
+        "ended at {:.0} m rather than the field elevation",
+        points.last().unwrap().altitude
+    );
+}
+
+/// The escape hatch is still there and still works: a caller that explicitly turns
+/// elevation off gets a sea-level plan even with both fields supplied. That is the
+/// setting to reach for when the globe is run with `TerrainConfig::enabled == false`.
+#[test]
+fn field_elevation_can_still_be_switched_off() {
+    let config = FlightPlanConfig {
+        terrain_elevation: false,
+        dep_elevation_m: 2_548.0,
+        arr_elevation_m: 1_640.0,
+        ..FlightPlanConfig::default()
+    };
+    let points = plan_with((4.7016, -74.1469), (19.4363, -99.0721), 4 * 60 + 30, config);
+    assert!(
+        points[0].altitude < 20.0,
+        "started at {:.0} m with terrain elevation switched off",
         points[0].altitude
     );
 }

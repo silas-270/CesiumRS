@@ -57,12 +57,26 @@ pub enum WindModel {
 pub struct FlightPlanConfig {
     /// Whether runways sit at their true elevation.
     ///
-    /// Off by default, and deliberately so: the globe currently renders without terrain,
-    /// so an aircraft starting at Bogotá's 2,548 m would hang visibly above a sea-level
-    /// surface. Everything downstream already handles real elevations — the ground roll
-    /// lengthens in thin air, cruise levels are checked against the field below them —
-    /// so turning this on is the only change needed once terrain exists.
+    /// **On by default since Phase E3** (`docs/terrain-plan.md` §8). It was held off
+    /// while the globe rendered a sea-level sphere, because an aircraft starting at
+    /// Bogotá's 2,548 m would have hung visibly above the surface. The globe now draws
+    /// real relief, so the aircraft sits on the ground it is standing on.
+    ///
+    /// Everything downstream already handled real elevations before the flip — the
+    /// ground roll lengthens in thin air, cruise levels are checked against the field
+    /// below them.
+    ///
+    /// The one caveat, and it is a display caveat rather than a planning one: with
+    /// `TerrainConfig::enabled == false` the globe is a sea-level sphere again and an
+    /// aircraft at a real field elevation floats above it — 2.5 km at Bogotá. That is
+    /// the honest rendering of a correct plan on a surface that is not there, not a
+    /// reason to plan the flight at sea level.
     pub terrain_elevation: bool,
+    /// Departure field elevation in metres, used only when [`Self::terrain_elevation`].
+    ///
+    /// Defaults to `0.0`, so a caller that supplies no elevation still plans at sea
+    /// level: the flip above changes what happens to an elevation that *is* supplied,
+    /// not what happens when none is.
     pub dep_elevation_m: f64,
     pub arr_elevation_m: f64,
     /// Whether to route around airspace civil traffic currently avoids.
@@ -75,7 +89,7 @@ pub struct FlightPlanConfig {
 impl Default for FlightPlanConfig {
     fn default() -> Self {
         Self {
-            terrain_elevation: false,
+            terrain_elevation: true,
             dep_elevation_m: 0.0,
             arr_elevation_m: 0.0,
             avoid_closed_airspace: true,
