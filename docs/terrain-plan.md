@@ -1352,6 +1352,72 @@ all, by 9 %. `FogConfig::sse` therefore stays unconsumed in production — now a
 measurement rather than as a pending question, five sections after WP5 reserved it "once
 terrain gives this engine a real geometric error term".
 
+#### E1c — `Stage::Fog` was unreachable, and deleting it was the honest answer
+
+§7b recorded the fact and did not draw the consequence: `Stage::Fog` was the fourth of four
+stages in `DEFAULT_WITH_FOG`, behind `Stage::NodeFrustum` (which answers `Keep` outright
+for every node without a sub-grid) and `Stage::SubPatchGrid` (which answers `Keep` or
+`Cull` for every node with one), so `CullPipeline::keeps` returned before it — for every
+node, at every camera, in the pipeline production actually ran.
+
+Moved into slot 1, where a `Cull`/`Undecided` stage does execute, over all 204 bench poses:
+
+| | visible tiles | poses that moved |
+|---|--:|--:|
+| shipped (fog in the dead slot) | 3 579 | — |
+| fog reachable | 3 579 | **0** |
+
+Not "almost nothing". Zero, and the reason is structural rather than a property of these
+poses. `cesium_fog` saturates to exactly `1.0` in f32 at `distance · density ≈ 4.16`. A
+tile that survives `Stage::Horizon` has a point the limb test could not prove hidden, and
+every such point lies within `√(2Rh + h²)` of the eye — so the stage can only fire when the
+saturation distance is *inside* the horizon:
+
+| camera altitude | fog = 1 at | horizon | ratio |
+|--:|--:|--:|--:|
+| 10 m | 30.3 km | 11.3 km | 2.68 |
+| 100 m | 34.5 km | 35.7 km | **0.97** |
+| 900 m | 126.3 km | 107.1 km | 1.18 |
+| 11 km | 553.1 km | 374.5 km | 1.48 |
+| 400 km | 4 609 km | 2 293 km | 2.01 |
+
+Above 1 everywhere this engine flies, dipping below only in a narrow band near 100 m where
+the whole visible set is a handful of tiles 35 km out. **Fog thick enough to cull is always
+further away than the planet's own edge.**
+
+**The margin is not always wide, and that is worth writing down.** At the tightest of
+the 204 poses the fog on a *surviving* tile reaches `0.999999940` — one f32 ulp under
+the threshold. That is the 0.97 row of the table above seen from the other side: near
+100 m the saturation distance really is just inside the horizon, and a tile out there
+really does come within a rounding step of being culled. It still culls nothing, in any
+frame this engine has been measured in, and the probe asserts the zero rather than
+reporting it — so an ulp's worth of drift in the fog constants shows up as a red test
+naming this section instead of as a silent change of behaviour.
+
+So it was deleted rather than promoted — a stage that removes nothing still costs an
+`OrientedBoundingBox::distance_to_point` and an `exp` per node per frame. With it went
+`CullPipeline::DEFAULT_WITH_FOG`, `TERRAIN_DEFAULT_WITH_FOG`, and the whole apparatus that
+existed to keep an unsound pipeline away from the harness. **Production now runs
+`CullPipeline::DEFAULT` / `TERRAIN_DEFAULT` — the same constants the culling gate proves
+FN = 0 against**, which is a better arrangement than the paragraph that used to explain why
+it was safe for them to differ.
+
+`MAX_STAGES` goes 5 → 4 with it, undoing D3's raise. §7b recorded that raise as costing
+code size and not frame time; the reverse reads the same way — `bench_update` 9.3 µs before
+and 8.8 µs after, on a machine whose same-code spread is wider than that, with 1 919 B/node
+and `size_of::<QuadtreeNode<Ellipsoid>>() == 192` untouched.
+
+**What did not change is the part that always did the work.** `apply_lod`'s fog relaxation
+is untouched, and WP5's shipped 95 % p95 reduction in cruise came from it and only ever
+came from it. The proof is byte-level: re-running the entire WP5 suite across this deletion
+returns **byte-identical CSVs**, fogged ones included.
+
+The probe survives the code it refutes, as §7c's did. `testing::lod::test_wp5_fog::the_fog_stage_never_ran_and_this_is_what_it_would_have_culled`
+settles the real tree under the real fog density and then applies the deleted stage's own
+predicate — `cesium_fog(obb.distance_to_point(eye) · 1e6, density) >= 1.0` — to every
+surviving tile, from outside the engine, and asserts the count is zero. The day the fog
+constants move far enough to make that false, something says so.
+
 ### E3 — what landed
 
 **1. Field elevation, flipped.** `FlightPlanConfig::terrain_elevation` now defaults to `true`.

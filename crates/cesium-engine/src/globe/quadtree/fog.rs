@@ -4,25 +4,32 @@
 //!
 //! # Where this is (and is not) wired in
 //!
-//! **Fog culling is not geometrically sound.** It deliberately discards tiles that
-//! are genuinely visible — that is the entire point, and it is why the pure math
-//! lives in this module, isolated from anything the culling harness's FN = 0
-//! guarantee depends on. Two, and only two, places consume it:
+//! **One consumer, and it is not a culling stage.** `QuadtreeNode::apply_lod` relaxes
+//! `subdivide_dist` (shrinks the threshold a node refines within) as fog thickens, so a
+//! tile buried in fog stops demanding full resolution. Every tile-count and quality number
+//! WP5 ever measured came from that line.
 //!
-//! * [`super::quadtree::Stage::Fog`] — a `Stage`, `&self`, outright culls a node
-//!   when [`cesium_fog`] reaches `1.0`. Present **only** in
-//!   [`super::quadtree::CullPipeline::DEFAULT_WITH_FOG`], which is what
-//!   `wgpu_state.rs` actually runs. **Never** present in
-//!   [`super::quadtree::CullPipeline::DEFAULT`], which is what the culling harness
-//!   builds and what every FN = 0 guarantee in `docs/culling-math.md` is proved
-//!   against. If a future change adds `Stage::Fog` to `CullPipeline::DEFAULT` or to
-//!   `test_stage_pipeline.rs`'s `all_pipelines`, every sweep in the culling gate
-//!   turns red — by design, not by accident, because fog subtracts real visible
-//!   geometry and the gate has no way to know that subtraction was intentional.
-//! * `QuadtreeNode::apply_lod` — relaxes `subdivide_dist` (shrinks the threshold a
-//!   node refines within) as fog thickens, so a tile buried in fog stops demanding
-//!   full resolution shortly before the `Stage` above culls it outright, rather
-//!   than staying maximally refined right up to the frame it vanishes.
+//! There was a second consumer until E1c of `docs/terrain-plan.md` §8: a
+//! `Stage::Fog` that culled a node outright once [`cesium_fog`] reached `1.0`, present only
+//! in a `CullPipeline::DEFAULT_WITH_FOG` that production ran and the culling harness was
+//! forbidden to touch. It was the fourth of four stages, behind two that settle every node
+//! outright, so it never executed — and when it was moved into a slot where it does
+//! execute, it culled **zero** tiles over all 204 bench poses and all ten real-terrain
+//! ones. The reason is structural rather than incidental: `cesium_fog` saturates at
+//! `distance · density ≈ 4.16`, and for every altitude this engine flies that distance is
+//! **further away than the horizon**, which [`super::quadtree::Stage::Horizon`] has already
+//! culled everything beyond. The stage, both `*_WITH_FOG` pipelines and the whole
+//! apparatus that kept them away from the harness were deleted;
+//! `testing::lod::test_wp5_fog` still reconstructs the stage's own test from outside the
+//! engine and asserts the count is zero, so the day the fog constants change enough to make
+//! it false, something says so.
+//!
+//! **What this means for the harness rule.** Fog culling was never geometrically sound —
+//! it discards tiles that are genuinely visible — and the FN = 0 guarantees in
+//! `docs/culling-math.md` are all proved against `CullPipeline::DEFAULT`. That is still
+//! true of the *relaxation*: it removes refinement, not visibility, so it cannot make a
+//! culling sweep report a false negative, which is why it was always allowed to sit in
+//! `apply_lod` while the stage was fenced out of `DEFAULT`.
 //!
 //! # The port
 //!
@@ -129,7 +136,9 @@ impl Default for FogConfig {
 
 /// `CesiumMath.fog(distanceToCamera, density)`, verbatim: the fraction of a tile at
 /// `distance_m` that atmospheric fog obscures, given the frame's current `density`.
-/// `0.0` is clear air, `>= 1.0` is fully obscured (the outright-cull threshold).
+/// `0.0` is clear air, `>= 1.0` is fully obscured. (`>= 1.0` used to be an
+/// outright-cull threshold; E1c measured that it is never reached inside the horizon and
+/// deleted the stage that tested it — see the module doc comment.)
 /// Monotonically increasing in both arguments; `0.0` at `distance_m == 0.0` or
 /// `density == 0.0` (including the `density == 0.0` [`fog_density_for`] returns
 /// above `max_height_m`, which is how "fog disabled in space" actually disables
