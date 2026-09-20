@@ -29,7 +29,8 @@
 //! deliberately *not* the metres `lon_lat_alt_to_ecef_f64` takes: mixing the two is
 //! the obvious way for a later phase to put a mountain 10⁶ times too high.
 
-use super::horizon::{span_is_occluded, HorizonCamera, TilePatch};
+use super::bounding_volume::OrientedBoundingBox;
+use super::horizon::{lat_span_max, span_is_occluded, HorizonCamera, TilePatch};
 use super::tile_id::TileId;
 
 /// One mesh vertex's inputs, as `TileMesh::generate` has them in hand.
@@ -97,7 +98,13 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// Per-node payload — `()` for [`Ellipsoid`], a height interval for terrain.
     ///
     /// Zero-sized in flat mode, which is what keeps `QuadtreeNode` at 192 B.
-    type NodeExtra: Default + Copy + std::fmt::Debug;
+    ///
+    /// `PartialEq` because Phase D1's bounds arrive *after* the node does (see
+    /// [`Self::child_extra`]) and `QuadtreeNode::set_extra` must be able to ask
+    /// "has this changed?" before paying to refit a box and a `k × k` sub-grid.
+    /// `()` compares equal to itself, so the flat path's answer is a compile-time
+    /// `true` and nothing is ever refitted.
+    type NodeExtra: Default + Copy + PartialEq + std::fmt::Debug;
 
     /// Per-patch payload — `()` for [`Ellipsoid`].
     ///
@@ -162,6 +169,35 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// exactly once — which is what makes the flat path's work identical to today's.
     fn obb_altitude_span(extra: &Self::NodeExtra) -> (f64, f64);
 
+    /// The interval a **child** node starts life with, given its parent's.
+    ///
+    /// # The one genuine soundness trap in Phase D1
+    ///
+    /// A node is culled long before its height tile arrives, and a parent's
+    /// `[h_min, h_max]` is **not** a superset of its children's: a coarse DEM smooths
+    /// away a peak that a deeper one resolves. Inheriting the parent interval
+    /// *unmodified* is therefore a false-negative source, and by I-7 a false negative
+    /// at one node costs the whole subtree.
+    ///
+    /// `docs/terrain-plan.md` §7 lists three policies and this is the third: the
+    /// parent's interval widened by a **measured** per-level margin. The measurement
+    /// lives with the implementation
+    /// ([`Heightfield::child_extra`](crate::globe::terrain::Heightfield)) and is
+    /// checked against a committed corpus by
+    /// `testing::terrain::test_terrain_visibility::d1_inherit_margin_covers_the_corpus`.
+    ///
+    /// [`Ellipsoid`] has nothing to inherit and returns `()`.
+    fn child_extra(parent: &Self::NodeExtra, child: &TileId) -> Self::NodeExtra;
+
+    /// The per-patch payload, derived from the node's **already fitted** box.
+    ///
+    /// Called once per node and once per sub-patch, at construction. Phase D2's
+    /// payload is the scaled-space bounding sphere of `obb`, which is why this takes
+    /// the box rather than the rectangle: `T(obb)` is a parallelepiped whose eight
+    /// vertices bound the patch exactly, with no sampling argument (see
+    /// [`ScaledSphere::around_obb`](super::horizon::ScaledSphere::around_obb)).
+    fn patch_extra(obb: &OrientedBoundingBox) -> Self::PatchExtra;
+
     /// Is every drawable point of this patch hidden behind the limb?
     ///
     /// **This site cannot be unified across models** (`docs/terrain-plan.md` §1):
@@ -170,6 +206,26 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// sphere's radius to zero does not recover the rectangle test. Unifying them
     /// would hand the flat globe a conservative test in place of an exact one.
     fn is_occluded(patch: &TilePatch<Self>, cam: &HorizonCamera) -> bool;
+
+    /// The same question for one sub-patch of a node's `k × k` grid.
+    ///
+    /// Separate from [`Self::is_occluded`] because a sub-patch is not a
+    /// [`TilePatch`]: the grid stores its `k+1` latitude and longitude breakpoints
+    /// once per row and column rather than eight trig constants per sub-patch (32·(k+1)
+    /// bytes against 64·k²), so the flat test is handed the φ span and the shared
+    /// `A*` for the column instead of a struct.
+    ///
+    /// Phase C left `SubGrid::sub_patch_is_occluded` calling `span_is_occluded`
+    /// directly, which was correct exactly as long as `Heightfield`'s node-level test
+    /// was also still the flat one. D2 closes it: with relief, the *sub*-patch test
+    /// is the same false negative as the node-level one, one level finer.
+    fn sub_patch_is_occluded(
+        cam: &HorizonCamera,
+        a_star: f64,
+        sin_lat: &[f64; 2],
+        cos_lat: &[f64; 2],
+        extra: &Self::PatchExtra,
+    ) -> bool;
 }
 
 /// Today's globe: the bare WGS-84 ellipsoid, zero relief (invariant I-1).
@@ -248,6 +304,16 @@ impl SurfaceModel for Ellipsoid {
         (0.0, 0.0)
     }
 
+    /// Nothing to inherit: the flat globe's altitude interval is `(0, 0)` at every
+    /// node of every level, known statically.
+    #[inline]
+    fn child_extra(_parent: &(), _child: &TileId) {}
+
+    /// No per-patch payload. The exact rectangle supremum below needs the eight trig
+    /// constants and the camera, and nothing else.
+    #[inline]
+    fn patch_extra(_obb: &OrientedBoundingBox) {}
+
     /// Moved verbatim from `TilePatch::is_occluded`.
     ///
     /// Soundness (§3.5): `S ≤ 1` means every point `p` of the drawn patch has
@@ -264,5 +330,19 @@ impl SurfaceModel for Ellipsoid {
     #[inline]
     fn is_occluded(patch: &TilePatch<Self>, cam: &HorizonCamera) -> bool {
         span_is_occluded(cam, patch.max_dot(cam))
+    }
+
+    /// Moved verbatim from `SubGrid::sub_patch_is_occluded`, whose body this was.
+    /// Same expressions, same order, same arguments — the λ half is still hoisted to
+    /// the column by the caller.
+    #[inline]
+    fn sub_patch_is_occluded(
+        cam: &HorizonCamera,
+        a_star: f64,
+        sin_lat: &[f64; 2],
+        cos_lat: &[f64; 2],
+        _extra: &(),
+    ) -> bool {
+        span_is_occluded(cam, lat_span_max(cam, a_star, sin_lat, cos_lat))
     }
 }

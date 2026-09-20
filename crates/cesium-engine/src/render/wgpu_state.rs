@@ -1,5 +1,5 @@
 use crate::camera::camera::Camera;
-use crate::globe::quadtree::{CullPipeline, QuadtreeManager, TileId};
+use crate::globe::quadtree::{AnyQuadtree, CullPipeline, TileId};
 use crate::render::camera_uniform::CameraUniform;
 use crate::render::tile_display::{TileBuffers, TileDisplayEntry, TilePushConstants};
 #[cfg(feature = "debug_panel")]
@@ -74,7 +74,7 @@ pub struct WgpuState<'a> {
     pub egui_state: Option<EguiState>,
     #[cfg(feature = "debug_panel")]
     pub egui_renderer: EguiRenderer,
-    pub quadtree_manager: QuadtreeManager,
+    pub quadtree_manager: AnyQuadtree,
     pub tile_system: crate::globe::tiles::system::TileSystem,
     pub extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
     /// Stable display state: persists across frames, only updated under controlled rules.
@@ -348,9 +348,13 @@ impl<'a> WgpuState<'a> {
                 // The culling harness never constructs a `WgpuState`, so this is the
                 // only place `DEFAULT_WITH_FOG` is ever selected — see that
                 // constant's doc comment before changing it.
-                let mut qt = QuadtreeManager::new();
-                qt.pipeline = CullPipeline::DEFAULT_WITH_FOG;
-                qt.max_zoom = tile_system.config.max_zoom;
+                //
+                // Phase D1: which *surface model* the tree runs over is decided here
+                // and only here — one match at the manager boundary rather than a
+                // branch per node. See `globe::quadtree::any`.
+                let mut qt = AnyQuadtree::for_terrain(tile_system.config.terrain.enabled);
+                qt.set_pipeline(CullPipeline::DEFAULT_WITH_FOG);
+                qt.set_frame_params(2.0, tile_system.config.max_zoom, 0.0);
                 qt
             },
             tile_system,
@@ -531,20 +535,30 @@ impl<'a> WgpuState<'a> {
             // the real decoded tile size once the current style's first tile has
             // arrived (WP4/A, `docs/pre-terrain-plan.md`) — `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`
             // only before that, or if imagery is disabled.
-            self.quadtree_manager.lod_factor = crate::globe::quadtree::lod_factor_for(
-                self.tile_system.config.target_texel_ratio,
-                self.tile_system.texture_manager.current_texture_size_px(),
-                self.size.height as f32,
-                self.camera.fovy(),
-            );
-            // WP5: fog density from camera altitude alone, recomputed fresh every
-            // frame like `lod_factor` above. `altitude` is megameters (this
-            // engine's world frame); `fog_density_for` takes metres — see
+            // WP5: fog density from camera altitude alone, the third argument below,
+            // recomputed fresh every frame like `lod_factor`. `altitude` is megameters
+            // (this engine's world frame); `fog_density_for` takes metres — see
             // `globe::quadtree::fog`'s module doc comment's Units section.
-            self.quadtree_manager.max_zoom = self.tile_system.config.max_zoom;
-            self.quadtree_manager.fog_density = crate::globe::quadtree::fog_density_for(
-                altitude * crate::globe::quadtree::MEGAMETERS_TO_METERS,
-                &self.tile_system.config.fog,
+            self.quadtree_manager.set_frame_params(
+                crate::globe::quadtree::lod_factor_for(
+                    self.tile_system.config.target_texel_ratio,
+                    self.tile_system.texture_manager.current_texture_size_px(),
+                    self.size.height as f32,
+                    self.camera.fovy(),
+                ),
+                self.tile_system.config.max_zoom,
+                crate::globe::quadtree::fog_density_for(
+                    altitude * crate::globe::quadtree::MEGAMETERS_TO_METERS,
+                    &self.tile_system.config.fog,
+                ),
+            );
+            // Phase D1: tighten every node's height interval from whatever has landed
+            // in the height cache since the last frame, *before* culling against it.
+            // A no-op on the flat arm. See `AnyQuadtree::refresh_height_bounds`.
+            self.quadtree_manager.refresh_height_bounds(
+                self.tile_system.height_manager.as_ref(),
+                self.tile_system.config.mesh_segments,
+                self.tile_system.config.terrain.exaggeration,
             );
             self.quadtree_manager.update(&frustum_obj);
             self.last_subsystem_timings.quadtree_us =

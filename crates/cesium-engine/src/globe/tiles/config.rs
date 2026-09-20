@@ -58,13 +58,18 @@ pub enum OceanPolicy {
     Raw,
 }
 
-/// Terrain height data — `docs/terrain-plan.md` §4 A3, §5 and §6.
+/// Terrain height data — `docs/terrain-plan.md` §4 A3, §5, §6 and §7.
 ///
-/// Off by default, and still off at the end of Phase C. Phase C gives the tiles real
-/// relief, normals and skirts; the quadtree still culls against the bare ellipsoid, so
-/// terrain on is **unsound** until Phase D fits the bounding volumes to `[h_min, h_max]`
-/// (§10: "C alone, with terrain on, is unsound"). §9 is where this flips to `true`, in
-/// its own commit.
+/// Off by default, and still off at the end of D2. The unsoundness §10 warned about is
+/// **gone**: D1 fits the bounding volumes over each node's `[h_min, h_max]` and D2 runs
+/// the limb test on its scaled-space bounding sphere, so turning this on no longer loses
+/// geometry — the sweep in `testing::terrain::test_terrain_visibility` measures FN = 0 and
+/// the headless captures over the Alps are gapless.
+///
+/// What is still missing is **D3**, the occlusion march of §3.3: tiles hidden behind
+/// mountains are still drawn, which is a cost rather than a defect. The flip to `true`
+/// belongs to §9 (Phase F), after D3 and after the on-device measurements, in its own
+/// commit.
 #[derive(Clone, Debug)]
 pub struct TerrainConfig {
     /// Master switch. While `false` no height fetcher, no height cache and no height

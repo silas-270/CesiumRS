@@ -47,7 +47,7 @@ async fn shoot(params: &ViewParams, out: &str) {
     println!(
         "[{out}] alt={:.6}Mm fog_density={:.4e} tiles_visible={}",
         state.camera.altitude(),
-        state.quadtree_manager.fog_density,
+        state.quadtree_manager.fog_density(),
         state.quadtree_manager.get_visible_tiles().len(),
     );
 

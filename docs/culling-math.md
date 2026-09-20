@@ -772,6 +772,35 @@ vertex test does not care). That is exact for the box and costs ≈ 100 flops.
 interface so that turning terrain on is a one-function change. Record invariant
 **I-1** loudly.
 
+#### Implemented — Phase D2, and three notes from doing it
+
+`horizon::sphere_is_occluded`, dispatched through `SurfaceModel::is_occluded`;
+`Ellipsoid` still runs §3.4's exact rectangle supremum and is untouched.
+
+1. **The sphere is fitted from the node's OBB, not from a sampled patch.** `T` is
+   linear, so `T(obb)` is the parallelepiped spanned by the three transformed
+   half-axes and its convex hull is the eight sign combinations of them. A sphere
+   about `T(centre)` through the farthest of those eight contains `T(obb)`
+   exactly, with no sampling argument to get wrong — and since `fit_obb` already
+   spans the node's `[h_min, h_max]` (D1), it contains the relief too. This also
+   sidesteps the `ρ_real / b` conversion this section offers as the alternative,
+   which is correct only because `b < a` and is the obvious thing for a later
+   reader to "simplify" into `ρ_real / a`, i.e. into a sphere that does not
+   contain its own patch.
+2. **The three inequalities are evaluated in the order written.** The second is
+   what licenses the third's squaring, so reordering them for an early-out would
+   make the third meaningless on exactly the inputs the second excludes.
+3. **`C² ≤ 1` must return "cull nothing" here**, the opposite convention to
+   `span_is_occluded`, which deliberately has no such guard. The surface-point
+   form `q·c ≤ 1` stays exact for an eye at or inside the surface (see that
+   function's comment); the cone form does not — `h² < 0` makes the third line
+   vacuously true and reports the whole globe occluded, which is §3.1's
+   `vh_mag_sq > -0.1` bug in a new place.
+
+Checked by `testing::terrain::test_terrain_visibility`: 72 000 points confirm the
+`ρ = 0` reduction to Theorem 3.1, and 11 017 spheres that the test culls contain
+no point the exact point test calls visible.
+
 ### 3.8 The exact point test, for labels
 
 `label/culling.rs::is_behind_horizon` should become, for a label at ECEF `p`:
@@ -798,13 +827,67 @@ culling.
 positive factor `1/‖g(p)‖`, so they have the same sign, pointwise. A patch is
 entirely back-facing iff `max q·c ≤ 1` iff it is entirely below the horizon. ∎
 
-Elevation breaks the equivalence in exactly one direction: an elevated point can
-be *front-facing relative to its own base normal* and still visible over the
-limb, so with relief, "below the horizon" ⊊ "back-facing" and only the horizon
-test (§3.7) is sound. Under Fact R the two coincide exactly.
-
 **So the back-face test at `quadtree.rs:326-336` can be deleted outright.**
 And it must be, because it is the engine's dominant false-negative source.
+
+### 4.0 The claim above depends on Fact R, and Phase C ended Fact R
+
+*(Corrected in Phase D2 of `docs/terrain-plan.md`. The paragraph this replaces
+asserted that elevation breaks the equivalence "in exactly one direction", that
+with relief "below the horizon ⊊ back-facing", and offered as evidence that an
+elevated point "can be front-facing relative to its own base normal and still
+visible over the limb" — which is not a failure of anything, front-facing and
+visible being perfectly consistent. The deletion stays correct; its reason does
+not, and the reason is what the next reader will build on.)*
+
+Hypothesis 4 is a statement about points **on** the ellipsoid, because Theorem
+3.4 is. Once `TileMesh` displaces vertices radially (Phase C) it stops applying,
+and it fails in **both** directions, not one.
+
+**Direction 1 — the base normal, which is what the deleted code used.** For a
+point `p = p₀ + a·n̂(p₀)` at altitude `a`,
+
+```
+n̂(p₀)·(cam − p) = n̂(p₀)·(cam − p₀) − a                                   (4.0)
+```
+
+so elevation drives the back-face quantity **down**. A summit whose base point
+sits just inside the horizon — `n̂·(cam − p₀)` small and positive — is classified
+*back-facing* as soon as `a` exceeds it, while the summit itself is in plain
+sight over the limb. Base-normal back-face culling is therefore not merely
+redundant at non-zero relief; it is a **false-negative source in its own right**,
+and it discards exactly the geometry terrain culling exists to keep.
+
+**Direction 2 — the true surface normal, which no node-level test has.** For a
+closed solid, a facet whose outward normal faces away from the eye is reached by
+a ray that was inside the solid the instant before, so it is occluded by that
+solid:
+
+```
+back-facing  ⊆  occluded            for any watertight surface             (4.0′)
+```
+
+The inclusion is strict once there is relief — a front-facing slope behind a
+ridge is occluded and not back-facing — and collapses to equality exactly under
+Fact R, which is Hypothesis 4. So even in the favourable direction, back-face
+culling can never prove anything a correct occlusion test would not: it is a
+subset of occlusion, never an addition to it. And a node-level test has one
+normal for a whole tile rather than one per facet, so it cannot evaluate (4.0′)
+in any case.
+
+**What survives.** The deletion, for three reasons that are each independently
+sufficient, and none of which is "relief makes it redundant":
+
+1. At zero relief it is subsumed by the horizon test — Hypothesis 4, proved
+   above.
+2. Its margin is wrong by a factor of `h`, making it **unsound above 2 642 km**
+   even at zero relief — §4.1.
+3. Its normal is f32 noise above z ≈ 13 — §4.2.
+
+At non-zero relief reason 1 is replaced by something stronger: the test would
+have to go even if it had never been unsound, because (4.0) makes it a hole in
+the globe. The sound test with relief is §3.7's cone test on the scaled-space
+bounding sphere, and nothing in this document replaces that.
 
 ### 4.1 The sub-OBB back-face heuristic is unsound above 2 642 km
 

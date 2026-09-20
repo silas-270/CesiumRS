@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::globe::quadtree::TileId;
 use crate::globe::terrain::height_tile::{decode_terrarium, HeightTile};
-use crate::globe::terrain::heightfield::PatchStatus;
+use crate::globe::terrain::heightfield::{skirt_allowance, HeightBounds, PatchStatus};
 use crate::globe::tiles::config::{
     tile_cache_entries_for, OceanPolicy, TileEngineConfig, HEIGHT_TILE_BYTES,
 };
@@ -305,6 +305,77 @@ impl HeightTileManager {
                 None => return PatchStatus::Unavailable,
             }
         }
+    }
+
+    /// The altitude interval `id`'s bounding volumes must be fitted over — **Phase
+    /// D1's feed**, and the only thing the quadtree ever asks the height cache.
+    ///
+    /// `None` means "nothing better than inheritance is known yet", and the node keeps
+    /// the widened interval it got from its parent ([`Heightfield::child_extra`]).
+    ///
+    /// # Why the readiness test is `status_of` and not `resolve_source`
+    ///
+    /// The two disagree exactly when a coarse ancestor has landed and the tile's own
+    /// height tile is still in flight, and that gap is a false-negative source. In that
+    /// window `resolve_source` would answer with the ancestor, whose extrema over this
+    /// tile's ground are a *smoothed* version of the truth and can be hundreds of metres
+    /// too low; the mesh, meanwhile, is deferred by [`Self::status_of`] until the tile's
+    /// own data arrives. Bounds taken from the ancestor and geometry built from the tile
+    /// is precisely the pairing that puts a summit outside its own box. Using the same
+    /// predicate as the mesh builder keeps the two in lockstep: while the answer here is
+    /// `None` no mesh exists either, and the frame the mesh becomes buildable is the
+    /// frame this starts answering — from the same tile.
+    ///
+    /// # Why the mip, and why whole cells
+    ///
+    /// Past the source's deepest level (z15 for Terrarium) `id` is answered by an
+    /// ancestor and covers only a sub-rectangle of it, so the ancestor's whole-tile
+    /// extrema would be wildly loose — a z20 tile is 1/32 768 of its z15 source by area.
+    /// B3's 16×16 min/max mip is exactly the structure for that, and rounding the
+    /// sub-rectangle *outward* to whole mip cells keeps the answer an upper bound on the
+    /// samples the mesh will bilinearly interpolate, which is the direction I-6 needs.
+    ///
+    /// It also makes the margin of [`HEIGHT_INHERIT_MARGIN_M`] exactly zero below z15:
+    /// child and parent read the same tile, and the child's rectangle is a **dyadic
+    /// sub-rectangle** of the parent's, so its covering cell set is a subset of the
+    /// parent's and its extrema are contained by construction.
+    ///
+    /// # The skirt
+    ///
+    /// `lo` is the lowest sample minus [`skirt_allowance`], because the mesh's skirt
+    /// hangs below the field and a skirt vertex outside the box is as much a false
+    /// negative as a summit outside it.
+    ///
+    /// [`Heightfield::child_extra`]: crate::globe::terrain::heightfield::Heightfield
+    /// [`HEIGHT_INHERIT_MARGIN_M`]: crate::globe::terrain::heightfield::skirt_allowance
+    pub fn height_bounds_for(
+        &self,
+        id: TileId,
+        segments: u32,
+        exaggeration: f32,
+    ) -> Option<HeightBounds> {
+        if self.status_of(id) != PatchStatus::Ready {
+            return None;
+        }
+        let src = self.resolve_source(id)?;
+        let tile = match self.cache.peek_state(&src)? {
+            TileState::Ready(tile) => tile,
+            _ => return None,
+        };
+
+        // `id`'s own [0,1]² mapped into the source tile. Affine, so the corners settle
+        // the whole rectangle.
+        let (u0, v0) = Self::ancestor_uv(id, src, 0.0, 0.0);
+        let (u1, v1) = Self::ancestor_uv(id, src, 1.0, 1.0);
+        let (h_min_m, h_max_m) = tile.mip_extrema_over(u0, v0, u1, v1);
+
+        let exaggeration = exaggeration as f64;
+        let lo_m = h_min_m as f64 * METRES_TO_MEGAMETRES * exaggeration;
+        let hi_m = h_max_m as f64 * METRES_TO_MEGAMETRES * exaggeration;
+        Some(HeightBounds {
+            lo: lo_m - skirt_allowance(id, segments, hi_m - lo_m),
+            hi: hi_m,
+        })
     }
 
     /// The decoded tile that answers for `id`, together with its id, promoted in the

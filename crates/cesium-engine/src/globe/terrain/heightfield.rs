@@ -24,14 +24,19 @@
 //!
 //! `TerrainConfig::exaggeration` is multiplied in during [`HeightPatch::sample`] and
 //! *nowhere else*. Phase B deliberately left it unused (`height_at` returns raw
-//! heights), and Phase D will read [`HeightPatch::height_bounds`] rather than the
-//! source tile's `h_min`/`h_max`, so the boxes and spheres of §3.1/§3.2 inherit the
-//! exaggeration automatically instead of having to remember it. One multiplication,
-//! upstream of every bound derived from it.
+//! heights), and Phase D reads [`HeightPatch::height_bounds`] — or, for a node whose
+//! mesh does not exist yet, [`HeightTileManager::height_bounds_for`], which applies the
+//! same factor to the same data — rather than the source tile's raw `h_min`/`h_max`, so
+//! the boxes and spheres of §3.1/§3.2 inherit the exaggeration automatically instead of
+//! having to remember it. One multiplication, upstream of every bound derived from it.
 
 use crate::globe::geometry::{lon_lat_to_ecef_f64, EARTH_RADIUS_A_F64};
+use crate::globe::quadtree::bounding_volume::OrientedBoundingBox;
+use crate::globe::quadtree::horizon::{sphere_is_occluded, ScaledSphere};
 use crate::globe::quadtree::surface::{SurfaceModel, VertexSample};
-use crate::globe::quadtree::{tile_bounds, web_mercator_y_to_lat_f64, TileId};
+use crate::globe::quadtree::{
+    tile_bounds, web_mercator_y_to_lat_f64, HorizonCamera, NodeExtraSource, TileId,
+};
 use crate::globe::terrain::height_cache::HeightTileManager;
 
 /// How many levels of LOD jump across a tile edge the skirt is derived against.
@@ -361,21 +366,239 @@ impl HeightPatch {
     }
 }
 
+/// The altitude interval, in **megametres**, a node's bounding volumes are fitted
+/// over — [`SurfaceModel::NodeExtra`] for [`Heightfield`], and the whole of Phase D1.
+///
+/// # This is the *box* span, not the height field's range
+///
+/// `hi` is the highest sample the node's mesh can reach, but `lo` is **not** the
+/// lowest: it is the lowest sample minus the deepest skirt that mesh can hang, because
+/// a skirt vertex outside the box is a drawable point outside the box, which is a false
+/// negative in the frustum stage exactly like a summit outside it. C3 made the skirt
+/// content-dependent (`docs/terrain-plan.md` §6), so it is no longer a number the
+/// quadtree could hard-code; [`skirt_allowance`] bounds it from the same two things the
+/// patch derives it from, and [`HeightTileManager::height_bounds_for`] folds it in
+/// before the interval ever reaches a node.
+///
+/// # Units
+///
+/// Megametres, exaggeration already applied — the contract `quadtree/surface.rs`'s
+/// module doc states for every altitude in the trait, and the reason the conversion
+/// happens once, at the height cache's boundary, rather than here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeightBounds {
+    /// Lowest altitude the node's geometry can reach, skirt included.
+    pub lo: f64,
+    /// Highest altitude the node's geometry can reach.
+    pub hi: f64,
+}
+
+/// The deepest trench the source can report, metres — Challenger Deep is −10 924 m.
+///
+/// Only reachable under [`OceanPolicy::Raw`](crate::globe::tiles::config::OceanPolicy);
+/// the default `ClampToZero` never goes below 0. Used for the root fallback, which must
+/// be sound under **either** policy because the quadtree does not know which is
+/// configured.
+const GLOBAL_H_MIN_M: f64 = -11_500.0;
+
+/// The highest ground the source can report, metres — Everest is 8 849 m, and the
+/// source's own z12 Everest tile peaks at 8 740 m.
+const GLOBAL_H_MAX_M: f64 = 9_500.0;
+
+impl Default for HeightBounds {
+    /// The whole range the Earth's solid surface occupies — the interval a **root**
+    /// node starts with, and the only interval available before anything has been
+    /// fetched.
+    ///
+    /// `docs/terrain-plan.md` §7's first policy row, used exactly where that row is
+    /// cheap: at z1 a 21-km-tall box over a 10 000-km tile is nothing. Every node below
+    /// a root either has its own data or inherits through [`Heightfield::child_extra`],
+    /// which is the third row.
+    fn default() -> Self {
+        Self {
+            lo: GLOBAL_H_MIN_M * 1.0e-6,
+            hi: GLOBAL_H_MAX_M * 1.0e-6,
+        }
+    }
+}
+
+impl HeightBounds {
+    /// Widened by `margin` megametres on both ends.
+    #[inline]
+    pub fn widened(self, margin: f64) -> Self {
+        Self {
+            lo: self.lo - margin,
+            hi: self.hi + margin,
+        }
+    }
+
+    /// Does this interval contain `other`?
+    #[inline]
+    pub fn contains(&self, other: &HeightBounds) -> bool {
+        self.lo <= other.lo && other.hi <= self.hi
+    }
+}
+
+/// How far a child node's height interval may fall outside its parent's, per level,
+/// in **metres** — the measured margin of `docs/terrain-plan.md` §7's third policy.
+///
+/// # What is being measured, and why it is not zero
+///
+/// A node is culled long before its own height tile arrives, so while it waits it must
+/// use its parent's interval. That interval is **not** a superset of the child's: the
+/// parent's DEM covers four times the ground at half the resolution, so it smooths away
+/// peaks and fills in notches that the child's own tile resolves. Inheriting unmodified
+/// is therefore an FN source, and by I-7 an FN at one node deletes its whole subtree.
+///
+/// The quantity is `max(child.hi − parent.hi, parent.lo − child.lo)` over every
+/// parent/child pair in the committed corpus
+/// (`assets/terrain_fixtures/pyramid_extrema.csv` — 16 regions, chains from z1 to z15
+/// with all four children at each step), computed on the *box spans*
+/// [`HeightTileManager::height_bounds_for`] produces rather than on the raw extrema, so
+/// it covers [`skirt_allowance`]'s level dependence too.
+///
+/// # Measured (2026-09-20, 788 tiles, 720 parent/child pairs)
+///
+/// | child z | pairs | max needed (m) | p99 (m) | margin here (m) | headroom |
+/// |--:|--:|--:|--:|--:|--:|
+/// | 2  | 16 | 698    | 383  | 20 000 | 28× |
+/// | 3  | 36 | **4 566** | 1 668 | 20 000 | 4.4× |
+/// | 4  | 44 | 492    | 384  | 20 000 | 41× |
+/// | 5  | 56 | 461    | 183  | 8 000  | 17× |
+/// | 6  | 60 | 1 061  | 889  | 8 000  | 7.5× |
+/// | 7  | 60 | 1 292  | 787  | 8 000  | 6.2× |
+/// | 8  | 64 | 1 365  | 221  | 8 000  | 5.9× |
+/// | 9  | 64 | 166    | 155  | 6 000  | 36× |
+/// | 10 | 64 | 833    | 637  | 6 000  | 7.2× |
+/// | 11 | 64 | 1 359  | 50   | 6 000  | 4.4× |
+/// | 12 | 64 | 36     | 25   | 1 500  | 42× |
+/// | 13 | 64 | 11     | 9    | 750    | 68× |
+/// | 14 | 64 | 3      | 2    | 400    | 133× |
+/// | 15 | 64 | 3      | 3    | 200    | 67× |
+///
+/// The z3 row is the whole argument in one number: the z3 tile over eastern Greenland
+/// reports a 7 796 m maximum where its z2 parent reports 3 230 m. One z2 texel is ~150 km
+/// across, which averages that spike out of existence; the z3 tile at ~75 km resolves it.
+/// A child interval inherited unmodified would have been **4.6 km too shallow** there.
+///
+/// The medians are all *negative* (−29 m to −1 052 m), i.e. in the typical case the
+/// parent's interval already contains the child's and no margin is needed at all. It is
+/// the tail this table is sized for, and a sample of 720 pairs bounds a tail only so
+/// far — hence headroom of 4× at the tightest level rather than a fitted curve.
+///
+/// # Exaggeration
+///
+/// Measured at `exaggeration = 1.0`. The height-dependent part of the requirement scales
+/// linearly with it, so the 4.4× headroom at the binding levels covers exaggeration up to
+/// ~4; past that the table needs re-measuring. Stated rather than asserted because
+/// `child_extra` is a static dispatch with no access to the config.
+///
+/// # Below the source's deepest level the margin is exactly zero
+///
+/// Past this table's length (z ≥ 16) it reads `0.0`, and that is exact rather than
+/// optimistic: there the child's interval is read from the *same* height tile as its
+/// parent's, over a dyadic sub-rectangle of the parent's, so its covering mip cells are a
+/// subset of the parent's and its extrema are contained by construction. See
+/// [`HeightTileManager::height_bounds_for`] and `HeightTile::mip_extrema_over`.
+///
+/// Indexed by the **child's** level; levels 0 and 1 are roots or their children.
+/// `testing::terrain::test_terrain_visibility::d1_inherit_margin_covers_the_corpus` re-derives
+/// the middle column from `assets/terrain_fixtures/pyramid_extrema.csv` and fails if any
+/// entry here stops covering it.
+const HEIGHT_INHERIT_MARGIN_M: [f64; 16] = [
+    // z0    z1      z2      z3      z4     z5     z6     z7
+    20_000.0, 20_000.0, 20_000.0, 20_000.0, 20_000.0, 8_000.0, 8_000.0, 8_000.0,
+    // z8   z9     z10    z11    z12     z13    z14    z15
+    8_000.0, 6_000.0, 6_000.0, 6_000.0, 1_500.0, 750.0, 400.0, 200.0,
+];
+
+/// The inheritance margin for a node at level `z`, **megametres**.
+#[inline]
+pub fn inherit_margin_mm(z: u8) -> f64 {
+    let m = HEIGHT_INHERIT_MARGIN_M
+        .get(z as usize)
+        .copied()
+        .unwrap_or(0.0);
+    m * 1.0e-6
+}
+
+/// An upper bound, in **megametres**, on the skirt [`HeightPatch::derive_skirt`] can
+/// produce for a tile at level `z` with a height range of `range` megametres.
+///
+/// C3's skirt is `max over k ∈ {2, 4}` of (the edge's deviation from its own
+/// `k`-coarsening) + (the curvature sagitta of the chord a neighbour draws across `k`
+/// grid steps). Both terms are bounded here from things the quadtree knows:
+///
+/// 1. The deviation of an edge from a linear interpolation *of that same edge* cannot
+///    exceed the edge's own range, which cannot exceed the tile's.
+/// 2. The sagitta is `R·(1 − cos(k·δ/2))` for an angular grid step `δ`, maximised at
+///    `k = 4`. `δ` is taken as the larger of the tile's longitude and latitude steps —
+///    latitude matters, because a Mercator tile at low zoom is far taller than it is
+///    wide and the pole row is stretched to ±90°.
+///
+/// Both are upper bounds, so the result is one, which is what I-6 needs: a box that is
+/// too deep costs false positives, a box that is too shallow costs the subtree.
+///
+/// `segments` is the mesh density (`TileEngineConfig::mesh_segments`); the sagitta falls
+/// with it, so a caller that passes the shipped 16 while the mesh is built at 32 is
+/// still conservative.
+pub fn skirt_allowance(id: TileId, segments: u32, range_mm: f64) -> f64 {
+    let b = tile_bounds(&id);
+    let inv_seg = 1.0 / segments.max(1) as f64;
+    let dlon = (b.lon_max - b.lon_min).to_radians() * inv_seg;
+    let dlat = (b.lat_max - b.lat_min).to_radians() * inv_seg;
+    let delta = dlon.max(dlat);
+    // k = 4, so the chord spans 4 steps and the half-angle is 2δ.
+    let sagitta = EARTH_RADIUS_A_F64 * (1.0 - (2.0 * delta).cos()).max(0.0);
+    range_mm + sagitta
+}
+
+/// The quadtree's view of the height cache — Phase D1's feed, and the only coupling
+/// between the two.
+///
+/// Exists because the interval a node needs is not a property of the cache alone: it
+/// depends on the mesh density and the vertical exaggeration the *geometry* will be
+/// built at, and a bound derived at different settings from the mesh it is supposed to
+/// contain is no bound at all. Carrying both here means the quadtree side cannot forget
+/// either one.
+///
+/// Borrows the manager immutably, so the per-frame refresh walk cannot reorder the LRU
+/// by looking — see [`NodeExtraSource`].
+pub struct HeightBoundsSource<'a> {
+    pub heights: &'a HeightTileManager,
+    /// `TileEngineConfig::mesh_segments`, as the mesh will be built.
+    pub segments: u32,
+    /// `TerrainConfig::exaggeration`, as [`HeightPatch::sample`] will apply it.
+    pub exaggeration: f32,
+}
+
+impl NodeExtraSource<Heightfield> for HeightBoundsSource<'_> {
+    #[inline]
+    fn extra_for(&self, id: &TileId) -> Option<HeightBounds> {
+        self.heights
+            .height_bounds_for(*id, self.segments, self.exaggeration)
+    }
+}
+
 /// The globe with relief: the ellipsoid displaced radially by a sampled height field.
 ///
-/// The node and patch payloads are still `()` in this phase — **Phase C changes the
-/// geometry, not the culling**. `docs/terrain-plan.md` §10 says so explicitly: "C
-/// alone, with terrain on, is unsound", and D1/D2 are where
-/// [`SurfaceModel::obb_altitude_span`] and [`SurfaceModel::is_occluded`] get their
-/// terrain forms. Giving them terrain bounds here without the cone test of §3.2 would
-/// mix a half-done culling change into a geometry change and make neither reviewable.
+/// Phase C gave this model its geometry; **Phase D gives it its culling**. The two
+/// payloads below are D1 and D2 of `docs/terrain-plan.md` §7:
+///
+/// * [`HeightBounds`] per node — the altitude interval `fit_obb` sweeps, so a node's
+///   box contains the relief inside it instead of hugging the ellipsoid under it. This
+///   is what the Phase C captures were missing: the visible set over the Alps at 4.5 km
+///   was byte-identically the flat one, its geometry was lifted by up to 2.9 km, and the
+///   tiles that should have filled the gap underneath were frustum-culled against boxes
+///   fitted at `alt = 0`.
+/// * [`ScaledSphere`] per patch — Theorem 3.7's cone test, which stays sound when a
+///   summit satisfies `q·c ≤ 1` and is visible over the limb anyway.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Heightfield;
 
 impl SurfaceModel for Heightfield {
-    // Phase D's payloads. Deliberately still `()`: see the type's doc comment.
-    type NodeExtra = ();
-    type PatchExtra = ();
+    type NodeExtra = HeightBounds;
+    type PatchExtra = ScaledSphere;
     type BuildCtx = HeightPatch;
 
     /// C3's measured value. See [`HeightPatch::derive_skirt`].
@@ -494,21 +717,80 @@ impl SurfaceModel for Heightfield {
         }
     }
 
-    /// **Phase D.** Still the flat span, and deliberately so — see the type's doc.
+    /// **D1** — the node's own interval, so `fit_obb` sweeps its grid at both ends and
+    /// the box spans the relief instead of hugging the ellipsoid under it.
+    ///
+    /// Always a non-degenerate interval ([`skirt_allowance`]'s sagitta term is strictly
+    /// positive at every level), so `fit_obb`'s `alt_max != alt_min` guard always takes
+    /// the two-sample branch here and never takes it for [`Ellipsoid`].
+    ///
+    /// [`Ellipsoid`]: crate::globe::quadtree::Ellipsoid
     #[inline]
-    fn obb_altitude_span(_extra: &()) -> (f64, f64) {
-        (0.0, 0.0)
+    fn obb_altitude_span(extra: &HeightBounds) -> (f64, f64) {
+        (extra.lo, extra.hi)
     }
 
-    /// **Phase D.** Still the flat-mode rectangle test, which relief makes *unsound*
-    /// (`docs/terrain-plan.md` §3.2: a summit can satisfy `q·c ≤ 1` and still be
-    /// visible over the limb). Known, scoped to D2, and the reason terrain stays
-    /// `enabled: false` by default at the end of Phase C.
+    /// **D1's soundness trap** — the parent's interval, widened by the measured
+    /// per-level margin of [`HEIGHT_INHERIT_MARGIN_M`].
+    ///
+    /// Not the parent's interval unmodified: a coarse DEM smooths a peak away that a
+    /// deeper one resolves, so the parent's interval is not a superset of the child's
+    /// and copying it is a false negative waiting for the first mountain
+    /// (`docs/terrain-plan.md` §7).
+    ///
+    /// # Not clamped to the global interval
+    ///
+    /// Down a chain with nothing loaded the margins add up — ≈113 km by z15, over a tile
+    /// 1.2 km wide. Capping `hi` at [`GLOBAL_H_MAX_M`] would bound that, and is
+    /// deliberately **not** done: `hi` is a real height with `TerrainConfig::exaggeration`
+    /// already multiplied in, this is a static dispatch with no access to that factor, and
+    /// a cap that is right at exaggeration 1.0 would cut a real summit at 2.0. A loose box
+    /// for the frame or two it takes the prefetched ancestor chain to fill is the better
+    /// trade: it costs false positives, and the alternative costs the subtree.
     #[inline]
-    fn is_occluded(
-        patch: &crate::globe::quadtree::TilePatch<Self>,
-        cam: &crate::globe::quadtree::HorizonCamera,
+    fn child_extra(parent: &HeightBounds, child: &TileId) -> HeightBounds {
+        parent.widened(inherit_margin_mm(child.z))
+    }
+
+    /// **D2** — the scaled-space bounding sphere of the node's box, fitted at
+    /// construction where `T`'s linearity makes it free and exact.
+    #[inline]
+    fn patch_extra(obb: &OrientedBoundingBox) -> ScaledSphere {
+        ScaledSphere::around_obb(obb)
+    }
+
+    /// **D2** — Theorem 3.7's cone test on that sphere.
+    ///
+    /// The flat model's exact rectangle supremum is *unsound* here and this is the
+    /// whole reason the site dispatches: `q·c ≤ 1` says a point is below the polar
+    /// plane, which for a point **on** the ellipsoid means occluded (Theorem 3.5) and
+    /// for a point 8 km above it means nothing at all. A summit can satisfy it and be
+    /// in plain view over the limb.
+    ///
+    /// The rectangle is not consulted at all — `patch.max_dot` is never called on this
+    /// model. The sphere already contains the rectangle *and* its relief, and combining
+    /// the two tests would only re-admit the unsound one.
+    #[inline]
+    fn is_occluded(patch: &crate::globe::quadtree::TilePatch<Self>, cam: &HorizonCamera) -> bool {
+        sphere_is_occluded(cam, &patch.extra)
+    }
+
+    /// **D2**, one level finer. See [`SurfaceModel::sub_patch_is_occluded`].
+    ///
+    /// `a_star` and the φ span are the flat test's inputs and go unread here, which is
+    /// ~25 f64 flops per sub-patch column that the terrain path computes and throws
+    /// away. Left that way on purpose: hoisting `column_a_star` behind a model-dependent
+    /// condition would put a branch on the flat path's hottest loop to save work only
+    /// the terrain path does, which is the trade `docs/terrain-plan.md` §1 exists to
+    /// refuse.
+    #[inline]
+    fn sub_patch_is_occluded(
+        cam: &HorizonCamera,
+        _a_star: f64,
+        _sin_lat: &[f64; 2],
+        _cos_lat: &[f64; 2],
+        extra: &ScaledSphere,
     ) -> bool {
-        crate::globe::quadtree::horizon::span_is_occluded(cam, patch.max_dot(cam))
+        sphere_is_occluded(cam, extra)
     }
 }

@@ -52,8 +52,6 @@
 //! `test_stage_prefix_only_grows_the_kept_set` asserts exactly that over every
 //! pipeline and every prefix of one.
 
-use std::marker::PhantomData;
-
 use glam::{DVec3, Vec3};
 
 use super::bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
@@ -364,6 +362,15 @@ fn fit_obb<S: SurfaceModel>(
     (surface_center, max_dist_sq.sqrt() as f32, obb)
 }
 
+/// [`fit_obb`] at altitude 0 whatever the surface model is.
+///
+/// One caller — `unstretched_radius`, whose job is to measure the *ground* extent of
+/// a tile for the LOD threshold, not the extent of the geometry drawn over it. See
+/// the comment at that call site for why Phase D1 keeps it flat.
+fn fit_obb_flat(b: &TileBounds, steps: u32) -> (DVec3, f32, OrientedBoundingBox) {
+    fit_obb::<Ellipsoid>(b, steps, &())
+}
+
 /// The `[u0,u1] × [v0,v1]` sub-rectangle of a tile, in degrees.
 ///
 /// `v` is parameterised in **Mercator y**, matching the mesh, so consecutive
@@ -402,15 +409,29 @@ fn sub_bounds(id: &TileId, b: &TileBounds, u0: f64, u1: f64, v0: f64, v1: f64) -
 /// patch, pole stretch included. That union property is what makes
 /// [`SubGrid::has_surviving_sub_patch`] sound.
 ///
-/// The surface-model parameter is carried but not yet read: `S` selects which
-/// [`fit_obb`] the sub-boxes are built by (Phase D1 makes that sample a height
-/// interval), and it is a [`PhantomData`], so the struct's size and layout are
-/// unchanged.
+/// One cell of the grid: its box, and whatever the surface model carries per patch.
+///
+/// The payload rides **inside** the existing `obbs` vector rather than in a second
+/// one, and that is deliberate rather than tidy: `S::PatchExtra` is `()` for
+/// [`Ellipsoid`], so `SubPatch<Ellipsoid>` is layout-identical to a bare
+/// [`OrientedBoundingBox`], `SubGrid<Ellipsoid>` keeps its exact size, and
+/// [`SubGrid::heap_bytes`] — which `culling::bench_update` reports as bytes per node —
+/// does not move by a single byte. A second `Vec<S::PatchExtra>` would have cost the
+/// flat path 24 B per gridded node for a vector that can never hold anything.
+struct SubPatch<S: SurfaceModel> {
+    obb: OrientedBoundingBox,
+    extra: S::PatchExtra,
+}
+
+/// The surface-model parameter selects which [`fit_obb`] the sub-boxes are built by
+/// (Phase D1 makes that sample a height interval) and what each sub-patch carries for
+/// the limb test (Phase D2: a scaled-space bounding sphere). Both are `()`-sized for
+/// [`Ellipsoid`], so the struct's size and layout are unchanged.
 pub struct SubGrid<S: SurfaceModel = Ellipsoid> {
     k: u32,
-    /// `k²` boxes, indexed `ui · k + vi` — `ui` along λ, `vi` along **Mercator y**,
+    /// `k²` cells, indexed `ui · k + vi` — `ui` along λ, `vi` along **Mercator y**,
     /// so `vi = 0` is the sub-patch row at the *north* edge of the tile.
-    obbs: Vec<OrientedBoundingBox>,
+    obbs: Vec<SubPatch<S>>,
     /// `(sin λ, cos λ)` at the `k+1` longitude breakpoints, increasing in λ.
     lon: Vec<(f64, f64)>,
     /// `(sin φ, cos φ)` at the `k+1` latitude breakpoints, increasing in φ —
@@ -423,7 +444,6 @@ pub struct SubGrid<S: SurfaceModel = Ellipsoid> {
     /// counts southwards; [`SubGrid::sub_patch_is_occluded`] converts once, in one
     /// named place.
     lat: Vec<(f64, f64)>,
-    _surface: PhantomData<S>,
 }
 
 impl<S: SurfaceModel> SubGrid<S> {
@@ -452,7 +472,9 @@ impl<S: SurfaceModel> SubGrid<S> {
                 // §5.3's 3×3 argument holds comfortably at every zoom, which is why
                 // the node-level taper does not apply here. Changing this number is
                 // a recalibration, not a cleanup.
-                obbs.push(fit_obb::<S>(&sb, 4, extra).2);
+                let obb = fit_obb::<S>(&sb, 4, extra).2;
+                let extra = S::patch_extra(&obb);
+                obbs.push(SubPatch { obb, extra });
             }
         }
 
@@ -489,17 +511,11 @@ impl<S: SurfaceModel> SubGrid<S> {
             lat[n - i as usize] = phi.to_radians().sin_cos();
         }
 
-        Some(SubGrid {
-            k,
-            obbs,
-            lon,
-            lat,
-            _surface: PhantomData,
-        })
+        Some(SubGrid { k, obbs, lon, lat })
     }
 
     fn heap_bytes(&self) -> usize {
-        self.obbs.capacity() * std::mem::size_of::<OrientedBoundingBox>()
+        self.obbs.capacity() * std::mem::size_of::<SubPatch<S>>()
             + (self.lon.capacity() + self.lat.capacity()) * std::mem::size_of::<(f64, f64)>()
     }
 
@@ -536,10 +552,10 @@ impl<S: SurfaceModel> SubGrid<S> {
         for ui in 0..k {
             let a_star = self.column_a_star(ctx, ui);
             for vi in 0..k {
-                if self.sub_patch_is_occluded(ctx, a_star, vi) {
+                if self.sub_patch_is_occluded(ctx, a_star, ui, vi) {
                     continue;
                 }
-                let sub_patch_obb = &self.obbs[ui * k + vi];
+                let sub_patch_obb = &self.obbs[ui * k + vi].obb;
                 let d = ctx.frustum.relative(sub_patch_obb.center);
                 match ctx.frustum.classify_box(
                     d,
@@ -559,10 +575,10 @@ impl<S: SurfaceModel> SubGrid<S> {
         for ui in 0..k {
             let a_star = self.column_a_star(ctx, ui);
             for vi in 0..k {
-                if self.sub_patch_is_occluded(ctx, a_star, vi) {
+                if self.sub_patch_is_occluded(ctx, a_star, ui, vi) {
                     continue;
                 }
-                if ctx.frustum.intersects_obb(&self.obbs[ui * k + vi]) {
+                if ctx.frustum.intersects_obb(&self.obbs[ui * k + vi].obb) {
                     return true;
                 }
             }
@@ -580,22 +596,29 @@ impl<S: SurfaceModel> SubGrid<S> {
         )
     }
 
-    /// Is sub-patch row `vi` of a column with this `A*` entirely behind the limb?
+    /// Is sub-patch `(ui, vi)` of a column with this `A*` entirely behind the limb?
     ///
     /// The single place where the two directions meet: `vi` counts south along
     /// Mercator y (`vi = 0` is the north row, matching `obbs`), while `lat` is
     /// stored increasing in φ. `lo = k − 1 − vi` is that conversion, and it leaves
     /// the span itself in the `[low, high]` order every `*_span_max` expects.
+    ///
+    /// **Phase D2.** This used to call `span_is_occluded` directly; it now dispatches
+    /// to the surface model, for the same reason the node-level test does. Phase C
+    /// deliberately left it alone (`Heightfield`'s node-level test was still the flat
+    /// one, so a split here would have been half a change); with D2 the sub-patch test
+    /// is the same unsound rectangle collapse, one level finer, and by I-7 a false
+    /// negative here deletes the same subtree.
     #[inline]
-    fn sub_patch_is_occluded(&self, ctx: &CullContext, a_star: f64, vi: usize) -> bool {
+    fn sub_patch_is_occluded(&self, ctx: &CullContext, a_star: f64, ui: usize, vi: usize) -> bool {
         let lo = self.k as usize - 1 - vi;
-        let s = super::horizon::lat_span_max(
+        S::sub_patch_is_occluded(
             &ctx.horizon,
             a_star,
             &[self.lat[lo].0, self.lat[lo + 1].0],
             &[self.lat[lo].1, self.lat[lo + 1].1],
-        );
-        super::horizon::span_is_occluded(&ctx.horizon, s)
+            &self.obbs[ui * self.k as usize + vi].extra,
+        )
     }
 }
 
@@ -1018,9 +1041,18 @@ impl QuadtreeNode<Ellipsoid> {
 
 impl<S: SurfaceModel> QuadtreeNode<S> {
     pub fn for_surface(id: TileId) -> Self {
+        Self::for_surface_with(id, <S::NodeExtra as Default>::default())
+    }
+
+    /// A node whose surface payload is known at construction — Phase D1.
+    ///
+    /// Everything derived from that payload (the two boxes, the bounding radii, the
+    /// sub-grid and the patch) is fitted here, once. The flat path reaches this
+    /// through [`Self::for_surface`] with `extra = ()` and compiles to the loop it
+    /// always had.
+    pub fn for_surface_with(id: TileId, extra: S::NodeExtra) -> Self {
         // I-5: the single source of tile bounds, shared with `TileMesh::generate`.
         let bounds = tile_bounds(&id);
-        let extra = <S::NodeExtra as Default>::default();
         let (center, bounding_radius, obb) = fit_obb::<S>(&bounds, obb_grid_steps(id.z), &extra);
 
         // Deliberately measured on the ***un*-stretched** rectangle: a polar row's
@@ -1030,8 +1062,18 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         // covers the ground. Nothing about it is an LOD parameter; it is the size
         // of a geometric object, and the threshold derived from it is
         // `subdivide_dist`.
+        //
+        // **Phase D1 deliberately keeps this on the zero-altitude span** — see
+        // [`fit_obb_flat`]. Relief does grow the tile's true extent, and feeding that
+        // growth in here would grow `subdivide_dist` with it and refine terrain mode
+        // deeper than flat mode at the same camera distance. That is a real and
+        // probably desirable effect, but it is an *LOD* change, it is `apply_lod`'s
+        // dispatch site in `docs/terrain-plan.md` §1's table, and that site is Phase
+        // E1 (`max(imagery_dist, terrain_dist)`, from the tile's measured deviation
+        // from its parent). D1 is a culling change; smuggling an LOD change in with
+        // it would make the tile-count delta in the D1 captures unreadable.
         let raw = tile_bounds_unstretched(&id);
-        let (_, unstretched_radius, _) = fit_obb::<S>(&raw, 2, &extra);
+        let (_, unstretched_radius, _) = fit_obb_flat(&raw, 2);
 
         let sub_grid =
             SubGrid::<S>::build(&id, &bounds, sub_boxes_per_axis(id.z), &extra).map(Box::new);
@@ -1041,13 +1083,44 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
             center,
             bounding_radius,
             unstretched_radius,
+            patch: TilePatch::<S>::for_surface(&bounds, S::patch_extra(&obb)),
             obb,
             sub_grid,
-            patch: TilePatch::<S>::for_surface(&bounds),
             extra,
             visible: false,
             children: None,
         }
+    }
+
+    /// Re-fits everything derived from the surface payload, in place — Phase D1.
+    ///
+    /// A node is created long before its height tile lands, so its interval is a
+    /// conservative inheritance ([`SurfaceModel::child_extra`]) until real data
+    /// arrives and tightens it. This is how the tightening is applied without
+    /// dropping the subtree: the children keep their own intervals and their own
+    /// LOD state, and are re-derived by the same traversal that calls this.
+    ///
+    /// Returns immediately when the payload has not changed, which for
+    /// [`Ellipsoid`] is *always* — `()` equals `()`, the comparison folds to a
+    /// constant and the whole body is dead code the flat path never reaches.
+    pub fn set_extra(&mut self, extra: S::NodeExtra) {
+        if extra == self.extra {
+            return;
+        }
+        let bounds = tile_bounds(&self.id);
+        let (center, bounding_radius, obb) =
+            fit_obb::<S>(&bounds, obb_grid_steps(self.id.z), &extra);
+        // `unstretched_radius` is not re-fitted: it does not depend on `extra` at all
+        // (see [`Self::for_surface_with`]), so there is nothing here for a payload
+        // change to move.
+        self.center = center;
+        self.bounding_radius = bounding_radius;
+        self.patch = TilePatch::<S>::for_surface(&bounds, S::patch_extra(&obb));
+        self.obb = obb;
+        self.sub_grid =
+            SubGrid::<S>::build(&self.id, &bounds, sub_boxes_per_axis(self.id.z), &extra)
+                .map(Box::new);
+        self.extra = extra;
     }
 
     /// Heap bytes this node hangs off itself (not counting children).
@@ -1058,16 +1131,31 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
             .unwrap_or(0)
     }
 
+    /// Creates the four children, each inheriting this node's surface payload through
+    /// [`SurfaceModel::child_extra`].
+    ///
+    /// Inheritance is the **only** source a new child has: the quadtree runs before
+    /// anything has been fetched for a tile it has just decided to look at, so a
+    /// child's own height data cannot exist yet by construction. `child_extra` is
+    /// therefore where Phase D1's soundness lives, and why it widens rather than
+    /// copies — see its doc comment. Real data replaces the inherited interval later,
+    /// through [`Self::set_extra`].
+    ///
+    /// For [`Ellipsoid`] `child_extra` returns `()` and this is the function it always
+    /// was.
     pub fn subdivide(&mut self) {
         let z = self.id.z + 1;
         let x = self.id.x * 2;
         let y = self.id.y * 2;
 
+        let child =
+            |id: TileId| QuadtreeNode::<S>::for_surface_with(id, S::child_extra(&self.extra, &id));
+
         self.children = Some(Box::new([
-            QuadtreeNode::<S>::for_surface(TileId { z, x, y }), // Top-Left
-            QuadtreeNode::<S>::for_surface(TileId { z, x: x + 1, y }), // Top-Right
-            QuadtreeNode::<S>::for_surface(TileId { z, x, y: y + 1 }), // Bottom-Left
-            QuadtreeNode::<S>::for_surface(TileId {
+            child(TileId { z, x, y }),        // Top-Left
+            child(TileId { z, x: x + 1, y }), // Top-Right
+            child(TileId { z, x, y: y + 1 }), // Bottom-Left
+            child(TileId {
                 z,
                 x: x + 1,
                 y: y + 1,
@@ -1323,6 +1411,63 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
 
         active_tiles.push((self.id, self.center_f32(), self.bounding_radius));
         is_ready(&self.id)
+    }
+}
+
+/// Where a node's surface payload comes from — Phase D1's feed, and the whole of it.
+///
+/// # Why this is a trait and not a field on [`CullContext`]
+///
+/// The quadtree has no access to the height cache and must not acquire one: the cache
+/// is `&mut` (it promotes in an LRU), it lives on `TileSystem`, and putting a borrow
+/// of it into [`CullContext`] would give that `Copy`, per-frame, per-node-read struct
+/// a lifetime parameter for the benefit of one surface model. A trait implemented on
+/// the *outside* keeps the dependency pointing the right way: `globe::terrain` knows
+/// about the quadtree, the quadtree knows nothing about terrain.
+///
+/// # Why it is a separate pass and not part of `update`
+///
+/// The payload is needed at node *construction*, deep inside `apply_lod`'s recursion,
+/// and threading a source through `update → apply_lod → subdivide` would put an extra
+/// argument on the hottest path in the culler for a model that is usually off. Instead
+/// a new child inherits ([`SurfaceModel::child_extra`], sound but loose) and this pass
+/// — run once per frame, before `update`, over the tree the previous frame left —
+/// tightens every node whose data has since arrived. A node is therefore loose for at
+/// most the frame it was born in, which costs false positives and never a false
+/// negative.
+///
+/// Nothing implements this for [`Ellipsoid`] and nothing needs to: the flat path never
+/// calls [`QuadtreeManager::refresh_extras`].
+pub trait NodeExtraSource<S: SurfaceModel> {
+    /// The payload for `id`, or `None` when there is nothing better than inheritance.
+    ///
+    /// `&self`: the refresh walk visits every node in the tree every frame and must
+    /// not reorder an LRU by looking.
+    fn extra_for(&self, id: &TileId) -> Option<S::NodeExtra>;
+}
+
+/// One node of [`QuadtreeManager::refresh_extras`]'s top-down walk.
+///
+/// Top-down because inheritance is: a node with no data of its own takes its parent's
+/// *current* interval, which this pass may itself have just tightened.
+fn refresh_node<S: SurfaceModel, X: NodeExtraSource<S>>(
+    node: &mut QuadtreeNode<S>,
+    parent: Option<S::NodeExtra>,
+    src: &X,
+) {
+    let want = src.extra_for(&node.id).unwrap_or_else(|| match parent {
+        Some(p) => S::child_extra(&p, &node.id),
+        // A root. Nothing above it to inherit from, so it falls back to the model's
+        // own worst case — for `Heightfield`, the whole range the Earth occupies.
+        None => <S::NodeExtra as Default>::default(),
+    });
+    node.set_extra(want);
+
+    let mine = node.extra;
+    if let Some(children) = &mut node.children {
+        for child in children.iter_mut() {
+            refresh_node(child, Some(mine), src);
+        }
     }
 }
 
@@ -1596,6 +1741,21 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
             max_zoom: MAX_ZOOM,
+        }
+    }
+
+    /// Re-derives every node's surface payload from `src` — Phase D1.
+    ///
+    /// Call once per frame, **before** [`Self::update`]. See [`NodeExtraSource`] for
+    /// why this is a separate pass rather than an argument threaded through the
+    /// traversal, and [`QuadtreeNode::set_extra`] for what a changed payload costs
+    /// (a box, a radius and a `k × k` sub-grid — paid once, the frame the tile's
+    /// heights land).
+    ///
+    /// Never called on the flat path.
+    pub fn refresh_extras<X: NodeExtraSource<S>>(&mut self, src: &X) {
+        for root in self.roots.iter_mut() {
+            refresh_node(root, None, src);
         }
     }
 
