@@ -108,6 +108,30 @@ pub struct VisibleLabel {
     pub label_rank: u8,
 }
 
+/// Where the ground is, for the labels that have to stand on it.
+///
+/// Phase E3.4 of `docs/terrain-plan.md` §8. A one-method trait rather than a direct
+/// dependency on the tile system: this module knows about points and rectangles, and
+/// giving it a height cache would make the label pass depend on the terrain stack in
+/// both the flat and the terrain builds. `TileSystem` implements it; `None` is what the
+/// flat path passes, and is the only value it ever passes.
+pub trait GroundHeights {
+    /// Height of the drawn surface above the ellipsoid at an ECEF position, in
+    /// megametres, or `None` when nothing covering it is known.
+    fn ground_height_above_ellipsoid(&self, pos: Vec3) -> Option<f32>;
+}
+
+/// The outward ellipsoid normal at `p` — the direction "up" from the surface.
+///
+/// The gradient of `x²/a² + y²/b² + z²/a², normalised; the same expression
+/// `Camera::enforce_bounds` and `geometry::lon_lat_alt_to_ecef_f64` use, so a label
+/// lifted along it rises along the same line a vertex at that height would.
+fn ellipsoid_up(p: Vec3) -> Vec3 {
+    const INV_A2: f32 = 1.0 / (6.378137 * 6.378137);
+    const INV_B2: f32 = 1.0 / (6.356_752_4 * 6.356_752_4);
+    Vec3::new(p.x * INV_A2, p.y * INV_B2, p.z * INV_A2).normalize_or_zero()
+}
+
 pub struct GridCell {
     pub labels: Vec<PackedLabel>,
     pub lod_offsets: [u32; 16],
@@ -208,7 +232,23 @@ impl LabelManager {
     }
 
     /// Updates the visible label cache based on camera position, orientation, altitude, and frustum planes.
-    pub fn update(&mut self, camera_pos: Vec3, camera_ori: Quat, altitude: f32, current_zoom: usize, frustum: &Frustum) {
+    ///
+    /// `ground` is Phase E3.4's terrain lift, and `None` on the flat path. It is
+    /// consulted **only** for the labels that have already survived culling, and only to
+    /// move them: every rank, distance, horizon and frustum test below runs on the
+    /// ellipsoid position exactly as it always did. That is deliberate rather than
+    /// merely convenient — the label set is unchanged by this phase, only where its
+    /// members are drawn, and it keeps the query off the hundreds of candidates that are
+    /// about to be rejected anyway.
+    pub fn update(
+        &mut self,
+        camera_pos: Vec3,
+        camera_ori: Quat,
+        altitude: f32,
+        current_zoom: usize,
+        frustum: &Frustum,
+        ground: Option<&dyn GroundHeights>,
+    ) {
         if !self.enabled {
             if !self.visible_labels.is_empty() {
                 self.visible_labels.clear();
@@ -277,11 +317,18 @@ impl LabelManager {
                     continue;
                 }
                 
-                // If it passes both, resolve name and store it
+                // If it passes both, resolve name and store it — lifted onto the
+                // terrain if there is any. Denver's label sat 1.6 km underground
+                // before this; with `ground` absent this is `label_pos` itself.
                 let name = self.db.get_name(label);
+                let ecef_pos = match ground.and_then(|g| g.ground_height_above_ellipsoid(label_pos))
+                {
+                    Some(h) => label_pos + ellipsoid_up(label_pos) * h,
+                    None => label_pos,
+                };
                 self.visible_labels.push(VisibleLabel {
                     name,
-                    ecef_pos: label_pos,
+                    ecef_pos,
                     scale_rank: label.scale_rank,
                     label_rank: label.label_rank,
                 });

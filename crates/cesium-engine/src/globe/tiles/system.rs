@@ -312,6 +312,17 @@ impl TileSystem {
         Some(h.peek_height_at_lon_lat(lon, lat)? * self.config.terrain.exaggeration as f64)
     }
 
+    /// Whether this system has any terrain at all — `false` whenever
+    /// `TerrainConfig::enabled` is off, in which case [`Self::ground_height_at`] can
+    /// only ever answer `None`.
+    ///
+    /// Lets a caller skip building a `&dyn` for a query that cannot succeed, which is
+    /// what the label pass does to keep the flat path free of a vtable it has no use
+    /// for.
+    pub fn has_terrain(&self) -> bool {
+        self.height_manager.is_some()
+    }
+
     pub fn is_loading_complete(&self) -> bool {
         self.texture_manager.is_loading_complete()
             && self.mesh_worker.is_loading_complete()
@@ -319,5 +330,18 @@ impl TileSystem {
                 .height_manager
                 .as_ref()
                 .is_none_or(|h| h.is_loading_complete())
+    }
+}
+
+/// Phase E3.4: the label pass asks the tile system where the ground is.
+///
+/// The whole implementation is [`TileSystem::ground_height_at`] with the argument
+/// widened to f64 and the answer narrowed to f32 — labels are placed in the f32 world
+/// frame, where a megametre-scale position has ~0.4 m of resolution and a height
+/// carried in f64 would be thrown away by the addition anyway.
+impl crate::label::GroundHeights for TileSystem {
+    fn ground_height_above_ellipsoid(&self, pos: Vec3) -> Option<f32> {
+        self.ground_height_at(glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64))
+            .map(|h| h as f32)
     }
 }
