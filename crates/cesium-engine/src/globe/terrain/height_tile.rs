@@ -21,6 +21,23 @@ pub const HEIGHT_MIP_CELLS: usize = HEIGHT_MIP_DIM * HEIGHT_MIP_DIM;
 /// Texels per mip cell, both axes: `256 / 16`.
 pub const HEIGHT_MIP_BLOCK: usize = HEIGHT_TILE_DIM / HEIGHT_MIP_DIM;
 
+/// Texels between two consecutive samples of the **drawn mesh** across one tile —
+/// `256 / 16`, i.e. exactly one mip block — and therefore the decimation
+/// [`HeightTile::detail`] measures the field against. E1 of `docs/terrain-plan.md` §8.
+///
+/// Not a coincidence worth leaving unstated: `TileEngineConfig::mesh_segments` ships at
+/// **16**, so `TileMesh::generate_on` lays 17 samples across a tile and the span between
+/// two of them is `256/16 = 16` texels. The deviation of the field from its own 16:1
+/// decimation is then *exactly* the deviation of the drawn surface from the DEM — the
+/// tile's geometric error, not a proxy for it.
+///
+/// At `mesh_segments = 32` the mesh is finer than this and the number over-states the
+/// error (refines slightly early, costs tiles, never shape); at `mesh_segments = 8` it
+/// under-states it. Stated rather than asserted because the decode has no access to the
+/// configuration — the same situation, and the same remedy, as `INHERIT_SEGMENTS`'s in
+/// [`super::heightfield`].
+pub const HEIGHT_DETAIL_STEP: usize = HEIGHT_TILE_DIM / 16;
+
 /// A decoded height tile: 256x256 samples in metres, plus the extrema and the
 /// min/max pyramid Phase D will cull with.
 ///
@@ -38,6 +55,9 @@ pub struct HeightTile {
     min_mip: Box<[i16; HEIGHT_MIP_CELLS]>,
     /// Per-16x16-block maxima, same indexing.
     max_mip: Box<[i16; HEIGHT_MIP_CELLS]>,
+    /// This tile's **measured geometric error**, metres — E1 of
+    /// `docs/terrain-plan.md` §8. See [`Self::detail`].
+    detail: i16,
 }
 
 /// Decodes one Terrarium PNG's RGBA bytes.
@@ -102,6 +122,60 @@ fn decode_texel(r: u8, g: u8, b: u8, ocean: OceanPolicy) -> i16 {
     }
 }
 
+/// The lattice one axis of the mesh samples this tile on, as `(lo, hi, weight)` per
+/// texel — see [`HeightTile::detail`].
+///
+/// The lattice lines are texels `0, 16, 32, … 240, 255`: seventeen of them, the last
+/// pulled onto the tile's final texel rather than off the end of it, which makes the last
+/// interval fifteen texels wide instead of sixteen. Interpolating with each interval's
+/// *own* width keeps `I(h)` an exact piecewise-linear function through the lattice
+/// samples, so a field that is already linear measures exactly zero deviation — the
+/// property the whole measurement rests on, and the one an assumed-uniform spacing would
+/// quietly break in the last row and column.
+fn detail_lattice() -> [(usize, usize, f64); HEIGHT_TILE_DIM] {
+    let mut out = [(0usize, 0usize, 0.0f64); HEIGHT_TILE_DIM];
+    let last = HEIGHT_TILE_DIM - 1;
+    for (x, slot) in out.iter_mut().enumerate() {
+        let lo = (x / HEIGHT_DETAIL_STEP) * HEIGHT_DETAIL_STEP;
+        let hi = (lo + HEIGHT_DETAIL_STEP).min(last);
+        let span = hi - lo;
+        let w = if span == 0 {
+            0.0
+        } else {
+            (x - lo) as f64 / span as f64
+        };
+        *slot = (lo, hi, w);
+    }
+    out
+}
+
+/// [`HeightTile::detail`], computed once over a finished sample grid.
+///
+/// `ceil` rather than round: the number is used as an upper bound on the drawn surface's
+/// error, and rounding a 0.4 m deviation to zero would report a field as flat that is not.
+fn measure_detail(data: &[i16; HEIGHT_TILE_TEXELS]) -> i16 {
+    let lattice = detail_lattice();
+    let mut worst = 0.0f64;
+    for y in 0..HEIGHT_TILE_DIM {
+        let (y0, y1, wy) = lattice[y];
+        for x in 0..HEIGHT_TILE_DIM {
+            let (x0, x1, wx) = lattice[x];
+            let h00 = data[y0 * HEIGHT_TILE_DIM + x0] as f64;
+            let h10 = data[y0 * HEIGHT_TILE_DIM + x1] as f64;
+            let h01 = data[y1 * HEIGHT_TILE_DIM + x0] as f64;
+            let h11 = data[y1 * HEIGHT_TILE_DIM + x1] as f64;
+            let top = h00 + (h10 - h00) * wx;
+            let bottom = h01 + (h11 - h01) * wx;
+            let interpolated = top + (bottom - top) * wy;
+            let dev = (data[y * HEIGHT_TILE_DIM + x] as f64 - interpolated).abs();
+            if dev > worst {
+                worst = dev;
+            }
+        }
+    }
+    worst.ceil().min(i16::MAX as f64) as i16
+}
+
 impl HeightTile {
     /// Builds the extrema and the min/max mip over a finished sample grid.
     pub fn from_samples(data: Box<[i16; HEIGHT_TILE_TEXELS]>) -> Self {
@@ -127,13 +201,55 @@ impl HeightTile {
         let h_min = *min_mip.iter().min().expect("mip is non-empty");
         let h_max = *max_mip.iter().max().expect("mip is non-empty");
 
+        let detail = measure_detail(&data);
+
         Self {
             data,
             h_min,
             h_max,
             min_mip,
             max_mip,
+            detail,
         }
+    }
+
+    /// The tile's **measured geometric error** in metres: how far its own height field
+    /// departs from the surface a mesh laid across it actually draws — E1 of
+    /// `docs/terrain-plan.md` §8, and the whole content of the terrain LOD term.
+    ///
+    /// # What is measured
+    ///
+    /// `max over all 65 536 texels of |h − I(h)|`, where `I(h)` is the piecewise-bilinear
+    /// interpolation of the same field decimated [`HEIGHT_DETAIL_STEP`]:1 — the 17×17
+    /// lattice `TileMesh::generate_on` builds its vertices on. So this is not a proxy for
+    /// the drawn surface's error, it *is* that error, evaluated against the finest data
+    /// there is for this tile.
+    ///
+    /// # Why this beats a level-based error
+    ///
+    /// Cesium's heightmap path (`getEstimatedLevelZeroGeometricErrorForAHeightmap`) is
+    /// `2πa / (65 · 2^z)` — a function of the level and nothing else, so the Bay of Bengal
+    /// and the Karakoram at the same zoom are given the same error and refine at the same
+    /// distance. Here the number comes off the data: this tile's own roughness at exactly
+    /// the scale the mesh fails to resolve. It costs one extra pass over a grid the decode
+    /// already walks and no memory beyond this `i16`.
+    ///
+    /// # A maximum over the tile, on purpose
+    ///
+    /// One cliff in a corner gives the whole tile a large error and refines all of it.
+    /// That is the direction a *bound* on the drawn surface's error has to round — and it
+    /// is the opposite of [`Self::mip_min`]'s problem, where a minimum over a whole tile
+    /// averaged a ridge away (`docs/terrain-plan.md` §7b). An error that is too large
+    /// costs tiles; an error that is too small costs shape, silently.
+    ///
+    /// # Units
+    ///
+    /// Metres, like everything else in this module, and **without** vertical
+    /// exaggeration — `HeightTileManager::height_bounds_for` multiplies it in on the way
+    /// out, at the same seam as every other altitude.
+    #[inline]
+    pub fn detail(&self) -> i16 {
+        self.detail
     }
 
     /// A tile of exact zeros — sea level everywhere, no relief.
@@ -333,6 +449,7 @@ impl std::fmt::Debug for HeightTile {
         f.debug_struct("HeightTile")
             .field("h_min", &self.h_min)
             .field("h_max", &self.h_max)
+            .field("detail", &self.detail)
             .finish_non_exhaustive()
     }
 }

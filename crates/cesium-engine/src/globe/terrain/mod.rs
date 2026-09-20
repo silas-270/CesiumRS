@@ -27,6 +27,7 @@ pub mod heightfield;
 pub use height_cache::HeightTileManager;
 pub use height_tile::{decode_terrarium, HeightTile};
 pub use heightfield::{
-    inherit_allowance_mm, inherit_margin_mm, skirt_allowance, HeightBounds, HeightBoundsSource,
-    HeightPatch, Heightfield, PatchStatus, OCCLUDER_GRID, OCCLUDER_GRID_CELLS,
+    fallback_detail_mm, inherit_allowance_mm, inherit_margin_mm, skirt_allowance, HeightBounds,
+    HeightBoundsSource, HeightPatch, Heightfield, PatchStatus, DETAIL_MAX_Z, OCCLUDER_GRID,
+    OCCLUDER_GRID_CELLS,
 };

@@ -162,6 +162,34 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// Outward unit normal at one mesh vertex.
     fn vertex_normal(sample: &VertexSample, ctx: &Self::BuildCtx) -> [f64; 3];
 
+    /// Does this surface model have a geometric error for `apply_lod` to refine against?
+    ///
+    /// **E1 of `docs/terrain-plan.md` §8, and the fifth dispatch site of §1** — the one
+    /// Phase A deliberately left out because there was nothing to dispatch on yet.
+    ///
+    /// `false` for [`Ellipsoid`], and that is a *compile-time* false: `apply_lod` reads it
+    /// as `if S::HAS_GEOMETRIC_ERROR`, so the flat arm monomorphises to the single
+    /// `unstretched_radius · lod_factor · fog_relaxation` expression it always was, with
+    /// no `max`, no second multiply and nothing for a float to round differently. That is
+    /// stronger than returning a zero error and relying on `max(x, 0.0) == x`: the
+    /// threshold is not merely equal, it is the same instruction sequence, which is what
+    /// "the flat path does not move" has meant at every previous dispatch site.
+    const HAS_GEOMETRIC_ERROR: bool;
+
+    /// How far the drawn surface of this node departs from the real one, in
+    /// **megametres** — E1's LOD term, and `0.0` wherever [`Self::HAS_GEOMETRIC_ERROR`]
+    /// is false.
+    ///
+    /// Read by `apply_lod` as `terrain_dist = geometric_error · terrain_lod_factor`,
+    /// which is Cesium's `d < G·H / (maxSSE · 2·tan(fovy/2))` with `G` finally being a
+    /// real quantity rather than a constant folded into `lod_factor`. The threshold is
+    /// then `max(imagery_dist, terrain_dist)`: whichever of the picture and the shape
+    /// still wants resolution at this distance gets it.
+    ///
+    /// `id` is passed because the term has to **stop** at the data ceiling — see
+    /// `DETAIL_MAX_Z` in [`crate::globe::terrain::heightfield`].
+    fn geometric_error(extra: &Self::NodeExtra, id: &TileId) -> f32;
+
     /// The `[min, max]` altitude interval, in **megametres**, that a node's bounding
     /// box must be fitted over (`fit_obb`).
     ///
@@ -338,6 +366,23 @@ impl SurfaceModel for Ellipsoid {
     #[inline]
     fn vertex_normal(sample: &VertexSample, _ctx: &()) -> [f64; 3] {
         sample.up
+    }
+
+    /// Invariant I-1 restated for E1: the drawn surface **is** the ellipsoid, so the
+    /// deviation between them is not small, it is identically zero — there is no
+    /// geometric error here to bound and never was.
+    ///
+    /// This is what `src/testing/lod/`'s `texels / screen_px` metric has always rested on,
+    /// and the flat half of it stays true: with this constant `false`, `apply_lod`
+    /// compiles to the imagery-only threshold and the LOD harness's CSVs do not move by a
+    /// byte.
+    const HAS_GEOMETRIC_ERROR: bool = false;
+
+    /// Unreachable rather than merely zero: `HAS_GEOMETRIC_ERROR` is `false`, so
+    /// `apply_lod`'s `if` is a compile-time constant and this call site is not emitted.
+    #[inline]
+    fn geometric_error(_extra: &(), _id: &TileId) -> f32 {
+        0.0
     }
 
     /// Zero relief: one altitude, and it is 0. `fit_obb` therefore samples each of

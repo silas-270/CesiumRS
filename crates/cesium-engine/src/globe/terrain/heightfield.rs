@@ -430,6 +430,27 @@ pub struct HeightBounds {
     /// way: a child that has no data of its own gets its inherited scalar floor in every
     /// cell, because a parent's sub-cells are not a child's.
     pub floor_grid: [f32; OCCLUDER_GRID_CELLS],
+    /// The node's **measured geometric error** — megametres, exaggeration applied, the
+    /// deviation of the drawn mesh from the DEM ([`HeightTile::detail`]). E1 of
+    /// `docs/terrain-plan.md` §8, and the only field here that is not about a bounding
+    /// volume.
+    ///
+    /// It rides in `HeightBounds` rather than in a payload of its own because the
+    /// quadtree has exactly one per-node channel out of the height cache
+    /// ([`NodeExtraSource`]), and a second one would mean a second per-frame walk of the
+    /// tree for four bytes.
+    ///
+    /// # Loose in the *upward* direction, unlike everything above it
+    ///
+    /// `lo`, `hi` and `floor` are bounds and a wrong one is a hole in the globe. This is
+    /// a **tuning input**: too large refines early (tiles, bandwidth), too small refines
+    /// late (a coarse mountain). Nothing about soundness passes through it, which is why
+    /// the inheritance fallback below is allowed to be a level-based guess where the
+    /// others must be measured margins.
+    ///
+    /// [`HeightTile::detail`]: crate::globe::terrain::HeightTile::detail
+    /// [`NodeExtraSource`]: crate::globe::quadtree::NodeExtraSource
+    pub detail: f32,
 }
 
 /// Sub-cells per axis in [`HeightBounds::floor_grid`].
@@ -476,6 +497,11 @@ impl Default for HeightBounds {
             // the right answer before any data has arrived.
             floor: GLOBAL_H_MIN_M * 1.0e-6,
             floor_grid: [(GLOBAL_H_MIN_M * 1.0e-6) as f32; OCCLUDER_GRID_CELLS],
+            // A root has no data and no parent, so it gets the level-based fallback at
+            // the coarsest level this table defines. The engine's roots are at z1 and
+            // subdivide at every camera anyway, so which end of `z ∈ {0, 1}` this reads
+            // has never decided anything; z0 is the conservative one.
+            detail: fallback_detail_mm(0) as f32,
         }
     }
 }
@@ -495,6 +521,11 @@ impl HeightBounds {
             // apply it to different ground. The scalar floor is the only thing still true
             // of every part of it.
             floor_grid: [(self.floor - margin) as f32; OCCLUDER_GRID_CELLS],
+            // Not a bound and not widened by one. `margin` answers "how far outside its
+            // parent's interval can a child's ground be?", which says nothing about how
+            // rough that ground is; the error term's own inheritance rule is
+            // `Heightfield::child_extra`'s level-based fallback.
+            detail: self.detail,
         }
     }
 
@@ -611,6 +642,53 @@ pub fn inherit_allowance_mm(child: &TileId) -> f64 {
         // A root has no parent to owe anything to; it starts from `HeightBounds::default`.
         None => 0.0,
     }
+}
+
+/// Level-zero geometric error, **metres** — the fallback [`fallback_detail_mm`] halves
+/// per level, and the one number in E1 that is *not* measured off the data.
+///
+/// Cesium's `getEstimatedLevelZeroGeometricErrorForAHeightmap(ellipsoid, tileWidth,
+/// tilesAtLevelZero)` is `maximumRadius · 2π / (tileWidth · tilesAtLevelZero)`. For this
+/// engine's scheme — Web Mercator, **one** tile at z0 — and Cesium's own shipped
+/// `tileWidth = 65`, that is `2π · 6 378 137 / 65 = 616 538 m`, which is the value used
+/// here. The table it generates, and the measured errors it stands in for, are in
+/// `docs/terrain-plan.md` §8.
+const LEVEL_ZERO_DETAIL_M: f64 = 616_538.0;
+
+/// The deepest level the terrain LOD term is allowed to demand refinement *into*.
+///
+/// Matches `TerrainConfig::max_level` (`TERRARIUM_MAX_LEVEL`, 15), and is a separate
+/// constant for the same reason `INHERIT_SEGMENTS` is: [`Heightfield::geometric_error`]
+/// is a static dispatch with no access to the configuration. A source that served deeper
+/// data would want both raised together.
+///
+/// # Why the term must stop, and why *here*
+///
+/// Past the source's deepest level a node's mesh is an interpolation of its z15 ancestor's
+/// samples. Its measured error against that ancestor keeps falling — a z19 node's mesh
+/// samples the DEM almost texel for texel — but what it is converging to is the DEM's own
+/// resolution, not the ground's, so the refinement it would buy is arithmetic and not
+/// shape. A level-based term past the ceiling is worse still: it keeps *demanding*
+/// refinement for detail that provably is not there. Imagery is unaffected and still
+/// drives to z19/z20 — the picture keeps sharpening, the surface does not.
+pub const DETAIL_MAX_Z: u8 = 15;
+
+/// The level-based geometric error for a node at level `z`, **megametres** — E1's
+/// fallback for a node whose own height tile has not landed.
+///
+/// `LEVEL_ZERO_DETAIL_M / 2^z`, which is Cesium's heightmap rule exactly: content-blind,
+/// halving per level. It is kept for the one case where the measured number cannot exist —
+/// a node the quadtree created this frame, whose data is still in flight — and is replaced
+/// by [`HeightTile::detail`](crate::globe::terrain::HeightTile::detail) the frame it
+/// arrives.
+///
+/// Zero at and below [`DETAIL_MAX_Z`], for that constant's reason.
+#[inline]
+pub fn fallback_detail_mm(z: u8) -> f64 {
+    if z >= DETAIL_MAX_Z {
+        return 0.0;
+    }
+    LEVEL_ZERO_DETAIL_M * 1.0e-6 / (1u64 << z.min(40)) as f64
 }
 
 /// The inheritance margin for a node at level `z`, **megametres**.
@@ -831,6 +909,26 @@ impl SurfaceModel for Heightfield {
         (extra.lo, extra.hi)
     }
 
+    /// **E1** — this globe has relief, so it has an error to refine against.
+    const HAS_GEOMETRIC_ERROR: bool = true;
+
+    /// **E1** — the node's measured deviation from the DEM, clamped off at the data
+    /// ceiling.
+    ///
+    /// The clamp is here and not in [`HeightBounds`] on purpose: it is a statement about
+    /// *this engine's LOD rule*, not about the data, and the same node's `detail` is a
+    /// perfectly good number for anything else that wants to know how rough the ground is.
+    /// Putting it at the one site that acts on it keeps it from having to be remembered
+    /// twice — see `DETAIL_MAX_Z`.
+    #[inline]
+    fn geometric_error(extra: &HeightBounds, id: &TileId) -> f32 {
+        if id.z >= DETAIL_MAX_Z {
+            0.0
+        } else {
+            extra.detail
+        }
+    }
+
     /// **D3** — the node's ground floor, not its box floor. See
     /// [`HeightBounds::floor`] for why those are two different numbers and
     /// [`SurfaceModel::occluder_floor`] for why this side must be the lower bound.
@@ -910,6 +1008,15 @@ impl SurfaceModel for Heightfield {
             // the parent rather than a scaled copy of it. The scalar floor is what is still
             // true everywhere in that quadrant.
             floor_grid: [floor as f32; OCCLUDER_GRID_CELLS],
+            // **E1: the level-based formula, and only here.** The parent's *measured*
+            // error is the wrong number to inherit — it is the error of the parent's mesh
+            // over four times the ground, which is systematically larger than the child's
+            // and would compound a demand for refinement down a chain that has no data at
+            // all. The level-based fallback halves per level exactly as the imagery term's
+            // `unstretched_radius` does, so a cold chain refines at the same rate it always
+            // did rather than running away. It is replaced by the measurement the frame the
+            // child's own tile lands.
+            detail: fallback_detail_mm(child.z) as f32,
         }
     }
 

@@ -1173,6 +1173,137 @@ commit as each other rather than in this one.
   5. Picking/pan uses a closed-form ellipsoid intersection. Lowest priority — sub-pixel error
      except in mountains at low altitude, and the closed form is a fine first guess to refine.
 
+### E1 — what landed
+
+Four commits, because the four pieces answer to different evidence: E1a is a feature with a
+cost table, E1b is a re-measurement of a shipped decision, E1c is a production behaviour
+change, and E1d is an instrument that had gone stale.
+
+#### E1a — a measured geometric error
+
+`apply_lod` keeps its shape and its 20 % hysteresis band. The threshold becomes
+
+```text
+subdivide_dist = max(imagery_dist, terrain_dist)
+imagery_dist   = unstretched_radius · lod_factor · fog_relaxation     (unchanged)
+terrain_dist   = geometric_error · terrain_lod_factor
+```
+
+`terrain_lod_factor` is `terrain_lod_factor_for(max_geometric_error_px, viewport_height,
+fovy)` = `H / (max_px · 2·tan(fovy/2))` — Cesium's `d < G·H/(maxSSE·2·tan(fovy/2))` with
+`G` left outside it. It is deliberately **not** derived from `lod_factor`, which carries
+`LOD_CALIBRATION_CONSTANT` (a residual fitted to reproduce a hard-coded `2.0`, not a
+geometric ratio), the imagery tile size and `target_texel_ratio`. Deriving one from the
+other would make the shape of the ground depend on which imagery style is loaded, which is
+the coupling E1 exists to break.
+
+**The error is measured at decode, and that is the whole point.** `HeightTile::detail` is
+the maximum over all 65 536 texels of `|h − I(h)|`, where `I` is the bilinear interpolation
+of the same field decimated 16:1. At `mesh_segments = 16` — the shipped value — a tile's
+mesh lays 17 samples across 256 texels, so the decimation lattice *is* the mesh's own
+vertex lattice and this is not a proxy for the drawn surface's error, it is that error. It
+costs one extra pass over a grid the decode already walks and **two bytes per resident
+tile** (`HEIGHT_TILE_BYTES` 132 096 → 132 098; the derived cache entry count is still 254).
+
+Cesium's heightmap path is `2πa / (65 · 2^z)` — level-based and content-blind. What that
+costs, measured on the real DEM at five regions (metres):
+
+| level | Inn valley | Everest | Po plain | Bay of Bengal | Amazon | level-based |
+|--:|--:|--:|--:|--:|--:|--:|
+| z6 | 1 520 | 3 760 | 1 520 | 802 | 204 | 9 633 |
+| z8 | 1 422 | 2 200 | 1 049 | **0** | 690 | 2 408 |
+| z10 | 587 | 1 206 | 10 | **0** | 104 | 602 |
+| z12 | 109 | 602 | 12 | **0** | 37 | 151 |
+| z13 | 42 | 610 | 4 | **0** | 32 | 75 |
+
+At z12 the Karakoram-class number is **50× the Bay of Bengal's** and the level-based
+formula cannot tell them apart. The Bengal column is exactly zero from z7 down: that ground
+is flat to the metre, its mesh draws it exactly, and a level-based term would have spent
+refinement on it anyway.
+
+**The level-based formula stays, as the fallback only** (`fallback_detail_mm`), for a node
+the quadtree created this frame whose data is still in flight. It is replaced by the
+measurement the frame the tile lands. It is Cesium's constant unmodified, and the table
+above is also its error bars: 2.6× too generous at z6, 8× too small for Everest at z13.
+Too generous is the dangerous direction — a fallback that demanded refinement would
+compound down a cold chain — and it is generous only where tiles are few. The *shape* is
+what makes it safe either way: it halves per level exactly as `unstretched_radius` does, so
+the two terms keep a fixed ratio down a chain with no data and the tree cannot run away.
+
+**The term stops at z15** (`DETAIL_MAX_Z`), and `Heightfield::geometric_error` is where the
+clamp lives rather than `HeightBounds`, because it is a statement about this engine's LOD
+rule and not about the data. Past the source ceiling a node's mesh is an interpolation of
+its z15 ancestor's samples; refining it converges on the DEM's resolution, not the
+ground's. Imagery is untouched and still drives to z19/z20 — the picture keeps sharpening,
+the surface does not.
+
+**The flat path cannot reach any of this.** `SurfaceModel::HAS_GEOMETRIC_ERROR` is an
+associated **const**, `false` for `Ellipsoid`, and `apply_lod` reads it as
+`if S::HAS_GEOMETRIC_ERROR`. `QuadtreeNode<Ellipsoid>` therefore emits the
+`unstretched_radius · lod_factor · fog_relaxation` line and nothing else — not a `max`
+against zero, not a multiply by one. That is stronger than an arithmetic no-op, and it is
+why the 204-pose LOD harness produces byte-identical CSVs (below).
+
+##### The cost, against the knob
+
+Visible tiles summed over ten real-DEM poses, and the p95 projected geometric error left on
+screen at `alps_inn_valley` (`testing::terrain::test_terrain_lod::e1_cost_of_the_geometric_term_on_real_terrain`, at
+`TerrainFogPolicy::ImageryOnly`, which E1b below selects):
+
+| `max_geometric_error_px` | tiles | vs off | imagery bytes | p95 error at `alps_inn_valley` |
+|--:|--:|--:|--:|--:|
+| off | 483 | — | 121 MiB | 22.0 px |
+| 24 | 493 | +2 % | 123 MiB | 18.6 px |
+| 16 | 532 | +10 % | 133 MiB | 14.9 px |
+| **12** | **707** | **+46 %** | **177 MiB** | **10.7 px** |
+| 10 | 867 | +80 % | 217 MiB | 8.9 px |
+| 8 | 1 210 | +150 % | 303 MiB | 7.5 px |
+| 4 | 3 350 | +593 % | 838 MiB | 6.4 px |
+
+**12 px**, read off the marginal column and not the total: 16 → 12 buys 4.2 px for 175
+tiles, 12 → 10 buys 1.8 px for 160, and 10 → 8 buys 1.4 px for 343. Phase F re-measures it
+on device; desktop and an S23 may well want different values, the same split §9 already
+anticipates for `mesh_segments`.
+
+**Cesium's own default is 2 and copying it across would be a category error.** Cesium
+budgets a level-based *estimate* and pairs it with an imagery rule far more eager than this
+engine's; 2 px here measures 3 350 tiles where the engine draws 483.
+
+The other half of that table is the half E1 exists for. At **every** budget above,
+`po_plain_to_alps` — flat ground, same screen area, same camera — moves by 0 to 3 tiles
+while `alps_inn_valley` doubles. Bucketed by each tile's own measured error
+(`e1_the_extra_tiles_land_on_the_mountains`, the same pose at 300 m):
+
+| | tiles | flat (<10 m) | rugged (>100 m) |
+|---|--:|--:|--:|
+| off (pre-E1) | 63 | 43 | 20 |
+| 12 px | 66 | 43 | 23 |
+| **delta** | **+3** | **0** | **+3** |
+
+Every tile the term adds lands on the mountains. None lands on the plain.
+
+##### The picture
+
+`rendering::terrain_e1_capture`, three poses, each rendered twice with nothing different
+but the knob. Differing pixels are a sampled RGBA comparison, every second pixel in each
+axis, with the frame cut into six horizontal bands:
+
+| pose | tiles off → on | pixels differing | where |
+|---|--:|--:|---|
+| `e1_alps_inn_valley` | 48 → 110 | 4.30 % | **22.7 % in band 2** — the Nordkette crest — and **0.00 % in the bottom half**, which is the valley floor and the city |
+| `e1_po_plain_to_alps` | 40 → 46 | 2.52 % | **15.1 % in band 3** — the Prealpine skyline — and **0.00 % in the bottom half**, which is the Po plain |
+| `e1_bengal_flat` | 64 → 67 | 0.35 % | the control: a flat delta at the same altitude and pitch, where the knob is very nearly free |
+
+That band localisation is the proof, and it is stronger than the tile counts: the frames
+differ *only* where the ground has shape. On the Karwendel the crest line gains resolved
+summits and notches that the coarser mesh chorded away; the city below it, already fully
+refined by imagery, is bit-identical.
+
+**The Po pose was wrong the first time and the picture is what said so.** At its original
+300 m the horizon is 62 km, the Venetian Prealps begin at 40 and the Dolomites at 90 — so
+the shot contained a plain and a hill line and no Alps at all. `√(2Rh)` is checkable before
+rendering; it was not checked until the image came back. It is at 4 km now.
+
 ### E3 — what landed
 
 **1. Field elevation, flipped.** `FlightPlanConfig::terrain_elevation` now defaults to `true`.

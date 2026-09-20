@@ -513,7 +513,9 @@ fn the_height_cache_reports_its_share_of_the_budget() {
 
     heights.insert_ready(ANCESTOR_Z15, x_ramp());
     assert_eq!(heights.residency().0, 1);
-    assert_eq!(heights.resident_bytes(), 132_096);
+    // 256² i16 samples + the two 16² mips + E1's one-i16 measured geometric error. The
+    // last term is two bytes and the derived capacity above does not move with it.
+    assert_eq!(heights.resident_bytes(), 132_098);
 
     // …and it is a slice of the imagery budget, not an addition to it.
     assert_eq!(
