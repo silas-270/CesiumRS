@@ -267,6 +267,10 @@ a descent, when many height tiles land at once.
 
 ## 6. Phase C — terrain geometry
 
+*(Landed. `TerrainConfig.enabled` is still `false` by default — §10: C alone, with terrain
+on, is unsound. See "What Phase C found" below for the four things this section had wrong or
+under-specified, and the C4 table.)*
+
 - **C1. Relief.** `Heightfield::vertex_altitude` returns the sampled height; it flows into the
   existing f64 `lon_lat_alt_to_ecef_f64` call, so I-2 (f64 world positions, downcast only at
   the end) is preserved for free. Skirt vertices become `edge_height − skirt_depth`.
@@ -296,16 +300,116 @@ a descent, when many height tiles land at once.
   of 256×256 **misses summits**, so peaks grow as tiles refine — measure the popping before
   deciding whether max-filtered downsampling is worth making the mesh non-interpolating.
 
-**New invariant, replacing I-1 (zero relief):**
+**New invariant, alongside I-1 (zero relief):**
 
 > **I-1′.** Every vertex of a tile's mesh lies within that node's declared `[h_min, h_max]`,
 > and the node's OBB is fitted over that interval.
 
-I-1′ is what makes §3.1's boxes and §3.2's spheres sound, and it is checkable in exactly the
-place I-1 was: `test_generated_mesh_has_no_positive_altitude` becomes
-`test_generated_mesh_stays_within_declared_height_bounds`.
+I-1′ is what makes §3.1's boxes and §3.2's spheres sound.
 `test_generated_mesh_stays_inside_the_culling_rectangle` must still pass **unchanged** —
 relief is radial and must not move any vertex in lon/lat.
+
+### What Phase C found
+
+**I-1′ does not replace I-1, it joins it.** An earlier draft of this section had
+`test_generated_mesh_has_no_positive_altitude` *become*
+`test_generated_mesh_stays_within_declared_height_bounds`. That is wrong twice over. The
+first test says something **stronger** about `Ellipsoid` — `max = 0`, not merely "inside
+its own claim" — and that stronger statement is what licenses the exact rectangle horizon
+test the flat globe still runs. It is also a member of the gate, whose contract is to
+report *32 passed, 0 failed, 1 ignored* unchanged across every phase; replacing or adding
+to it changes the number being held fixed. So it stays exactly as it is, and I-1′ is
+checked **additionally**, for both models, in `testing::terrain::test_heightfield`.
+
+**Relief must displace along the ellipsoid normal, and shading must not.** Phase A had one
+`vertex_normal` doing both jobs, because at zero relief they are the same vector. They are
+not the same vector once C2 tilts the normal with the slope, and displacing along the
+tilted one moves the vertex sideways out of its own culling rectangle — an I-5 violation,
+i.e. a false negative at every tile edge. `VertexSample` now carries `up` (the analytic
+gradient, computed once per vertex exactly as before) for displacement, and
+`SurfaceModel::vertex_normal` is shading only.
+
+**The mesh must not be built from whichever ancestor arrived first.** `TileSystem::update`
+prefetches the whole height ancestor chain at `Low`, so a coarse ancestor routinely lands
+before the tile's own height tile. Building from it bakes a smoothed, hundreds-of-metres-too-low
+surface into a cache that — until E2 — has no reason to rebuild it. Measured, not reasoned:
+the first Phase C capture over the Alps at 4.5 km had its whole foreground flattened this
+way. `HeightTileManager::status_of` therefore answers `Ready` only once
+`source_tile_for(id)` has arrived *or failed*; while it is in flight the mesh is deferred
+and the engine draws the parent's mesh, exactly as it already draws the parent's texture.
+This is not E2 — it removes the common case that would need a rebuild, and `TileMesh`
+carries `height_source` for the case that still does.
+
+**C3, derived.** The skirt is `max over k ∈ {2, 4}` of (the deviation of the tile's own edge
+from that edge coarsened by `k`) + (the sagitta `R·(1 − cos(k·δ/2))` of the chord a
+neighbour draws across `k` grid steps). The second term is the reassuring one: on an
+all-ocean tile at z2 it lands on the same order as the hand-chosen `0.5 / 2^z`, so that
+constant was never arbitrary — it was a curvature estimate, and a good one. From ~z5 down
+the two diverge fast, because the constant falls as `2^-z` while the real sagitta falls as
+`4^-z`; at z15 the derived skirt is four orders of magnitude smaller. Terrain is what puts
+the difference back, and only where there is terrain: on the Everest fixture at z12 the
+derived skirt is **741 m** against the old formula's 122 m, i.e. the old value was *six
+times too small* for real relief, while on the Monterey coast tile it is 25 m, five times
+too large. `Ellipsoid::skirt_depth` keeps the old expression bit-for-bit.
+
+**C2 edge treatment: a one-texel halo, not a one-sided difference.** `HeightPatch` samples
+a `(segments+3)²` grid whose outer ring lies one grid step *outside* the tile, read from
+the same source tile. Whenever the source is an ancestor — the normal case, and the only
+case past z15 — that halo is the real neighbour's ground, so edge vertices get a genuine
+central difference and two adjacent tiles agree on their shared edge to within 0.016°.
+Where the halo would fall outside the source (the tile *is* the source and sits on its
+border) the patch records it per side and C2 drops to a **one-sided** difference with the
+one-sided denominator. Reading the clamped value over a two-step baseline instead — the
+obvious bug — would report half the true slope along that one vertex ring.
+
+**The unsoundness §10 predicts is visible, and it is not at the limb.** With terrain on and
+the quadtree still on `Ellipsoid`, the headless capture over the Alps at 4.5 km loses its
+**entire near field**: the visible set is byte-identically the same 36 tiles as with terrain
+off (the quadtree is untouched, as intended), but those tiles' geometry is lifted up to
+2 900 m, so the near edge of the coverage rises in screen space and exposes bare background
+underneath it. The tiles that *should* fill it are frustum-culled, because `fit_obb` samples
+`alt = 0` and their raised geometry never enters the box being tested. This is **D1**, not
+D2 — the false negative is a bounding-volume miss in the frustum stage, and it is far larger
+and far more visible at low altitude than anything happening at the limb. At 400 km over the
+Himalaya the limb itself looks clean; the same near-field loss appears at the bottom of that
+frame too. Both go away when §7 D1 makes the box span `[h_min, h_max]`. Nothing in Phase C
+touches culling to paper over it.
+
+### C4 — grid density, measured
+
+Max and RMS deviation of the drawn mesh from **all 65 536** source samples of each committed
+fixture, in metres, with the buffer cost and the C3 skirt each density produces
+(`testing::terrain::test_heightfield::c4_grid_density_error_against_the_fixtures`):
+
+| fixture (z12) | `mesh_segments` | max err (m) | RMS err (m) | C3 skirt (m) | verts | vbuf (B) | ibuf (B) |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| Everest | 16 | 658.5 | 75.1 | 740.6 | 361 | 11 552 | 3 888 |
+| Everest | 32 | 503.8 | 33.6 | 500.5 | 1 225 | 39 200 | 13 872 |
+| Everest | 64 | 274.5 | 14.9 | 207.8 | 4 489 | 143 648 | 52 272 |
+| Zugspitze | 16 | 288.2 | 35.2 | 635.1 | 361 | 11 552 | 3 888 |
+| Zugspitze | 32 | 193.3 | 17.3 | 152.3 | 1 225 | 39 200 | 13 872 |
+| Zugspitze | 64 | 137.5 | 8.5 | 101.8 | 4 489 | 143 648 | 52 272 |
+| Monterey coast | 16 | 29.3 | 3.4 | 24.8 | 361 | 11 552 | 3 888 |
+| Monterey coast | 32 | 24.5 | 2.0 | 14.8 | 1 225 | 39 200 | 13 872 |
+| Monterey coast | 64 | 25.4 | 1.1 | 19.0 | 4 489 | 143 648 | 52 272 |
+
+**The default stays 16.** Phase F picks against device measurements, not against this table.
+What the table says:
+
+- **RMS falls cleanly and roughly halves per doubling** — 75 → 34 → 15 m on Everest, 35 → 17
+  → 8.5 on Zugspitze, 3.4 → 2.0 → 1.1 on the coast. That is first-order convergence, which is
+  what a linear interpolant over a halved spacing should give, so the mesh really is
+  converging to the field.
+- **Max error does not fall monotonically** — Monterey goes 29.3 → 24.5 → **25.4**. This is
+  §6 C4's "point-sampling 17×17 out of 256×256 misses summits", confirmed: refining moves the
+  sample points rather than averaging over them, so a peak one grid straddles the next can
+  straddle almost as badly. Any decision framed on max error will be noisy; frame it on RMS.
+- **Cost is the plan's table, confirmed**: 3.4× the vertex bytes per doubling. The 64 column
+  is 143 kB per tile, 71.8 MB over a 512-tile cache, which is the figure §6 already quotes.
+- At z12 an Everest tile is ~9.8 km wide, so `mesh_segments = 16` is a 612 m post. The RMS
+  error at that density (75 m) is **larger than the ~30 m SRTM posting of the source itself**
+  — the grid, not the source, is the limit, exactly as §6 C4 predicted, and it stays the limit
+  through z15.
 
 ---
 

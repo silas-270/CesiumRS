@@ -1,7 +1,7 @@
 use crate::globe::quadtree::TileId;
-use crate::globe::terrain::HeightTileManager;
+use crate::globe::terrain::{HeightPatch, HeightTileManager, PatchStatus};
 use crate::globe::tiles::config::TileEngineConfig;
-use crate::globe::tiles::mesh_worker::MeshWorkerPool;
+use crate::globe::tiles::mesh_worker::{MeshBuild, MeshWorkerPool};
 use crate::globe::tiles::texture_manager::TileTextureManager;
 use crate::globe::tiles::tile_cache::TileState;
 use crate::globe::tiles::tile_fetcher::TilePriority;
@@ -21,8 +21,8 @@ pub struct TileSystem {
     /// (`docs/terrain-plan.md` §5). `None` is the flat path, and on it nothing in this
     /// file does any extra work at all: no cache, no fetcher, no request.
     ///
-    /// Phase B stops here. The data is fetched, decoded, cached and queryable; no mesh
-    /// and no cull reads it yet.
+    /// Phase C's mesh builder is its first real consumer — see the `missing_meshes`
+    /// loop in [`Self::update`]. No *cull* reads it yet; that is Phase D.
     pub height_manager: Option<HeightTileManager>,
     pub mesh_worker: MeshWorkerPool,
     last_camera_pos: Option<Vec3>,
@@ -110,8 +110,46 @@ impl TileSystem {
         }
         self.last_camera_pos = Some(camera_pos);
 
+        // Height tiles first, so a mesh that needs them can find them: the mesh loop
+        // below *defers* a tile whose heights have not arrived rather than baking sea
+        // level into it (`docs/terrain-plan.md` §5 B2), and a deferred tile is only
+        // ever un-deferred by a request having gone out.
+        if let Some(heights) = self.height_manager.as_mut() {
+            for (id, _, _) in visible_tiles {
+                Self::request_height_chain(heights, *id);
+            }
+            // Fallback parent meshes are drawn too, and they are not always in
+            // `visible_tiles`. Without this they would defer forever.
+            for id in missing_meshes {
+                Self::request_height_chain(heights, *id);
+            }
+            heights.update();
+        }
+
         for id in missing_meshes {
-            self.mesh_worker.request_mesh(*id, self.config.mesh_segments);
+            let segments = self.config.mesh_segments;
+            let build = match self.height_manager.as_mut() {
+                None => MeshBuild::Flat,
+                Some(heights) => {
+                    match HeightPatch::sample(
+                        heights,
+                        *id,
+                        segments,
+                        self.config.terrain.exaggeration,
+                    ) {
+                        Ok(patch) => MeshBuild::Terrain(Box::new(patch)),
+                        // Not yet: skip this tile entirely and retry next frame. The
+                        // alternative — a flat mesh now — is the failure §5 B2 exists
+                        // to prevent, because nothing would later mark it stale.
+                        Err(PatchStatus::Pending) => continue,
+                        // The whole ancestor chain failed. No data is coming, so the
+                        // flat mesh is the honest answer, and it is the *same* flat
+                        // mesh the engine builds with terrain off.
+                        Err(_) => MeshBuild::Flat,
+                    }
+                }
+            };
+            self.mesh_worker.request_mesh(*id, segments, build);
         }
 
         for (id, _, _) in visible_tiles {
@@ -128,27 +166,25 @@ impl TileSystem {
             }
         }
 
-        // Height tiles, only when terrain is on. Visible tiles go in at `High`: a
-        // missing texture is a blur, a missing height tile is the wrong shape. The
-        // ancestor chain follows at `Low` for the same reason imagery prefetches it —
-        // and more so here, because past z15 the ancestor is not a fallback, it is the
-        // only data that will ever exist (`docs/terrain-plan.md` §2).
-        if let Some(heights) = self.height_manager.as_mut() {
-            for (id, _, _) in visible_tiles {
-                heights.request_tile(*id, TilePriority::High);
-
-                let mut curr = heights.source_tile_for(*id);
-                while let Some(p) = curr.parent() {
-                    if heights.cache.get_state(&p).is_none() {
-                        heights.request_tile(p, TilePriority::Low);
-                    }
-                    curr = p;
-                }
-            }
-            heights.update();
-        }
-
         self.texture_manager.update(device, queue);
+    }
+
+    /// Queues `id`'s height tile and its whole ancestor chain, if they are not known.
+    ///
+    /// The tile itself goes in at `High`: a missing texture is a blur, a missing height
+    /// tile is the wrong shape. The ancestor chain follows at `Low` for the same reason
+    /// imagery prefetches it — and more so here, because past z15 the ancestor is not a
+    /// fallback, it is the only data that will ever exist (`docs/terrain-plan.md` §2).
+    fn request_height_chain(heights: &mut HeightTileManager, id: TileId) {
+        heights.request_tile(id, TilePriority::High);
+
+        let mut curr = heights.source_tile_for(id);
+        while let Some(p) = curr.parent() {
+            if heights.cache.get_state(&p).is_none() {
+                heights.request_tile(p, TilePriority::Low);
+            }
+            curr = p;
+        }
     }
 
     pub fn compute_fallback_uv(child: TileId, parent: TileId) -> [f32; 4] {

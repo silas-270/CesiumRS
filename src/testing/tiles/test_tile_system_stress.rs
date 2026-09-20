@@ -1,5 +1,5 @@
 use cesium_engine::globe::quadtree::TileId;
-use cesium_engine::globe::tiles::mesh_worker::MeshWorkerPool;
+use cesium_engine::globe::tiles::mesh_worker::{MeshBuild, MeshWorkerPool};
 use cesium_engine::globe::tiles::system::TileSystem;
 use cesium_engine::globe::tiles::tile_cache::TileCacheManager;
 use std::time::{Duration, Instant};
@@ -143,6 +143,7 @@ fn test_mesh_worker_stress_throughput() {
                 y: i % 1024,
             },
             16,
+            MeshBuild::Flat,
         );
     }
 

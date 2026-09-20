@@ -31,7 +31,6 @@
 
 use super::horizon::{span_is_occluded, HorizonCamera, TilePatch};
 use super::tile_id::TileId;
-use crate::globe::geometry::{INV_A2_F64, INV_B2_F64};
 
 /// One mesh vertex's inputs, as `TileMesh::generate` has them in hand.
 ///
@@ -43,6 +42,16 @@ use crate::globe::geometry::{INV_A2_F64, INV_B2_F64};
 pub struct VertexSample {
     /// The tile being meshed.
     pub id: TileId,
+    /// This vertex's row in the `(segments+3)²` build grid, skirt ring included, so
+    /// row 0 and row `segments+2` are the two skirt rows.
+    ///
+    /// Phase C: a height-field model needs to find *this* vertex in its pre-sampled
+    /// [`SurfaceModel::BuildCtx`] and to walk to its four neighbours for a central
+    /// difference. Both are grid-index questions, not `(lon, lat)` questions, so the
+    /// index is what the sample carries. [`Ellipsoid`] ignores it.
+    pub row: u32,
+    /// This vertex's column in the same grid. See [`Self::row`].
+    pub col: u32,
     /// Vertex longitude in degrees. A skirt vertex carries its *edge's* longitude,
     /// not one outside the tile — skirts hang inward, they do not widen the patch
     /// (invariant I-5).
@@ -55,13 +64,23 @@ pub struct VertexSample {
     pub v: f32,
     /// The point on the ellipsoid at altitude 0 for `(lon_deg, lat_deg)`.
     pub surface_pos: [f64; 3],
+    /// The **outward ellipsoid normal** at [`Self::surface_pos`] — the analytic WGS-84
+    /// gradient, normalised.
+    ///
+    /// This is the direction the mesh displaces the vertex along, for **every** model,
+    /// and it is deliberately not [`SurfaceModel::vertex_normal`]'s job: relief is
+    /// radial (I-5, `test_generated_mesh_stays_inside_the_culling_rectangle`), whereas
+    /// a terrain normal tilts with the slope and would drag the vertex sideways out of
+    /// its own culling rectangle. The two coincide only for [`Ellipsoid`], which is
+    /// why they used to be one value.
+    pub up: [f64; 3],
     /// This vertex belongs to a skirt row or column.
     pub is_skirt: bool,
     /// …and it is one of the two pole caps, which are pulled to ±90° and get **no**
     /// skirt (they would tear the cap open).
     pub is_pole_cap: bool,
-    /// The tile's skirt depth, `0.5 / 2^z` **megametres**, as the f32 the mesh
-    /// computes it in.
+    /// The tile's skirt depth in **megametres**, as the f32 the mesh computes it in —
+    /// [`SurfaceModel::skirt_depth`], called once per tile before the vertex loop.
     pub skirt_height: f32,
 }
 
@@ -85,11 +104,56 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// Zero-sized in flat mode, which is what keeps `TilePatch` at 64 B.
     type PatchExtra: Default + Copy + std::fmt::Debug;
 
+    /// Everything `TileMesh::generate_on` needs to know about *this* tile's surface
+    /// data, gathered **before** the mesh worker starts — `()` for [`Ellipsoid`], a
+    /// pre-sampled height patch for terrain.
+    ///
+    /// # Why the mesh builder takes its inputs rather than fetching them
+    ///
+    /// `generate_on` runs on a rayon worker and must stay a **pure function of
+    /// `(id, segments, ctx)`**. Two reasons, and the second is the load-bearing one:
+    ///
+    /// 1. The height cache is `&mut` (it promotes in an LRU) and lives on the update
+    ///    thread. Reaching into it from the worker would need a lock in the middle of
+    ///    a per-vertex loop.
+    /// 2. Phase E2 (`docs/terrain-plan.md` §8) makes the mesh *stale* when a better
+    ///    height tile arrives — the mesh stops being a function of `TileId` alone. A
+    ///    builder that sampled the cache itself would have no record of *which* data
+    ///    it used; one that is handed a `BuildCtx` does, and
+    ///    [`Self::height_source`] hands it straight back out into the finished
+    ///    `TileMesh`.
+    type BuildCtx: Send + 'static;
+
+    /// The tile's skirt depth, in **megametres**, computed once per tile before the
+    /// vertex loop and handed to every vertex as [`VertexSample::skirt_height`].
+    ///
+    /// C3 of `docs/terrain-plan.md` §6: with relief the crack at an LOD boundary is a
+    /// property of the *content*, not of the level, so this is a dispatch site rather
+    /// than the one formula it used to be.
+    fn skirt_depth(id: &TileId, segments: u32, ctx: &Self::BuildCtx) -> f32;
+
+    /// The `[min, max]` altitude interval, in **megametres**, that every vertex of
+    /// the finished mesh is promised to lie inside — skirts included, which is why it
+    /// takes the skirt depth [`Self::skirt_depth`] just returned.
+    ///
+    /// **Invariant I-1′** (`docs/terrain-plan.md` §6). This is the number Phase D's
+    /// bounding boxes are fitted over, and
+    /// `testing::culling::test_tile_bounds::test_generated_mesh_stays_within_declared_height_bounds`
+    /// is what makes the promise checkable for both models.
+    fn declared_height_bounds(ctx: &Self::BuildCtx, skirt: f32) -> [f64; 2];
+
+    /// The height tile this mesh was built from, or `None` when the model has no
+    /// height data at all ([`Ellipsoid`], always).
+    ///
+    /// Carried through into `TileMesh` so Phase E2 can key the mesh cache on it; it
+    /// costs one `Option<TileId>` per mesh and is the whole of what E2 needs from C.
+    fn height_source(ctx: &Self::BuildCtx) -> Option<TileId>;
+
     /// Altitude of one mesh vertex above the ellipsoid, in **megametres**.
-    fn vertex_altitude(sample: &VertexSample) -> f64;
+    fn vertex_altitude(sample: &VertexSample, ctx: &Self::BuildCtx) -> f64;
 
     /// Outward unit normal at one mesh vertex.
-    fn vertex_normal(sample: &VertexSample) -> [f64; 3];
+    fn vertex_normal(sample: &VertexSample, ctx: &Self::BuildCtx) -> [f64; 3];
 
     /// The `[min, max]` altitude interval, in **megametres**, that a node's bounding
     /// box must be fitted over (`fit_obb`).
@@ -118,6 +182,35 @@ pub struct Ellipsoid;
 impl SurfaceModel for Ellipsoid {
     type NodeExtra = ();
     type PatchExtra = ();
+    type BuildCtx = ();
+
+    /// `0.5 / 2^z` megametres — today's formula, moved here **as the same
+    /// expression**, so the flat mesh is bit-for-bit what it was.
+    ///
+    /// C3 replaces this for terrain with a measured edge mismatch. It deliberately
+    /// does **not** replace it here: with zero relief the crack at an LOD boundary is
+    /// pure curvature sagitta, this constant has been chosen against exactly that, and
+    /// the flat path may not move (`docs/terrain-plan.md` §4 acceptance).
+    #[inline]
+    fn skirt_depth(id: &TileId, _segments: u32, _ctx: &()) -> f32 {
+        0.5 / 2.0_f32.powi(id.z as i32)
+    }
+
+    /// I-1 as an interval: nothing above the ellipsoid, nothing below the skirt.
+    ///
+    /// The two invariants agree where they overlap — I-1′ with `max = 0` *is* I-1 —
+    /// which is why `test_generated_mesh_has_no_positive_altitude` stays exactly as it
+    /// is rather than being replaced.
+    #[inline]
+    fn declared_height_bounds(_ctx: &(), skirt: f32) -> [f64; 2] {
+        [-(skirt as f64), 0.0]
+    }
+
+    /// No height data exists in flat mode, so there is nothing for Phase E2 to key on.
+    #[inline]
+    fn height_source(_ctx: &()) -> Option<TileId> {
+        None
+    }
 
     /// Moved verbatim from `TileMesh::generate`: zero everywhere, except the skirt
     /// rows and columns, which hang `skirt_height` radially *inward*. The pole caps
@@ -126,7 +219,7 @@ impl SurfaceModel for Ellipsoid {
     /// Computed in f32 and widened, exactly as before: `skirt_height` is an f32
     /// and the old code's `alt` was too.
     #[inline]
-    fn vertex_altitude(sample: &VertexSample) -> f64 {
+    fn vertex_altitude(sample: &VertexSample, _ctx: &()) -> f64 {
         let alt = if sample.is_skirt && !sample.is_pole_cap {
             -sample.skirt_height
         } else {
@@ -135,17 +228,17 @@ impl SurfaceModel for Ellipsoid {
         alt as f64
     }
 
-    /// Moved verbatim from `TileMesh::generate`: the analytic ellipsoid gradient at
-    /// the vertex's **surface** point, normalised. Independent of altitude, because
-    /// the vertex is displaced *along* this normal.
+    /// The analytic ellipsoid gradient at the vertex's **surface** point, normalised —
+    /// the same value, from the same expression, the mesh loop already computes as
+    /// [`VertexSample::up`] to displace the vertex along.
+    ///
+    /// Phase A had this expression here and the mesh used its result for both jobs.
+    /// Phase C splits the two jobs (displacement is radial for every model, shading is
+    /// not) but not the arithmetic: flat mode still evaluates the gradient exactly
+    /// once per vertex and still gets the identical bits out of it.
     #[inline]
-    fn vertex_normal(sample: &VertexSample) -> [f64; 3] {
-        let [x, y, z] = sample.surface_pos;
-        let nx = x * INV_A2_F64;
-        let ny = y * INV_B2_F64;
-        let nz = z * INV_A2_F64;
-        let len = (nx * nx + ny * ny + nz * nz).sqrt();
-        [nx / len, ny / len, nz / len]
+    fn vertex_normal(sample: &VertexSample, _ctx: &()) -> [f64; 3] {
+        sample.up
     }
 
     /// Zero relief: one altitude, and it is 0. `fit_obb` therefore samples each of
