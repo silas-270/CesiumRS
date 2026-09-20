@@ -352,8 +352,18 @@ impl<'a> WgpuState<'a> {
                 // Phase D1: which *surface model* the tree runs over is decided here
                 // and only here — one match at the manager boundary rather than a
                 // branch per node. See `globe::quadtree::any`.
-                let mut qt = AnyQuadtree::for_terrain(tile_system.config.terrain.enabled);
-                qt.set_pipeline(CullPipeline::DEFAULT_WITH_FOG);
+                //
+                // Phase D3: the terrain arm additionally runs `Stage::TerrainOcclusion`
+                // (`CullPipeline::TERRAIN_DEFAULT_WITH_FOG`). Unlike fog that stage is
+                // sound, so it is in the terrain *default* rather than bolted on for
+                // production only — see `globe::quadtree::terrain_occlusion`.
+                let terrain = tile_system.config.terrain.enabled;
+                let mut qt = AnyQuadtree::for_terrain(terrain);
+                qt.set_pipeline(if terrain && tile_system.config.terrain.occlusion.enabled {
+                    CullPipeline::TERRAIN_DEFAULT_WITH_FOG
+                } else {
+                    CullPipeline::DEFAULT_WITH_FOG
+                });
                 qt.set_frame_params(2.0, tile_system.config.max_zoom, 0.0);
                 qt
             },
@@ -559,6 +569,15 @@ impl<'a> WgpuState<'a> {
                 self.tile_system.height_manager.as_ref(),
                 self.tile_system.config.mesh_segments,
                 self.tile_system.config.terrain.exaggeration,
+            );
+            // Phase D3: build this frame's occlusion march from the tree the bounds pass
+            // has just tightened, then cull against it. A no-op on the flat arm, and
+            // gated on camera altitude inside `TerrainHorizon::begin` — see
+            // `globe::quadtree::terrain_occlusion`.
+            self.quadtree_manager.refresh_terrain_horizon(
+                frustum_obj.eye,
+                altitude as f64,
+                &self.tile_system.config.terrain.occlusion,
             );
             self.quadtree_manager.update(&frustum_obj);
             self.last_subsystem_timings.quadtree_us =

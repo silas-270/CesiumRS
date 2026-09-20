@@ -224,15 +224,91 @@ impl HeightTile {
     ///
     /// The whole tile (`0,0 → 1,1`) returns exactly [`Self::h_min`] and [`Self::h_max`],
     /// which is what a tile at or above the source's deepest level asks for.
-    pub fn mip_extrema_over(&self, u0: f64, v0: f64, u1: f64, v1: f64) -> (i16, i16) {
+    /// The largest height **range** over any aligned quarter-window of any of the four
+    /// edges of the `[u0,u1] × [v0,v1]` rectangle, in metres — **D1's follow-up**, the
+    /// tight replacement for bounding C3's skirt by the whole tile's range.
+    ///
+    /// # What it bounds and why the windows are quarters
+    ///
+    /// C3's crack is `max_i |h[i] − lerp(h[i₀], h[i₁])|` along one edge, where `i₀`/`i₁`
+    /// are that edge's samples `k` grid steps apart and `k ∈ {2, 4}`
+    /// (`SKIRT_COARSENINGS`). A linear interpolant of two samples never leaves their
+    /// interval, so the deviation over one window cannot exceed the **range of the field
+    /// over that window** — and `i₀ = (i/k)·k` makes the windows *aligned*, so the
+    /// `k = 4` windows are the edge's four quarters and every `k = 2` window nests inside
+    /// one of them. Four quarters per edge therefore cover both coarsenings exactly.
+    ///
+    /// The old bound was the range over the **whole tile**, which is what
+    /// `docs/terrain-plan.md` §7 records as making a node's interval **1.53×** the mesh
+    /// interval it has to contain (Everest z12: a 741 m real skirt bounded by a 4 700 m
+    /// span). A summit in the middle of a tile inflates that bound and cannot affect any
+    /// edge's interpolation at all; this reads only the edges.
+    ///
+    /// Each window is queried as a degenerate (zero-width) rectangle on the edge line
+    /// itself. [`Self::mip_extrema_over`] rounds outward to whole mip cells and adds its
+    /// one-cell halo, so the answer is an upper bound on the field along that line —
+    /// which is the direction I-6 needs: a skirt allowance that is too small is a box
+    /// that does not contain its own geometry.
+    pub fn edge_window_range(&self, u0: f64, v0: f64, u1: f64, v1: f64) -> i32 {
+        /// Aligned windows per edge — see this method's doc comment.
+        const WINDOWS: usize = 4;
+        let mut worst = 0i32;
+        for w in 0..WINDOWS {
+            let t0 = w as f64 / WINDOWS as f64;
+            let t1 = (w + 1) as f64 / WINDOWS as f64;
+            let ua = u0 + (u1 - u0) * t0;
+            let ub = u0 + (u1 - u0) * t1;
+            let va = v0 + (v1 - v0) * t0;
+            let vb = v0 + (v1 - v0) * t1;
+            for (a0, b0, a1, b1) in [
+                (ua, v0, ub, v0), // north edge
+                (ua, v1, ub, v1), // south edge
+                (u0, va, u0, vb), // west edge
+                (u1, va, u1, vb), // east edge
+            ] {
+                let (lo, hi) = self.mip_extrema_texel_halo(a0, b0, a1, b1);
+                worst = worst.max(hi as i32 - lo as i32);
+            }
+        }
+        worst
+    }
+
+    /// [`Self::mip_extrema_over`] with the halo grown by **two texels** instead of a
+    /// whole mip cell.
+    ///
+    /// The whole-cell halo that method uses is deliberately 32× more slack than the
+    /// bilinear argument needs, and it says so — which is free when the rectangle is a
+    /// whole tile and expensive when it is a one-texel-wide line. [`Self::sample_bilinear`]
+    /// places texel centres at `(i + 0.5)/256`, so a read at parameter `t` touches texels
+    /// with indices in `t·256 ± 1.5`; inflating the parameter by `2/256` before flooring
+    /// to cells covers that with half a texel to spare, and usually lands in the *same*
+    /// mip cell rather than the next one.
+    ///
+    /// Used by [`Self::edge_window_range`], where the across-edge direction is one texel
+    /// wide and the whole-cell halo would otherwise make it 32 texels deep — which on the
+    /// Everest fixture is most of the difference between the old bound and the real skirt.
+    pub fn mip_extrema_texel_halo(&self, u0: f64, v0: f64, u1: f64, v1: f64) -> (i16, i16) {
+        const TEXEL_HALO: f64 = 2.0 / HEIGHT_TILE_DIM as f64;
+        self.mip_cell_extrema(
+            u0.min(u1) - TEXEL_HALO,
+            v0.min(v1) - TEXEL_HALO,
+            u0.max(u1) + TEXEL_HALO,
+            v0.max(v1) + TEXEL_HALO,
+            0,
+        )
+    }
+
+    /// The shared body of the two extrema queries: `(min, max)` over every mip cell the
+    /// rectangle touches, with `halo` extra cells on each side.
+    fn mip_cell_extrema(&self, u0: f64, v0: f64, u1: f64, v1: f64, halo: isize) -> (i16, i16) {
         let n = HEIGHT_MIP_DIM as f64;
         let last = HEIGHT_MIP_DIM as isize - 1;
-        let cell = |t: f64, halo: isize| -> usize {
+        let cell = |t: f64, h: isize| -> usize {
             let x = (t.clamp(0.0, 1.0) * n).floor() as isize;
-            (x + halo).clamp(0, last) as usize
+            (x + h).clamp(0, last) as usize
         };
-        let (cx0, cx1) = (cell(u0.min(u1), -1), cell(u0.max(u1), 1));
-        let (cy0, cy1) = (cell(v0.min(v1), -1), cell(v0.max(v1), 1));
+        let (cx0, cx1) = (cell(u0, -halo), cell(u1, halo));
+        let (cy0, cy1) = (cell(v0, -halo), cell(v1, halo));
 
         let mut lo = i16::MAX;
         let mut hi = i16::MIN;
@@ -244,6 +320,10 @@ impl HeightTile {
             }
         }
         (lo, hi)
+    }
+
+    pub fn mip_extrema_over(&self, u0: f64, v0: f64, u1: f64, v1: f64) -> (i16, i16) {
+        self.mip_cell_extrema(u0.min(u1), v0.min(v1), u0.max(u1), v0.max(v1), 1)
     }
 }
 

@@ -1,5 +1,8 @@
 //! Phase D acceptance for `docs/terrain-plan.md` §7 — D1 (height-aware bounding
-//! volumes) and D2 (the horizon with relief). **D3, the occlusion march, is not here.**
+//! volumes) and D2 (the horizon with relief). **D3, the occlusion march, lives in
+//! `test_terrain_occlusion`** — it needs a third term in the visibility oracle (occlusion
+//! by the drawn surface) that would make every correct D3 cull look like a false negative
+//! here, so the two sweeps are deliberately separate instruments.
 //!
 //! **Nothing in this file touches the network.** The soundness sweep runs against a
 //! synthetic elevation field built in this file; the margin measurement runs against
@@ -34,7 +37,9 @@
 //! That is strictly harder on the engine than the ellipsoid oracle would be — it counts
 //! the relief the oracle cannot see — and strictly easier than the truth, because a vertex
 //! hidden behind a *mountain* still counts as visible here. Closing that last gap is D3's
-//! job, and until D3 exists the gap can only make this test over-report, never under-.
+//! job; the gap can only make this test over-report, never under-, which is why the tree
+//! this file builds deliberately keeps running `CullPipeline::DEFAULT` (D1+D2) now that
+//! D3 exists. `test_terrain_occlusion` measures the pipeline that has it.
 
 use std::sync::Arc;
 
@@ -518,6 +523,14 @@ fn corpus_span(id: TileId, h_min_m: i32, h_max_m: i32, clamp: bool) -> HeightBou
     HeightBounds {
         lo: lo - skirt_allowance(id, SEGMENTS, hi - lo),
         hi,
+        // D3's occluder floor: the ground minimum, without the skirt allowance. Not
+        // what this test measures — the margin table is about `lo`/`hi`, the interval
+        // the box is fitted over — but the struct carries it and `widened` moves it with
+        // `lo`, so it is filled in from the same row.
+        floor: lo,
+        // The corpus is whole-tile extrema; a sub-cell grid is not derivable from it, and
+        // nothing this test measures reads one.
+        floor_grid: [lo as f32; cesium_engine::globe::terrain::OCCLUDER_GRID_CELLS],
     }
 }
 
@@ -627,14 +640,29 @@ fn d1_inherit_margin_covers_the_corpus() {
     );
 }
 
-/// The zero margin below the source's deepest level is exact, not optimistic.
+/// Below the source's deepest level a child's interval is contained in its parent's
+/// **under the inheritance policy** — with `HEIGHT_INHERIT_MARGIN_M` at zero there and the
+/// whole widening coming from [`inherit_allowance_mm`].
 ///
-/// Past z15 a child reads the *same* height tile as its parent over a dyadic
-/// sub-rectangle, so its covering mip cells are a subset of the parent's. This checks the
-/// claim on the real data path rather than on the argument: real tiles, real
-/// `height_bounds_for`, every child of a deep node.
+/// # What changed, and why the stronger claim had to go
+///
+/// This used to assert the raw containment `parent ⊇ child`, with no widening at all, on
+/// the argument that past z15 a child reads the *same* height tile as its parent over a
+/// dyadic sub-rectangle, so its covering mip cells are a subset of the parent's. That
+/// argument holds for `h_min`/`h_max`, and it held for `lo` only while the skirt allowance
+/// was a function of the **whole tile's** range — which is monotone under refinement for
+/// exactly the same reason.
+///
+/// D1's follow-up (`HeightTile::edge_window_range`) broke the monotonicity, and
+/// deliberately: a child's edges are *interior lines* of its parent, so a child edge can
+/// cross a ridge its parent's edges miss and the child's allowance can exceed its
+/// parent's. Measured on the real data path, the excess reaches ~350 m at z8. That is a
+/// statement about the raw intervals, not about soundness: `Heightfield::child_extra`
+/// hands the parent's whole-tile allowance back precisely so this composes, and what this
+/// test now checks is that policy — which is the thing the engine actually runs, and the
+/// thing I-7 depends on.
 #[test]
-fn below_the_source_ceiling_a_child_interval_is_contained_without_a_margin() {
+fn below_the_source_ceiling_a_child_interval_is_contained_by_what_it_inherits() {
     let root = TileId { z: 4, x: 8, y: 5 };
     let config = TileEngineConfig {
         mesh_segments: SEGMENTS,
@@ -672,17 +700,23 @@ fn below_the_source_ceiling_a_child_interval_is_contained_without_a_margin() {
                 };
                 checked += 1;
                 worst_excess_m = worst_excess_m.max((cb.hi - pb.hi).max(pb.lo - cb.lo) * 1.0e6);
+                let inherited =
+                    <Heightfield as cesium_engine::globe::quadtree::SurfaceModel>::child_extra(
+                        &pb, &c,
+                    );
                 assert!(
-                    pb.contains(&cb),
-                    "z{} {}/{}: child interval [{:.3}, {:.3}] km escapes its parent's \
-                     [{:.3}, {:.3}] km with no margin",
+                    inherited.contains(&cb) && inherited.floor <= cb.floor,
+                    "z{} {}/{}: child interval [{:.3}, {:.3}] km (floor {:.3}) escapes what \
+                     `child_extra` inherits from its parent, [{:.3}, {:.3}] km (floor {:.3})",
                     c.z,
                     c.x,
                     c.y,
                     cb.lo * 1000.0,
                     cb.hi * 1000.0,
-                    pb.lo * 1000.0,
-                    pb.hi * 1000.0
+                    cb.floor * 1000.0,
+                    inherited.lo * 1000.0,
+                    inherited.hi * 1000.0,
+                    inherited.floor * 1000.0,
                 );
                 next.push(c);
             }
@@ -692,7 +726,7 @@ fn below_the_source_ceiling_a_child_interval_is_contained_without_a_margin() {
 
     println!(
         "  [D1 zero margin below the z4 ceiling] {checked} child/parent pairs, \
-         worst excess {worst_excess_m:.1} m"
+         worst raw excess {worst_excess_m:.1} m (covered by `child_extra`)"
     );
     assert!(checked > 100, "the descent did not actually happen");
 }
@@ -755,6 +789,141 @@ fn a_node_interval_contains_the_mesh_interval_it_is_fitted_against() {
          node interval {:.2}x the mesh interval",
         inflation / checked as f64
     );
+}
+
+/// **D1's named follow-up, measured on real data** — the loose half of the box, and what
+/// bounding the skirt from the *edges* instead of from the whole tile buys.
+///
+/// `docs/terrain-plan.md` §7 left this with a number rather than as a surprise: the node
+/// interval measured **1.53×** the mesh interval it has to contain, and the range term was
+/// the loose half — on the Everest z12 fixture C3's real skirt is 741 m against a 4 700 m
+/// whole-tile span. The fix is [`HeightTile::edge_window_range`]: C3's crack is a property
+/// of a tile's *edges*, over aligned quarter-windows of them, so a summit in the middle of
+/// a tile has no business inflating it.
+///
+/// Measured here on the committed PNGs rather than on the sweep's synthetic field,
+/// deliberately. The synthetic field is incommensurable high-frequency noise at every
+/// scale — that is what it is for, and it makes an edge's range equal to the tile's, so it
+/// is exactly the fixture on which this change is invisible. Real terrain is not like that
+/// and the fixtures are what say so.
+#[test]
+fn d1_edge_window_skirt_allowance_against_the_fixtures() {
+    const FIXTURES: [(&str, TileId); 4] = [
+        (
+            "everest_z12_3037_1716.png",
+            TileId {
+                z: 12,
+                x: 3037,
+                y: 1716,
+            },
+        ),
+        (
+            "zugspitze_z12_2172_1433.png",
+            TileId {
+                z: 12,
+                x: 2172,
+                y: 1433,
+            },
+        ),
+        (
+            "monterey_coast_z12_661_1599.png",
+            TileId {
+                z: 12,
+                x: 661,
+                y: 1599,
+            },
+        ),
+        (
+            "pacific_z12_341_2048.png",
+            TileId {
+                z: 12,
+                x: 341,
+                y: 2048,
+            },
+        ),
+    ];
+
+    println!("  [D1 follow-up: skirt allowance from the edges]");
+    println!(
+        "    {:<16} {:>9} {:>11} {:>11} {:>10} {:>10}",
+        "fixture", "C3 (m)", "old bnd (m)", "new bnd (m)", "old infl", "new infl"
+    );
+
+    let config = sweep_config();
+    let mut worst_new_inflation = 0.0_f64;
+    for (name, id) in FIXTURES {
+        let path = format!(
+            "{}/assets/terrain_fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+        let img = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        let (w, h) = (img.width(), img.height());
+        let tile = Arc::new(
+            cesium_engine::globe::terrain::decode_terrarium(
+                w,
+                h,
+                &img.into_raw(),
+                OceanPolicy::Raw,
+            )
+            .unwrap(),
+        );
+
+        let range_whole = (tile.h_max as f64 - tile.h_min as f64) * 1.0e-6;
+        let range_edge = tile.edge_window_range(0.0, 0.0, 1.0, 1.0) as f64 * 1.0e-6;
+        let old_bound = skirt_allowance(id, SEGMENTS, range_whole);
+        let new_bound = skirt_allowance(id, SEGMENTS, range_edge);
+
+        let mut heights = HeightTileManager::new(&config);
+        heights.insert_ready(id, tile.clone());
+        let patch = HeightPatch::sample(&mut heights, id, SEGMENTS, 1.0).expect("Ready");
+        let c3 = patch.skirt() as f64;
+        let mesh = TileMesh::generate_on::<Heightfield>(&id, SEGMENTS, &patch);
+        let [mlo, mhi] = mesh.height_bounds;
+        let bounds = heights
+            .height_bounds_for(id, SEGMENTS, 1.0)
+            .expect("just inserted");
+
+        // The box span the old bound would have produced, against the one in force now.
+        let hi = bounds.hi;
+        let old_span = (hi - (bounds.floor - old_bound)) / (mhi - mlo);
+        let new_span = (hi - bounds.lo) / (mhi - mlo);
+        worst_new_inflation = worst_new_inflation.max(new_span);
+
+        println!(
+            "    {:<16} {:>9.0} {:>11.0} {:>11.0} {:>9.2}x {:>9.2}x",
+            name.split('_').next().unwrap_or(name),
+            c3 * 1.0e6,
+            old_bound * 1.0e6,
+            new_bound * 1.0e6,
+            old_span,
+            new_span
+        );
+
+        // The whole point of the change: still an upper bound on the real skirt.
+        assert!(
+            new_bound >= c3,
+            "{name}: the edge-window skirt allowance ({:.1} m) fell below the skirt C3 \
+             actually derives ({:.1} m) — the box no longer contains its own geometry",
+            new_bound * 1.0e6,
+            c3 * 1.0e6
+        );
+        assert!(
+            new_bound <= old_bound,
+            "{name}: the edge-window bound is not tighter than the whole-tile one"
+        );
+        // And I-1′ still holds against the tightened interval.
+        assert!(
+            bounds.lo <= mlo && mhi <= bounds.hi,
+            "{name}: the tightened node interval [{:.1}, {:.1}] m no longer contains the \
+             mesh's [{:.1}, {:.1}] m",
+            bounds.lo * 1.0e6,
+            bounds.hi * 1.0e6,
+            mlo * 1.0e6,
+            mhi * 1.0e6
+        );
+    }
+    println!("    worst node-interval inflation after the change: {worst_new_inflation:.2}x");
 }
 
 // ── the sweep ────────────────────────────────────────────────────────────────────

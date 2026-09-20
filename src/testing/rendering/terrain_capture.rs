@@ -1,12 +1,16 @@
-//! Headless captures for Phase C of `docs/terrain-plan.md` §6 — relief, on and off.
+//! Headless captures for Phase C of `docs/terrain-plan.md` §6 — relief, on and off —
+//! and, since D3, for §3.3's occlusion march as well.
 //!
 //! AGENTS.md requires that anything touching rendering or geometry be checked with
 //! the headless path and *looked at*. Phase C changes every vertex of every tile, so
 //! it qualifies: the numbers in `terrain::test_heightfield` say the heights and the
 //! normals are right, and only a picture says whether the globe looks like a globe.
 //!
-//! Each pose is captured **twice**, with `terrain.enabled` true and false and nothing
-//! else different, so the pair is a controlled comparison rather than a screenshot.
+//! Each pose is captured **three times** — terrain off, terrain on with D1+D2 only, and
+//! terrain on with D3 as well — with nothing else different, so the set is a controlled
+//! comparison rather than three screenshots. The third shot is where D3 is *looked at*
+//! rather than counted: a piece of ground that vanishes between the second and the third
+//! is a false negative, and no tile-count table can see it.
 //!
 //! `#[ignore]`d because it needs the network (imagery *and* height tiles) and writes
 //! PNGs:
@@ -84,6 +88,20 @@ fn oblique(
 
 fn poses() -> Vec<Pose> {
     vec![
+        // **The D3 pose.** Down on the Inn valley floor at 900 m, looking north into the
+        // Karwendel wall 15 km away — the regime `docs/terrain-plan.md` §3.3 says the
+        // occlusion march is the difference between drawing a mountain range and drawing
+        // everything behind it too. The other four are Phase C/D1 poses and are kept as
+        // they are, because their numbers are quoted.
+        oblique(
+            "alps_inn_valley",
+            11.40,
+            47.26,
+            900.0,
+            1.5,
+            0.20,
+            "Innsbruck and the Nordkette wall from the Inn valley at 900 m — D3's own regime",
+        ),
         // The Zugspitze fixture region: 47.42 N 10.99 E, 2 962 m. Stand 70 km south of
         // it at 9 km and look north into the main alpine ridge.
         oblique(
@@ -129,7 +147,7 @@ fn poses() -> Vec<Pose> {
     ]
 }
 
-fn config(terrain: bool) -> TileEngineConfig {
+fn config(terrain: bool, occlusion: bool) -> TileEngineConfig {
     TileEngineConfig {
         // Satellite imagery: relief against a dark vector basemap is legible only in
         // silhouette, and half of what C2 changes is the shading.
@@ -143,6 +161,10 @@ fn config(terrain: bool) -> TileEngineConfig {
         terrain: TerrainConfig {
             enabled: terrain,
             exaggeration: 1.0,
+            occlusion: cesium_engine::globe::quadtree::TerrainOcclusionConfig {
+                enabled: occlusion,
+                ..Default::default()
+            },
             ..TerrainConfig::default()
         },
         ..TileEngineConfig::default()
@@ -231,12 +253,21 @@ fn capture_terrain_poses() {
 
     for p in poses() {
         println!("  {} — {}", p.name, p.what);
-        for (suffix, terrain) in [("terrain_off", false), ("terrain_on", true)] {
+        for (suffix, terrain, occlusion) in [
+            ("terrain_off", false, false),
+            ("terrain_on_d1d2", true, false),
+            ("terrain_on_d3", true, true),
+        ] {
             let out = dir.join(format!("{}_{suffix}.png", p.name));
             let out_str = out.to_string_lossy().into_owned();
 
-            let (visible, heights) =
-                pollster::block_on(render_settled(1280, 720, config(terrain), &p, &out_str));
+            let (visible, heights) = pollster::block_on(render_settled(
+                1280,
+                720,
+                config(terrain, occlusion),
+                &p,
+                &out_str,
+            ));
 
             println!(
                 "    {suffix:<12} {visible:4} visible tiles, {heights:3} height tiles \

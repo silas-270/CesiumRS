@@ -38,6 +38,7 @@ use glam::Vec3;
 use super::bounding_volume::Frustum;
 use super::quadtree::{CullPipeline, QuadtreeManager};
 use super::surface::Ellipsoid;
+use super::terrain_occlusion::TerrainOcclusionConfig;
 use super::tile_id::TileId;
 use crate::globe::terrain::{HeightBoundsSource, HeightTileManager, Heightfield};
 
@@ -46,6 +47,14 @@ use crate::globe::terrain::{HeightBoundsSource, HeightTileManager, Heightfield};
 /// Construct with [`AnyQuadtree::for_terrain`] and then treat it as a
 /// [`QuadtreeManager`]: every method below forwards to the active arm and exists only
 /// because the two arms are different types.
+// D3 grew `QuadtreeNode<Heightfield>` by the 4x4 occluder floor grid, which pushes the
+// two arms' root arrays 480 B apart and past clippy's threshold. Boxing the terrain arm
+// to even them out would buy nothing and cost something: there is exactly **one** of
+// these in the process, it lives on `WgpuState` for the program's lifetime, and the
+// suggested indirection would put a pointer chase in front of five per-frame calls into
+// the traversal. The asymmetry is the zero-sized payload doing its job — see this
+// module's doc comment.
+#[allow(clippy::large_enum_variant)]
 pub enum AnyQuadtree {
     /// `TerrainConfig::enabled == false` — the globe this engine has always drawn.
     Flat(QuadtreeManager<Ellipsoid>),
@@ -111,6 +120,28 @@ impl AnyQuadtree {
                 segments,
                 exaggeration,
             });
+        }
+    }
+
+    /// **D3's per-frame march** — the occlusion horizon of `docs/terrain-plan.md` §3.3.
+    ///
+    /// Absent on the flat arm, exactly like [`Self::refresh_height_bounds`]: `Ellipsoid`
+    /// has no relief, so there is nothing for a terrain occluder to be made of.
+    ///
+    /// Call after [`Self::refresh_height_bounds`] — the march reads the node floors that
+    /// pass has just tightened — and before [`Self::update`].
+    ///
+    /// `cam_alt` is the camera's altitude above the ellipsoid in **megametres**, the
+    /// engine's world unit; [`TerrainOcclusionConfig::max_camera_altitude_m`] is metres,
+    /// and the conversion happens once, inside `TerrainHorizon::begin`.
+    pub fn refresh_terrain_horizon(
+        &mut self,
+        eye: glam::DVec3,
+        cam_alt: f64,
+        cfg: &TerrainOcclusionConfig,
+    ) {
+        if let Self::Terrain(q) = self {
+            q.refresh_terrain_horizon(eye, cam_alt, cfg);
         }
     }
 

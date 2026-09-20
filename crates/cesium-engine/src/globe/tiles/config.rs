@@ -7,7 +7,8 @@ use std::time::Duration;
 /// served at 256x256 (e.g. `SATELLITE_IMAGERY_URL`) still work unchanged.
 pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png?key=cb1_28wa_1_ff42c0a0f313514c2bdb2e7a";
 /// Esri World Imagery - free, no API key required.
-pub const SATELLITE_IMAGERY_URL: &str = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+pub const SATELLITE_IMAGERY_URL: &str =
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
 /// Mapzen/Tilezen "Terrarium" elevation tiles on AWS Open Data — free, no API key.
 ///
@@ -66,10 +67,9 @@ pub enum OceanPolicy {
 /// geometry — the sweep in `testing::terrain::test_terrain_visibility` measures FN = 0 and
 /// the headless captures over the Alps are gapless.
 ///
-/// What is still missing is **D3**, the occlusion march of §3.3: tiles hidden behind
-/// mountains are still drawn, which is a cost rather than a defect. The flip to `true`
-/// belongs to §9 (Phase F), after D3 and after the on-device measurements, in its own
-/// commit.
+/// **D3** — the occlusion march of §3.3, tiles hidden behind mountains — landed too; see
+/// [`Self::occlusion`]. The flip of this flag to `true` belongs to §9 (Phase F), after the
+/// on-device measurements, in its own commit.
 #[derive(Clone, Debug)]
 pub struct TerrainConfig {
     /// Master switch. While `false` no height fetcher, no height cache and no height
@@ -102,6 +102,16 @@ pub struct TerrainConfig {
     /// [`TileEngineConfig::imagery_cache_budget_bytes`]. Terrain on must not silently
     /// raise the engine's total tile-memory ceiling.
     pub height_cache_budget_bytes: usize,
+    /// **D3** — culling tiles hidden behind mountains (`docs/terrain-plan.md` §3.3).
+    ///
+    /// Only consulted while [`Self::enabled`] is set: the occluders are the terrain
+    /// quadtree's own node floors, and the flat quadtree has none.
+    ///
+    /// Unlike [`TileEngineConfig::fog`] this stage is geometrically **sound**, so it
+    /// lives in `CullPipeline::TERRAIN_DEFAULT` — the pipeline the terrain harness
+    /// measures — rather than being kept out of it. See
+    /// [`crate::globe::quadtree::terrain_occlusion`].
+    pub occlusion: crate::globe::quadtree::TerrainOcclusionConfig,
 }
 
 impl Default for TerrainConfig {
@@ -116,6 +126,7 @@ impl Default for TerrainConfig {
             // resident height tiles, enough for the visible set plus its ancestor
             // chains at any camera this engine flies.
             height_cache_budget_bytes: 32 * 1024 * 1024,
+            occlusion: crate::globe::quadtree::TerrainOcclusionConfig::default(),
         }
     }
 }
@@ -353,7 +364,10 @@ mod tests {
             512 * 512 * 4,
             config.max_cache_size,
         );
-        assert_eq!(entries.get() * 512 * 512 * 4, config.tile_cache_budget_bytes);
+        assert_eq!(
+            entries.get() * 512 * 512 * 4,
+            config.tile_cache_budget_bytes
+        );
     }
 
     #[test]
