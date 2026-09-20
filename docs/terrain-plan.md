@@ -1418,6 +1418,44 @@ predicate — `cesium_fog(obb.distance_to_point(eye) · 1e6, density) >= 1.0` �
 surviving tile, from outside the engine, and asserts the count is zero. The day the fog
 constants move far enough to make that false, something says so.
 
+#### E1d — the LOD harness's measuring stick had expired
+
+`src/testing/lod/mod.rs` justified `texels / screen_px` as a complete description of LOD
+quality *because* with zero relief the only per-tile error is imagery resolution. True when
+written, and E1a expired it: a globe can be perfectly sharp and the wrong shape.
+
+The harness now carries a second metric, `sweep::geometric_error_px` —
+`error · H / (dist · 2·tan(fovy/2))`, Cesium's screen-space error evaluated on this
+engine's measured one. It is the quantity `max_geometric_error_px` budgets, so every table
+above reads directly against it.
+
+**In the LOD harness itself the second metric is identically zero**, and that is the point
+rather than a gap: everything there runs an `Ellipsoid` tree, whose `HAS_GEOMETRIC_ERROR`
+is a compile-time `false`. What used to be a claim in a comment is now a value
+`the_flat_globe_leaves_no_geometric_error_on_screen` reads and asserts over all 204 poses
+— *exactly* zero, not merely small. Where the number is not zero is
+`testing::terrain::test_terrain_lod`, which calls the same function on real DEM tiles.
+
+Neither metric is written to the CSVs as a new column, deliberately: those files are the
+byte-for-byte statement that the flat path has not moved, and an instrument that rewrites
+its own output format cannot make that statement.
+
+#### E1 — acceptance
+
+* `cargo test --release --lib culling::` — **32 passed, 0 failed, 1 ignored**, no re-pin of
+  `size_of::<QuadtreeNode<Ellipsoid>>() == 192`, `TilePatch<Ellipsoid> == 64`,
+  `HorizonCamera == 56` or `test_visible_set_digest_is_stable`.
+* **All 14 LOD-harness CSVs byte-identical** — `cmp`, not "equivalent" — across all four
+  commits, `aggregate_ratio = 1.663` and 204 poses unchanged. That includes the four
+  `wp5d_*` fogged CSVs across E1c's deletion of the fog stage, which is the measurement
+  that says the stage never did anything.
+* The five `rendering::terrain_capture` poses: the `terrain_off` shots still read 34 / 39 /
+  36 / 33 / 11 visible tiles, exactly §7b's table. The terrain-on shots refine further and
+  are gapless — `alps_low` 46 → 76, `alps_inn_valley` 49 → 110, `himalaya_everest` 42 → 75,
+  the 400 km limb unchanged at 12 — and were looked at, not just counted.
+* One pin moved, and it is an accounting one: `resident_bytes` 132 096 → 132 098, E1's two
+  bytes per height tile. The derived cache entry count stays 254.
+
 ### E3 — what landed
 
 **1. Field elevation, flipped.** `FlightPlanConfig::terrain_elevation` now defaults to `true`.

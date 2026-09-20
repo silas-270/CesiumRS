@@ -13,10 +13,9 @@
 //! **measuring device, not a fix**: it reports numbers, it does not assert targets,
 //! until `docs/pre-terrain-plan.md` WP4 picks them.
 //!
-//! # The metric
+//! # The metrics — there are two of them now
 //!
-//! With zero terrain relief the drawn geometry is always the ellipsoid, so the
-//! only real per-tile error is imagery resolution:
+//! ## 1. Imagery resolution, `texels / screen_px`
 //!
 //! ```text
 //! screen_px = projected area of the tile's drawn patch, in pixels²
@@ -30,10 +29,33 @@
 //! tiles) — WP4 is what makes it a real, per-style input; here it is still frozen.
 //! (`lod_factor` no longer is: see above.)
 //!
-//! The patch is sampled the same way `TileMesh::generate` builds the mesh — see
-//! [`sweep::patch_grid_points`] — not via the node's `OrientedBoundingBox`, which
-//! over-states area at grazing angles (the box is fatter than the curved patch it
-//! bounds).
+//! ## 2. Projected geometric error, in pixels — and why there had to be a second one
+//!
+//! This module used to say, in this position, that `texels / screen_px` was the whole
+//! story *because* with zero relief the only per-tile error is imagery resolution. That
+//! sentence was true when it was written and **E1 of `docs/terrain-plan.md` §8 expired
+//! it**: `apply_lod`'s threshold is now `max(imagery_dist, terrain_dist)`, and the second
+//! half is driven by a quantity the first metric cannot see — the deviation of the drawn
+//! mesh from the real ground. A globe can be perfectly sharp and the wrong shape.
+//!
+//! So the harness carries [`sweep::geometric_error_px`] alongside it:
+//! `error · H / (dist · 2·tan(fovy/2))`, Cesium's screen-space error evaluated on this
+//! engine's own measured error. `Summary::aggregate_ratio` was a complete description of
+//! LOD quality only while relief was zero; the pair is what replaces it.
+//!
+//! **In this harness the second metric is identically zero**, and that is the point
+//! rather than a gap. Everything here runs `QuadtreeManager::new()` — an
+//! `Ellipsoid` tree — whose `HAS_GEOMETRIC_ERROR` is a compile-time `false` because
+//! invariant I-1 says the drawn surface *is* the ellipsoid. What used to be a claim in
+//! this comment is now a value that
+//! [`test_lod_sweep::the_flat_globe_leaves_no_geometric_error_on_screen`] reads and
+//! asserts over all 204 poses. Where the number is *not* zero is
+//! `testing::terrain::test_terrain_lod`, which measures real DEM tiles through the same
+//! function — see §8's tables.
+//!
+//! Neither metric is written to the CSVs as a new column, deliberately: those files are
+//! the byte-for-byte statement that the flat path has not moved across every package since
+//! WP0, and an instrument that rewrites its own output format cannot make that statement.
 //!
 //! ## Known limit: flat 3×3 grid under-states curvature at coarse zoom
 //!
@@ -103,15 +125,15 @@ pub mod ladder;
 #[cfg(test)]
 pub mod report;
 #[cfg(test)]
-pub mod test_fog_math;
-#[cfg(test)]
 pub mod sweep;
+#[cfg(test)]
+pub mod test_fog_math;
 
 #[cfg(test)]
 pub mod test_lod_sweep;
 #[cfg(test)]
-pub mod test_wp5_fog;
-#[cfg(test)]
 pub mod test_viewport_ladder;
 #[cfg(test)]
 pub mod test_wp4c_3a_equal_budget;
+#[cfg(test)]
+pub mod test_wp5_fog;

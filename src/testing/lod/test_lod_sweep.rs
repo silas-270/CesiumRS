@@ -390,3 +390,47 @@ fn test_wp4a_esri_texture_size_compensated_vs_uncompensated() {
     report::emit("wp4a_esri_compensated_256", &compensated_256);
     report::emit("wp4a_esri_uncompensated_256", &uncompensated_256);
 }
+
+/// **E1d** — the sentence this module's doc comment used to make in prose, as a value.
+///
+/// `src/testing/lod/mod.rs` justified `texels / screen_px` as a complete description of
+/// LOD quality *because* with zero relief the only per-tile error is imagery resolution.
+/// E1 gave the engine a second error term, so the justification needs checking rather than
+/// restating: over all 204 bench poses, every tile's projected geometric error must be
+/// **exactly** zero — not small, zero — because `Ellipsoid::HAS_GEOMETRIC_ERROR` is a
+/// compile-time `false` and `apply_lod` never reaches the term at all on this tree.
+///
+/// If this ever reads non-zero, one of two things has happened and both matter: the flat
+/// globe has acquired relief (it must not), or this harness has stopped measuring the flat
+/// globe (in which case `docs/culling-baseline.md`'s cross-package comparisons are no
+/// longer like for like).
+#[test]
+fn the_flat_globe_leaves_no_geometric_error_on_screen() {
+    let poses = bench_poses();
+    let results = measure_poses(&poses);
+    let mut tiles = 0usize;
+    for r in &results {
+        for t in &r.tiles {
+            tiles += 1;
+            assert_eq!(
+                t.geom_err_px, 0.0,
+                "{:?} reported {} px of geometric error on a globe that has none",
+                t.id, t.geom_err_px
+            );
+        }
+    }
+    assert!(
+        tiles > 0,
+        "the bench poses must produce visible tiles to check"
+    );
+
+    // And the metric is not vacuous — the same function, handed a real error and a real
+    // distance, produces the number `TerrainConfig::max_geometric_error_px` budgets. A
+    // 300 m error 100 km away at 1080 px and the engine's default fovy is ~3.8 px.
+    let fovy = 2.0 * (3.0f64 / 7.0).atan();
+    let px = sweep::geometric_error_px(300.0e-6, 0.100, 1080.0, fovy);
+    assert!(
+        (px - 3.78).abs() < 0.05,
+        "the second metric must actually measure something: got {px}"
+    );
+}

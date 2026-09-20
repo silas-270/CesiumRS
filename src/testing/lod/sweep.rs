@@ -162,6 +162,12 @@ pub struct TileMetric {
     pub ratio: f64,
     /// At least one of the four projected quads lost area to viewport clipping.
     pub partly_offscreen: bool,
+    /// **The second metric**: this tile's geometric error, projected to pixels — see
+    /// [`geometric_error_px`]. Zero for every tile this harness measures, because this
+    /// harness measures the flat globe; not written to the CSVs for that reason, and
+    /// checked rather than assumed by
+    /// `test_lod_sweep::the_flat_globe_leaves_no_geometric_error_on_screen`.
+    pub geom_err_px: f64,
     /// At least one of the patch's 9 samples had `w <= CLIP_W_EPS` in clip space.
     /// Any quad touching such a sample is excluded from `screen_px` rather than
     /// risking a perspective-divide blow-up, so this tile's `screen_px` may
@@ -381,6 +387,11 @@ pub(crate) fn project_patch(
         screen_px,
         texels,
         ratio,
+        // `Ellipsoid::HAS_GEOMETRIC_ERROR` is a compile-time `false` and
+        // `Ellipsoid::geometric_error` is `0.0`: invariant I-1 says the drawn surface *is*
+        // the ellipsoid, so the deviation between them is not small, it is zero. The
+        // number is carried rather than omitted so the claim is a value a test can read.
+        geom_err_px: 0.0,
         partly_offscreen,
         behind_eye,
     }
