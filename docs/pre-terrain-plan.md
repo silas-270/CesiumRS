@@ -466,6 +466,14 @@ The hand-rolled velocity prefetch in `TileSystem::update` is reaching for the sa
 
 ## WP7 — Terrain decision brief
 
+> **Written, 2026-09-20 — see [`docs/terrain-plan.md`](terrain-plan.md).** Its §0 is this
+> brief: the recommendation below is **adopted** (stay Mercator, heightmap source, no ion),
+> and the rest of that document is the plan the brief recommends. Two things this section did
+> not anticipate, both found by probing the source rather than by reasoning: the terrarium
+> data ceiling is **z15** while imagery refines to z19/20, so upsampling is the *normal* path
+> and not a fallback; and terrarium encodes **bathymetry** in the open ocean, so a clamp
+> policy is a decision the brief has to make rather than a detail.
+
 **Goal.** A short document, no code, that closes this plan and opens the next one.
 
 Cesium runs its globe quadtree on the *terrain provider's* tiling scheme — `GeographicTilingScheme` for Cesium World Terrain — and reprojects Web-Mercator imagery onto it with a GPU pass per imagery tile. This engine is Mercator to its bones: `AGENTS.md` pins it, invariant I-5 makes `tile_bounds` the single source, pole rows are stretched to ±90° in both the mesh and the culling rectangle, and `compute_fallback_uv` assumes imagery and geometry share a tile ID.
