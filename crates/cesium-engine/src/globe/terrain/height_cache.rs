@@ -40,6 +40,11 @@ const METRES_TO_MEGAMETRES: f64 = 1.0e-6;
 /// a guard against a pathological budget.
 const MAX_HEIGHT_CACHE_ENTRIES: usize = 4096;
 
+/// The latitude Web Mercator stops at, `atan(sinh(π))` in degrees — the value that makes
+/// the projection square. Beyond it there is no tile row and therefore no DEM sample; see
+/// [`HeightTileManager::peek_height_at_lon_lat`]'s "Poles" note.
+const MERCATOR_LAT_LIMIT_DEG: f64 = 85.051_128_779_806_59;
+
 /// Owns the height tiles: fetch, decode, cache, query.
 ///
 /// Constructed **only** when [`crate::globe::tiles::config::TerrainConfig::enabled`]
@@ -215,6 +220,78 @@ impl HeightTileManager {
             TileState::Ready(tile) => Some(tile.sample_bilinear(su, sv) * METRES_TO_MEGAMETRES),
             _ => None,
         }
+    }
+
+    /// Terrain height in **megametres** under a geodetic position, from whatever height
+    /// data is already resident — `None` when nothing in the ancestor chain has arrived.
+    ///
+    /// The geodetic entry point, for the parts of the engine that know where they are on
+    /// the globe rather than which tile they are in: the camera's ground clearance
+    /// (`Camera::altitude_agl`), its collision floor, and label placement. It is
+    /// [`Self::peek_height_at`] with the Web-Mercator forward map in front of it, so it
+    /// promotes nothing in the LRU and can be called from a `&self` frame path.
+    ///
+    /// **Raw height — [`crate::globe::tiles::config::TerrainConfig::exaggeration`] is
+    /// *not* applied**, exactly as [`Self::height_at`] leaves it off. The caller that
+    /// wants the height of the surface the renderer actually draws multiplies it in;
+    /// [`crate::globe::tiles::system::TileSystem::ground_height_at`] is the one that does.
+    ///
+    /// # Resolution follows what has landed, and that is the point
+    ///
+    /// The query starts at [`Self::max_level`] (z15 for Terrarium) and
+    /// [`Self::resolve_source`] walks up to the deepest ancestor that is ready. At
+    /// cruise altitude that is a z4-z6 tile and the answer is a continent-scale average;
+    /// on final approach the z15 tile under the aircraft is resident because it is being
+    /// drawn, and the answer is the real valley floor. Both are the best available, and
+    /// neither needs a fetch of its own — this query never enqueues anything, so it
+    /// cannot make the camera path compete with the tiles being drawn.
+    ///
+    /// # Poles
+    ///
+    /// Latitude is clamped to the Web-Mercator limit (±85.051 13°). [`tile_bounds`]
+    /// stretches the top and bottom tile *rows* to ±90° to cap the globe, but that
+    /// stretch is a property of the drawn rectangle, not of the DEM inside it; there is
+    /// no sample beyond the Mercator limit to return. The clamp yields the polar row's
+    /// edge height, which over the Arctic ocean and the Antarctic coast is the right
+    /// answer to within the relief this query is used to resolve.
+    ///
+    /// [`tile_bounds`]: crate::globe::quadtree::tile_bounds
+    pub fn peek_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
+        let (id, u, v) = Self::tile_uv_at_lon_lat(lon_deg, lat_deg, self.max_level);
+        self.peek_height_at(id, u, v)
+    }
+
+    /// The tile of level `z` containing `(lon, lat)`, and the position inside it.
+    ///
+    /// The inverse of the map `HeightPatch::grid_metrics` and `TileMesh::generate`
+    /// build their rows from: `lat = web_mercator_y_to_lat_f64(y + v, z)`, `lon`
+    /// linear in `x + u`. Written as the inverse of *that* expression and not of a
+    /// textbook Web-Mercator formula, so a sample lands on the same ground the mesh
+    /// puts there — invariant I-5's concern, one level down.
+    ///
+    /// `u`, `v` come back in `[0, 1]`, `v` measured downward from the tile's north
+    /// edge, which is [`Self::peek_height_at`]'s convention.
+    pub fn tile_uv_at_lon_lat(lon_deg: f64, lat_deg: f64, z: u8) -> (TileId, f64, f64) {
+        let n = (1_u64 << z) as f64;
+
+        let fx = ((lon_deg + 180.0) / 360.0 * n).clamp(0.0, n - f64::EPSILON);
+        // `web_mercator_y_to_lat_f64` is `atan(sinh(π(1 − 2y/n)))`; inverted,
+        // `y = n/2 · (1 − asinh(tan φ)/π)`. `asinh` is the exact inverse of the `sinh`
+        // that function applies, so the round trip is an identity to within an ulp.
+        let lat = lat_deg.clamp(-MERCATOR_LAT_LIMIT_DEG, MERCATOR_LAT_LIMIT_DEG);
+        let fy = 0.5 * n * (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI);
+        let fy = fy.clamp(0.0, n - f64::EPSILON);
+
+        let (x, y) = (fx.floor(), fy.floor());
+        (
+            TileId {
+                z,
+                x: x as u32,
+                y: y as u32,
+            },
+            fx - x,
+            fy - y,
+        )
     }
 
     /// The tile that answers for `id`: the deepest ready ancestor (or `id` itself),

@@ -472,6 +472,21 @@ impl<'a> WgpuState<'a> {
     ) -> Vec<(TileId, Vec3, f32)> {
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
 
+        // Phase E3.2 (`docs/terrain-plan.md` §8): one height sample under the camera per
+        // frame, before anything reads the camera's clearance. `ground_height_at` is
+        // `None` with terrain off — no cache, no manager, no query — so on the flat path
+        // this is one `Option` field written to `None` and `Camera::altitude_agl` stays
+        // `Camera::altitude`.
+        //
+        // Deliberately *after* `global_transform_f64` and *before* the frustum: the near
+        // plane is derived from this, and the culling frustum and the drawn frustum have
+        // to be built from the same one.
+        let ground_height = self
+            .tile_system
+            .ground_height_at(camera_pos_dvec3)
+            .map(|h| h as f32);
+        self.camera.set_ground_height(ground_height);
+
         // ALWAYS use main camera for logic and culling
         let mut frustum = self.camera.calculate_frustum_planes(aspect_ratio);
 
@@ -489,6 +504,15 @@ impl<'a> WgpuState<'a> {
             self.last_subsystem_timings.extension_update_us =
                 extension_start.elapsed().as_secs_f64() * 1_000_000.0;
             // Recalculate frustum since the extension may have moved the camera!
+            // Re-sample the ground under it first, for the same reason: in tracking and
+            // cockpit modes the extension is what puts the camera on the aircraft, so
+            // before it runs the sample is from wherever the camera was last frame.
+            let (moved_pos, _) = self.camera.global_transform_f64();
+            let ground_height = self
+                .tile_system
+                .ground_height_at(moved_pos)
+                .map(|h| h as f32);
+            self.camera.set_ground_height(ground_height);
             frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         }
 

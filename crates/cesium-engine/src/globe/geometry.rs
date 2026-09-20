@@ -55,6 +55,25 @@ pub fn lon_lat_to_ecef_f64(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
     [x, y, z]
 }
 
+/// The exact inverse of [`lon_lat_to_ecef_f64`], in degrees: `(lon, lat)`.
+///
+/// Inverts *this engine's* mapping and not a textbook geodetic one. `lon_lat_to_ecef_f64`
+/// places a point at `(a·cosφ·cosθ, b·sinφ, −a·cosφ·sinθ)`, so `φ` here is the latitude
+/// that names a tile row, the same `φ` [`crate::globe::quadtree::web_mercator_y_to_lat_f64`]
+/// returns — not the geodetic latitude of the surface normal, which differs by up to 0.19°
+/// at 45°. Anything that goes round-trip through the tiling must use this one; the
+/// difference is 11 km of ground at mid-latitude.
+///
+/// Altitude is ignored: scaling a position radially leaves `θ` unchanged and moves `φ`
+/// only by the ellipsoid's flattening, well under the resolution of anything that asks.
+pub fn ecef_to_lon_lat_f64(pos: glam::DVec3) -> (f64, f64) {
+    let lon = (-pos.z).atan2(pos.x).to_degrees();
+    let lat = (pos.y / EARTH_RADIUS_B_F64)
+        .atan2((pos.x * pos.x + pos.z * pos.z).sqrt() / EARTH_RADIUS_A_F64)
+        .to_degrees();
+    (lon, lat)
+}
+
 pub fn lon_lat_alt_to_ecef_f64(lon_deg: f64, lat_deg: f64, alt_meters: f64) -> [f64; 3] {
     let surface_pos = lon_lat_to_ecef_f64(lon_deg, lat_deg);
 

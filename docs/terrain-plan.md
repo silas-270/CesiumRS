@@ -1189,6 +1189,35 @@ not there, and the fix is to switch terrain on, not to plan the flight at sea le
 explicit `terrain_elevation: false` escape hatch is kept and tested
 (`field_elevation_can_still_be_switched_off`) for a caller that deliberately runs flat.
 
+**2. A near plane that knows where the ground is.** `Camera::altitude()` is unchanged and
+still measures the ellipsoid — fog density, the label zoom bucket and `TerrainHorizon`'s own
+gate genuinely want that. What was wrong is that `znear` used it too. `Camera::altitude_agl()`
+is new, and both projection matrices (f32 and f64) derive `znear` from it.
+
+The camera cannot reach the height cache, so the ground comes to it: `update_logic` samples
+`TileSystem::ground_height_at(camera_position)` once per frame and writes it into a private
+`Option<f32>` on the camera. Three new pieces underneath, each with one job:
+
+| | |
+|---|---|
+| `geometry::ecef_to_lon_lat_f64` | inverts *this engine's* ECEF map. The `φ` in `lon_lat_to_ecef_f64` is parametric, not geodetic — 0.19° apart at 45°, which is **11 km of ground**. Inverting the textbook formula instead would have sampled the wrong valley. |
+| `HeightTileManager::tile_uv_at_lon_lat` | inverts `web_mercator_y_to_lat_f64`, the expression every tile boundary and mesh row is built from, so a sample lands on the ground the mesh draws (I-5, one level down). |
+| `TileSystem::ground_height_at` | `&self`, no LRU promotion, no fetch. Resolution follows what has landed: a z4-z6 continental average at cruise, the real z15 valley floor on approach. Applies `exaggeration`, which `peek_height_at` deliberately does not. |
+
+*Why this is the flat path and not a flat-looking path.* With terrain off there is no
+`HeightTileManager` at all, so `ground_height_at`'s first `?` returns `None` before any
+geometry runs; the camera's field is `None` on every frame; and `altitude_agl()` is
+`match None => self.altitude()` — a call to the same function, not a re-derivation of it.
+`testing::terrain::test_ground_reference` pins this by recomputing the pre-E3 `znear`
+expression by hand and comparing all 16 matrix elements **by bit pattern**, f32 and f64, over
+five poses × two camera modes × three aspect ratios, including a camera that has been given a
+ground height and then handed `None` again.
+
+*What it buys.* On the Inn valley floor (900 m over a 574 m floor) the old near plane is
+`0.1 × 900 m = 90 m` and the new one `0.1 × 326 m = 33 m`. Clamped at zero, because the
+bilinear sample and the 16×16 drawn patch of the same field disagree by metres and a camera
+can be a little under its own sampled ground.
+
 ---
 
 ## 9. Phase F — turn it on

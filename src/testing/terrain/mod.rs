@@ -1,4 +1,6 @@
 #[cfg(test)]
+pub mod test_ground_reference;
+#[cfg(test)]
 pub mod test_height_tiles;
 #[cfg(test)]
 pub mod test_heightfield;
