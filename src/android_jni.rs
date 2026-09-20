@@ -21,8 +21,8 @@ pub struct PendingFlightData {
 /// Field elevations for the next flight, in metres.
 ///
 /// Separate from `FLIGHT_DATA` so that supplying them stays optional: when nothing has
-/// been set, flights are planned at sea level, which is what the globe currently
-/// renders. See `FlightPlanConfig::terrain_elevation`.
+/// been set the two elevations stay at `0.0` and the flight is planned at sea level,
+/// exactly as before. See `FlightPlanConfig::terrain_elevation`.
 pub static FIELD_ELEVATIONS: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 pub static FLIGHT_DATA: Mutex<Option<PendingFlightData>> = Mutex::new(None);
@@ -282,7 +282,8 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
             let runways = RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
             let mut config = cesium_flight::telemetry::FlightPlanConfig::default();
             if let Some((dep_m, arr_m)) = FIELD_ELEVATIONS.lock().unwrap().take() {
-                config.terrain_elevation = true;
+                // `terrain_elevation` is already `true` by default since Phase E3;
+                // all that is left to do is hand over the two numbers.
                 config.dep_elevation_m = dep_m;
                 config.arr_elevation_m = arr_m;
             }
@@ -318,14 +319,16 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     }
 }
 
-/// Supplies the elevations of the two airports for the next flight, and by doing so
-/// turns terrain-aware planning on for it.
+/// Supplies the elevations of the two airports for the next flight.
 ///
-/// Optional, and currently uncalled: the globe renders no terrain, so a flight starting
-/// at a real field elevation would visibly float above a sea-level surface. The planner
-/// handles elevation correctly either way — the takeoff roll lengthens in thin air, and
-/// cruise levels are checked against the ground beneath them — so the Kotlin side only
-/// needs to declare and call this once the globe has terrain to sit on.
+/// Optional: with nothing supplied the flight is planned at sea level, as it always
+/// was. Since Phase E3 the globe draws real relief and `FlightPlanConfig` honours a
+/// supplied elevation by default, so the Kotlin side can now declare and call this and
+/// see the aircraft sit on the runway of a mountain field rather than above it.
+///
+/// If the globe is run with terrain switched off, a flight planned at a real field
+/// elevation will visibly float over the sea-level sphere. That is the plan being
+/// right and the surface being absent — see `FlightPlanConfig::terrain_elevation`.
 #[no_mangle]
 pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetFieldElevations(
     mut _env: JNIEnv,

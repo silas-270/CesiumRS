@@ -1173,6 +1173,22 @@ commit as each other rather than in this one.
   5. Picking/pan uses a closed-form ellipsoid intersection. Lowest priority — sub-pixel error
      except in mountains at low altitude, and the closed form is a fine first guess to refine.
 
+### E3 — what landed
+
+**1. Field elevation, flipped.** `FlightPlanConfig::terrain_elevation` now defaults to `true`.
+Nothing in the planner changed; the flag simply stopped being vetoed. The default config still
+carries `dep_elevation_m = arr_elevation_m = 0.0`, so a caller that supplies no elevation gets
+the same sea-level plan it always got — the flip changes what happens to an elevation that *is*
+supplied. `nativeSetFieldElevations` no longer has to set the flag itself, only hand over the
+two numbers.
+
+*The one thing that looks like a bug and is not.* With `TerrainConfig::enabled == false` the
+globe is a sea-level sphere again, while the plan still puts the aircraft at Bogotá's 2 548 m.
+It floats, by exactly the field elevation. That is a correct plan drawn on a surface that is
+not there, and the fix is to switch terrain on, not to plan the flight at sea level. The
+explicit `terrain_elevation: false` escape hatch is kept and tested
+(`field_elevation_can_still_be_switched_off`) for a caller that deliberately runs flat.
+
 ---
 
 ## 9. Phase F — turn it on
