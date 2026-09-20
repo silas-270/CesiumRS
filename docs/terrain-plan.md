@@ -1218,6 +1218,36 @@ ground height and then handed `None` again.
 bilinear sample and the 16×16 drawn patch of the same field disagree by metres and a camera
 can be a little under its own sampled ground.
 
+**3. The ground is a floor.** `enforce_bounds` kept the camera 2 m off the ellipsoid and flew
+it through the Alps. Cesium's shape, ported: `MIN_COLLISION_TERRAIN_HEIGHT` = 15 km
+(`minimumCollisionTerrainHeight`, same value), above which the terrain floor is not enforced
+at all. Below it the floor is `t + ground + 2 m`, the same 2 m clearance, against a different
+surface.
+
+Two reasons for the threshold, and the first is the real one. Far from the ground the sample
+comes from a z4-z6 ancestor and is a continental average, so a floor built on it would *move*
+as tiles land — a wandering floor is worse than none. Second, 15 km clears Everest, so
+nothing collidable is skipped at `exaggeration = 1`. (At an exaggeration high enough to lift a
+summit past 15 km the camera can pass through it. That is a debug setting doing what a debug
+setting does; scaling the threshold would make the flat path's constant depend on a terrain
+field.)
+
+Two refusals worth writing down:
+
+- **Ground at or below sea level yields no floor.** The ellipsoid floor is already the higher
+  of the two there, and a DEM reading of −430 m at the Dead Sea must not license the camera to
+  descend *further* than it could before.
+- **`set_ground_height(None)` never calls `enforce_bounds`.** An unconditional call would have
+  given the flat path a per-frame distance clamp it never had, which `set_eye` (which enforces
+  nothing) can be on the wrong side of. `feeding_none_every_frame_never_clamps_a_flat_camera`
+  runs 240 flat frames over a camera parked outside its own `max_distance` and checks it has
+  not moved by a bit.
+
+The flat pin is `the_ellipsoid_floor_is_bitwise_unchanged_with_no_ground_known`: a camera put
+5 km underground at four positions, compared against `t + 0.000002` written out on the same
+operands, in `local_pos`'s own `f32` — comparing an f64 floor against an f32 field would fail
+on a 0.4 m quantisation that is not a behaviour change.
+
 ---
 
 ## 9. Phase F — turn it on
