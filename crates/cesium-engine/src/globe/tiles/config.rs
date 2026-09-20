@@ -30,13 +30,17 @@ pub const TERRARIUM_URL: &str =
 pub const TERRARIUM_MAX_LEVEL: u8 = 15;
 
 /// Resident bytes one decoded [`crate::globe::terrain::height_tile::HeightTile`]
-/// costs: 256x256 `i16` samples plus the 16x16 min and max mips.
+/// costs: 256x256 `i16` samples, the 16x16 min and max mips, and E1's one-`i16`
+/// measured geometric error ([`crate::globe::terrain::HeightTile::detail`]).
 ///
 /// `docs/terrain-plan.md` §5 B4 rounds this to "128 kB per height tile; 256 resident
 /// = 32 MB". The real figure is 129 kB, because the mips are not free, so the 32 MiB
 /// default below derives **254** entries rather than 256. The budget is the promise;
 /// the entry count is derived from it, exactly as it is for imagery.
-pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2 + 2 * (16 * 16 * 2);
+///
+/// E1's error term costs **two bytes per tile** — 512 B across the whole resident set —
+/// and the derived entry count does not move: 33 554 432 / 132 098 is still 254.
+pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2 + 2 * (16 * 16 * 2) + 2;
 
 /// What to do with the sub-sea-level samples the Terrarium source carries.
 ///
@@ -112,6 +116,51 @@ pub struct TerrainConfig {
     /// measures — rather than being kept out of it. See
     /// [`crate::globe::quadtree::terrain_occlusion`].
     pub occlusion: crate::globe::quadtree::TerrainOcclusionConfig,
+    /// **E1** — how many pixels of geometric error the drawn surface may show before
+    /// the LOD refines it (`docs/terrain-plan.md` §8). Cesium's
+    /// `maximumScreenSpaceError` in all but name.
+    ///
+    /// **12, not Cesium's 2**, and the two numbers are not comparable. Cesium budgets a
+    /// *level-based estimate* of the error and pairs it with an imagery rule that refines
+    /// far more eagerly than this engine's; the number here budgets the **measured**
+    /// deviation of this tile's mesh from the DEM, against a `lod_factor` calibrated for a
+    /// globe that draws ~50 tiles a frame. Copying Cesium's 2 across measures 3 350 tiles
+    /// where the engine draws 483 — the table below.
+    ///
+    /// Feeds [`crate::globe::quadtree::terrain_lod_factor_for`], whose product with a
+    /// node's measured error is the distance inside which that node subdivides for the
+    /// sake of its *shape*. `0.0` switches the geometric term off entirely and leaves
+    /// `apply_lod` refining on imagery sharpness alone, which is what every build before
+    /// E1 did.
+    ///
+    /// Only consulted while [`Self::enabled`] is set: with no relief there is no error
+    /// (I-1), and `Ellipsoid::HAS_GEOMETRIC_ERROR` is a compile-time `false`.
+    ///
+    /// # The measured cost, and why the default is what it is
+    ///
+    /// Visible tiles summed over the ten real-DEM poses of
+    /// `testing::terrain::test_terrain_lod::e1_cost_of_the_geometric_term_on_real_terrain`,
+    /// and the p95 projected geometric error left on screen at `alps_inn_valley`:
+    ///
+    /// | budget | tiles | vs off | p95 error at `alps_inn_valley` |
+    /// |--:|--:|--:|--:|
+    /// | off  | 483 | — | 22.0 px |
+    /// | 24 px | 493 | +2 % | 18.6 px |
+    /// | 16 px | 532 | +10 % | 14.9 px |
+    /// | **12 px** | **707** | **+46 %** | **10.7 px** |
+    /// | 10 px | 867 | +80 % | 8.9 px |
+    /// | 8 px | 1 210 | +150 % | 7.5 px |
+    /// | 4 px | 3 350 | +593 % | 6.4 px |
+    ///
+    /// 12 is the knee, read off the *marginal* column rather than the total: 16 → 12 buys
+    /// 4.2 px for 175 tiles, 12 → 10 buys 1.8 px for 160, and 10 → 8 buys 1.4 px for 343.
+    /// Phase F re-measures it on device, where the answer may well differ between desktop
+    /// and an S23 — the same split §9 already anticipates for `mesh_segments`.
+    ///
+    /// The other half of the table is the half E1 exists for: at every budget above,
+    /// `po_plain_to_alps` — flat ground, same screen area — moves by **0 to 3 tiles**
+    /// while `alps_inn_valley` doubles. The knob costs what the ground is worth.
+    pub max_geometric_error_px: f32,
 }
 
 impl Default for TerrainConfig {
@@ -127,6 +176,9 @@ impl Default for TerrainConfig {
             // chains at any camera this engine flies.
             height_cache_budget_bytes: 32 * 1024 * 1024,
             occlusion: crate::globe::quadtree::TerrainOcclusionConfig::default(),
+            // E1. Cesium's own `maximumScreenSpaceError` default, kept until the cost
+            // table in `docs/terrain-plan.md` §8 gives a reason to move it.
+            max_geometric_error_px: 12.0,
         }
     }
 }

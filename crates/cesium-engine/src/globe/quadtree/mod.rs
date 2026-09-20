@@ -17,8 +17,9 @@ pub use horizon::{
     TilePatch,
 };
 pub use quadtree::{
-    lod_factor_for, CullContext, CullPipeline, LodDistanceMode, NodeExtraSource, QuadtreeManager,
-    QuadtreeNode, Stage, StageVerdict, MAX_STAGES,
+    lod_factor_for, terrain_lod_factor_for, CullContext, CullPipeline, LodDistanceMode,
+    NodeExtraSource, QuadtreeManager, QuadtreeNode, Stage, StageVerdict, TerrainFogPolicy,
+    MAX_STAGES,
 };
 pub use surface::{Ellipsoid, SurfaceModel, VertexSample};
 pub use terrain_occlusion::{

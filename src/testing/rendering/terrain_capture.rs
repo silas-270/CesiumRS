@@ -23,7 +23,7 @@
 use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
 
 /// Where the PNGs go. Set `CESIUM_SHOT_DIR`; defaults to the system temp dir.
-fn shot_dir() -> std::path::PathBuf {
+pub(crate) fn shot_dir() -> std::path::PathBuf {
     let dir = std::env::var_os("CESIUM_SHOT_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("cesium_terrain_shots"));
@@ -53,17 +53,17 @@ fn north_at(lon_deg: f64, up: glam::DVec3) -> glam::DVec3 {
     up.cross(east).normalize()
 }
 
-struct Pose {
-    name: &'static str,
-    eye: glam::Vec3,
-    target: glam::Vec3,
-    up: Option<glam::Vec3>,
-    what: &'static str,
+pub(crate) struct Pose {
+    pub(crate) name: &'static str,
+    pub(crate) eye: glam::Vec3,
+    pub(crate) target: glam::Vec3,
+    pub(crate) up: Option<glam::Vec3>,
+    pub(crate) what: &'static str,
 }
 
 /// An oblique view: stand `alt_m` up at (`lon`, `lat`) and look along the local north
 /// bearing, pitched `pitch_deg` below the horizontal.
-fn oblique(
+pub(crate) fn oblique(
     name: &'static str,
     lon: f64,
     lat: f64,
@@ -184,7 +184,7 @@ fn config(terrain: bool, occlusion: bool) -> TileEngineConfig {
 /// Settles on three conditions at once — no missing meshes, nothing loading anywhere
 /// (imagery, meshes *and* heights), and a few quiet frames after that, because a mesh
 /// finished on a rayon worker only reaches the GPU on the next `update_logic`.
-async fn render_settled(
+pub(crate) async fn render_settled(
     width: u32,
     height: u32,
     config: TileEngineConfig,

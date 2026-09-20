@@ -586,6 +586,24 @@ impl<'a> WgpuState<'a> {
                     &self.tile_system.config.fog,
                 ),
             );
+            // E1: the geometric half of the LOD threshold, derived from the same viewport
+            // and field of view as `lod_factor` above and applied only on the terrain arm.
+            // Texture size and `target_texel_ratio` are deliberately absent — the shape of
+            // the ground does not depend on which imagery style is loaded.
+            let max_geometric_error_px = self.tile_system.config.terrain.max_geometric_error_px;
+            self.quadtree_manager.set_terrain_lod(
+                crate::globe::quadtree::terrain_lod_factor_for(
+                    max_geometric_error_px,
+                    self.size.height as f32,
+                    self.camera.fovy(),
+                ),
+                crate::globe::quadtree::TerrainFogPolicy::default(),
+                if max_geometric_error_px > 0.0 {
+                    self.tile_system.config.fog.sse / max_geometric_error_px
+                } else {
+                    0.0
+                },
+            );
             // Phase D1: tighten every node's height interval from whatever has landed
             // in the height cache since the last frame, *before* culling against it.
             // A no-op on the flat arm. See `AnyQuadtree::refresh_height_bounds`.

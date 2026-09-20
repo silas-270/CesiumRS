@@ -531,6 +531,10 @@ fn corpus_span(id: TileId, h_min_m: i32, h_max_m: i32, clamp: bool) -> HeightBou
         // The corpus is whole-tile extrema; a sub-cell grid is not derivable from it, and
         // nothing this test measures reads one.
         floor_grid: [lo as f32; cesium_engine::globe::terrain::OCCLUDER_GRID_CELLS],
+        // E1's error term is not a bound and takes no part in the margin: the corpus
+        // rows are extrema, which say nothing about how rough the ground between them
+        // is, and `widened` carries this field through unchanged.
+        detail: 0.0,
     }
 }
 

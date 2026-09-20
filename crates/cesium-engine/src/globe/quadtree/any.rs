@@ -36,7 +36,7 @@
 use glam::Vec3;
 
 use super::bounding_volume::Frustum;
-use super::quadtree::{CullPipeline, QuadtreeManager};
+use super::quadtree::{CullPipeline, QuadtreeManager, TerrainFogPolicy};
 use super::surface::Ellipsoid;
 use super::terrain_occlusion::TerrainOcclusionConfig;
 use super::tile_id::TileId;
@@ -87,7 +87,8 @@ impl AnyQuadtree {
     }
 
     /// The three per-frame knobs `wgpu_state` recomputes every frame, set together
-    /// because they are always set together.
+    /// because they are always set together. E1's geometric term is deliberately not
+    /// among them — see [`Self::set_terrain_lod`].
     pub fn set_frame_params(&mut self, lod_factor: f32, max_zoom: u8, fog_density: f32) {
         match self {
             Self::Flat(q) => {
@@ -100,6 +101,28 @@ impl AnyQuadtree {
                 q.max_zoom = max_zoom;
                 q.fog_density = fog_density;
             }
+        }
+    }
+
+    /// **E1** — this frame's geometric LOD constant and its fog policy
+    /// (`docs/terrain-plan.md` §8).
+    ///
+    /// A **no-op on the flat arm**, and deliberately not folded into
+    /// [`Self::set_frame_params`]: `Ellipsoid::HAS_GEOMETRIC_ERROR` is a compile-time
+    /// `false`, so `apply_lod` never reads these fields there. Assigning them anyway
+    /// would be a statement that the flat globe has a shape budget, which it does not —
+    /// and this way the flat arm's per-frame writes are byte-for-byte the three they
+    /// always were.
+    pub fn set_terrain_lod(
+        &mut self,
+        terrain_lod_factor: f32,
+        policy: TerrainFogPolicy,
+        fog_sse_ratio: f32,
+    ) {
+        if let Self::Terrain(q) = self {
+            q.terrain_lod_factor = terrain_lod_factor;
+            q.terrain_fog_policy = policy;
+            q.terrain_fog_sse_ratio = fog_sse_ratio;
         }
     }
 

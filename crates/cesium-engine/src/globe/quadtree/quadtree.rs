@@ -241,6 +241,52 @@ pub fn lod_factor_for(
         / (2.0 * (fovy_rad * 0.5).tan())
 }
 
+/// The **geometric** LOD constant — E1 of `docs/terrain-plan.md` §8, and the terrain
+/// half of what [`lod_factor_for`] is for imagery.
+///
+/// `QuadtreeNode::apply_lod` refines while `dist < geometric_error · terrain_lod_factor`,
+/// so this function is Cesium's rule with the error left outside it:
+///
+/// ```text
+/// terrain_lod_factor = viewport_height / (max_geometric_error_px · 2·tan(fovy/2))
+/// ```
+///
+/// Multiply by a node's error in megametres and the product is the distance, in
+/// megametres, inside which that error covers more than `max_geometric_error_px` pixels
+/// of screen. Unlike `lod_factor_for` there is no calibration constant and no texture
+/// size: the quantity on the other side is a length on the ground, in the engine's own
+/// units, so the conversion to pixels is the projection and nothing else.
+///
+/// # Why this is a second function and not a reuse of `lod_factor_for`
+///
+/// The two share `H / (2·tan(fovy/2))` and nothing else, and the parts they do not share
+/// are exactly the parts that must not leak across. `lod_factor_for` carries
+/// [`LOD_CALIBRATION_CONSTANT`] — a residual fitted to reproduce a hard-coded `2.0`, not a
+/// geometric ratio (see its doc comment) — the imagery tile size, and
+/// `target_texel_ratio`, whose units are texels per pixel. Deriving the geometric term
+/// from it would make the shape of the globe depend on which imagery style happened to be
+/// loaded, which is the one coupling E1 exists to break.
+///
+/// # `max_geometric_error_px`
+///
+/// `TerrainConfig::max_geometric_error_px`, Cesium's `maximumScreenSpaceError` in all but
+/// name: how many pixels of error on screen the surface is allowed before it refines.
+/// Higher is coarser and cheaper. See that field for the measured cost table.
+///
+/// Returns `0.0` for a non-positive `max_geometric_error_px` — "no geometric demand at
+/// all", which is the same thing the `0.0` default of `CullContext::terrain_lod_factor`
+/// means, rather than an infinity that would refine every node to `max_zoom`.
+pub fn terrain_lod_factor_for(
+    max_geometric_error_px: f32,
+    viewport_height_px: f32,
+    fovy_rad: f32,
+) -> f32 {
+    if max_geometric_error_px <= 0.0 {
+        return 0.0;
+    }
+    viewport_height_px / (max_geometric_error_px * 2.0 * (fovy_rad * 0.5).tan())
+}
+
 /// Outward unit normal of the ellipsoid at `p`, in f64 — the normalised gradient of
 /// the implicit form (1.1). Exact whether or not `p` is on the surface.
 fn ellipsoid_normal(p: DVec3) -> DVec3 {
@@ -1040,6 +1086,47 @@ pub enum LodDistanceMode {
     Box,
 }
 
+/// How fog is allowed to relax the **geometric** half of `apply_lod`'s threshold —
+/// **E1b** of `docs/terrain-plan.md` §8.
+///
+/// WP5 tuned its relaxation on a globe with no relief, where coarsening the far field is
+/// free because there is nothing out there but texture. With terrain it is not free: it is
+/// the difference between distant mountains having a shape and distant mountains being
+/// coarse bumps. §7c left the question open and named it the honest one; this enum is what
+/// made it a measurement rather than an argument, and §8 has the table.
+///
+/// The imagery term is **not** affected by any of these — it keeps WP5's shipped
+/// `× (1 − fog)` unconditionally, because the argument for relaxing *imagery* in fog is
+/// exactly as good as it was: a texture you cannot see through does not need to be sharp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TerrainFogPolicy {
+    /// WP5's relaxation applied to the geometric term as well: `terrain_dist ×= 1 − fog`.
+    /// What E1a shipped, before E1b measured it.
+    #[default]
+    Relax,
+    /// Fog does not touch the geometric term at all. The shape of the ground is refined on
+    /// its own error and fog only decides how sharp the picture painted on it needs to be.
+    ImageryOnly,
+    /// Cesium's own form, and the first thing to give [`super::fog::FogConfig::sse`]
+    /// units in this engine.
+    ///
+    /// `Scene/GlobeSurfaceTileProvider`'s `screenSpaceError` computes the error in pixels
+    /// and then subtracts `fog(d) · fog.screenSpaceErrorFactor` from it before comparing
+    /// against `maximumScreenSpaceError` — i.e. fog *widens the pixel budget* rather than
+    /// shortening the distance. Refining while `error_px − fog·sse > max_px` is refining
+    /// while `dist < error · H / (2·tan(fovy/2) · (max_px + fog·sse))`, so in this
+    /// engine's shape it is a division:
+    ///
+    /// ```text
+    /// terrain_dist /= 1 + fog · (sse / max_geometric_error_px)
+    /// ```
+    ///
+    /// Bounded below by `1/(1 + sse/max_px)` however thick the fog gets, which is the
+    /// structural difference from [`Self::Relax`]: Cesium's form can halve the distance,
+    /// WP5's can take it to zero.
+    CesiumSse,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct CullContext<'a> {
     pub frustum: Frustum,
@@ -1068,11 +1155,29 @@ pub struct CullContext<'a> {
     pub lod_distance_mode: LodDistanceMode,
     /// This frame's atmospheric fog density (WP5) — `0.0` (the default) means "no
     /// fog effect", which is both the harness's only value and what a camera above
-    /// `FogConfig::max_height_m` computes. Read by [`Stage::Fog`] (only ever
-    /// present in [`CullPipeline::DEFAULT_WITH_FOG`]) and by
-    /// `QuadtreeNode::apply_lod`'s relaxation. See [`super::fog`]'s module doc
-    /// comment.
+    /// `FogConfig::max_height_m` computes. Since E1c deleted `Stage::Fog` there is
+    /// exactly one consumer left — `QuadtreeNode::apply_lod`'s relaxation, which is
+    /// where every measured effect of WP5 always came from. See [`super::fog`]'s
+    /// module doc comment.
     pub fog_density: f32,
+    /// **E1** — what one megametre of geometric error is worth in refinement distance
+    /// (`docs/terrain-plan.md` §8). See [`terrain_lod_factor_for`].
+    ///
+    /// `0.0` (the default) switches the terrain half of `apply_lod`'s threshold off
+    /// completely — `max(imagery_dist, 0)` is `imagery_dist` for any non-negative
+    /// threshold, and every one of them is. That is what every caller that predates E1
+    /// gets, including the whole flat path, which does not read this field at all.
+    pub terrain_lod_factor: f32,
+    /// **E1b** — how fog is allowed to touch the geometric term. See
+    /// [`TerrainFogPolicy`]; the default is the measured winner and the flat path never
+    /// reads it.
+    pub terrain_fog_policy: TerrainFogPolicy,
+    /// **E1b**, and only [`TerrainFogPolicy::CesiumSse`] reads it: `FogConfig::sse`
+    /// divided by `TerrainConfig::max_geometric_error_px`, the one ratio Cesium's form
+    /// needs. Carried as a ratio rather than as the two numbers because that is all the
+    /// formula uses, and computing it at the frame boundary keeps `apply_lod` free of a
+    /// division it would otherwise redo per node.
+    pub terrain_fog_sse_ratio: f32,
     /// Maximum zoom level to refine down to. Defaults to [`MAX_ZOOM`].
     pub max_zoom: u8,
 }
@@ -1091,6 +1196,9 @@ impl<'a> CullContext<'a> {
             pipeline,
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
+            terrain_lod_factor: 0.0,
+            terrain_fog_policy: TerrainFogPolicy::default(),
+            terrain_fog_sse_ratio: 0.0,
             max_zoom: MAX_ZOOM,
         }
     }
@@ -1115,6 +1223,20 @@ impl<'a> CullContext<'a> {
     /// WP5 only — see [`super::fog::FogConfig`] and this struct's `fog_density` field.
     pub fn with_fog_density(mut self, fog_density: f32) -> Self {
         self.fog_density = fog_density;
+        self
+    }
+
+    /// **E1** only — see [`terrain_lod_factor_for`] and this struct's
+    /// `terrain_lod_factor` field. `0.0`, the default, is the pre-E1 threshold exactly.
+    pub fn with_terrain_lod_factor(mut self, terrain_lod_factor: f32) -> Self {
+        self.terrain_lod_factor = terrain_lod_factor;
+        self
+    }
+
+    /// **E1b** only — see [`TerrainFogPolicy`]. Unread on the flat arm.
+    pub fn with_terrain_fog(mut self, policy: TerrainFogPolicy, sse_ratio: f32) -> Self {
+        self.terrain_fog_policy = policy;
+        self.terrain_fog_sse_ratio = sse_ratio;
         self
     }
 
@@ -1366,7 +1488,48 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         // threshold rather than a fixed absolute margin that would narrow, and
         // therefore oscillate more easily, as fog thickens.
         let is_subdivided = self.children.is_some();
-        let subdivide_dist = self.unstretched_radius * lod_factor * fog_relaxation;
+        let imagery_dist = self.unstretched_radius * lod_factor * fog_relaxation;
+
+        // **E1** — the geometric half of the threshold (`docs/terrain-plan.md` §8).
+        //
+        // Until here this engine has refined on picture sharpness alone: a flat coastal
+        // tile and a shattered massif of the same on-screen size got the same treatment,
+        // because with zero relief (I-1) imagery resolution was the *only* error there
+        // was. With terrain it is not, so the threshold becomes
+        //
+        //   subdivide_dist = max(imagery_dist, terrain_dist)
+        //
+        // and whichever of the two still wants resolution at this distance gets it. The
+        // imagery half is untouched — every number WP3/WP4 measured into `lod_factor_for`
+        // still means what it meant.
+        //
+        // `terrain_dist = G · terrain_lod_factor` is Cesium's `d < G·H/(maxSSE·2·tan(fovy/2))`
+        // with `G` (`SurfaceModel::geometric_error`) a real measured length in megametres
+        // and the rest of the expression in `terrain_lod_factor_for`. The fog relaxation
+        // multiplies it exactly as it multiplies the imagery term: with relief, whether
+        // that is the right way to spend the far field is a question §7c leaves open and
+        // E1b answers with a measurement.
+        //
+        // The whole block is behind a compile-time `S::HAS_GEOMETRIC_ERROR`, so
+        // `QuadtreeNode<Ellipsoid>` emits the `imagery_dist` line and nothing else.
+        let subdivide_dist = if S::HAS_GEOMETRIC_ERROR {
+            // **E1b**: which of the three answers to "what may fog do to the *shape*
+            // budget" this frame is running. `Relax` is WP5's, measured against a globe
+            // with nothing in the far field but texture; the default is what §8's table
+            // picked once there was relief out there to lose.
+            let geometric_fog = match ctx.terrain_fog_policy {
+                TerrainFogPolicy::Relax => fog_relaxation,
+                TerrainFogPolicy::ImageryOnly => 1.0,
+                TerrainFogPolicy::CesiumSse => {
+                    1.0 / (1.0 + (1.0 - fog_relaxation) * ctx.terrain_fog_sse_ratio)
+                }
+            };
+            let terrain_dist =
+                S::geometric_error(&self.extra, &self.id) * ctx.terrain_lod_factor * geometric_fog;
+            imagery_dist.max(terrain_dist)
+        } else {
+            imagery_dist
+        };
         let collapse_dist = subdivide_dist * 1.20;
 
         let should_be_subdivided = if is_subdivided {
@@ -2002,11 +2165,21 @@ pub struct QuadtreeManager<S: SurfaceModel = Ellipsoid> {
     pub lod_distance_mode: LodDistanceMode,
     /// This frame's fog density — WP5. `0.0` (the default) is a true no-op: every
     /// caller that never sets this field gets exactly pre-WP5 behaviour, in both
-    /// [`Stage::Fog`] (undecided, never culls) and `QuadtreeNode::apply_lod`'s
-    /// relaxation (multiplies by `1.0`). `wgpu_state.rs` is the only production
+    /// `QuadtreeNode::apply_lod`'s relaxation (multiplies by `1.0`), which since E1c
+    /// is its only consumer. `wgpu_state.rs` is the only production
     /// caller that sets it, recomputed fresh every frame from camera altitude — see
     /// [`super::fog::fog_density_for`].
     pub fog_density: f32,
+    /// **E1** — this frame's geometric LOD constant. `0.0` (the default) is a true
+    /// no-op, exactly as `fog_density = 0.0` is: the terrain half of `apply_lod`'s
+    /// threshold vanishes and every pre-E1 caller gets the threshold it always got.
+    /// Only the terrain arm ever sets it — see [`terrain_lod_factor_for`].
+    pub terrain_lod_factor: f32,
+    /// **E1b** — this frame's fog policy for the geometric term, and the `sse /
+    /// max_geometric_error_px` ratio only [`TerrainFogPolicy::CesiumSse`] reads. Both are
+    /// dead weight on the flat arm, which never reaches the branch that reads them.
+    pub terrain_fog_policy: TerrainFogPolicy,
+    pub terrain_fog_sse_ratio: f32,
     /// Maximum zoom level to refine down to. Defaults to [`MAX_ZOOM`].
     pub max_zoom: u8,
     /// **D3** — this frame's occlusion march, or `None` when there is none.
@@ -2047,6 +2220,9 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
             pipeline: CullPipeline::DEFAULT,
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
+            terrain_lod_factor: 0.0,
+            terrain_fog_policy: TerrainFogPolicy::default(),
+            terrain_fog_sse_ratio: 0.0,
             max_zoom: MAX_ZOOM,
             terrain_horizon: None,
         }
@@ -2136,6 +2312,8 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
             .with_lod_distance_mode(self.lod_distance_mode)
             .with_fog_density(self.fog_density)
             .with_terrain_horizon(self.terrain_horizon.as_deref())
+            .with_terrain_lod_factor(self.terrain_lod_factor)
+            .with_terrain_fog(self.terrain_fog_policy, self.terrain_fog_sse_ratio)
             .with_max_zoom(self.max_zoom);
         for root in self.roots.iter_mut() {
             root.update(&ctx, self.lod_factor);

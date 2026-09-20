@@ -110,6 +110,27 @@ pub const BYTES_PER_TEXEL: u64 = 4;
 /// a perspective divide.
 const CLIP_W_EPS: f64 = 1e-9;
 
+/// **The second metric** — a tile's geometric error, projected, in pixels.
+///
+/// `error · H / (dist · 2·tan(fovy/2))`: Cesium's screen-space error, evaluated on the
+/// error this engine measures since E1 of `docs/terrain-plan.md` §8
+/// (`SurfaceModel::geometric_error`, for `Heightfield` the tile's own deviation from the
+/// DEM). It is the quantity `TerrainConfig::max_geometric_error_px` is a budget for, so a
+/// sweep of that knob reads directly against it.
+///
+/// Lives here, in the instrument, rather than in either of the two places that call it:
+/// `measure_pose_with_config` below, where it is **identically zero** because the tree is
+/// an [`Ellipsoid`](cesium_engine::globe::quadtree::Ellipsoid) one, and
+/// `testing::terrain::test_terrain_lod`, where it is not. One definition, two surfaces —
+/// which is the whole reason this file states the metric instead of the module doc merely
+/// claiming there is nothing to state.
+pub fn geometric_error_px(error_mm: f64, dist_mm: f64, viewport_h: f64, fovy: f64) -> f64 {
+    if dist_mm <= 0.0 {
+        return f64::INFINITY;
+    }
+    error_mm * viewport_h / (dist_mm * 2.0 * (fovy * 0.5).tan())
+}
+
 /// The 204 poses the culling gate and `bench_update` already treat as
 /// representative: the nadir ladder plus the zoom-cliff ladder. Reusing them means
 /// a regression here and a regression in `bench_update`'s timings are always

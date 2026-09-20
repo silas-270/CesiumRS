@@ -77,7 +77,7 @@ use crate::testing::culling::cameras::{build_camera, ViewParams};
 use crate::testing::culling::oracle::{VisibilityOracle, NDC_MARGIN};
 
 /// Mesh density, the shipped default — the geometry checked is the geometry that ships.
-const SEGMENTS: u32 = 16;
+pub(crate) const SEGMENTS: u32 = 16;
 
 /// Deepest level the sweep's quadtree refines to, and the depth the synthetic source
 /// "serves" to. Deep enough that a valley tile is a kilometre across (which is the scale
@@ -87,7 +87,7 @@ const SWEEP_MAX_ZOOM: u8 = 14;
 
 /// Update ticks per pose, matching every other sweep in the repo: `apply_lod`'s 20 %
 /// hysteresis, `reorder_children_near_to_far` and D1's bounds refresh all need a few.
-const UPDATE_ITERATIONS: usize = 4;
+pub(crate) const UPDATE_ITERATIONS: usize = 4;
 
 /// Limb band, in scaled-space units — `test_terrain_visibility`'s constant, same role.
 const LIMB_BAND_SCALED: f64 = 1.0e-9;
@@ -210,7 +210,7 @@ fn fill_cache(
     }
 }
 
-fn bounds_source(heights: &HeightTileManager) -> HeightBoundsSource<'_> {
+pub(crate) fn bounds_source(heights: &HeightTileManager) -> HeightBoundsSource<'_> {
     HeightBoundsSource {
         heights,
         segments: SEGMENTS,
@@ -876,7 +876,7 @@ fn bench_terrain_occlusion_cost() {
 /// Where the terrarium PNGs are cached between runs. Set `CESIUM_HEIGHT_CACHE` to keep
 /// them; otherwise the system temp dir, which is still shared between runs on one
 /// machine.
-fn height_cache_dir() -> std::path::PathBuf {
+pub(crate) fn height_cache_dir() -> std::path::PathBuf {
     let dir = std::env::var_os("CESIUM_HEIGHT_CACHE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("cesium_terrarium_cache"));
@@ -892,7 +892,7 @@ fn terrarium_path(dir: &std::path::Path, id: TileId) -> std::path::PathBuf {
 ///
 /// `curl` rather than a Rust client on purpose: the root crate has no HTTP dependency
 /// and a measurement harness is not a reason to add one to the shipped dependency graph.
-fn fetch_missing(dir: &std::path::Path, ids: &[TileId]) {
+pub(crate) fn fetch_missing(dir: &std::path::Path, ids: &[TileId]) {
     let missing: Vec<TileId> = ids
         .iter()
         .copied()
@@ -918,20 +918,20 @@ fn fetch_missing(dir: &std::path::Path, ids: &[TileId]) {
 }
 
 /// The real DEM, tile by tile, off disk.
-struct RealWorld {
-    dir: std::path::PathBuf,
+pub(crate) struct RealWorld {
+    pub(crate) dir: std::path::PathBuf,
     tiles: HashMap<TileId, Arc<HeightTile>>,
 }
 
 impl RealWorld {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             dir: height_cache_dir(),
             tiles: HashMap::new(),
         }
     }
 
-    fn tile(&mut self, id: TileId) -> Arc<HeightTile> {
+    pub(crate) fn tile(&mut self, id: TileId) -> Arc<HeightTile> {
         if let Some(t) = self.tiles.get(&id) {
             return t.clone();
         }
@@ -956,7 +956,7 @@ impl RealWorld {
     }
 }
 
-fn real_config() -> TileEngineConfig {
+pub(crate) fn real_config() -> TileEngineConfig {
     TileEngineConfig {
         mesh_segments: SEGMENTS,
         target_texel_ratio: 1.0,
@@ -974,7 +974,7 @@ fn real_config() -> TileEngineConfig {
 
 /// Every height source the tree currently wants, so one `curl` invocation can fetch
 /// them all instead of one round trip per node.
-fn collect_sources(
+pub(crate) fn collect_sources(
     node: &QuadtreeNode<Heightfield>,
     heights: &HeightTileManager,
     out: &mut Vec<TileId>,
@@ -990,7 +990,7 @@ fn collect_sources(
     }
 }
 
-fn fill_cache_real(
+pub(crate) fn fill_cache_real(
     node: &QuadtreeNode<Heightfield>,
     heights: &mut HeightTileManager,
     w: &mut RealWorld,
@@ -1013,7 +1013,7 @@ fn fill_cache_real(
 /// from nadir, so the two differ by 90°. Everything else — longitude, latitude, altitude
 /// and the due-north bearing — is copied from `terrain_capture::poses` verbatim, which is
 /// what makes the numbers here comparable to the table in `docs/terrain-plan.md` §7b.
-fn real_poses() -> Vec<(&'static str, ViewParams)> {
+pub(crate) fn real_poses() -> Vec<(&'static str, ViewParams)> {
     let p = |name: &'static str, lon: f64, lat: f64, alt_m: f64, below: f64, yaw: f64| {
         (
             name,

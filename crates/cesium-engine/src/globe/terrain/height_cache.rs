@@ -481,6 +481,16 @@ impl HeightTileManager {
             // skirt allowance. See [`HeightBounds::floor`].
             floor: lo_m,
             floor_grid,
+            // **E1** — the measured geometric error, read off the tile that answers for
+            // `id`. Whole-tile, not per sub-rectangle, and that is exact rather than
+            // approximate wherever it matters: `status_of` above only answers `Ready`
+            // once `source_tile_for(id)` itself has landed, so below the source's ceiling
+            // `src == id` and this is `id`'s own error. Past the ceiling, and in the rare
+            // case where `id`'s own tile 404s and an ancestor answers, it is the
+            // ancestor's error over four or more times the ground — an over-statement,
+            // which refines early and costs tiles rather than shape, and which
+            // `Heightfield::geometric_error` clamps to zero past the ceiling anyway.
+            detail: (tile.detail() as f64 * METRES_TO_MEGAMETRES * exaggeration) as f32,
         })
     }
 
