@@ -1674,27 +1674,49 @@ fn stamp_node<S: SurfaceModel>(
     let north = DVec3::new(h[1].x as f64, h[1].y as f64, h[1].z as f64);
 
     let n = OCCLUDER_GRID as f64;
+
+    // The `OCCLUDER_GRID + 1` row boundaries, hoisted — §7c's first optimisation.
+    //
+    // `sub_bounds` derives two of these per sub-cell, and consecutive rows share one, so
+    // the loop below used to call `web_mercator_y_to_lat_f64` **32 times per node** for 5
+    // distinct values. It is an `atan` of a `sinh` and it was the largest single line in
+    // the march: hoisting it took the walk from 174 µs to 115 µs on the `alps_inn_valley`
+    // tree. The expressions and the `t` values are `sub_bounds`' own, so every rectangle
+    // built below is bit-identical to what it returned.
+    //
+    // Two more of these calls per row were **dead** — a `lat0`/`lat1` pair computed and
+    // then discarded through a `let _ = (lat0, lat1);`, left behind when this loop stopped
+    // deriving the rectangle by hand and started calling `sub_bounds`. That is 8 of the 40
+    // gone for nothing at all.
+    let mut lat = [0.0f64; OCCLUDER_GRID + 1];
+    let last_row = (1_u32 << node.id.z) - 1;
+    for (j, slot) in lat.iter_mut().enumerate() {
+        *slot = if j == 0 && node.id.y == 0 {
+            90.0
+        } else if j == OCCLUDER_GRID && node.id.y == last_row {
+            -90.0
+        } else {
+            web_mercator_y_to_lat_f64(node.id.y as f64 + j as f64 / n, node.id.z)
+        };
+    }
+
     for j in 0..OCCLUDER_GRID {
         // `v` counts south, `half_axes[1]` points north.
         let ty = 1.0 - 2.0 * (j as f64 + 0.5) / n;
-        let lat0 = web_mercator_y_to_lat_f64(node.id.y as f64 + j as f64 / n, node.id.z);
-        let lat1 = web_mercator_y_to_lat_f64(node.id.y as f64 + (j as f64 + 1.0) / n, node.id.z);
         for i in 0..OCCLUDER_GRID {
             let tx = 2.0 * (i as f64 + 0.5) / n - 1.0;
             let centre = node.obb.center + east * tx + north * ty;
-            // The sub-cell's own ground rectangle, from the same `sub_bounds`
+            // The sub-cell's own ground rectangle, on the same `sub_bounds`
             // parameterisation the mesh and the sub-patch grid use — not a scaled copy of
             // the node's box, whose circumradius stops describing a ground footprint at
             // all once a tile spans degrees.
-            let sb = sub_bounds(
-                &node.id,
-                bounds,
-                i as f64 / n,
-                (i as f64 + 1.0) / n,
-                j as f64 / n,
-                (j as f64 + 1.0) / n,
-            );
-            let _ = (lat0, lat1);
+            let sb = TileBounds {
+                lon_min: bounds.lon_min + (i as f64 / n) * (bounds.lon_max - bounds.lon_min),
+                lon_max: bounds.lon_min
+                    + ((i as f64 + 1.0) / n) * (bounds.lon_max - bounds.lon_min),
+                lat_min: lat[j + 1],
+                lat_max: lat[j],
+            };
             let (gamma, gr, near) = horizon.extent_of_pub(&sb);
             horizon.stamp(
                 centre,

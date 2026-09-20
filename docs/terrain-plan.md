@@ -737,6 +737,14 @@ ring they sit on could stamp once instead of sixteen times, and `finish` could h
 per-ring geometry out of the sector loop. Neither was needed to make D3 correct and both
 are measurements away.
 
+*(Both measured in §7c. The second is worth 33 % and is done. **The first does not exist**:
+of the 58–96 nodes stamped per frame, zero have a footprint inside a single cell, because
+`classify` descends only until the *sub-cells* beat the ring. What was actually costing the
+walk was 40 `web_mercator_y_to_lat_f64` calls per node for five distinct values, 8 of them
+dead. These figures are also an upper bound with 2–3× of machine load in them; §7c's
+before/after pairs were taken interleaved on the same loaded machine, and read 267 µs for
+the valley pose rather than 499.)*
+
 **Flat mode pays none of it**: `refresh_terrain_horizon` is never called on the
 `Ellipsoid` arm, `CullContext::terrain` is `None` there, and `Stage::TerrainOcclusion` is
 not in `CullPipeline::DEFAULT`.
@@ -871,6 +879,13 @@ it exists for. That is a change to the sub-patch stage's contract, it moves the 
 path's stage list, and it wants its own measurement — so it is recorded here rather than
 smuggled into D3.
 
+*(Built and measured in §7c, and **rejected**: two to four more tiles out of forty to
+sixty-seven, for six to ten times the cost of the whole D1+D2 pass, and **nothing at all**
+at the five capture poses. It needed neither a contract change nor a stage-list change in
+the end — it fitted inside `Stage::TerrainOcclusion` — but it did not earn its place, and
+the code is gone. §7c also corrects the two numbers this section reasons from: the far
+field is coarse because of **fog**, not the imagery LOD.)*
+
 **Does the sphere cull noticeably looser than the rectangle?** At these poses, no — not
 measurably. The limb stage is not what is keeping the extra tiles: at 4.5 km almost nothing
 in frame is anywhere near the limb, and the 400 km pose, which is the one that is, gains a
@@ -901,6 +916,229 @@ unchanged and un-re-pinned; `QuadtreeNode<Heightfield>` 240 B, `TilePatch<Height
 96 B. That asymmetry is the zero-sized payload doing exactly the job §1 designed it for,
 and `testing::terrain::test_terrain_visibility::the_zero_sized_payload_still_costs_the_flat_node_nothing`
 asserts it where it cannot change the gate's count.
+
+---
+
+## 7c. The sub-patch follow-up, measured and rejected — and the march made cheap
+
+§7b closed with a proposal and a complaint. The complaint: D3 removes **one tile** at
+`alps_inn_valley` and **none** at the other four capture poses, for a march costing
+293–499 µs a frame. The proposal: test **per sub-patch** rather than per node box, because
+`k²` small boxes follow a ridge line far more closely than one box fitted over the node's
+own `h_max`.
+
+Both were followed up. The proposal was built, measured at its ceiling, and **thrown
+away**; the march is now 27–43 % cheaper. This section is the measurement, including the
+part of it that says §7b was reading its own numbers through a confound.
+
+### First: §7b's captures were measuring a globe with the far field already gone
+
+Before any of this could be tuned it needed a harness that could be run in a loop.
+`rendering::terrain_capture` measures the real-terrain reduction but only alongside a GPU
+render, so `testing::terrain::test_terrain_occlusion::d3_on_real_terrain` was built to
+count the same tree instead of drawing it: the real DEM off `terrarium` (cached on disk),
+the capture's own poses, and the capture's own LOD threshold.
+
+It did not agree — 100 visible tiles at `alps_inn_valley` against the capture's 49, and a
+D3 reduction of −36 % against the capture's −2 %. The difference is **WP5's fog
+relaxation**. `apply_lod` multiplies `subdivide_dist` by `1 − fog(distance)`, and at 900 m,
+where fog is thickest, that stops the far field refining past z10/z11 *in the first place*.
+The ridge-world sweep runs at `fog_density = 0` and therefore hands D3 a far field
+production never draws.
+
+So §7b's second explanation — "the far field is coarse, z10–z11" — is right, and the reason
+it is coarse is not the LOD's imagery budget. It is fog. Set `fog_density` from
+`fog_density_for(alt)` as `wgpu_state` does and the harness lands on the capture to a tile
+(50 → 48 here, 49 → 48 there). Every number below is measured with it set.
+
+| pose | camera alt | D1+D2 | with D3 | delta |
+|---|--:|--:|--:|--:|
+| `alps_inn_valley` | 900 m | 50 | 48 | −4.0 % |
+| `alps_low` | 4.5 km | 46 | 46 | 0.0 % |
+| `alps_zugspitze` | 9 km | 45 | 45 | 0.0 % |
+| `himalaya_everest` | 11 km | 42 | 42 | 0.0 % |
+| `himalaya_limb_400km` | 400 km | 12 | 12 | 0.0 % (gate shut) |
+| `po_plain_to_alps` | 300 m | 64 | 63 | −1.6 % |
+| `terai_to_himalaya` | 600 m | 67 | 67 | 0.0 % |
+| `rhone_valley` | 900 m | 49 | 48 | −2.0 % |
+| `salzach_to_alps` | 800 m | 53 | 53 | 0.0 % |
+| `aosta_valley` | 900 m | 61 | 59 | −3.3 % |
+
+**The five extra poses are placed over ground whose height was looked up first**, and that
+is not fussiness. The first attempt at this list picked coordinates off a map, and three of
+four put the camera *inside a mountain* — 11.75 E / 47.28 N "in the Inn valley" is 1 998 m
+of Tuxer Alpen, 11.00 E / 45.60 N "the Po plain" is 499 m of Lessini hills, 86.83 E /
+27.80 N "the Khumbu valley" is 5 440 m. `TerrainHorizon::finish`'s enclosure guard
+correctly switched the whole march off at all three. Four poses reading a flat zero for a
+reason that has nothing to do with the thing under test is how a negative result gets faked
+by accident.
+
+### The sub-patch test: built, measured at its ceiling, removed
+
+`Stage::TerrainOcclusion` was given the node's `k × k` `SubGrid` — the same decomposition
+`Stage::SubPatchGrid` has used for the frustum and the limb since the culling rework — and
+culled a node only when **every** cell was individually proved hidden. Sound for the same
+reason `has_surviving_sub_patch` is: the cells' union is the whole drawn patch, so it is
+D3's own proof one level finer, and `d3_never_hides_a_visible_vertex` stayed at FN = 0
+throughout.
+
+It works. It is just not worth it.
+
+| pose | D1+D2 | node | sub-patch, gated | sub-patch, ungated |
+|---|--:|--:|--:|--:|
+| `alps_inn_valley` | 50 | 48 (−4.0 %) | 48 (−4.0 %) | 46 (−8.0 %) |
+| `alps_low` | 46 | 46 (0.0 %) | 46 (0.0 %) | 44 (−4.3 %) |
+| `alps_zugspitze` | 45 | 45 (0.0 %) | 45 (0.0 %) | 44 (−2.2 %) |
+| `himalaya_everest` | 42 | 42 (0.0 %) | 42 (0.0 %) | 41 (−2.4 %) |
+| `himalaya_limb_400km` | 12 | 12 (0.0 %) | 12 (0.0 %) | 12 (0.0 %) |
+| `po_plain_to_alps` | 64 | 63 (−1.6 %) | 63 (−1.6 %) | 58 (−9.4 %) |
+| `terai_to_himalaya` | 67 | 67 (0.0 %) | 66 (−1.5 %) | 63 (−6.0 %) |
+| `rhone_valley` | 49 | 48 (−2.0 %) | 47 (−4.1 %) | 46 (−6.1 %) |
+| `salzach_to_alps` | 53 | 53 (0.0 %) | 53 (0.0 %) | 50 (−5.7 %) |
+| `aosta_valley` | 61 | 59 (−3.3 %) | 58 (−4.9 %) | 57 (−6.6 %) |
+
+And the price, `update` per frame on the same trees:
+
+| pose | D1+D2 | +D3 node | +D3 sub-patch, ungated |
+|---|--:|--:|--:|
+| `alps_inn_valley` | 29 µs | 74 µs | **464 µs** |
+| `alps_low` | 22 µs | 47 µs | 398 µs |
+| `alps_zugspitze` | 21 µs | 56 µs | 460 µs |
+| `himalaya_everest` | 16 µs | 24 µs | 171 µs |
+| `rhone_valley` | 59 µs | 88 µs | 564 µs |
+| `aosta_valley` | 30 µs | 81 µs | 523 µs |
+
+**Three tiles across ten poses for 190 µs, or eleven tiles for 400 µs.** Either way the
+cull costs six to ten times what the entire D1+D2 pass costs, to remove two to four tiles
+out of forty to sixty-seven. The five capture poses — the ones this package is accepted
+against — move by **nothing at all** under the gated form. That is not a marginal call, so
+`OccludeeGranularity` and `SubGrid::every_sub_patch_is_occluded` were deleted rather than
+shipped behind a default-off knob: a measured negative result belongs in this document, and
+complex code that buys three tiles does not belong in the engine.
+
+Three things it is worth having found out, because each of them would have to be
+rediscovered by anyone who reads §7b's proposal and tries it again:
+
+1. **The gate is not free and the ungated form is not affordable.** The cheap filter that
+   makes the loop tolerable — skip a node whose box top already clears the tallest ridge
+   anywhere — is exactly the filter that throws the culls away, because the nodes whose
+   boxes clear everything are the *coarse* ones, and coarse nodes are where the culls are.
+   Benefit and cost live in the same place.
+2. **The culls are at z1–z6, and they are not mountains.** The level histogram
+   (`d3_sub_patch_granularity_probe`) puts every extra cull between z1 and z6 and none at
+   z7 or below. A z10 far-field tile 19–39 km across is never wholly hidden however finely
+   it is cut; what a finer occludee bound removes is a *coarse leaf* in the far field, and
+   what hides it is the terrain-aware **curvature** horizon, not a ridge. That is the same
+   thing §7b's flat-world control column was already saying about where the ridge world's
+   −31 % comes from.
+3. **`SUB_BOXES_PER_AXIS` only just happens to cover it.** The table is
+   `16, 16, 12, 8, 6, 4, 3, 2, 1`, so a node has a sub-grid only to `z = 7`. Had the culls
+   been one level deeper the proposal would have had nothing to work with at all, and §7b's
+   "`SubGrid` already carries a `k × k` decomposition" would have been simply false.
+
+The probe that measures the ceiling stays, and it needs no engine support:
+`d3_sub_patch_granularity_probe` builds each sub-rectangle's box with
+`QuadtreeNode::for_surface_with` on the descendant tile id at the parent's height interval
+— which is what `SubGrid::build` does one abstraction down — and reports what a 2×2, 4×4
+and 8×8 division would cull, against the ridge world as a positive control. The refutation
+is therefore re-runnable without the code it refutes.
+
+### The march, made cheap
+
+Since the stage rarely pays, it had better be cheap. §7b named two levers. One of them does
+not exist; the other is worth 33 %, and a third was sitting in plain sight.
+
+**Lever 1 — "16 stamps per node instead of one" — does not exist.** The condition under
+which one stamp is equivalent to sixteen is that the node's whole footprint lands inside a
+single (sector, ring) cell. Instrumented over the ten real poses: of the **58–96 nodes
+stamped per frame, zero** meet it, at any pose. That is not bad luck, it is what
+`TerrainHorizon::classify` is for — it descends until a node's *sub-cells* are at most half
+a ring wide, which leaves the node itself up to two rings wide and always spanning several
+15° sectors. The lever was measured away rather than argued away.
+
+**What was actually costing the walk was `web_mercator_y_to_lat_f64`.** `stamp_node` called
+it **40 times per node** for five distinct values: 32 inside `sub_bounds`, which re-derives
+both row boundaries for every one of the sixteen sub-cells, and **8 more that were dead** —
+a `lat0`/`lat1` pair computed per row and then discarded through a `let _ = (lat0, lat1);`,
+left behind when the loop stopped deriving its rectangle by hand and started calling
+`sub_bounds`. It is an `atan` of a `sinh` and it was the largest single line in the march.
+Hoisting the five boundaries to the top of the function and building each sub-rectangle
+from them — the same expressions at the same `v`, so the rectangles are bit-identical —
+takes the walk from **174 µs to 115 µs**.
+
+**Lever 2 — hoist the ring geometry out of the sector loop — is real.** `elevation_of`
+opened with `gamma.sin_cos()`, and `gamma` belongs to the *ring* while the bearing belongs
+to the sector, so the sector-major loop computed the same 48 sine-cosine pairs 24 times
+over. Turning the loops inside out (rings outer, sectors inner, the running maximum an
+array of 24 instead of a scalar) makes it 48 calls instead of 1 152 and takes `finish` from
+**52 µs to 35 µs**. Every finite cell is still evaluated: the tempting skip §7b's
+`RANGE_RINGS` note warns about is still wrong for the reason recorded there.
+
+Measured end to end, `refresh_terrain_horizon` once per frame, before and after,
+interleaved over two rounds to cancel the machine's drift (load 90–130 throughout):
+
+| pose | before | after | delta |
+|---|--:|--:|--:|
+| `alps_inn_valley` | 346 µs | 253 µs | **−27 %** |
+| `alps_low` | 271 µs | 175 µs | −35 % |
+| `alps_zugspitze` | 282 µs | 203 µs | −28 % |
+| `himalaya_everest` | 236 µs | 159 µs | −33 % |
+| `himalaya_limb_400km` | 0.8 µs | 0.9 µs | — (gate shut) |
+| `po_plain_to_alps` | 308 µs | 201 µs | −35 % |
+| `terai_to_himalaya` | 344 µs | 229 µs | −33 % |
+| `rhone_valley` | 333 µs | 210 µs | −37 % |
+| `salzach_to_alps` | 360 µs | 207 µs | **−43 %** |
+| `aosta_valley` | 355 µs | 232 µs | −35 % |
+
+…and on the ridge world, which is the table §7b quotes:
+
+| pose | march before | march after | `update` D1+D2 | `update` +D3 |
+|---|--:|--:|--:|--:|
+| valley | 267 µs | **170 µs** | 16 µs | 41 µs |
+| approach | 265 µs | 193 µs | 15 µs | 34 µs |
+| cockpit | 308 µs | 192 µs | 17 µs | 43 µs |
+| cruise 11 km | 219 µs | 167 µs | 14 µs | 28 µs |
+
+`update` does not move, which is the expected result: the stage itself was not touched.
+`TerrainHorizon::begin` was measured too, in case the two boxed 24 × 48 grids it allocates
+and fills every frame were hiding something — **0.4 µs**, so they are not.
+
+### What did not change, and what the acceptance says
+
+The stage's contract, the pipeline, the stage list and every flat-path number are untouched;
+`Stage::TerrainOcclusion` is byte-for-byte the test it was. `refresh_terrain_horizon` is
+never called on the `Ellipsoid` arm, so neither optimisation is even reachable from flat
+mode.
+
+* `cargo test --release --lib culling::` — **32 passed, 0 failed, 1 ignored**, no re-pin of
+  `size_of::<QuadtreeNode<Ellipsoid>>() == 192`, `TilePatch<Ellipsoid> == 64`,
+  `HorizonCamera == 56` or `test_visible_set_digest_is_stable`.
+* **FN = 0**, unchanged: `d3_never_hides_a_visible_vertex` (22 poses, 1 409 culled nodes)
+  and `terrain_sweep_has_no_false_negatives`.
+* The ridge world's reduction table is unchanged to the tenth of a percent — valley −31.2 %,
+  cockpit −9.7 %, approach −3.4 %, cruise 0.0 % — which is the check that the march still
+  computes the same grid.
+* **The five captures are byte-identical**, all three shots each, to the ones §7b committed.
+  Not "pixel-identical to within a sampled comparison": `cmp` on the PNGs. (The
+  `terrain_off` shots do differ run to run, including between two runs of the *same*
+  binary — that is the satellite imagery arriving differently, on a path that has no
+  terrain in it at all.)
+
+### Where this leaves D3
+
+Sound, cheap, and honest about how little it does. It removes one to two tiles in an Alpine
+valley, occasionally two or three, nothing at altitude, and nothing at all above 12 km
+because the gate shuts it off. The march is 170–250 µs once a frame and the per-node test is
+some 25–45 µs inside `update`. §7b's hope that a finer occludee bound would change that is
+now a measurement rather than a hope, and the measurement says no — twice over, once for
+what it buys and once for what it costs.
+
+The honest open question is no longer granularity. It is **fog**: the relaxation in
+`apply_lod` has already deleted most of the far field D3 was built to remove, which is why
+the synthetic world reads −31 % and the real one reads −4 %. Whether that relaxation is the
+right way to spend the far field is a WP5 question with its own trade — and, since
+`Stage::Fog` itself is unreachable in `DEFAULT_WITH_FOG` (§7b), the two belong in the same
+commit as each other rather than in this one.
 
 ---
 
@@ -962,7 +1200,8 @@ A ── B ──┬── C ──┬── D1 ── D2 ── D3 ──┬─
   thing here.
 - **D3 is the constraint-2 deliverable.** Do not let it slide to the end.
   *(Landed 2026-09-20. FN = 0, and see §7b for what it removes and — more usefully —
-  where it does not.)*
+  where it does not. Followed up 2026-09-21 in §7c: the per-sub-patch refinement §7b
+  proposed was built, measured and removed; the march is 27–43 % cheaper.)*
 
 ---
 
