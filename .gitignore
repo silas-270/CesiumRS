@@ -40,3 +40,6 @@ routes_test.png
 light_audit/
 haze_capture/
 
+
+# Written by testing::terrain::test_parametric_sweeps when run; regenerable.
+parametric_results.csv
