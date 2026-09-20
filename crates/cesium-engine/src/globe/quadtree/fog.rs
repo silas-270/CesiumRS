@@ -90,14 +90,27 @@ pub struct FogConfig {
     /// `Fog.maxHeight`, in metres. "The maximum height fog is applied. If the
     /// camera is above this height fog will be disabled."
     pub max_height_m: f32,
-    /// `Fog.screenSpaceErrorFactor`. Ported for parity with the CesiumJS defaults,
-    /// and reserved for a genuine screen-space-error-based relaxation once terrain
-    /// gives this engine a real geometric error term (`docs/pre-terrain-plan.md`
-    /// WP7's terrain brief, and `TileEngineConfig::target_texel_ratio`'s own doc
-    /// comment, both already anticipate that). **Not consumed** by
-    /// `QuadtreeNode::apply_lod`'s distance-threshold relaxation — see that
-    /// function's doc comment for the derivation and why `sse` has no unit-correct
-    /// role in it today.
+    /// `Fog.screenSpaceErrorFactor`. Ported for parity with the CesiumJS defaults, and
+    /// reserved since WP5 "once terrain gives this engine a real geometric error term".
+    ///
+    /// **E1 gave it one, and E1b measured whether Cesium's form beats WP5's. It does
+    /// not.** Cesium subtracts `fog(d) · sse` from the screen-space error *in pixels*
+    /// before comparing against the budget, which in this engine's distance form is
+    /// `terrain_dist /= 1 + fog · (sse / max_geometric_error_px)`; that is
+    /// [`super::quadtree::TerrainFogPolicy::CesiumSse`], it is implemented, and at an
+    /// equal tile budget over ten real-terrain poses it left **91.6** pixels of summed
+    /// far-field p95 geometric error against **84.3** for simply not relaxing the
+    /// geometric term at all. So the shipped policy is
+    /// [`super::quadtree::TerrainFogPolicy::ImageryOnly`] and this field is still not
+    /// consumed in production — now as a measured result rather than as a pending
+    /// question. `docs/terrain-plan.md` §8 has the table.
+    ///
+    /// The structural reason, which is worth more than the seven pixels: Cesium's form is
+    /// bounded below by `1/(1 + sse/max_px)` however thick the fog gets, so with this
+    /// engine's shipped budget it can only ever shorten the geometric refinement distance
+    /// by a fifth. It is a nudge where WP5's `× (1 − fog)` is a switch, and the question
+    /// E1b was actually asking — may fog coarsen a *mountain* — is answered "no" by both
+    /// of them far better than by WP5's.
     pub sse: f32,
 }
 

@@ -1304,6 +1304,54 @@ refined by imagery, is bit-identical.
 the shot contained a plain and a hill line and no Alps at all. `√(2Rh)` is checkable before
 rendering; it was not checked until the image came back. It is at 4 km now.
 
+#### E1b — fog was tuned on a globe with nothing to lose
+
+§7c named this the honest open question and it turns out to have a measurable answer.
+`apply_lod` multiplies `subdivide_dist` by `1 − fog(d)`. At 900 m, where fog is thickest,
+that is what stops the far field refining past z10/z11 — §7c measured the same pose at 100
+tiles and −36 % D3 reduction with fog off, and 50 tiles and −4 % with it on. It was tuned
+for a globe with **no relief**, where coarsening the far field is free because there is
+nothing out there but texture. With terrain it is distant mountains staying coarse bumps.
+
+Three policies (`TerrainFogPolicy`), all implemented, all re-runnable:
+
+| | geometric term multiplied by | at `fog → 1` |
+|---|---|---|
+| `Relax` | `1 − fog` — WP5's, extended to the new term. What E1a shipped. | **0** |
+| `ImageryOnly` | `1` | 1 |
+| `CesiumSse` | `1 / (1 + fog · sse/max_px)` — Cesium's own form | ≥ `1/(1+sse/max_px)` |
+
+`CesiumSse` is what finally gives `FogConfig::sse` units. Cesium subtracts `fog(d) · sse`
+from the screen-space error *in pixels* before comparing against the budget, and refining
+while `error_px − fog·sse > max_px` is refining while
+`dist < error · H / (2·tan(fovy/2) · (max_px + fog·sse))` — a division, not a
+multiplication, and bounded below however thick the fog gets. WP5's version is a switch
+where Cesium's is a nudge.
+
+**Measured at an equal tile budget**, which is this repo's own methodology for exactly this
+situation (WP4/C: "equal tile budget, not equal `target_texel_ratio`"). The budget is
+bisected per policy so all three land on the same total, and the column that decides is the
+p95 projected geometric error **in the far field**, past 20 km, because fog is negligible
+nearer than that by construction:
+
+| policy | budget | tiles | Σ p95 px | **Σ far-field p95 px** | far-field tiles |
+|---|--:|--:|--:|--:|--:|
+| `Relax` (WP5) | 8.01 px | 897 | 205.8 | **106.3** | 368 |
+| **`ImageryOnly`** | 9.71 px | 896 | 191.1 | **84.3** | 442 |
+| `CesiumSse` | 9.25 px | 887 | 203.7 | **91.6** | 419 |
+
+**`ImageryOnly` ships.** For the same tiles it leaves **21 % less geometric error in the
+far field** and moves 20 % more of the budget out there, which is precisely what §7c said
+was being lost. The argument matches the number: fog's case for relaxing *imagery* is as
+good as it ever was — a texture you cannot see through does not need to be sharp — and it
+does not transfer to silhouette, because haze does not hide an outline. The imagery term
+keeps WP5's `× (1 − fog)` unchanged and every number in `docs/culling-baseline.md` stands.
+
+**`CesiumSse` is a negative result and worth stating as one.** It loses to doing nothing at
+all, by 9 %. `FogConfig::sse` therefore stays unconsumed in production — now as a
+measurement rather than as a pending question, five sections after WP5 reserved it "once
+terrain gives this engine a real geometric error term".
+
 ### E3 — what landed
 
 **1. Field elevation, flipped.** `FlightPlanConfig::terrain_elevation` now defaults to `true`.

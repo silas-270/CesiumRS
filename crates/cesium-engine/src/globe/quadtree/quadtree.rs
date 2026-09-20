@@ -1102,10 +1102,17 @@ pub enum LodDistanceMode {
 pub enum TerrainFogPolicy {
     /// WP5's relaxation applied to the geometric term as well: `terrain_dist ×= 1 − fog`.
     /// What E1a shipped, before E1b measured it.
-    #[default]
     Relax,
     /// Fog does not touch the geometric term at all. The shape of the ground is refined on
     /// its own error and fog only decides how sharp the picture painted on it needs to be.
+    ///
+    /// **What E1b measured and shipped.** At an equal tile budget over ten real-DEM
+    /// poses it leaves 21 % less geometric error in the far field than [`Self::Relax`]
+    /// — 84.3 px of summed far-field p95 against 106.3 — and moves a fifth more of the
+    /// budget out there, which is exactly what §7c said was being lost. Fog's case for
+    /// relaxing *imagery* is as good as it ever was; it does not transfer to silhouette,
+    /// because haze does not hide an outline.
+    #[default]
     ImageryOnly,
     /// Cesium's own form, and the first thing to give [`super::fog::FogConfig::sse`]
     /// units in this engine.
