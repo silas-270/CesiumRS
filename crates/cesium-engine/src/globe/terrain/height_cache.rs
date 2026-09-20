@@ -19,7 +19,9 @@ use tokio::sync::mpsc;
 
 use crate::globe::quadtree::TileId;
 use crate::globe::terrain::height_tile::{decode_terrarium, HeightTile};
-use crate::globe::terrain::heightfield::{skirt_allowance, HeightBounds, PatchStatus};
+use crate::globe::terrain::heightfield::{
+    skirt_allowance, HeightBounds, PatchStatus, OCCLUDER_GRID, OCCLUDER_GRID_CELLS,
+};
 use crate::globe::tiles::config::{
     tile_cache_entries_for, OceanPolicy, TileEngineConfig, HEIGHT_TILE_BYTES,
 };
@@ -368,13 +370,40 @@ impl HeightTileManager {
         let (u0, v0) = Self::ancestor_uv(id, src, 0.0, 0.0);
         let (u1, v1) = Self::ancestor_uv(id, src, 1.0, 1.0);
         let (h_min_m, h_max_m) = tile.mip_extrema_over(u0, v0, u1, v1);
+        // D1's follow-up: the skirt is an *edge* property, so it is bounded from the
+        // edges. See `HeightTile::edge_window_range` and the "The skirt is in the box"
+        // note in `docs/terrain-plan.md` §7 for the 1.53× this replaces.
+        let edge_range_m = tile.edge_window_range(u0, v0, u1, v1) as f64;
 
         let exaggeration = exaggeration as f64;
         let lo_m = h_min_m as f64 * METRES_TO_MEGAMETRES * exaggeration;
         let hi_m = h_max_m as f64 * METRES_TO_MEGAMETRES * exaggeration;
+        let edge_range = edge_range_m * METRES_TO_MEGAMETRES * exaggeration;
+        // D3's occluder, per sub-cell. Each entry is the minimum over its own
+        // sub-rectangle of the same mip, which is what keeps a ridge from being averaged
+        // away against the ground on the far side of the tile — see
+        // `HeightBounds::floor_grid` for the measurement that made this a grid.
+        let mut floor_grid = [0.0f32; OCCLUDER_GRID_CELLS];
+        let n = OCCLUDER_GRID as f64;
+        for j in 0..OCCLUDER_GRID {
+            let (a, b) = (j as f64 / n, (j + 1) as f64 / n);
+            let (sv0, sv1) = (v0 + (v1 - v0) * a, v0 + (v1 - v0) * b);
+            for i in 0..OCCLUDER_GRID {
+                let (c, d) = (i as f64 / n, (i + 1) as f64 / n);
+                let (su0, su1) = (u0 + (u1 - u0) * c, u0 + (u1 - u0) * d);
+                let (cell_min, _) = tile.mip_extrema_over(su0, sv0, su1, sv1);
+                floor_grid[j * OCCLUDER_GRID + i] =
+                    (cell_min as f64 * METRES_TO_MEGAMETRES * exaggeration) as f32;
+            }
+        }
+
         Some(HeightBounds {
-            lo: lo_m - skirt_allowance(id, segments, hi_m - lo_m),
+            lo: lo_m - skirt_allowance(id, segments, edge_range),
             hi: hi_m,
+            // D3's occluder: the ground's own minimum over this tile, *without* the
+            // skirt allowance. See [`HeightBounds::floor`].
+            floor: lo_m,
+            floor_grid,
         })
     }
 

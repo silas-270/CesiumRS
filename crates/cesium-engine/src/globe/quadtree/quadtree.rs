@@ -237,9 +237,7 @@ pub fn lod_factor_for(
     viewport_height_px: f32,
     fovy_rad: f32,
 ) -> f32 {
-    (LOD_CALIBRATION_CONSTANT / texture_size_px)
-        * viewport_height_px
-        * target_texel_ratio.sqrt()
+    (LOD_CALIBRATION_CONSTANT / texture_size_px) * viewport_height_px * target_texel_ratio.sqrt()
         / (2.0 * (fovy_rad * 0.5).tan())
 }
 
@@ -685,6 +683,37 @@ pub enum Stage {
     /// warning on [`super::fog`]'s module doc comment before touching this stage's
     /// placement in any pipeline.
     Fog,
+    /// **D3** — the tile is behind a *mountain*, not behind the planet
+    /// ([`super::terrain_occlusion`], `docs/terrain-plan.md` §3.3). `Cull` when the
+    /// circumsphere of the node's D1 box lies entirely below the guaranteed ridge this
+    /// frame's occlusion march found in front of it; `Undecided` otherwise, including
+    /// whenever the march is inactive (terrain off, camera above the altitude gate, or
+    /// no `CullContext::terrain` at all — which is always, on the flat arm). Never
+    /// `Keep`: like the limb and frustum stages it proves invisibility and nothing else.
+    ///
+    /// # Sound, unlike [`Stage::Fog`] — and that is why it sits in a default pipeline
+    ///
+    /// The two are adjacent in this `enum` and their contracts are opposite, so this is
+    /// worth stating where both are in view. `Fog` **deliberately discards geometry that
+    /// is genuinely visible**; that is what atmospheric fog culling is, it makes false
+    /// negatives non-zero by design, and it is fenced out of [`CullPipeline::DEFAULT`]
+    /// for exactly that reason. `TerrainOcclusion` discards only what it has proved
+    /// invisible. It therefore belongs in [`CullPipeline::TERRAIN_DEFAULT`] — the
+    /// pipeline the terrain arm of [`super::any::AnyQuadtree`] runs *and* the one the
+    /// terrain harness measures — and is held to FN = 0 by
+    /// `testing::terrain::test_terrain_occlusion::d3_never_hides_a_visible_vertex`
+    /// rather than being kept away from the thing that would notice.
+    ///
+    /// # Why it is placed second, right after [`Stage::Horizon`]
+    ///
+    /// Not a preference — the only two slots where a stage that returns `Undecided` can
+    /// still run. [`Stage::NodeFrustum`] answers `Keep` outright for every node without
+    /// a sub-grid, and [`Stage::SubPatchGrid`] answers `Keep` or `Cull` for every node
+    /// with one, so a stage appended *after* those never executes (this is the same
+    /// structural fact [`CullPipeline::DEFAULT`]'s doc comment records as "the final rule
+    /// is never reached under `DEFAULT`"). Of the two live slots, the limb test is both
+    /// cheaper and more selective, so it keeps the first.
+    TerrainOcclusion,
 }
 
 impl Stage {
@@ -741,9 +770,24 @@ impl Stage {
                 // of `LodDistanceMode` (a separate, orthogonal WP4/C experiment):
                 // fog concealment is a property of the tile's own geometry, not of
                 // which LOD distance metric happens to be active.
-                let dist_m = node.obb.distance_to_point(ctx.frustum.eye)
-                    * MEGAMETERS_TO_METERS;
+                let dist_m = node.obb.distance_to_point(ctx.frustum.eye) * MEGAMETERS_TO_METERS;
                 if cesium_fog(dist_m, ctx.fog_density) >= 1.0 {
+                    StageVerdict::Cull
+                } else {
+                    StageVerdict::Undecided
+                }
+            }
+            Stage::TerrainOcclusion => {
+                let Some(horizon) = ctx.terrain else {
+                    return StageVerdict::Undecided;
+                };
+                // The node's own D1 box, which by I-1' contains every drawable point of
+                // the tile, skirts included. The **box**, not `bounding_radius` and not
+                // a sphere around it: a tile's box is a flat slab tangent to the globe,
+                // and collapsing it to a sphere claims the tile could be overhead. See
+                // `TerrainHorizon::occludes` for the measured difference (+11.8° against
+                // −1.1° on the same z12 tile).
+                if horizon.occludes(&node.obb, &tile_bounds(&node.id)) {
                     StageVerdict::Cull
                 } else {
                     StageVerdict::Undecided
@@ -754,7 +798,21 @@ impl Stage {
 }
 
 /// The most stages a pipeline can hold — one of each [`Stage`].
-pub const MAX_STAGES: usize = 4;
+///
+/// # Raised from 4 to 5 by D3, and what that cost the flat path
+///
+/// [`CullPipeline::keeps`] loops over `0..MAX_STAGES` with a `break` at `len`
+/// deliberately, so the trip count is a constant and the three-way `match` in
+/// [`Stage::run`] unrolls into one specialised copy per slot (measured: 6.9 µs against
+/// 7.3 µs for a slice loop — see that function's doc comment). Raising the constant adds
+/// a **fifth** such copy, which `CullPipeline::DEFAULT` (three stages) breaks out of
+/// before reaching. The cost is therefore code size, not frame time, and `bench_update`
+/// confirms it: mean `QuadtreeManager::update` over the 204 bench poses is unchanged
+/// inside run-to-run variance, and `size_of::<QuadtreeNode<Ellipsoid>>()` cannot move
+/// because a pipeline is not stored per node. `CullPipeline` itself grows from 4 B to
+/// 6 B; it lives on [`QuadtreeManager`] and is copied by value into [`CullContext`]
+/// once per frame.
+pub const MAX_STAGES: usize = 5;
 
 /// An ordered, switchable list of culling stages. `Copy`, 4 bytes, no allocation.
 ///
@@ -834,8 +892,53 @@ impl CullPipeline {
     /// be while measuring this pipeline. That is not a bug to fix; it is the reason
     /// `Stage::Fog` exists as an *addition* on top of `DEFAULT` rather than a change
     /// to it. See [`super::fog`]'s module doc comment for the full story.
-    pub const DEFAULT_WITH_FOG: CullPipeline =
-        CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid, Stage::Fog]);
+    pub const DEFAULT_WITH_FOG: CullPipeline = CullPipeline::of(&[
+        Stage::Horizon,
+        Stage::NodeFrustum,
+        Stage::SubPatchGrid,
+        Stage::Fog,
+    ]);
+
+    /// **The terrain arm's default** — `DEFAULT` with [`Stage::TerrainOcclusion`]
+    /// inserted second, right behind the limb test. D3 of `docs/terrain-plan.md` §7.
+    ///
+    /// # This one *is* sound, and is measured as such
+    ///
+    /// The opposite of [`Self::DEFAULT_WITH_FOG`] in every respect that matters. Fog
+    /// removes geometry that is genuinely visible, so it may never appear in a pipeline
+    /// the culling harness measures. Terrain occlusion removes only geometry it has
+    /// proved invisible, so it belongs in the default the terrain engine runs *and* in
+    /// the one the terrain harness measures, and
+    /// `testing::terrain::test_terrain_occlusion` holds it to FN = 0 against the drawn
+    /// mesh. Putting it here and then measuring something else would defeat the point.
+    ///
+    /// `CullPipeline::DEFAULT` is untouched and stays what the flat globe runs and what
+    /// every sweep in `src/testing/culling/` is proved against — a new `Stage` variant
+    /// changes nothing about a pipeline that does not list it.
+    ///
+    /// # Second, not last
+    ///
+    /// See [`Stage::TerrainOcclusion`]: `NodeFrustum` and `SubPatchGrid` between them
+    /// settle *every* node outright, so a fourth stage appended after them is
+    /// unreachable. The two live slots are first and second, and the limb test — 25 f64
+    /// flops and roughly half the globe — earns the first.
+    pub const TERRAIN_DEFAULT: CullPipeline = CullPipeline::of(&[
+        Stage::Horizon,
+        Stage::TerrainOcclusion,
+        Stage::NodeFrustum,
+        Stage::SubPatchGrid,
+    ]);
+
+    /// [`Self::TERRAIN_DEFAULT`] plus [`Stage::Fog`] — what `wgpu_state.rs` runs on the
+    /// terrain arm, exactly as [`Self::DEFAULT_WITH_FOG`] is what it runs on the flat
+    /// one. **Not for the harness**, for fog's reason and fog's reason only.
+    pub const TERRAIN_DEFAULT_WITH_FOG: CullPipeline = CullPipeline::of(&[
+        Stage::Horizon,
+        Stage::TerrainOcclusion,
+        Stage::NodeFrustum,
+        Stage::SubPatchGrid,
+        Stage::Fog,
+    ]);
 
     /// Builds a pipeline from a stage list. Panics above [`MAX_STAGES`] stages —
     /// `const`, so a bad constant fails to compile rather than at run time.
@@ -938,9 +1041,25 @@ pub enum LodDistanceMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct CullContext {
+pub struct CullContext<'a> {
     pub frustum: Frustum,
     pub horizon: HorizonCamera,
+    /// This frame's terrain occlusion march — **D3**, and the only borrowed thing in
+    /// this struct.
+    ///
+    /// A shared reference rather than a value on purpose. The march is a
+    /// [`AZIMUTH_SECTORS`](super::terrain_occlusion::AZIMUTH_SECTORS) ×
+    /// [`RANGE_RINGS`](super::terrain_occlusion::RANGE_RINGS) grid, ~6 kB, and this
+    /// struct is `Copy` and is rebuilt every frame on **both** arms — storing it by
+    /// value would charge the flat path a memcpy for a structure it can never fill.
+    /// `Option<&_>` is one niche-optimised word and is `None` on the flat arm, where
+    /// `QuadtreeManager::refresh_terrain_horizon` is never called.
+    ///
+    /// This is the one place the `NodeExtraSource` argument (a trait on the outside,
+    /// because the height cache is `&mut` and lives on `TileSystem`) does not apply: the
+    /// march is a finished, immutable, purely geometric structure by the time culling
+    /// starts, so there is nothing to keep out of a per-node read.
+    pub terrain: Option<&'a super::terrain_occlusion::TerrainHorizon>,
     /// Copied by value from [`QuadtreeManager::pipeline`] — 4 bytes, so the context
     /// stays `Copy` and the stage list is not rebuilt per frame.
     pub pipeline: CullPipeline,
@@ -958,7 +1077,7 @@ pub struct CullContext {
     pub max_zoom: u8,
 }
 
-impl CullContext {
+impl<'a> CullContext<'a> {
     /// The shipped configuration, [`CullPipeline::DEFAULT`].
     pub fn new(frustum: &Frustum) -> Self {
         Self::with_pipeline(frustum, CullPipeline::DEFAULT)
@@ -968,11 +1087,23 @@ impl CullContext {
         Self {
             frustum: *frustum,
             horizon: HorizonCamera::new(frustum.eye),
+            terrain: None,
             pipeline,
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
             max_zoom: MAX_ZOOM,
         }
+    }
+
+    /// D3 only — this frame's occlusion march. `None` (the default) is what every
+    /// existing caller and the whole flat path get, and it makes
+    /// [`Stage::TerrainOcclusion`] a single null check.
+    pub fn with_terrain_horizon(
+        mut self,
+        horizon: Option<&'a super::terrain_occlusion::TerrainHorizon>,
+    ) -> Self {
+        self.terrain = horizon;
+        self
     }
 
     /// WP4/C only — see [`LodDistanceMode`]. Not called anywhere in production.
@@ -1332,12 +1463,8 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         // from the same 4 cases as the position-swap table this replaces:
         // near_idx 0 -> [TL,TR,BL,BR], 1 -> [TR,TL,BR,BL], 2 -> [BL,BR,TL,TR],
         // 3 -> [BR,TR,BL,TL].
-        const SLOT_QUADRANT: [[usize; 4]; 4] = [
-            [0, 1, 2, 3],
-            [1, 0, 3, 2],
-            [2, 3, 0, 1],
-            [3, 1, 2, 0],
-        ];
+        const SLOT_QUADRANT: [[usize; 4]; 4] =
+            [[0, 1, 2, 3], [1, 0, 3, 2], [2, 3, 0, 1], [3, 1, 2, 0]];
         let want = SLOT_QUADRANT[near_idx];
 
         let base_x = self.id.x * 2;
@@ -1471,6 +1598,115 @@ fn refresh_node<S: SurfaceModel, X: NodeExtraSource<S>>(
     }
 }
 
+/// One node of [`QuadtreeManager::refresh_terrain_horizon`]'s occluder walk — **D3**.
+///
+/// Three outcomes, and the middle one is what keeps the walk bounded:
+///
+/// * `Skip` — the node's near edge is already beyond the march's range, so neither it nor
+///   anything under it can touch a cell. This is the prune that stops the walk being
+///   proportional to the whole tree.
+/// * `Descend` with children — the node is angularly larger than the cells it sits on, so
+///   its children have tighter (higher) floors over the same ground. A node whose
+///   children were culled or never created falls through to `Stamp`, which is correct
+///   rather than a fallback: it is then a leaf of the partition.
+/// * `Stamp` — record this node's floor in every cell its footprint can reach.
+///
+/// The union of the stamped nodes is the whole globe, which is the property
+/// [`TerrainHorizon::stamp`](super::terrain_occlusion::TerrainHorizon::stamp) relies on:
+/// a cell's floor is the minimum over everything stamped into it, so a cell that is only
+/// partly covered would keep a floor that is too high, and a floor that is too high is
+/// the one error that loses geometry.
+///
+/// A node's **circumsphere** is what gets stamped — the box's, not `bounding_radius`'s,
+/// for the same reason [`Stage::TerrainOcclusion`] queries with it: it is the sphere that
+/// provably contains the node's ground. Over-covering a cell can only pull its floor
+/// down, which is the conservative direction.
+fn stamp_occluders<S: SurfaceModel>(
+    node: &QuadtreeNode<S>,
+    horizon: &mut super::terrain_occlusion::TerrainHorizon,
+) {
+    use super::terrain_occlusion::OccluderStep;
+
+    let bounds = tile_bounds(&node.id);
+    match horizon.classify(&bounds) {
+        OccluderStep::Skip => {}
+        OccluderStep::Descend => match &node.children {
+            Some(children) => {
+                for c in children.iter() {
+                    stamp_occluders(c, horizon);
+                }
+            }
+            None => stamp_node(node, &bounds, horizon),
+        },
+        OccluderStep::Stamp => stamp_node(node, &bounds, horizon),
+    }
+}
+
+/// Stamps one node's `4 × 4` occluder grid, sub-cell by sub-cell — **D3**.
+///
+/// # Why each sub-cell is placed by the box's own axes
+///
+/// The node's box is built in the [`tangent_frame`] at its centre: `half_axes[0]` runs
+/// east along the tile's `u`, `half_axes[1]` north against its Mercator `v`, and
+/// `half_axes[2]` is the relief. A sub-cell's centre is therefore the box centre plus a
+/// linear step along the first two, which costs six multiplies instead of a
+/// `lon_lat_to_ecef` per sub-cell — sixteen of those per node, on every node in range,
+/// every frame.
+///
+/// The linear step is not exact: the real sub-rectangle centres bow toward the eye by the
+/// patch's sagitta, `≈ r²/2R`, which is 1.7 m on a z12 tile and a few hundred metres on a
+/// z8 one. That error is added straight back onto the sub-cell's radius, because the
+/// direction that matters here is **outward**: a stamp that covers more cells than it
+/// should can only pull those cells' floors *down* (they take the minimum over everything
+/// stamped into them, the true contributors included), while a stamp that covers fewer
+/// leaves a cell holding a floor that is too high — which is a false negative, and by I-7
+/// a subtree.
+fn stamp_node<S: SurfaceModel>(
+    node: &QuadtreeNode<S>,
+    bounds: &TileBounds,
+    horizon: &mut super::terrain_occlusion::TerrainHorizon,
+) {
+    use crate::globe::terrain::heightfield::OCCLUDER_GRID;
+
+    let floors = S::occluder_floor(&node.extra);
+    let h = &node.obb.half_axes;
+    let east = DVec3::new(h[0].x as f64, h[0].y as f64, h[0].z as f64);
+    let north = DVec3::new(h[1].x as f64, h[1].y as f64, h[1].z as f64);
+
+    let n = OCCLUDER_GRID as f64;
+    for j in 0..OCCLUDER_GRID {
+        // `v` counts south, `half_axes[1]` points north.
+        let ty = 1.0 - 2.0 * (j as f64 + 0.5) / n;
+        let lat0 = web_mercator_y_to_lat_f64(node.id.y as f64 + j as f64 / n, node.id.z);
+        let lat1 = web_mercator_y_to_lat_f64(node.id.y as f64 + (j as f64 + 1.0) / n, node.id.z);
+        for i in 0..OCCLUDER_GRID {
+            let tx = 2.0 * (i as f64 + 0.5) / n - 1.0;
+            let centre = node.obb.center + east * tx + north * ty;
+            // The sub-cell's own ground rectangle, from the same `sub_bounds`
+            // parameterisation the mesh and the sub-patch grid use — not a scaled copy of
+            // the node's box, whose circumradius stops describing a ground footprint at
+            // all once a tile spans degrees.
+            let sb = sub_bounds(
+                &node.id,
+                bounds,
+                i as f64 / n,
+                (i as f64 + 1.0) / n,
+                j as f64 / n,
+                (j as f64 + 1.0) / n,
+            );
+            let _ = (lat0, lat1);
+            let (gamma, gr, near) = horizon.extent_of_pub(&sb);
+            horizon.stamp(
+                centre,
+                gamma,
+                gr,
+                near,
+                floors[j * OCCLUDER_GRID + i] as f64,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod reorder_children_tests {
     use super::*;
@@ -1500,8 +1736,13 @@ mod reorder_children_tests {
         for (east, north, near_idx) in cases {
             let mut node = make_node();
             node.subdivide();
-            let ids_before: Vec<TileId> =
-                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+            let ids_before: Vec<TileId> = node
+                .children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect();
 
             let bounds = tile_bounds(&node.id);
             let up = ellipsoid_normal(node.center);
@@ -1513,8 +1754,13 @@ mod reorder_children_tests {
             let eye = node.center + (east_axis * sx + north_axis * sy + up) * 1.0e7;
 
             node.reorder_children_near_to_far(eye);
-            let ids_after: Vec<TileId> =
-                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+            let ids_after: Vec<TileId> = node
+                .children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect();
 
             let far_idx = 3 - near_idx;
             assert_eq!(
@@ -1575,16 +1821,26 @@ mod reorder_children_tests {
             let eye = node.center + (east_axis * sx + north_axis * sy + up) * 1.0e7;
 
             node.reorder_children_near_to_far(eye);
-            let after_first: Vec<TileId> =
-                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+            let after_first: Vec<TileId> = node
+                .children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect();
 
             // Same tick-over-tick call the real update loop makes when the
             // camera hasn't moved. UPDATE_ITERATIONS is 4 in the harness, so
             // simulate a few repeats, not just one.
             for _ in 0..4 {
                 node.reorder_children_near_to_far(eye);
-                let after_repeat: Vec<TileId> =
-                    node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+                let after_repeat: Vec<TileId> = node
+                    .children
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|c| c.id)
+                    .collect();
                 assert_eq!(
                     after_repeat, after_first,
                     "east={east} north={north}: reordering with an unchanged eye \
@@ -1615,15 +1871,25 @@ mod reorder_children_tests {
         reference.subdivide();
         let eye = eye_for(&reference, true, false); // BR near, arbitrary choice
         reference.reorder_children_near_to_far(eye);
-        let expected: Vec<TileId> =
-            reference.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+        let expected: Vec<TileId> = reference
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.id)
+            .collect();
 
         // Same node, but scrambled into every other starting permutation of
         // the 4 children before reordering with the same eye.
         let mut base = make_node();
         base.subdivide();
-        let original: Vec<TileId> =
-            base.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+        let original: Vec<TileId> = base
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.id)
+            .collect();
 
         let mut permutations: Vec<[usize; 4]> = Vec::new();
         for a in 0..4 {
@@ -1654,12 +1920,26 @@ mod reorder_children_tests {
                     children.swap(target, cur);
                 }
             }
-            let scrambled: Vec<TileId> =
-                node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
-            assert_eq!(scrambled, perm.iter().map(|&i| original[i]).collect::<Vec<_>>());
+            let scrambled: Vec<TileId> = node
+                .children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            assert_eq!(
+                scrambled,
+                perm.iter().map(|&i| original[i]).collect::<Vec<_>>()
+            );
 
             node.reorder_children_near_to_far(eye);
-            let got: Vec<TileId> = node.children.as_ref().unwrap().iter().map(|c| c.id).collect();
+            let got: Vec<TileId> = node
+                .children
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect();
             assert_eq!(
                 got, expected,
                 "starting permutation {perm:?} did not converge to the same \
@@ -1673,10 +1953,7 @@ mod reorder_children_tests {
         let mut qt = QuadtreeManager::new();
         qt.max_zoom = 3;
         // Place camera right on top of root 0
-        let frustum = Frustum::planes_only(
-            [DVec3::ZERO; 4],
-            qt.roots[0].center,
-        );
+        let frustum = Frustum::planes_only([DVec3::ZERO; 4], qt.roots[0].center);
         qt.lod_factor = 1000.0; // Force maximum subdivision
         qt.update(&frustum);
         let visible = qt.get_visible_tiles();
@@ -1710,6 +1987,14 @@ pub struct QuadtreeManager<S: SurfaceModel = Ellipsoid> {
     pub fog_density: f32,
     /// Maximum zoom level to refine down to. Defaults to [`MAX_ZOOM`].
     pub max_zoom: u8,
+    /// **D3** — this frame's occlusion march, or `None` when there is none.
+    ///
+    /// `None` on the flat arm always: [`Self::refresh_terrain_horizon`] is the only thing
+    /// that sets it and nothing calls it for [`Ellipsoid`], whose
+    /// [`SurfaceModel::occluder_floor`] is `-∞` anyway. One `Option<Box<_>>` word per
+    /// *manager* (there are four in the process, not four per node), read once per frame
+    /// when the context is built.
+    terrain_horizon: Option<Box<super::terrain_occlusion::TerrainHorizon>>,
 }
 
 impl Default for QuadtreeManager<Ellipsoid> {
@@ -1741,6 +2026,7 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
             lod_distance_mode: LodDistanceMode::default(),
             fog_density: 0.0,
             max_zoom: MAX_ZOOM,
+            terrain_horizon: None,
         }
     }
 
@@ -1759,12 +2045,75 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
         }
     }
 
+    /// Rebuilds this frame's terrain occlusion march from the tree as it stands —
+    /// **D3**, `docs/terrain-plan.md` §3.3.
+    ///
+    /// Call after [`Self::refresh_extras`] and before [`Self::update`], with the camera
+    /// this frame will cull against. Never called for [`Ellipsoid`].
+    ///
+    /// # Why the occluders are the tree's own nodes
+    ///
+    /// Because the tree is the only place a *sound lower bound on the terrain surface*
+    /// already exists. Every node carries one ([`SurfaceModel::occluder_floor`], which
+    /// for `Heightfield` is D1's `HeightBounds::floor`), it is derived from B3's min/max
+    /// mip with the cell range rounded outward, and where no data has arrived it is the
+    /// parent's widened by the measured margin — loose, and loose downward, which
+    /// occludes less rather than more. Querying the height cache again here would have
+    /// meant deriving and measuring a *second* margin for the same quantity, in the
+    /// other direction, with nothing to gain.
+    ///
+    /// # Why it is a partition and why that matters
+    ///
+    /// The walk descends from the roots and stops at every node it does not descend into
+    /// — real leaves, nodes small enough that descending would not refine any cell they
+    /// touch, and nodes the previous frame culled (which keep their payload and simply
+    /// have no children). The stopping set therefore **covers the globe exactly once**,
+    /// so every cell within range receives at least one stamp and no cell is left with
+    /// an unearned floor. A cell that somehow received none stays at `+∞` and
+    /// [`TerrainHorizon::finish`](super::terrain_occlusion::TerrainHorizon::finish)
+    /// reads that as "nothing guaranteed", never as "guaranteed high".
+    ///
+    /// # The tree is one frame stale, and that is fine
+    ///
+    /// The occluders come from the tree the *previous* frame left behind, exactly as
+    /// `refresh_extras`' inheritance does. A node's floor is a statement about the ground
+    /// under a fixed footprint; it does not go stale when the camera moves. What can be
+    /// stale is the tree's *depth* — a region refined to z15 last frame may want z16 this
+    /// frame — and a coarser node has a *lower* floor, so staleness occludes less.
+    pub fn refresh_terrain_horizon(
+        &mut self,
+        eye: DVec3,
+        cam_alt: f64,
+        cfg: &super::terrain_occlusion::TerrainOcclusionConfig,
+    ) {
+        let mut horizon = super::terrain_occlusion::TerrainHorizon::begin(eye, cam_alt, cfg);
+        if horizon.is_active() {
+            for root in self.roots.iter() {
+                stamp_occluders(root, &mut horizon);
+            }
+            horizon.finish();
+        }
+        self.terrain_horizon = Some(Box::new(horizon));
+    }
+
+    /// Forgets this frame's march. The next [`Self::update`] runs D1+D2 only.
+    pub fn clear_terrain_horizon(&mut self) {
+        self.terrain_horizon = None;
+    }
+
+    /// This frame's march, if one was built — a read-only window for tests and debug
+    /// readouts. `None` on the flat arm always.
+    pub fn terrain_horizon(&self) -> Option<&super::terrain_occlusion::TerrainHorizon> {
+        self.terrain_horizon.as_deref()
+    }
+
     /// The camera position is `frustum.eye`: the frustum *is* the camera-relative
     /// frame, so there is no second position argument to get out of step with it.
     pub fn update(&mut self, frustum: &Frustum) {
         let ctx = CullContext::with_pipeline(frustum, self.pipeline)
             .with_lod_distance_mode(self.lod_distance_mode)
             .with_fog_density(self.fog_density)
+            .with_terrain_horizon(self.terrain_horizon.as_deref())
             .with_max_zoom(self.max_zoom);
         for root in self.roots.iter_mut() {
             root.update(&ctx, self.lod_factor);

@@ -185,6 +185,8 @@ lookups into a small array.
 
 - **Unlike fog, this stage is sound.** It can live in the terrain-mode `CullPipeline::DEFAULT`
   and be verified by the harness at FN = 0, rather than being fenced out of it.
+  *(Done — `CullPipeline::TERRAIN_DEFAULT`. And while writing it down: `Stage::Fog` is not
+  merely unsound, it is **unreachable** where it currently sits. See §7b.)*
 - **It pays off unevenly, and that is fine.** At 10–12 km cruise you are above almost
   everything and it will cull little. In valleys, on approach, and in cockpit view it is the
   difference between drawing a mountain range and drawing everything behind it too. Gate it on
@@ -441,8 +443,8 @@ hurt, real data is there. Confirm that rather than believing it.
 D1, D2 and D3 independently and together. FP recorded per stage so D3's benefit is visible
 against its cost. Flat mode: Phase A's list, still unchanged.
 
-*(D1 and D2 landed 2026-09-20. D3 is still open. Everything below is what doing them
-produced or corrected.)*
+*(D1 and D2 landed 2026-09-20; **D3 landed 2026-09-20** together with D1's named
+bounding-box follow-up. Everything below is what doing them produced or corrected.)*
 
 ### How the bounds reach a node
 
@@ -606,30 +608,268 @@ the visible set goes **36 → 46 tiles** (+28 %), over the Zugspitze at 9 km 39 
 over Everest at 11 km 33 → 42 (+27 %), at the 400 km limb 11 → 12 (+9 %). D3 is what buys
 some of this back, and the number to beat is in this table.
 
+
+---
+
+## 7b. D3 — the occlusion march, as built
+
+`globe/quadtree/terrain_occlusion.rs`, `Stage::TerrainOcclusion`,
+`CullPipeline::TERRAIN_DEFAULT`. **FN = 0** over 22 poses and 1 409 culled nodes
+(`testing::terrain::test_terrain_occlusion`), against an oracle that adds the third term
+the D1/D2 sweep deliberately lacks.
+
+### The march is amortised over the frame, not re-run per candidate
+
+§3.3 describes marching the cone from the eye to each candidate. The answer does not
+depend on the candidate — only on bearing and range — so the march runs **once per
+frame** into a polar grid of 24 azimuth sectors × 48 range rings around the camera, and a
+candidate costs a handful of lookups into it. That is §3.3's "16–32 lookups into a small
+array" with the pyramid walk paid once instead of once per tile.
+
+Each cell holds a **lower bound on the terrain** over its wedge-annulus footprint, and
+`finish` converts it to the elevation angle of a wall standing at the cell's **far** edge,
+accumulated as a running maximum over the nearer rings. A candidate is culled when an
+**upper** bound on the elevation angle of its whole box is below the **minimum** of that
+wall over every sector the candidate spans. Every bound is the one that makes the claim
+weaker; the module doc has the table and the soundness proof.
+
+### The occluders are the quadtree's own node floors
+
+Not a second query path into the height cache. D1 already maintains a sound lower bound on
+the ground per node, so the march walks the tree exactly as `refresh_extras` does and
+stamps each node's floor into the cells it covers. The walk is a **partition** — it stops
+at nodes it does not descend into, culled ones included — so every cell in range is
+covered and its floor is the minimum over everything stamped into it. Building a second
+path would have meant measuring a second margin, in the other direction, for a quantity
+D1 already bounds.
+
+### Four things this got wrong first, all of them measurable and none of them obvious
+
+Written down because each one was *invisible in the tile counts* until the specific probe
+that exposed it, and three of the four still culled plenty while being wrong.
+
+1. **A bounding *sphere* for the occludee is useless.** A tile's box is a flat slab
+   tangent to the globe; its circumsphere claims the tile could be overhead. On the
+   valley pose a z12 tile 20 km out has a 4.7 km circumradius, so the sphere bound puts
+   its highest point at **+11.8°** where the box bound puts it at **−1.1°**, against a
+   ridge at +11.3°. Fixed by bounding `vert_max` and `horiz` separately off the box, with
+   the horizontal extreme branched on the sign of the vertical one.
+2. **A whole-tile minimum is not a ridge.** The LOD sizes a node for *imagery*: at the
+   stand-off where D3 matters the crest lands inside a z12 tile 6.6 km across, whose
+   minimum is the ground on the far side — 1 132 m against a 3 400 m crest. The ridge
+   disappeared from the occluder and the stage culled only against the curvature horizon.
+   **The probe that caught it: flatten the test world's ridge and the tile counts do not
+   move.** Fixed by `HeightBounds::floor_grid`, a 4 × 4 minimum per node.
+3. **The same failure radially.** A cell's floor is a minimum over its whole radial
+   extent, so a ring deeper than the ridge is wide averages the crest with the valley in
+   front of it. 16 rings (7.2 km deep at 22 km) and 24 rings (5.1 km) both lost the crest;
+   48 rings (2.4 km) keep it.
+4. **A stamp thinner than a ring may not claim that ring's far edge.** The wall stands at
+   the far edge, so a 200 m-deep stamp writing into a 1 km-deep ring claims ground a
+   kilometre beyond what it bounds. 122 false negatives, the moment the stamps got tight
+   enough for it to matter.
+
+And one plain arithmetic slip worth recording because it was the hardest to see: inverting
+the ellipsoid normal to the camera's own latitude needs **one** power of the flattening
+(`tan φ = (b/a)·n_y/‖n_h‖`), not two. Squaring both radii moves the camera 0.096° —
+**10.6 km** on the ground — and every bearing and range in the file with it.
+
+### Measured reduction
+
+`testing::terrain::test_terrain_occlusion`, synthetic ridge world: a continuous
+east–west crest 2.8 km above a 600 m plateau, σ ≈ 5 km, with one col through it. All poses
+look due north into the crest. The last column is the **control**: the same pose over the
+same world with the ridge flattened, i.e. what the stage removes against the *curvature*
+horizon alone.
+
+| pose | camera alt | D1+D2 | with D3 | delta | flat-world control |
+|---|--:|--:|--:|--:|--:|
+| valley (11 km out) | 1 200 m | 64 | 44 | **−31.2 %** | −20.3 % |
+| cockpit (18 km out) | 2 000 m | 62 | 56 | −9.7 % | −9.7 % |
+| approach (31 km out) | 3 000 m | 58 | 56 | −3.4 % | −3.4 % |
+| cruise (66 km out) | 11 000 m | 45 | 45 | 0.0 % | 0.0 % |
+
+The valley row is the deliverable: **11 points of the 31 are the mountain**, and the rest
+is the terrain-aware curvature horizon that comes with it. The cruise row is the
+counter-check §3.3 asks for, and it reads zero.
+
+### The altitude gate, measured
+
+`d3_altitude_gate_is_where_the_benefit_stops`, same stand-off geometry walked up in
+altitude with the gate held open, at two crest heights:
+
+| camera alt | 2.8 km crest | 8.0 km crest |
+|--:|--:|--:|
+| 800 m | −27.9 % | −27.9 % |
+| 1 500 m | −16.7 % | −16.7 % |
+| 3 000 m | −3.7 % | −3.7 % |
+| 5 000 m | −4.3 % | −4.3 % |
+| 8 000 m | −4.3 % | −4.3 % |
+| 12 000 m | 0.0 % | 0.0 % |
+| 20 000 m | 0.0 % | 0.0 % |
+| 40 000 m | 0.0 % | 0.0 % |
+
+Three regimes: a large benefit below ~2 km, a −4 % plateau to 8 km, and exactly zero from
+12 km up. **`max_camera_altitude_m = 12 000`** — the first altitude that measures zero, not
+the knee, because shutting the stage off at the knee would give up a real 4.3 % at 5 and
+8 km to save a march that costs tens of microseconds once a frame. The two crest columns
+agree, which is itself a finding: past ~3 km the reduction *saturates* — the shadow
+lengthens but there are no tiles left in it — so the curve to read a threshold off is the
+altitude one, not the relief one.
+
+### Cost
+
+`bench_terrain_occlusion_cost`, on a machine under load 125–169 (the same conditions that
+made `bench_update` read 10–25 µs for a 6.9 µs mean, so treat these as an upper bound with
+roughly 2–3× of inflation in them):
+
+| pose | march, once/frame | `update` D1+D2 | `update` +D3 |
+|---|--:|--:|--:|
+| valley | 499 µs | 47 µs | 106 µs |
+| approach | 479 µs | 38 µs | 81 µs |
+| cockpit | 416 µs | 27 µs | 67 µs |
+| cruise 11 km | 293 µs | 17 µs | 37 µs |
+
+The march is the expensive half and it is the obvious next optimisation: it is 16 stamps
+per in-range node, each costing an `acos`, an `atan2`, a `sin` and an `asin`, plus
+24 × 48 elevation angles in `finish`. A node whose sub-cells are already finer than the
+ring they sit on could stamp once instead of sixteen times, and `finish` could hoist the
+per-ring geometry out of the sector loop. Neither was needed to make D3 correct and both
+are measurements away.
+
+**Flat mode pays none of it**: `refresh_terrain_horizon` is never called on the
+`Ellipsoid` arm, `CullContext::terrain` is `None` there, and `Stage::TerrainOcclusion` is
+not in `CullPipeline::DEFAULT`.
+
+### `MAX_STAGES` went 4 → 5
+
+`CullPipeline::TERRAIN_DEFAULT_WITH_FOG` needs five. The flat consequences, measured:
+`size_of::<QuadtreeNode<Ellipsoid>>()` is 192 B and `bench_update` reports 1 919 B/node
+and a mean inside run-to-run variance (13.2 / 20.4 / 22.3 µs against a 20.4 µs baseline on
+the same loaded machine). `CullPipeline::keeps` unrolls one more dead slot that `DEFAULT`
+breaks out of before reaching, so the cost is code size. `CullPipeline` itself grows 4 B →
+6 B and is not stored per node.
+
+### Where the stage sits, and a structural fact worth knowing
+
+`Stage::TerrainOcclusion` is **second**, right after `Stage::Horizon`. That is not a
+preference: `Stage::NodeFrustum` answers `Keep` outright for every node without a
+sub-grid and `Stage::SubPatchGrid` answers `Keep` or `Cull` for every node with one, so a
+stage appended *after* those never runs. `CullPipeline::DEFAULT`'s own doc comment already
+records the fact ("the final rule is never reached under `DEFAULT`") without drawing the
+consequence.
+
+**The same fact means `Stage::Fog` is unreachable in `DEFAULT_WITH_FOG`.** It is the
+fourth stage of four, behind exactly those two, so `CullPipeline::keeps` returns before it
+runs — for every node, at every camera. Whatever WP5's fog culling contributes today, it
+comes from `apply_lod`'s `subdivide_dist` relaxation and not from the stage. **Not touched
+here**: moving it would change production behaviour, and this package's contract is that
+the flat path does not move. It belongs in its own commit with its own measurement.
+
+### D1's follow-up: the loose half of the box, tightened
+
+§7 recorded the node interval at **1.53×** the mesh interval with a named cause — the
+skirt allowance bounded C3's crack by the *whole tile's* height range. C3's crack is an
+**edge** property, over aligned quarter-windows of each edge, so
+`HeightTile::edge_window_range` bounds it from the edges instead, with a two-texel halo in
+place of `mip_extrema_over`'s deliberately generous whole-cell one.
+
+| fixture (z12) | C3's real skirt | old bound | new bound | old inflation | new inflation |
+|---|--:|--:|--:|--:|--:|
+| Everest | 741 m | 3 617 m | **2 874 m** | 1.69× | **1.52×** |
+| Zugspitze | 635 m | 2 099 m | **1 519 m** | 1.57× | **1.36×** |
+| Monterey coast | 25 m | 146 m | **86 m** | 2.03× | **1.62×** |
+| Pacific | 102 m | 2 048 m | **1 299 m** | 1.91× | **1.56×** |
+
+On the terrain sweep's synthetic field the false-positive rate moves 10.39 % → **10.29 %**
+(273/2 627 → 270/2 624), and that small number is the fixture's doing rather than the
+change's: the sweep's field is incommensurable noise at every scale, which makes an edge's
+range equal to the tile's and is precisely the field on which this change cannot show. The
+committed PNGs are what say otherwise. **What is still loose** is now the mip's own
+granularity — a quarter-edge window is 4 of 16 mip cells plus a halo, so on Everest the
+bound is 2 874 m against a real 741 m. Reading the edge's texels directly would close most
+of the rest and costs ~1 000 reads per node per refresh; that is the next follow-up, with
+its number, rather than a surprise.
+
+**It is not free, and the price is in the inheritance.** Tightening `lo` raises the
+child's end *and* the parent's, and the corpus measured the margin table against
+whole-tile spans. `Heightfield::child_extra` now hands the parent's whole-tile allowance
+back — as a **level-constant** (`inherit_allowance_mm`), never as `parent.hi − parent.lo`,
+which would compound down an unloaded chain and have the box larger than the solar system
+by z15. The composition then closes against the numbers already in the table, with no
+re-measurement the committed corpus (whole-tile extrema only) could not support. Two
+consequences worth stating:
+
+- `below_the_source_ceiling_…` no longer asserts raw containment. Past z15 a child's
+  *edges* are interior lines of its parent, so its allowance can exceed its parent's —
+  measured at up to 470 m on the real data path. The test now checks the inheritance
+  **policy**, which is what I-7 actually depends on.
+- A cold z1→z15 chain accumulates a bounded ~1 300 km of downward slack instead of the
+  ~113 km §7 records. Sound, transient, and numerically ordinary; below z15 it never
+  happens at all, because a z16–z20 node is `Ready` the moment its z15 source is.
+
+### `HeightBounds` grew a third number, and a fourth
+
+`floor` (D3's occluder, the ground minimum *without* the skirt allowance) and `floor_grid`
+(the same per 4 × 4 sub-cell). `QuadtreeNode<Heightfield>` is 304 B; `QuadtreeNode<Ellipsoid>`
+is **192 B**, unchanged and un-re-pinned.
+
+**`floor`'s soundness is not covered by the corpus and needs saying.** The corpus measures
+`parent.lo − child.lo`, and turning that into the bound `floor` needs —
+`parent.h_min − child.h_min ≤ M` — costs the parent's whole-tile allowance back. That is
+the same term the edge tightening owes, which is why one constant pays for both. Had the
+margin been inherited on `floor` unmodified, it would have been the quiet kind of wrong:
+sound almost everywhere, and an over-high occluder exactly where a coarse DEM had smoothed
+a notch away.
+
 ### What the captures show
 
-`rendering::terrain_capture`, regenerated at 1280×720 after D1/D2:
+`rendering::terrain_capture`, 1280×720, regenerated after D3. Each pose is now rendered
+**three** times — terrain off, terrain on with D1+D2, terrain on with D3 — because a tile
+count cannot see a hole and three shots can.
 
-- **`alps_low` (4.5 km, 35 km south of the main ridge) — the acceptance shot, and it is
-  now gapless.** Phase C's version lost its entire near field to black with the skirts
-  hanging off the break as vertical streaks; the visible set was byte-identically the same
-  **36 tiles** as with terrain off, lifted by up to 2 900 m, so the near edge of the
-  coverage rose in screen space and exposed the background under it. It is now 46 tiles
-  and the relief runs continuously from the ridge line down to the bottom edge of the
-  frame: valleys, a lake basin at the left, no break, no streaks, no skirt visible
-  anywhere. The top third is sky, which is what it is supposed to be.
-- **`alps_zugspitze` (9 km)** — full frame of ridges out to the Bavarian foreland,
-  continuous to the bottom edge; 39 → 45 tiles.
-- **`himalaya_everest` (11 km)** — the massif in the near field with the Tibetan plateau
-  behind it, continuous to the bottom edge; 33 → 42 tiles.
-- **`himalaya_limb_400km`** — the limb is clean and the plateau is fully covered to the
-  bottom edge, which is where §6 records Phase C's version losing geometry too; 11 → 12
-  tiles. On and off are near-indistinguishable at this scale, which is the right answer:
-  400 km up, 2.9 km of relief is a pixel.
+| pose | camera alt | off | D1+D2 | +D3 | D1+D2 vs +D3 |
+|---|--:|--:|--:|--:|---|
+| **`alps_inn_valley`** (new) | 900 m | 34 | 49 | **48** | **pixel-identical** |
+| `alps_zugspitze` | 9 km | 39 | 44 | 44 | pixel-identical |
+| `alps_low` | 4.5 km | 36 | 46 | 46 | pixel-identical |
+| `himalaya_everest` | 11 km | 33 | 42 | 42 | pixel-identical |
+| `himalaya_limb_400km` | 400 km | 11 | 12 | 12 | pixel-identical (gate shut) |
 
-The terrain-off captures are unchanged by construction: with `TerrainConfig::enabled`
-false, `AnyQuadtree::Flat` holds the same `QuadtreeManager<Ellipsoid>` this engine has
-always run.
+"Pixel-identical" is a sampled RGBA comparison of the two PNGs, every second pixel in
+each axis, and it comes back at **zero differing samples** on all five. At the valley pose
+that is the statement worth having: D3 removed a tile and the picture did not move.
+
+- **`alps_inn_valley`** — Innsbruck on the valley floor with the Nordkette wall rising
+  behind it, which is exactly the regime §3.3 describes. Gapless from the foreground city
+  to the crest line, no skirts, no break.
+- The four Phase C/D1 poses are unchanged and still gapless: `alps_low`'s relief runs
+  continuously from the ridge to the bottom edge with a lake basin at the left,
+  `alps_zugspitze` shows ridges out to the Bavarian foreland, `himalaya_everest` has the
+  massif over the Tibetan plateau, and the 400 km limb is clean.
+
+### D3 removes almost nothing on real terrain at these poses, and that is worth stating
+
+One tile at the valley pose, none at the other four, against **−31 %** in the synthetic
+ridge world. The two numbers are both right and the gap is the finding:
+
+- **Real relief does not stop at the ridge.** The synthetic world puts a crest over a flat
+  plateau, so whole tiles behind it sit below the ridge line. In the Alps the ground behind
+  a ridge is more ridges, and a tile's box is fitted over its own `h_max` — so its top
+  pokes over the crest and the cull, which needs the *whole* box hidden, does not fire.
+- **The far field is coarse.** At the stand-off where a ridge shadows anything, the LOD has
+  already dropped to z10–z11, i.e. tiles 19–39 km across. A box that wide spans enough
+  ground to contain something visible almost anywhere.
+
+So the honest statement of the benefit is: D3 pays where the ground behind a ridge is
+genuinely lower *and* flatter — a valley floor, a plain behind a range, water, a plateau —
+and it is close to free elsewhere because the altitude gate shuts it off above 12 km. The
+obvious next step, and it is E-shaped rather than D-shaped, is to test **per sub-patch**
+the way `Stage::SubPatchGrid` does for the frustum and the limb: `SubGrid` already carries
+a `k × k` decomposition, and a coarse tile half-hidden behind a ridge is exactly the case
+it exists for. That is a change to the sub-patch stage's contract, it moves the flat
+path's stage list, and it wants its own measurement — so it is recorded here rather than
+smuggled into D3.
 
 **Does the sphere cull noticeably looser than the rectangle?** At these poses, no — not
 measurably. The limb stage is not what is keeping the extra tiles: at 4.5 km almost nothing
@@ -721,6 +961,8 @@ A ── B ──┬── C ──┬── D1 ── D2 ── D3 ──┬─
 - **E3.1 can jump the queue** as soon as C looks right; it is one line and the most visible
   thing here.
 - **D3 is the constraint-2 deliverable.** Do not let it slide to the end.
+  *(Landed 2026-09-20. FN = 0, and see §7b for what it removes and — more usefully —
+  where it does not.)*
 
 ---
 

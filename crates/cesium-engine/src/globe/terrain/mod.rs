@@ -4,9 +4,12 @@
 //! inputs a tile with relief is built from (C), and turned into the altitude interval and
 //! bounding sphere the quadtree culls against (D1, D2).
 //!
-//! **The occlusion march of §3.3 — culling tiles hidden behind mountains — is D3 and is
-//! not here yet**, which is why
-//! [`crate::globe::tiles::config::TerrainConfig::enabled`] is still `false`.
+//! The occlusion march of §3.3 — culling tiles hidden behind mountains — is **D3**, and it
+//! lives in [`crate::globe::quadtree::terrain_occlusion`] rather than here: its occluders
+//! are the quadtree's own node floors ([`HeightBounds::floor_grid`]), so it needs nothing
+//! from this module but that one number per node.
+//! [`crate::globe::tiles::config::TerrainConfig::enabled`] is still `false` — that flip is
+//! Phase F's, after the on-device measurements.
 //!
 //! - [`height_tile`] — the Terrarium decoder, the 256x256 `i16` sample grid, and the
 //!   16x16 min/max mip. Metres.
@@ -24,6 +27,6 @@ pub mod heightfield;
 pub use height_cache::HeightTileManager;
 pub use height_tile::{decode_terrarium, HeightTile};
 pub use heightfield::{
-    inherit_margin_mm, skirt_allowance, HeightBounds, HeightBoundsSource, HeightPatch, Heightfield,
-    PatchStatus,
+    inherit_allowance_mm, inherit_margin_mm, skirt_allowance, HeightBounds, HeightBoundsSource,
+    HeightPatch, Heightfield, PatchStatus, OCCLUDER_GRID, OCCLUDER_GRID_CELLS,
 };

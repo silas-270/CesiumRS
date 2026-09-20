@@ -391,7 +391,60 @@ pub struct HeightBounds {
     pub lo: f64,
     /// Highest altitude the node's geometry can reach.
     pub hi: f64,
+    /// Lowest altitude the node's **ground** can reach — `lo` *without* the skirt
+    /// allowance. **D3's occluder**, and the reason this is a third number rather than
+    /// a derived one.
+    ///
+    /// `lo` is the right bound for a bounding volume, because a skirt vertex outside the
+    /// box is as much a false negative as a summit outside it. It is the wrong bound for
+    /// an occluder: an occluder is a claim about where solid ground *is*, and the skirt
+    /// hangs into empty space below the ground precisely so that a crack at an LOD
+    /// boundary is covered. [`skirt_allowance`] bounds C3's content-derived skirt by the
+    /// tile's entire height range (measured: the node interval is 1.53× the mesh
+    /// interval it contains), so an occluder taken from `lo` would sit kilometres below
+    /// the ridge it is supposed to represent and D3 would cull almost nothing.
+    ///
+    /// Always `lo <= floor <= hi`. It widens downward with the inheritance margin like
+    /// `lo` does, so on an unloaded chain it is loose in the safe direction: a floor that
+    /// is too low occludes too little, which costs false positives and never a subtree.
+    pub floor: f64,
+    /// [`Self::floor`] again, but per **sub-cell** of a
+    /// [`OCCLUDER_GRID`]×[`OCCLUDER_GRID`] division of the tile — row-major, `u` along the
+    /// row, `v` (Mercator y, so north first) down the column. Megametres, as `f32`.
+    ///
+    /// # Why the whole-tile minimum is not enough, measured
+    ///
+    /// This is the difference between D3 culling *behind mountains* and D3 culling behind
+    /// the local curvature horizon, and the first implementation did the latter without
+    /// anybody noticing until the ridge was flattened and the tile counts did not move.
+    ///
+    /// A node's occluder has to be a minimum over its footprint, and the LOD sizes that
+    /// footprint for *imagery*, not for ridges. On the ridge-world valley pose the crest
+    /// lands near the southern edge of a z12 tile 6.6 km across; the minimum over that
+    /// whole tile is the ground 6 km away on the far side, 1 132 m, against a crest of
+    /// 3 400 m. The ridge simply disappears from the occluder. Split the same tile into
+    /// 4×4 and the southern row's minimum is 3 176 m — the ridge, back.
+    ///
+    /// Each entry is a minimum over its own sub-rectangle taken from the same 16×16 mip,
+    /// so it is sound for exactly the reason [`Self::floor`] is, and it inherits the same
+    /// way: a child that has no data of its own gets its inherited scalar floor in every
+    /// cell, because a parent's sub-cells are not a child's.
+    pub floor_grid: [f32; OCCLUDER_GRID_CELLS],
 }
+
+/// Sub-cells per axis in [`HeightBounds::floor_grid`].
+///
+/// 4 rather than 2 or 8, by the two things it trades. Up: a sub-cell's minimum is the
+/// resolution at which a ridge survives being averaged with the ground beside it, and a
+/// quarter of a tile is the coarsest division that resolves an Alpine crest inside the z12
+/// tile the LOD gives it at typical stand-off. Down: it is 16 extra `mip_extrema_over`
+/// queries per node per bounds refresh and 16 extra stamps per node per march, and the mip
+/// is 16×16 — at `OCCLUDER_GRID = 8` a sub-cell is two mip cells wide and the halo makes
+/// it four, so the resolution stops improving while the cost keeps going up.
+pub const OCCLUDER_GRID: usize = 4;
+
+/// `OCCLUDER_GRID²`.
+pub const OCCLUDER_GRID_CELLS: usize = OCCLUDER_GRID * OCCLUDER_GRID;
 
 /// The deepest trench the source can report, metres — Challenger Deep is −10 924 m.
 ///
@@ -418,6 +471,11 @@ impl Default for HeightBounds {
         Self {
             lo: GLOBAL_H_MIN_M * 1.0e-6,
             hi: GLOBAL_H_MAX_M * 1.0e-6,
+            // The deepest the Earth's solid surface goes: a root guarantees nothing, and
+            // a floor at the bottom of the Challenger Deep occludes nothing, which is
+            // the right answer before any data has arrived.
+            floor: GLOBAL_H_MIN_M * 1.0e-6,
+            floor_grid: [(GLOBAL_H_MIN_M * 1.0e-6) as f32; OCCLUDER_GRID_CELLS],
         }
     }
 }
@@ -429,6 +487,14 @@ impl HeightBounds {
         Self {
             lo: self.lo - margin,
             hi: self.hi + margin,
+            // Downward, like `lo`: a child's ground can dip below what its parent's
+            // coarser DEM resolved, and an occluder that is too high is the one error
+            // this whole file is arranged to prevent.
+            floor: self.floor - margin,
+            // A widened interval has lost its sub-cell structure: the caller is about to
+            // apply it to different ground. The scalar floor is the only thing still true
+            // of every part of it.
+            floor_grid: [(self.floor - margin) as f32; OCCLUDER_GRID_CELLS],
         }
     }
 
@@ -511,6 +577,41 @@ const HEIGHT_INHERIT_MARGIN_M: [f64; 16] = [
     // z8   z9     z10    z11    z12     z13    z14    z15
     8_000.0, 6_000.0, 6_000.0, 6_000.0, 1_500.0, 750.0, 400.0, 200.0,
 ];
+
+/// Mesh density the inheritance allowance is evaluated at.
+///
+/// The shipped default (`docs/terrain-plan.md` §6 C4 keeps 16). [`skirt_allowance`]'s
+/// sagitta term *falls* with density, so evaluating at 16 is an upper bound for every
+/// mesh built at 16 or finer. A configuration that lowered `mesh_segments` below 16 would
+/// need this raised with it — stated here because [`Heightfield::child_extra`] is a static
+/// dispatch and has no way to read the configuration.
+const INHERIT_SEGMENTS: u32 = 16;
+
+/// Widest height range a **Ready** node's data can report, metres — the whole span the
+/// Earth's solid surface occupies, times headroom for vertical exaggeration.
+///
+/// `GLOBAL_H_MAX_M − GLOBAL_H_MIN_M` is 21 km; the factor of 4 matches the exaggeration
+/// range [`HEIGHT_INHERIT_MARGIN_M`] already declares its table to cover, and is here for
+/// the same reason: [`Heightfield::child_extra`] is a static dispatch with no access to
+/// `TerrainConfig::exaggeration`, and the quantity being bounded scales linearly with it.
+const INHERIT_RANGE_M: f64 = 4.0 * (GLOBAL_H_MAX_M - GLOBAL_H_MIN_M);
+
+/// An upper bound, **megametres**, on the *whole-tile* skirt allowance the **parent** of
+/// `child` could have had — what [`Heightfield::child_extra`] must hand back when it
+/// widens. See that function for the two reasons it is owed.
+///
+/// `skirt_allowance(parent, 16, INHERIT_RANGE_M)` is exactly `range + sagitta(parent)`
+/// with `range` at its global maximum, which bounds `allow_whole(parent)` for any data the
+/// source can return. It depends only on the parent's level and tile shape, so unlike the
+/// parent's own interval it cannot compound down an unloaded chain.
+#[inline]
+pub fn inherit_allowance_mm(child: &TileId) -> f64 {
+    match child.parent() {
+        Some(p) => skirt_allowance(p, INHERIT_SEGMENTS, INHERIT_RANGE_M * 1.0e-6),
+        // A root has no parent to owe anything to; it starts from `HeightBounds::default`.
+        None => 0.0,
+    }
+}
 
 /// The inheritance margin for a node at level `z`, **megametres**.
 #[inline]
@@ -730,6 +831,14 @@ impl SurfaceModel for Heightfield {
         (extra.lo, extra.hi)
     }
 
+    /// **D3** — the node's ground floor, not its box floor. See
+    /// [`HeightBounds::floor`] for why those are two different numbers and
+    /// [`SurfaceModel::occluder_floor`] for why this side must be the lower bound.
+    #[inline]
+    fn occluder_floor(extra: &HeightBounds) -> [f32; OCCLUDER_GRID_CELLS] {
+        extra.floor_grid
+    }
+
     /// **D1's soundness trap** — the parent's interval, widened by the measured
     /// per-level margin of [`HEIGHT_INHERIT_MARGIN_M`].
     ///
@@ -747,9 +856,61 @@ impl SurfaceModel for Heightfield {
     /// a cap that is right at exaggeration 1.0 would cut a real summit at 2.0. A loose box
     /// for the frame or two it takes the prefetched ancestor chain to fill is the better
     /// trade: it costs false positives, and the alternative costs the subtree.
+    ///
+    /// # The extra downward term, and why the corpus does not need re-measuring
+    ///
+    /// The margin table was measured on box spans whose skirt allowance was the *whole
+    /// tile's* height range. Two things since then read the lower end differently and
+    /// both need that difference paid back, in the same currency:
+    ///
+    /// 1. **D1's follow-up** replaced the whole-tile range with the tight edge-window
+    ///    bound ([`HeightTile::edge_window_range`](crate::globe::terrain::HeightTile::edge_window_range)).
+    ///    That raises the child's `lo`, which helps, *and* the parent's, which does not.
+    ///    With `allow` for the skirt allowance and `M` for the table's margin, the corpus
+    ///    measured
+    ///
+    ///    ```text
+    ///      child.h_min − allow_whole(child) ≥ parent.h_min − allow_whole(parent) − M
+    ///    ```
+    ///
+    ///    and what is needed now is the same line with `allow_edge` on both sides.
+    ///    `allow_edge ≤ allow_whole` gives the child's side away, and
+    ///    `allow_edge(parent) ≥ sagitta(parent)` gives the parent's for one extra
+    ///    `range(parent)` of downward slack.
+    /// 2. **[`HeightBounds::floor`]**, D3's occluder, which the corpus never measured at
+    ///    all. What it measured is `parent.lo − child.lo`; turning that into a bound on
+    ///    `parent.h_min − child.h_min` — which is the statement `floor` needs — costs
+    ///    exactly `allow_whole(parent) = range(parent) + sagitta(parent)` back.
+    ///
+    /// So both want the *parent's* whole-tile allowance returned, and
+    /// [`inherit_allowance_mm`] is an upper bound on it that depends only on the parent's
+    /// level. The composition then closes against the numbers already in
+    /// [`HEIGHT_INHERIT_MARGIN_M`], rather than against a re-measurement the committed
+    /// corpus (whole-tile extrema only) could not support.
+    ///
+    /// **A level-constant, not `parent.hi − parent.lo`.** The parent's own interval is the
+    /// obvious source for its range and it is a trap: down an unloaded chain the widening
+    /// would feed on itself, roughly tripling per level, and by z15 the box would be
+    /// larger than the solar system and its f32 half-axes would be infinities. A constant
+    /// per level cannot compound — a cold z1→z15 chain accumulates a bounded ~1 300 km,
+    /// which is loose, sound, numerically ordinary, and gone the frame the prefetched
+    /// ancestor chain lands.
+    ///
+    /// `hi` is untouched: nothing about the skirt moves it, so the table covers it as
+    /// measured.
     #[inline]
     fn child_extra(parent: &HeightBounds, child: &TileId) -> HeightBounds {
-        parent.widened(inherit_margin_mm(child.z))
+        let w = inherit_margin_mm(child.z) + inherit_allowance_mm(child);
+        let floor = parent.floor - w;
+        HeightBounds {
+            lo: parent.lo - w,
+            hi: parent.hi + inherit_margin_mm(child.z),
+            floor,
+            // A parent's sub-cells are not a child's, and the child covers one quadrant of
+            // the parent rather than a scaled copy of it. The scalar floor is what is still
+            // true everywhere in that quadrant.
+            floor_grid: [floor as f32; OCCLUDER_GRID_CELLS],
+        }
     }
 
     /// **D2** — the scaled-space bounding sphere of the node's box, fitted at

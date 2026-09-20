@@ -189,6 +189,49 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// [`Ellipsoid`] has nothing to inherit and returns `()`.
     fn child_extra(parent: &Self::NodeExtra, child: &TileId) -> Self::NodeExtra;
 
+    /// A **lower** bound on the terrain surface over each sub-cell of a
+    /// `4 × 4` division of this node's ground, in megametres — **D3**'s occluder, and
+    /// the only thing the occlusion march reads off a node.
+    ///
+    /// Row-major, `u` along the row and `v` (Mercator y, north first) down the column,
+    /// matching `sub_bounds`' parameterisation.
+    ///
+    /// # Why a grid and not one number
+    ///
+    /// Measured, after shipping one number and finding it did nothing. A node's footprint
+    /// is sized by the *imagery* LOD, and at the stand-off where D3 matters that is a tile
+    /// several kilometres across — wider than the ridge it is supposed to represent. The
+    /// minimum over the whole tile is then the valley on the far side of the crest, the
+    /// ridge vanishes from the occluder, and what is left culls only against the curvature
+    /// horizon. Flattening the test world's ridge changed the tile counts by **zero**,
+    /// which is what a "behind mountains" culler must not do. See
+    /// [`HeightBounds::floor_grid`](crate::globe::terrain::HeightBounds::floor_grid).
+    ///
+    /// # This is not `obb_altitude_span().0`
+    ///
+    /// The box's lower end is the lowest point of the *drawn geometry*, skirts
+    /// included, and a skirt hangs well below the ground it belongs to
+    /// ([`skirt_allowance`](crate::globe::terrain::skirt_allowance) bounds C3's
+    /// content-derived skirt by the tile's whole height range, which measures 1.53× the
+    /// mesh interval). Using it here would sink every ridge by that much and quietly
+    /// throw most of D3's benefit away. What the march needs is the lowest point of the
+    /// *ground*, which is a separate, tighter number the node already carries.
+    ///
+    /// # It must be a lower bound, and getting that backwards is the failure mode
+    ///
+    /// `docs/terrain-plan.md` §3.3: only terrain that is definitely there can definitely
+    /// block. An occluder taken from `h_max` over-occludes and produces exactly the false
+    /// negative this engine exists to prevent — and by I-7 it deletes the whole subtree
+    /// behind the ridge, not one tile.
+    ///
+    /// [`Ellipsoid`] returns `-∞` in every cell: the flat globe has no relief, so
+    /// nothing on it can ever occlude anything the limb test has not already discarded.
+    /// The march is never built on the flat arm at all, so this is unreachable there
+    /// rather than merely cheap.
+    fn occluder_floor(
+        extra: &Self::NodeExtra,
+    ) -> [f32; crate::globe::terrain::heightfield::OCCLUDER_GRID_CELLS];
+
     /// The per-patch payload, derived from the node's **already fitted** box.
     ///
     /// Called once per node and once per sub-patch, at construction. Phase D2's
@@ -308,6 +351,15 @@ impl SurfaceModel for Ellipsoid {
     /// node of every level, known statically.
     #[inline]
     fn child_extra(_parent: &(), _child: &TileId) {}
+
+    /// Zero relief: nothing on the flat globe occludes anything the limb test has not
+    /// already thrown away, so this node can never be a D3 occluder.
+    #[inline]
+    fn occluder_floor(
+        _extra: &(),
+    ) -> [f32; crate::globe::terrain::heightfield::OCCLUDER_GRID_CELLS] {
+        [f32::NEG_INFINITY; crate::globe::terrain::heightfield::OCCLUDER_GRID_CELLS]
+    }
 
     /// No per-patch payload. The exact rectangle supremum below needs the eight trig
     /// constants and the camera, and nothing else.
