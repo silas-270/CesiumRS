@@ -4,6 +4,7 @@ pub mod fog;
 pub mod horizon;
 pub mod quadtree;
 pub mod slab;
+pub mod surface;
 pub mod tile_id;
 
 pub use bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
@@ -13,6 +14,7 @@ pub use quadtree::{
     lod_factor_for, CullContext, CullPipeline, LodDistanceMode, QuadtreeManager, QuadtreeNode,
     Stage, StageVerdict, MAX_STAGES,
 };
+pub use surface::{Ellipsoid, SurfaceModel, VertexSample};
 pub use tile_id::{
     tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
 };

@@ -37,6 +37,7 @@
 
 use glam::DVec3;
 
+use super::surface::{Ellipsoid, SurfaceModel};
 use super::tile_id::TileBounds;
 use crate::globe::geometry::{EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 
@@ -143,16 +144,34 @@ pub fn point_is_occluded(cam: &HorizonCamera, p: DVec3) -> bool {
 /// form needs. 64 B per node; no transcendentals at run time.
 ///
 /// Index 0 is the low end (`λ₀`, `φ₀ = lat_min`), index 1 the high end.
+///
+/// # The surface-model parameter
+///
+/// `S` defaults to [`Ellipsoid`], whose [`SurfaceModel::PatchExtra`] is `()` — a
+/// zero-sized field, so `TilePatch` (i.e. `TilePatch<Ellipsoid>`) is still exactly
+/// the 8 × f64, 64-byte, one-cache-line struct
+/// `test_horizon_hot_structs_have_not_grown` pins. See [`super::surface`].
 #[derive(Clone, Copy, Debug)]
-pub struct TilePatch {
+pub struct TilePatch<S: SurfaceModel = Ellipsoid> {
     pub cos_lon: [f64; 2],
     pub sin_lon: [f64; 2],
     pub cos_lat: [f64; 2],
     pub sin_lat: [f64; 2],
+    /// Whatever the surface model needs per patch — nothing, in flat mode.
+    pub extra: S::PatchExtra,
 }
 
-impl TilePatch {
+impl TilePatch<Ellipsoid> {
+    /// The flat globe's patch. See [`TilePatch::for_surface`] for the generic form;
+    /// this concrete wrapper is what keeps `TilePatch::new(&bounds)` resolving at
+    /// call sites that never mention a surface model.
     pub fn new(b: &TileBounds) -> Self {
+        Self::for_surface(b)
+    }
+}
+
+impl<S: SurfaceModel> TilePatch<S> {
+    pub fn for_surface(b: &TileBounds) -> Self {
         let (s0, c0) = b.lon_min.to_radians().sin_cos();
         let (s1, c1) = b.lon_max.to_radians().sin_cos();
         let (t0, d0) = b.lat_min.to_radians().sin_cos();
@@ -162,6 +181,7 @@ impl TilePatch {
             sin_lon: [s0, s1],
             cos_lat: [d0, d1],
             sin_lat: [t0, t1],
+            extra: S::PatchExtra::default(),
         }
     }
 
@@ -188,15 +208,13 @@ impl TilePatch {
 
     /// Is every drawable point of this tile hidden behind the limb?
     ///
-    /// Soundness (§3.5): `S ≤ 1` means every point `p` of the drawn patch has
-    /// `q·c ≤ 1`, hence `n̂(p)·(cam − p) ≤ 0` (Theorem 3.4), hence `p` is beyond the
-    /// polar plane and — the cone condition being automatic for surface points — is
-    /// occluded by the ellipsoid. The skirts lie strictly *inside* the ellipsoid, so
-    /// their segments to an exterior eye cross the sphere too. The ellipsoid is
-    /// convex and is the only occluder, so nothing can un-occlude them. ∎
+    /// Dispatches to the surface model — the test is a statement about the *drawn*
+    /// surface, and at non-zero relief the flat globe's exact rectangle supremum is
+    /// no longer sound (§3.7). [`Ellipsoid::is_occluded`] carries the flat proof and
+    /// the code that was here.
     #[inline]
     pub fn is_occluded(&self, cam: &HorizonCamera) -> bool {
-        span_is_occluded(cam, self.max_dot(cam))
+        S::is_occluded(self, cam)
     }
 }
 

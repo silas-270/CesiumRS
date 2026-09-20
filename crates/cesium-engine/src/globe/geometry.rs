@@ -1,11 +1,14 @@
+use crate::globe::quadtree::surface::{Ellipsoid, SurfaceModel, VertexSample};
 use crate::globe::quadtree::TileId;
 
 pub const EARTH_RADIUS_A_F32: f32 = 6.378137;
 pub const EARTH_RADIUS_B_F32: f32 = 6.356_752_4;
 pub const EARTH_RADIUS_A_F64: f64 = 6.378137;
 pub const EARTH_RADIUS_B_F64: f64 = 6.3567523142;
-const INV_A2_F64: f64 = 1.0 / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64);
-const INV_B2_F64: f64 = 1.0 / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64);
+/// `pub(crate)` only so [`Ellipsoid::vertex_normal`] can be the *same* expression
+/// this file used inline before the surface model was split out.
+pub(crate) const INV_A2_F64: f64 = 1.0 / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64);
+pub(crate) const INV_B2_F64: f64 = 1.0 / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64);
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -97,7 +100,22 @@ impl TileMesh {
     /// `testing::culling::test_tile_bounds::test_generated_mesh_has_no_positive_altitude`
     /// asserts this, so whoever turns relief on gets a failing test rather than
     /// silent holes at the limb.
+    ///
+    /// The flat globe's mesh — `Self::generate_on::<Ellipsoid>`. A concrete wrapper
+    /// rather than a defaulted type parameter because Rust applies such a default
+    /// only in *type* position, never in an expression path like this one.
     pub fn generate(id: &TileId, segments: u32) -> Self {
+        Self::generate_on::<Ellipsoid>(id, segments)
+    }
+
+    /// `generate`, with the surface model spelled out — Phase A of
+    /// `docs/terrain-plan.md` §4.
+    ///
+    /// Two of the five dispatch sites live in this loop: the vertex's altitude and
+    /// its normal. Everything else — the shared f64 bounds (I-5), the pole caps, the
+    /// skirt rows, the f64-relative-to-f64-centre positions (I-2) — is
+    /// model-independent and stays here.
+    pub fn generate_on<S: SurfaceModel>(id: &TileId, segments: u32) -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
@@ -156,11 +174,6 @@ impl TileMesh {
 
                 let is_skirt = is_skirt_row || is_skirt_col;
                 let is_pole_cap = is_north_pole_cap || is_south_pole_cap;
-                let alt = if is_skirt && !is_pole_cap {
-                    -skirt_height
-                } else {
-                    0.0
-                };
 
                 let theta = lon.to_radians();
                 let cos_theta = theta.cos();
@@ -172,16 +185,24 @@ impl TileMesh {
 
                 let surface_pos_f64 = [x, y, z];
 
-                // Normal based on WGS84 ellipsoid
-                let normal_f64 = {
-                    let nx = x * INV_A2_F64;
-                    let ny = y * INV_B2_F64;
-                    let nz = z * INV_A2_F64;
-                    let len = (nx * nx + ny * ny + nz * nz).sqrt();
-                    [nx / len, ny / len, nz / len]
+                let sample = VertexSample {
+                    id: *id,
+                    lon_deg: lon,
+                    lat_deg: lat,
+                    u,
+                    v,
+                    surface_pos: surface_pos_f64,
+                    is_skirt,
+                    is_pole_cap,
+                    skirt_height,
                 };
 
-                let alt_f64 = alt as f64;
+                // Dispatch site 2 — for `Ellipsoid`, the analytic WGS-84 gradient
+                // this line used to compute inline.
+                let normal_f64 = S::vertex_normal(&sample);
+
+                // Dispatch site 1 — for `Ellipsoid`, 0 or `-skirt_height`.
+                let alt_f64 = S::vertex_altitude(&sample);
                 let pos_f64 = if alt_f64 == 0.0 {
                     surface_pos_f64
                 } else {

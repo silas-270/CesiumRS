@@ -52,11 +52,14 @@
 //! `test_stage_prefix_only_grows_the_kept_set` asserts exactly that over every
 //! pipeline and every prefix of one.
 
+use std::marker::PhantomData;
+
 use glam::{DVec3, Vec3};
 
 use super::bounding_volume::{Frustum, OrientedBoundingBox, PlaneVerdict};
 use super::fog::{cesium_fog, MEGAMETERS_TO_METERS};
 use super::horizon::{HorizonCamera, TilePatch};
+use super::surface::{Ellipsoid, SurfaceModel};
 use super::tile_id::{
     tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
 };
@@ -255,6 +258,22 @@ fn surface_point(lon_deg: f64, lat_deg: f64) -> DVec3 {
     DVec3::new(p[0], p[1], p[2])
 }
 
+/// A patch sample at altitude `alt_mm` **megametres** above the ellipsoid, along the
+/// surface normal there.
+///
+/// `alt_mm == 0.0` returns [`surface_point`] itself — bit-for-bit, not "to within
+/// rounding" — which is what makes the flat path's `fit_obb` below identical to the
+/// one that existed before the surface model was a type parameter. Megametres, not
+/// the metres `lon_lat_alt_to_ecef_f64` takes: see [`super::surface`]'s units note.
+#[inline]
+fn patch_point(lon_deg: f64, lat_deg: f64, alt_mm: f64) -> DVec3 {
+    let p = surface_point(lon_deg, lat_deg);
+    if alt_mm == 0.0 {
+        return p;
+    }
+    p + ellipsoid_normal(p) * alt_mm
+}
+
 /// The tangent frame used to orient a patch's bounding box (§6.2).
 ///
 /// `east` is built **analytically from the centre longitude**, not as `Y × normal`.
@@ -280,7 +299,24 @@ fn tangent_frame(center_lon_deg: f64, up: DVec3) -> (DVec3, DVec3) {
 /// the greatest distance from the patch centre to a sampled point (the renderer's
 /// per-tile bounding radius) and `obb` is the box in the [`tangent_frame`] at that
 /// centre.
-fn fit_obb(b: &TileBounds, steps: u32) -> (DVec3, f32, OrientedBoundingBox) {
+///
+/// # The altitude span
+///
+/// The grid is swept at each end of [`SurfaceModel::obb_altitude_span`]. When the
+/// two ends coincide — which is the whole of [`Ellipsoid`], whose span is
+/// `(0.0, 0.0)` — each grid point is sampled **once**, at altitude 0, via
+/// [`patch_point`]'s exact short-circuit. The flat path therefore does exactly the
+/// work, in exactly the order, that it did before this parameter existed.
+///
+/// `surface_center` stays on the ellipsoid whatever the span is: it is the origin
+/// the mesh's f32 vertex offsets are taken against (I-2), not a bound. Moving it
+/// with relief is a Phase C/D question, not a Phase A one.
+fn fit_obb<S: SurfaceModel>(
+    b: &TileBounds,
+    steps: u32,
+    extra: &S::NodeExtra,
+) -> (DVec3, f32, OrientedBoundingBox) {
+    let (alt_min, alt_max) = S::obb_altitude_span(extra);
     let center_lon = b.center_lon();
     let center_lat = b.center_lat();
     let surface_center = surface_point(center_lon, center_lat);
@@ -297,11 +333,17 @@ fn fit_obb(b: &TileBounds, steps: u32) -> (DVec3, f32, OrientedBoundingBox) {
         for j in 0..=steps {
             let v = j as f64 / steps as f64;
             let lat = b.lat_min + v * (b.lat_max - b.lat_min);
-            let rel = surface_point(lon, lat) - surface_center;
-            max_dist_sq = max_dist_sq.max(rel.length_squared());
-            let local = DVec3::new(rel.dot(east), rel.dot(north), rel.dot(up));
-            min_ext = min_ext.min(local);
-            max_ext = max_ext.max(local);
+            let mut accumulate = |alt: f64| {
+                let rel = patch_point(lon, lat, alt) - surface_center;
+                max_dist_sq = max_dist_sq.max(rel.length_squared());
+                let local = DVec3::new(rel.dot(east), rel.dot(north), rel.dot(up));
+                min_ext = min_ext.min(local);
+                max_ext = max_ext.max(local);
+            };
+            accumulate(alt_min);
+            if alt_max != alt_min {
+                accumulate(alt_max);
+            }
         }
     }
 
@@ -359,7 +401,12 @@ fn sub_bounds(id: &TileId, b: &TileBounds, u0: f64, u1: f64, v0: f64, v1: f64) -
 /// share an edge exactly and the union of the `k²` sub-patches is the whole drawn
 /// patch, pole stretch included. That union property is what makes
 /// [`SubGrid::has_surviving_sub_patch`] sound.
-pub struct SubGrid {
+///
+/// The surface-model parameter is carried but not yet read: `S` selects which
+/// [`fit_obb`] the sub-boxes are built by (Phase D1 makes that sample a height
+/// interval), and it is a [`PhantomData`], so the struct's size and layout are
+/// unchanged.
+pub struct SubGrid<S: SurfaceModel = Ellipsoid> {
     k: u32,
     /// `k²` boxes, indexed `ui · k + vi` — `ui` along λ, `vi` along **Mercator y**,
     /// so `vi = 0` is the sub-patch row at the *north* edge of the tile.
@@ -376,11 +423,12 @@ pub struct SubGrid {
     /// counts southwards; [`SubGrid::sub_patch_is_occluded`] converts once, in one
     /// named place.
     lat: Vec<(f64, f64)>,
+    _surface: PhantomData<S>,
 }
 
-impl SubGrid {
+impl<S: SurfaceModel> SubGrid<S> {
     /// Builds the grid, or `None` when `k < 2` (a 1×1 grid is the node's own OBB).
-    fn build(id: &TileId, b: &TileBounds, k: u32) -> Option<Self> {
+    fn build(id: &TileId, b: &TileBounds, k: u32, extra: &S::NodeExtra) -> Option<Self> {
         if k < 2 {
             return None;
         }
@@ -404,7 +452,7 @@ impl SubGrid {
                 // §5.3's 3×3 argument holds comfortably at every zoom, which is why
                 // the node-level taper does not apply here. Changing this number is
                 // a recalibration, not a cleanup.
-                obbs.push(fit_obb(&sb, 4).2);
+                obbs.push(fit_obb::<S>(&sb, 4, extra).2);
             }
         }
 
@@ -441,7 +489,13 @@ impl SubGrid {
             lat[n - i as usize] = phi.to_radians().sin_cos();
         }
 
-        Some(SubGrid { k, obbs, lon, lat })
+        Some(SubGrid {
+            k,
+            obbs,
+            lon,
+            lat,
+            _surface: PhantomData,
+        })
     }
 
     fn heap_bytes(&self) -> usize {
@@ -614,7 +668,7 @@ impl Stage {
     /// Runs this stage. `&self` on the node, never `&mut`: see
     /// [`QuadtreeNode::update`] for why that signature is load-bearing.
     #[inline]
-    fn run(self, node: &QuadtreeNode, ctx: &CullContext) -> StageVerdict {
+    fn run<S: SurfaceModel>(self, node: &QuadtreeNode<S>, ctx: &CullContext) -> StageVerdict {
         match self {
             Stage::Horizon => {
                 if node.patch.is_occluded(&ctx.horizon) {
@@ -807,7 +861,7 @@ impl CullPipeline {
     /// **6.9 µs**, against 6.7 µs for the hand-written cascade this replaced. Tidying
     /// it back into a slice loop buys nothing and costs 6 % of the frame's culling.
     #[inline]
-    fn keeps(&self, node: &QuadtreeNode, ctx: &CullContext) -> bool {
+    fn keeps<S: SurfaceModel>(&self, node: &QuadtreeNode<S>, ctx: &CullContext) -> bool {
         let len = self.len as usize;
         for i in 0..MAX_STAGES {
             if i == len {
@@ -917,7 +971,15 @@ impl CullContext {
     }
 }
 
-pub struct QuadtreeNode {
+/// One node of the tile quadtree.
+///
+/// # The surface-model parameter
+///
+/// `S` defaults to [`Ellipsoid`], whose [`SurfaceModel::NodeExtra`] and
+/// [`SurfaceModel::PatchExtra`] are both `()`. Both payload fields are therefore
+/// zero-sized and `QuadtreeNode` (i.e. `QuadtreeNode<Ellipsoid>`) is still exactly
+/// 192 B — three cache lines — with `patch` still 64. See [`super::surface`].
+pub struct QuadtreeNode<S: SurfaceModel = Ellipsoid> {
     pub id: TileId,
     /// Patch centre on the ellipsoid, **f64** (invariant I-2).
     pub center: DVec3,
@@ -936,18 +998,30 @@ pub struct QuadtreeNode {
     pub unstretched_radius: f32,
     pub obb: OrientedBoundingBox,
     /// The `k × k` sub-patch grid, when `k ≥ 2` (see [`sub_boxes_per_axis`]).
-    pub sub_grid: Option<Box<SubGrid>>,
+    pub sub_grid: Option<Box<SubGrid<S>>>,
     /// The eight trig constants of this tile's rectangle, for the horizon test.
-    pub patch: TilePatch,
+    pub patch: TilePatch<S>,
+    /// Whatever the surface model needs per node — nothing, in flat mode.
+    pub extra: S::NodeExtra,
     pub visible: bool,
-    pub children: Option<Box<[QuadtreeNode; 4]>>,
+    pub children: Option<Box<[QuadtreeNode<S>; 4]>>,
 }
 
-impl QuadtreeNode {
+impl QuadtreeNode<Ellipsoid> {
+    /// The flat globe's node. See [`QuadtreeNode::for_surface`] for the generic
+    /// form; this concrete wrapper is what keeps `QuadtreeNode::new(id)` resolving
+    /// at call sites that never mention a surface model.
     pub fn new(id: TileId) -> Self {
+        Self::for_surface(id)
+    }
+}
+
+impl<S: SurfaceModel> QuadtreeNode<S> {
+    pub fn for_surface(id: TileId) -> Self {
         // I-5: the single source of tile bounds, shared with `TileMesh::generate`.
         let bounds = tile_bounds(&id);
-        let (center, bounding_radius, obb) = fit_obb(&bounds, obb_grid_steps(id.z));
+        let extra = <S::NodeExtra as Default>::default();
+        let (center, bounding_radius, obb) = fit_obb::<S>(&bounds, obb_grid_steps(id.z), &extra);
 
         // Deliberately measured on the ***un*-stretched** rectangle: a polar row's
         // true ground extent, not its pull to ±90°. Kept as-is (§8.4) — it makes
@@ -957,9 +1031,10 @@ impl QuadtreeNode {
         // of a geometric object, and the threshold derived from it is
         // `subdivide_dist`.
         let raw = tile_bounds_unstretched(&id);
-        let (_, unstretched_radius, _) = fit_obb(&raw, 2);
+        let (_, unstretched_radius, _) = fit_obb::<S>(&raw, 2, &extra);
 
-        let sub_grid = SubGrid::build(&id, &bounds, sub_boxes_per_axis(id.z)).map(Box::new);
+        let sub_grid =
+            SubGrid::<S>::build(&id, &bounds, sub_boxes_per_axis(id.z), &extra).map(Box::new);
 
         QuadtreeNode {
             id,
@@ -968,7 +1043,8 @@ impl QuadtreeNode {
             unstretched_radius,
             obb,
             sub_grid,
-            patch: TilePatch::new(&bounds),
+            patch: TilePatch::<S>::for_surface(&bounds),
+            extra,
             visible: false,
             children: None,
         }
@@ -978,7 +1054,7 @@ impl QuadtreeNode {
     pub fn sub_grid_heap_bytes(&self) -> usize {
         self.sub_grid
             .as_ref()
-            .map(|g| std::mem::size_of::<SubGrid>() + g.heap_bytes())
+            .map(|g| std::mem::size_of::<SubGrid<S>>() + g.heap_bytes())
             .unwrap_or(0)
     }
 
@@ -988,10 +1064,10 @@ impl QuadtreeNode {
         let y = self.id.y * 2;
 
         self.children = Some(Box::new([
-            QuadtreeNode::new(TileId { z, x, y }),        // Top-Left
-            QuadtreeNode::new(TileId { z, x: x + 1, y }), // Top-Right
-            QuadtreeNode::new(TileId { z, x, y: y + 1 }), // Bottom-Left
-            QuadtreeNode::new(TileId {
+            QuadtreeNode::<S>::for_surface(TileId { z, x, y }), // Top-Left
+            QuadtreeNode::<S>::for_surface(TileId { z, x: x + 1, y }), // Top-Right
+            QuadtreeNode::<S>::for_surface(TileId { z, x, y: y + 1 }), // Bottom-Left
+            QuadtreeNode::<S>::for_surface(TileId {
                 z,
                 x: x + 1,
                 y: y + 1,
@@ -1466,8 +1542,11 @@ mod reorder_children_tests {
     }
 }
 
-pub struct QuadtreeManager {
-    pub roots: [QuadtreeNode; 4],
+/// The four root nodes and the per-frame knobs the traversal reads.
+///
+/// `S` defaults to [`Ellipsoid`] — see [`QuadtreeNode`] and [`super::surface`].
+pub struct QuadtreeManager<S: SurfaceModel = Ellipsoid> {
+    pub roots: [QuadtreeNode<S>; 4],
     pub lod_factor: f32, // Multiplier for subdivision distance check
     /// Which culling stages run. Lives here — not on a node and not in the
     /// per-frame context — because it survives frames and changes only when a mode
@@ -1488,20 +1567,29 @@ pub struct QuadtreeManager {
     pub max_zoom: u8,
 }
 
-impl Default for QuadtreeManager {
+impl Default for QuadtreeManager<Ellipsoid> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl QuadtreeManager {
+impl QuadtreeManager<Ellipsoid> {
+    /// The flat globe's quadtree. See [`QuadtreeManager::for_surface`] for the
+    /// generic form; this concrete wrapper is what keeps `QuadtreeManager::new()`
+    /// resolving at call sites that never mention a surface model.
     pub fn new() -> Self {
+        Self::for_surface()
+    }
+}
+
+impl<S: SurfaceModel> QuadtreeManager<S> {
+    pub fn for_surface() -> Self {
         Self {
             roots: [
-                QuadtreeNode::new(TileId { z: 1, x: 0, y: 0 }), // NW
-                QuadtreeNode::new(TileId { z: 1, x: 1, y: 0 }), // NE
-                QuadtreeNode::new(TileId { z: 1, x: 0, y: 1 }), // SW
-                QuadtreeNode::new(TileId { z: 1, x: 1, y: 1 }), // SE
+                QuadtreeNode::<S>::for_surface(TileId { z: 1, x: 0, y: 0 }), // NW
+                QuadtreeNode::<S>::for_surface(TileId { z: 1, x: 1, y: 0 }), // NE
+                QuadtreeNode::<S>::for_surface(TileId { z: 1, x: 0, y: 1 }), // SW
+                QuadtreeNode::<S>::for_surface(TileId { z: 1, x: 1, y: 1 }), // SE
             ],
             lod_factor: 2.0, // Default LOD tuning parameter
             pipeline: CullPipeline::DEFAULT,
