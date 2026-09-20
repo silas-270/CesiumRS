@@ -117,6 +117,20 @@ mod inner {
         #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
         pub map_style: cesium_rs::MapStyle,
 
+
+        /// Fetch and cache terrain height tiles (Terrarium, AWS Open Data). Phase B of
+        /// docs/terrain-plan.md: this populates a height cache only — it does not render relief.
+        #[arg(long = "terrain", default_value_t = false)]
+        pub terrain: bool,
+
+        /// Vertical exaggeration for terrain relief. Stored now, applied in Phase C.
+        #[arg(long = "terrain-exaggeration", default_value_t = 1.0)]
+        pub terrain_exaggeration: f32,
+
+        /// What the height decoder does with sub-sea-level samples: 'clamp' (sea is the
+        /// ellipsoid) or 'raw' (keep the source's ocean bathymetry).
+        #[arg(long = "terrain-ocean", value_enum, default_value_t = cesium_rs::TerrainOcean::ClampToZero)]
+        pub terrain_ocean: cesium_rs::TerrainOcean,
         /// Initial flight route to load on startup: preset name (e.g. 'FRA-STR', 'LHR-NRT', 'JFK-LHR')
         /// or coordinates 'lat1,lon1,lat2,lon2'.
         #[arg(long, default_value = "FRA-STR")]
@@ -286,6 +300,9 @@ mod inner {
                 .enable_prefetch(true)
                 .target_texel_ratio(1.0)
                 .map_style(cli.map_style)
+                .terrain(cli.terrain)
+                .terrain_exaggeration(cli.terrain_exaggeration)
+                .terrain_ocean(cli.terrain_ocean)
                 .with_extension(Box::new(flight_app))
                 .build();
 
@@ -313,6 +330,20 @@ fn main() {
         #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
         pub map_style: cesium_rs::MapStyle,
 
+
+        /// Fetch and cache terrain height tiles (Terrarium, AWS Open Data). Phase B of
+        /// docs/terrain-plan.md: this populates a height cache only — it does not render relief.
+        #[arg(long = "terrain", default_value_t = false)]
+        pub terrain: bool,
+
+        /// Vertical exaggeration for terrain relief. Stored now, applied in Phase C.
+        #[arg(long = "terrain-exaggeration", default_value_t = 1.0)]
+        pub terrain_exaggeration: f32,
+
+        /// What the height decoder does with sub-sea-level samples: 'clamp' (sea is the
+        /// ellipsoid) or 'raw' (keep the source's ocean bathymetry).
+        #[arg(long = "terrain-ocean", value_enum, default_value_t = cesium_rs::TerrainOcean::ClampToZero)]
+        pub terrain_ocean: cesium_rs::TerrainOcean,
         /// Initial flight route to load on startup: preset name (e.g. 'FRA-STR', 'LHR-NRT', 'JFK-LHR')
         /// or coordinates 'lat1,lon1,lat2,lon2'.
         #[arg(long, default_value = "FRA-STR")]
@@ -343,6 +374,9 @@ fn main() {
         .enable_prefetch(true)
         .target_texel_ratio(1.0)
         .map_style(cli.map_style)
+        .terrain(cli.terrain)
+        .terrain_exaggeration(cli.terrain_exaggeration)
+        .terrain_ocean(cli.terrain_ocean)
         .with_extension(Box::new(flight_app))
         .build();
 

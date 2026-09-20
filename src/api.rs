@@ -36,7 +36,7 @@
 use cesium_engine::core::app::App;
 use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
 use cesium_engine::globe::tiles::config::{
-    TileEngineConfig, SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_URL,
+    OceanPolicy, TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_URL,
 };
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
@@ -68,6 +68,35 @@ pub enum MapStyle {
     Satellite,
 }
 
+/// What the terrain decoder does with the Terrarium source's sub-sea-level samples.
+///
+/// The engine-facing mirror of
+/// [`cesium_engine::globe::tiles::config::OceanPolicy`], kept here for the same reason
+/// [`MapStyle`] is: `clap::ValueEnum` belongs to the binary's CLI surface, not to the
+/// engine crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum TerrainOcean {
+    /// Clamp `h < 0` to `0`, so the sea is the ellipsoid. The default: Terrarium
+    /// carries real bathymetry in the open ocean (a Pacific tile measures −4324 m), and
+    /// untreated the sea sinks kilometres and every coast becomes a cliff. It flattens
+    /// the Dead Sea and Death Valley with it — a stated price, not an oversight.
+    #[default]
+    #[value(name = "clamp", alias = "clamp-to-zero", alias = "sea-level")]
+    ClampToZero,
+    /// Decode verbatim, bathymetry included.
+    #[value(name = "raw", alias = "bathymetry")]
+    Raw,
+}
+
+impl From<TerrainOcean> for OceanPolicy {
+    fn from(value: TerrainOcean) -> Self {
+        match value {
+            TerrainOcean::ClampToZero => OceanPolicy::ClampToZero,
+            TerrainOcean::Raw => OceanPolicy::Raw,
+        }
+    }
+}
+
 /// A snapshot of the camera's state at the time of the query.
 #[derive(Debug, Clone)]
 pub struct CameraState {
@@ -90,6 +119,9 @@ pub struct CesiumViewerBuilder {
     map_contrast: f32,
     map_brightness: f32,
     max_zoom: u8,
+    terrain: bool,
+    terrain_exaggeration: f32,
+    terrain_ocean: TerrainOcean,
     extension: Option<Box<dyn cesium_engine::core::extension::GlobeExtension>>,
 }
 
@@ -105,6 +137,9 @@ impl Default for CesiumViewerBuilder {
             map_contrast: 0.0,
             map_brightness: 0.5,
             max_zoom: TileEngineConfig::default().max_zoom,
+            terrain: TerrainConfig::default().enabled,
+            terrain_exaggeration: TerrainConfig::default().exaggeration,
+            terrain_ocean: TerrainOcean::default(),
             extension: None,
         }
     }
@@ -180,6 +215,32 @@ impl CesiumViewerBuilder {
         self
     }
 
+    /// Fetch, decode and cache terrain height tiles. Default `false`.
+    ///
+    /// **Phase B of `docs/terrain-plan.md`: this does not render relief.** Turning it
+    /// on populates a height cache and nothing more; the globe is still the bare
+    /// ellipsoid. The surface model that consumes the data is Phase C.
+    pub fn terrain(mut self, enabled: bool) -> Self {
+        self.terrain = enabled;
+        self
+    }
+
+    /// Vertical exaggeration for terrain relief. `1.0` is true scale.
+    ///
+    /// Stored now, applied in Phase C — deliberately in exactly one place, so the
+    /// bounding boxes and occlusion spheres of Phase D inherit it instead of having to
+    /// be kept in step with it.
+    pub fn terrain_exaggeration(mut self, factor: f32) -> Self {
+        self.terrain_exaggeration = factor;
+        self
+    }
+
+    /// What the height decoder does with sub-sea-level samples. See [`TerrainOcean`].
+    pub fn terrain_ocean(mut self, ocean: TerrainOcean) -> Self {
+        self.terrain_ocean = ocean;
+        self
+    }
+
     /// Attach a `GlobeExtension` plugin (e.g. `FlightTrackerApp`).
     pub fn with_extension(
         mut self,
@@ -209,6 +270,12 @@ impl CesiumViewerBuilder {
             map_contrast: self.map_contrast,
             map_brightness: self.map_brightness,
             max_zoom: self.max_zoom,
+            terrain: TerrainConfig {
+                enabled: self.terrain,
+                exaggeration: self.terrain_exaggeration,
+                ocean: self.terrain_ocean.into(),
+                ..TerrainConfig::default()
+            },
             ..TileEngineConfig::default()
         };
 
@@ -355,6 +422,14 @@ impl ViewerHandle {
         let _ = self
             .tx
             .try_send(ViewerCommand::MapSetImageryUrl(url.to_string()));
+    }
+
+    /// Turn terrain height fetching on or off at runtime.
+    ///
+    /// Phase B: this starts and stops the height cache. It does not change the rendered
+    /// surface — the globe is still the bare ellipsoid either way.
+    pub fn terrain_set_enabled(&self, enabled: bool) {
+        let _ = self.tx.try_send(ViewerCommand::TerrainSetEnabled(enabled));
     }
 
     // ── Performance testing (debug-only; see tools/run_perf_scenario.sh) ──────

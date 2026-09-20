@@ -9,6 +9,106 @@ pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nol
 /// Esri World Imagery - free, no API key required.
 pub const SATELLITE_IMAGERY_URL: &str = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
+/// Mapzen/Tilezen "Terrarium" elevation tiles on AWS Open Data — free, no API key.
+///
+/// 256x256 RGB(A) PNG; each texel encodes metres above the WGS-84 ellipsoid as
+/// `h = R·256 + G + B/256 − 32768`. See
+/// [`crate::globe::terrain::height_tile::decode_terrarium`] for the decoder and
+/// [`TERRARIUM_MAX_LEVEL`] for the depth ceiling.
+pub const TERRARIUM_URL: &str =
+    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+
+/// Deepest level the Terrarium source actually serves. **Probed live, not assumed**
+/// (`docs/terrain-plan.md` §2, re-checked 2026-09-20): `z15` returns a tile, `z16`
+/// returns `404`.
+///
+/// Imagery refines to z19/z20 ([`TileEngineConfig::max_zoom`]), so for five of the
+/// twenty levels there is no height tile *in principle*. Upsampling a z15 ancestor is
+/// therefore the **normal** path for deep tiles, not an error path — see
+/// [`crate::globe::terrain::height_cache::HeightTileManager::height_at`].
+pub const TERRARIUM_MAX_LEVEL: u8 = 15;
+
+/// Resident bytes one decoded [`crate::globe::terrain::height_tile::HeightTile`]
+/// costs: 256x256 `i16` samples plus the 16x16 min and max mips.
+///
+/// `docs/terrain-plan.md` §5 B4 rounds this to "128 kB per height tile; 256 resident
+/// = 32 MB". The real figure is 129 kB, because the mips are not free, so the 32 MiB
+/// default below derives **254** entries rather than 256. The budget is the promise;
+/// the entry count is derived from it, exactly as it is for imagery.
+pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2 + 2 * (16 * 16 * 2);
+
+/// What to do with the sub-sea-level samples the Terrarium source carries.
+///
+/// The open ocean in Terrarium is **bathymetry**, not a flat sheet: a mid-Pacific z12
+/// tile measures −4324 … −2276 m (`docs/terrain-plan.md` §2, reproduced as a pinned
+/// fixture test). Rendered untreated, the sea floor *is* the sea surface and every
+/// coastline becomes a multi-kilometre cliff.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OceanPolicy {
+    /// Clamp `h < 0` to `0` at decode time, so the sea is the ellipsoid.
+    ///
+    /// The price, stated rather than hidden: genuine below-sea-level land is flattened
+    /// with it — the Dead Sea (uniformly −412 m in its z12 tile) and Death Valley
+    /// (−86 m) come out at zero. That is the right trade for a flight tracker, where
+    /// the ocean is most of the frame and the Dead Sea is two tiles.
+    #[default]
+    ClampToZero,
+    /// Decode the source verbatim, bathymetry included. Kept so the choice above is
+    /// visible and reversible rather than baked into the decoder.
+    Raw,
+}
+
+/// Terrain height data — `docs/terrain-plan.md` §4 A3 and §5.
+///
+/// Off by default and off for the whole of Phase B: this phase fetches, decodes,
+/// caches and answers queries against height tiles, and renders **nothing**. The
+/// `Heightfield` surface model that would consume it is Phase C/D.
+#[derive(Clone, Debug)]
+pub struct TerrainConfig {
+    /// Master switch. While `false` no height fetcher, no height cache and no height
+    /// request exists — [`crate::globe::tiles::system::TileSystem::height_manager`] is
+    /// `None` — so the flat path is byte-for-byte what it was before terrain existed.
+    pub enabled: bool,
+    /// XYZ template for the height source, `{z}`/`{x}`/`{y}` placeholders, same
+    /// convention as [`TileEngineConfig::base_imagery_url`].
+    pub source_url: String,
+    /// Deepest level requested from the source. Requests for tiles below this are
+    /// redirected to the ancestor at this level rather than turned into 404s.
+    pub max_level: u8,
+    /// Vertical exaggeration.
+    ///
+    /// Stored here in Phase B and **deliberately not applied** by any Phase B code
+    /// path: `docs/terrain-plan.md` §6 C1 puts the single multiplication in
+    /// `Heightfield::vertex_altitude`, "here and nowhere else", so that §3.1's boxes
+    /// and §3.2's spheres inherit it automatically. `height_at` returning raw metres
+    /// is what makes that possible — if it exaggerated too, the factor would be
+    /// applied twice.
+    pub exaggeration: f32,
+    /// How sub-sea-level samples are treated. See [`OceanPolicy`].
+    pub ocean: OceanPolicy,
+    /// The height cache's **declared slice** of
+    /// [`TileEngineConfig::tile_cache_budget_bytes`], not an addition to it — see
+    /// [`TileEngineConfig::imagery_cache_budget_bytes`]. Terrain on must not silently
+    /// raise the engine's total tile-memory ceiling.
+    pub height_cache_budget_bytes: usize,
+}
+
+impl Default for TerrainConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source_url: TERRARIUM_URL.to_string(),
+            max_level: TERRARIUM_MAX_LEVEL,
+            exaggeration: 1.0,
+            ocean: OceanPolicy::ClampToZero,
+            // 32 MiB — `docs/terrain-plan.md` §5 B4. At HEIGHT_TILE_BYTES that is 254
+            // resident height tiles, enough for the visible set plus its ancestor
+            // chains at any camera this engine flies.
+            height_cache_budget_bytes: 32 * 1024 * 1024,
+        }
+    }
+}
+
 /// Lower bound the byte budget may never push the imagery cache below, however
 /// large a single tile turns out to be. Well under any plausible working set
 /// (visible tiles plus `prefetch_radius`), so it only ever acts as a guard
@@ -118,6 +218,26 @@ pub struct TileEngineConfig {
     pub map_brightness: f32,
     pub transparent_background: bool,
     pub mesh_segments: u32,
+    /// Terrain height data. Off by default; see [`TerrainConfig`].
+    pub terrain: TerrainConfig,
+}
+
+impl TileEngineConfig {
+    /// The part of [`tile_cache_budget_bytes`](Self::tile_cache_budget_bytes) left for
+    /// decoded imagery textures once terrain's declared share is taken out.
+    ///
+    /// `docs/terrain-plan.md` §5 B4: the height cache takes a **slice** of the existing
+    /// byte budget rather than silently doubling the engine's tile-memory ceiling. With
+    /// terrain off this returns `tile_cache_budget_bytes` unchanged, so
+    /// `TileTextureManager` sizes itself exactly as it did before terrain existed.
+    pub fn imagery_cache_budget_bytes(&self) -> usize {
+        if self.terrain.enabled {
+            self.tile_cache_budget_bytes
+                .saturating_sub(self.terrain.height_cache_budget_bytes)
+        } else {
+            self.tile_cache_budget_bytes
+        }
+    }
 }
 
 impl Default for TileEngineConfig {
@@ -146,6 +266,7 @@ impl Default for TileEngineConfig {
             map_brightness: 0.5,
             transparent_background: false,
             mesh_segments: 16,
+            terrain: TerrainConfig::default(),
         }
     }
 }
@@ -228,5 +349,46 @@ mod tests {
     fn default_config_max_zoom_is_19() {
         let config = TileEngineConfig::default();
         assert_eq!(config.max_zoom, 19);
+    }
+
+    /// Terrain off is the whole of Phase B, and it must leave the imagery budget
+    /// literally untouched — the flat path may not move.
+    #[test]
+    fn terrain_off_leaves_the_imagery_budget_alone() {
+        let config = TileEngineConfig::default();
+        assert!(!config.terrain.enabled);
+        assert_eq!(
+            config.imagery_cache_budget_bytes(),
+            config.tile_cache_budget_bytes
+        );
+    }
+
+    /// B4: a slice of the existing budget, not an addition to it.
+    #[test]
+    fn terrain_on_takes_its_share_out_of_the_imagery_budget() {
+        let mut config = TileEngineConfig::default();
+        config.terrain.enabled = true;
+        assert_eq!(
+            config.imagery_cache_budget_bytes() + config.terrain.height_cache_budget_bytes,
+            config.tile_cache_budget_bytes
+        );
+    }
+
+    /// The "256 resident = 32 MB" line of §5 B4, with the mips counted: 254.
+    #[test]
+    fn the_default_height_budget_lands_on_254_tiles() {
+        let terrain = TerrainConfig::default();
+        assert_eq!(HEIGHT_TILE_BYTES, 132_096);
+        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 254);
+    }
+
+    #[test]
+    fn terrain_defaults_are_off_terrarium_and_clamped() {
+        let terrain = TerrainConfig::default();
+        assert!(!terrain.enabled);
+        assert_eq!(terrain.source_url, TERRARIUM_URL);
+        assert_eq!(terrain.max_level, 15);
+        assert_eq!(terrain.exaggeration, 1.0);
+        assert_eq!(terrain.ocean, OceanPolicy::ClampToZero);
     }
 }

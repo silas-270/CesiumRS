@@ -71,6 +71,17 @@ impl<T> TileCacheManager<T> {
         self.cache.resize(new_capacity);
     }
 
+    /// Entries currently held, `Fetching` and `Failed` placeholders included.
+    /// Read-only and non-promoting; exists so the debug panel can report imagery and
+    /// height residency separately (`docs/terrain-plan.md` §5 B4).
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
     pub fn has_fetching(&self) -> bool {
         self.cache
             .iter()

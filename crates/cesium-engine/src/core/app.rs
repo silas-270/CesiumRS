@@ -185,6 +185,56 @@ impl<'a> App<'a> {
                 });
 
                 ui.separator();
+                ui.collapsing("Terrain (height data)", |ui| {
+                    // Phase B of docs/terrain-plan.md: this switch controls fetching,
+                    // decoding and caching only. Nothing here moves a vertex yet.
+                    let mut on = state.tile_system.config.terrain.enabled;
+                    if ui
+                        .checkbox(&mut on, "Enable height tiles (no relief yet — Phase B)")
+                        .changed()
+                    {
+                        state.tile_system.config.terrain.enabled = on;
+                        state.tile_system.height_manager =
+                            crate::globe::tiles::system::TileSystem::build_height_manager(
+                                &state.tile_system.config,
+                            );
+                    }
+
+                    let terrain = &state.tile_system.config.terrain;
+                    ui.label(format!("Source max level: z{}", terrain.max_level));
+                    ui.label(format!(
+                        "Ocean: {:?}  ·  Exaggeration: {:.2}x (applied in Phase C)",
+                        terrain.ocean, terrain.exaggeration
+                    ));
+
+                    // Height residency is reported separately from imagery on purpose
+                    // (§5 B4): the height cache takes a declared slice of the tile byte
+                    // budget, and the only way to see that it is a slice and not an
+                    // addition is to show both halves.
+                    let imagery_mb =
+                        state.tile_system.config.imagery_cache_budget_bytes() / (1024 * 1024);
+                    ui.label(format!(
+                        "Imagery budget: {} MB  ·  {} entries resident",
+                        imagery_mb,
+                        state.tile_system.texture_manager.cache.len()
+                    ));
+                    match state.tile_system.height_manager.as_ref() {
+                        Some(h) => {
+                            let (resident, capacity) = h.residency();
+                            ui.label(format!(
+                                "Height budget: {} MB  ·  {resident}/{capacity} tiles, {} MB resident",
+                                state.tile_system.config.terrain.height_cache_budget_bytes
+                                    / (1024 * 1024),
+                                h.resident_bytes() / (1024 * 1024),
+                            ));
+                        }
+                        None => {
+                            ui.label("Height budget: 0 MB · cache not built (terrain off)");
+                        }
+                    }
+                });
+
+                ui.separator();
                 ui.collapsing("Map Labels Settings", |ui| {
                     ui.checkbox(&mut state.label_manager.enabled, "Enable Labels");
                     if state.label_manager.enabled {
@@ -719,6 +769,13 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                                 crate::globe::tiles::texture_manager::TileTextureManager::new(
                                     &state.device,
                                     &state.queue,
+                                    &state.tile_system.config,
+                                );
+                        }
+                        ViewerCommand::TerrainSetEnabled(on) => {
+                            state.tile_system.config.terrain.enabled = on;
+                            state.tile_system.height_manager =
+                                crate::globe::tiles::system::TileSystem::build_height_manager(
                                     &state.tile_system.config,
                                 );
                         }
