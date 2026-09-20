@@ -344,25 +344,28 @@ impl<'a> WgpuState<'a> {
             #[cfg(feature = "debug_panel")]
             egui_renderer,
             quadtree_manager: {
-                // WP5 (`docs/pre-terrain-plan.md`): production runs DEFAULT + Fog.
-                // The culling harness never constructs a `WgpuState`, so this is the
-                // only place `DEFAULT_WITH_FOG` is ever selected — see that
-                // constant's doc comment before changing it.
-                //
                 // Phase D1: which *surface model* the tree runs over is decided here
                 // and only here — one match at the manager boundary rather than a
                 // branch per node. See `globe::quadtree::any`.
                 //
                 // Phase D3: the terrain arm additionally runs `Stage::TerrainOcclusion`
-                // (`CullPipeline::TERRAIN_DEFAULT_WITH_FOG`). Unlike fog that stage is
-                // sound, so it is in the terrain *default* rather than bolted on for
-                // production only — see `globe::quadtree::terrain_occlusion`.
+                // (`CullPipeline::TERRAIN_DEFAULT`), which is sound and therefore lives
+                // in the terrain *default* rather than being bolted on for production
+                // only — see `globe::quadtree::terrain_occlusion`.
+                //
+                // **E1c**: production used to run `DEFAULT_WITH_FOG` / its terrain twin
+                // here, whose extra `Stage::Fog` was the fourth of four stages behind two
+                // that settle every node — so it never executed. Measured (204 bench poses
+                // plus ten real-terrain ones): making it reachable culled **zero** tiles at
+                // every camera, because fog saturates further out than the horizon does at
+                // every altitude. The stage is gone; what fog actually does to the tree is
+                // `apply_lod`'s relaxation, which is untouched. `docs/terrain-plan.md` §8.
                 let terrain = tile_system.config.terrain.enabled;
                 let mut qt = AnyQuadtree::for_terrain(terrain);
                 qt.set_pipeline(if terrain && tile_system.config.terrain.occlusion.enabled {
-                    CullPipeline::TERRAIN_DEFAULT_WITH_FOG
+                    CullPipeline::TERRAIN_DEFAULT
                 } else {
-                    CullPipeline::DEFAULT_WITH_FOG
+                    CullPipeline::DEFAULT
                 });
                 qt.set_frame_params(2.0, tile_system.config.max_zoom, 0.0);
                 qt

@@ -1,38 +1,47 @@
 //! Pure-function checks on the fog port (`crates/cesium-engine/src/globe/quadtree/fog.rs`)
-//! — WP5 of `docs/pre-terrain-plan.md` — plus a direct guard on the constraint that
-//! matters most for this package: `Stage::Fog` must never reach the pipeline the
-//! culling harness builds.
+//! — WP5 of `docs/pre-terrain-plan.md` — plus a guard on what is left of fog's reach into
+//! the tree.
+//!
+//! There used to be two guards here on `Stage::Fog`'s placement: that it never entered
+//! `CullPipeline::DEFAULT` (where it would void every FN = 0 guarantee in
+//! `docs/culling-math.md`), and that `DEFAULT_WITH_FOG` was `DEFAULT` plus exactly that
+//! stage. **E1c deleted the stage**, having measured that it culls nothing at any camera
+//! (`docs/terrain-plan.md` §8, and
+//! [`super::test_wp5_fog::the_fog_stage_never_ran_and_this_is_what_it_would_have_culled`]
+//! for the reconstruction that still checks it). With no stage there is nothing to keep
+//! out of `DEFAULT`, and production now runs `DEFAULT` itself — so the constraint those
+//! two tests protected is satisfied structurally rather than by assertion, which is the
+//! stronger arrangement and the reason they are gone rather than rewritten.
 
 use cesium_engine::globe::quadtree::{cesium_fog, fog_density_for, CullPipeline, FogConfig, Stage};
 
-/// THE constraint. `CullPipeline::DEFAULT` — what every culling-gate sweep in
-/// `src/testing/culling/` runs — must never contain `Stage::Fog`. Fog culling makes
-/// false negatives non-zero by design; if this ever fails, every FN = 0 guarantee in
-/// `docs/culling-math.md` is void, silently, until the next gate run turns red with
-/// no explanation pointing here. A one-line check, but it is the one line that
-/// catches "a future reader who 'helpfully' adds the fog stage to the harness's
-/// pipeline" before they get as far as running the gate.
+/// What is left of the constraint: production's pipeline **is** the pipeline the culling
+/// gate proves FN = 0 against, on both arms.
+///
+/// Before E1c the two differed by `Stage::Fog` and a paragraph explaining why that was
+/// safe. Now they are the same constant, and this is the check that keeps them so — the
+/// failure it catches is someone reintroducing an unsound stage into the pipeline
+/// `wgpu_state` selects without noticing that the harness measures a different one.
 #[test]
-fn test_fog_stage_is_not_in_the_default_pipeline() {
-    assert!(
-        !CullPipeline::DEFAULT.stages().contains(&Stage::Fog),
-        "Stage::Fog must never be in CullPipeline::DEFAULT — see fog.rs's module doc \
-         comment and DEFAULT_WITH_FOG's doc comment for why"
+fn test_production_runs_the_pipeline_the_gate_proves() {
+    for stage in CullPipeline::DEFAULT.stages() {
+        assert!(
+            matches!(
+                stage,
+                Stage::Horizon | Stage::NodeFrustum | Stage::SubPatchGrid
+            ),
+            "CullPipeline::DEFAULT grew an unexpected stage: {stage:?} — if it is not \
+             provably sound at every level (invariant I-7), it does not belong in the \
+             pipeline the culling gate measures"
+        );
+    }
+    let terrain = CullPipeline::TERRAIN_DEFAULT.stages().to_vec();
+    assert_eq!(
+        terrain.len(),
+        CullPipeline::DEFAULT.stages().len() + 1,
+        "TERRAIN_DEFAULT is DEFAULT plus Stage::TerrainOcclusion and nothing else"
     );
-}
-
-/// `DEFAULT_WITH_FOG` is `DEFAULT` plus exactly `Stage::Fog`, appended, not
-/// substituted — the "prefix" property `test_stage_prefix_only_grows_the_kept_set`
-/// (`src/testing/culling/test_stage_pipeline.rs`) depends on for pipelines it knows
-/// about applies here too, informally: production's pipeline is a strict superset
-/// of stages, never a swap.
-#[test]
-fn test_default_with_fog_is_default_plus_fog_appended() {
-    let default_stages = CullPipeline::DEFAULT.stages().to_vec();
-    let with_fog_stages = CullPipeline::DEFAULT_WITH_FOG.stages().to_vec();
-    assert_eq!(with_fog_stages.len(), default_stages.len() + 1);
-    assert_eq!(&with_fog_stages[..default_stages.len()], default_stages.as_slice());
-    assert_eq!(with_fog_stages[default_stages.len()], Stage::Fog);
+    assert!(terrain.contains(&Stage::TerrainOcclusion));
 }
 
 /// `cesium_fog`'s boundary behaviour: zero at zero distance or zero density

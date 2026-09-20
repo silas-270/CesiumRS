@@ -104,8 +104,8 @@ fn test_wp5c_fog_vs_baseline() {
         print_comparison(c);
     }
 
-    // Fog only ever subtracts geometry/refinement (Stage::Fog only culls,
-    // apply_lod's relaxation only shrinks) — so at fixed content, fog must never
+    // Fog only ever subtracts refinement — `apply_lod`'s relaxation shrinks
+    // `subdivide_dist` and nothing else — so at fixed content, fog must never
     // *increase* tile count or texture bytes relative to the no-fog baseline, on
     // any subset.
     for c in [&all, &hz, &cr] {
@@ -334,7 +334,7 @@ fn test_wp5b_max_height_boundary_step() {
     }
 
     // Report, don't gate on a pass/fail number here — per the ground rules, only
-    // Stage::Fog's absence from CullPipeline::DEFAULT is a hard requirement. This
+    // fog's effect on the tree staying a relaxation is a hard requirement. This
     // is instead a documented, quantified property: see docs/culling-baseline.md's
     // WP5/B section for the reading, including why it is bounded in practice by
     // 800km being far outside this product's 10-12km cruise envelope.
@@ -365,4 +365,120 @@ fn test_wp5b_hysteresis_band_stays_proportional_under_fog() {
              relaxation ({relaxation}), got {ratio}"
         );
     }
+}
+
+// ── E1c: the stage that never ran ───────────────────────────────────────────────
+
+/// **E1c** (`docs/terrain-plan.md` §8) — the measurement that deleted `Stage::Fog`, kept
+/// re-runnable **without the code it refutes**.
+///
+/// The stage was the fourth of four in `CullPipeline::DEFAULT_WITH_FOG`, behind
+/// `Stage::NodeFrustum` (which answers `Keep` outright for every node without a sub-grid)
+/// and `Stage::SubPatchGrid` (which answers `Keep` or `Cull` for every node with one), so
+/// `CullPipeline::keeps` returned before it — for every node, at every camera. §7b recorded
+/// that and did not draw the consequence. Moved into slot 1, where a `Cull`/`Undecided`
+/// stage does run, it culled **zero** tiles over all 204 bench poses. So it was deleted
+/// rather than promoted: a stage that removes nothing still costs an
+/// `OrientedBoundingBox::distance_to_point` and an `exp` per node per frame in production.
+///
+/// This test is what is left, and it needs no engine support: it settles the real tree
+/// under the real fog density and then applies the deleted stage's own predicate —
+/// `cesium_fog(obb.distance_to_point(eye) · 1e6, density) >= 1.0` — to every tile that
+/// survived. The count must be zero.
+///
+/// # Why it is zero, in closed form
+///
+/// `cesium_fog` saturates to exactly `1.0` in f32 at `distance · density ≈ 4.16`. A tile
+/// that survived `Stage::Horizon` has a point the limb test could not prove hidden, and
+/// every such point is within the horizon distance `√(2Rh + h²)` — so the stage can only
+/// fire when the saturation distance is *inside* the horizon. The table below is that
+/// comparison at eight altitudes: the ratio is above 1 everywhere this engine flies, dipping
+/// to 0.97 only in a narrow band around 100 m, where the whole visible set is a handful of
+/// tiles 35 km out. Fog thick enough to cull is always further away than the planet's own
+/// edge.
+#[test]
+fn the_fog_stage_never_ran_and_this_is_what_it_would_have_culled() {
+    use cesium_engine::globe::quadtree::{
+        cesium_fog, fog_density_for, lod_factor_for, CullPipeline, QuadtreeManager, QuadtreeNode,
+        MEGAMETERS_TO_METERS,
+    };
+
+    use super::super::culling::cameras::build_camera;
+    use super::super::culling::sweep::UPDATE_ITERATIONS;
+    use super::sweep::frustum_for;
+
+    let fog_cfg = FogConfig::default();
+    let poses = bench_poses();
+    let mut visible_total = 0usize;
+    let mut would_cull = 0usize;
+    let mut thickest: f32 = 0.0;
+
+    for p in &poses {
+        let cam = build_camera(p);
+        let frustum = frustum_for(&cam, p.aspect() as f32);
+        let density = fog_density_for(cam.altitude() * MEGAMETERS_TO_METERS, &fog_cfg);
+        let mut qt = QuadtreeManager::new();
+        qt.pipeline = CullPipeline::DEFAULT;
+        qt.lod_factor = lod_factor_for(1.0, 512.0, p.height as f32, cam.fovy());
+        qt.fog_density = density;
+        for _ in 0..UPDATE_ITERATIONS {
+            qt.update(&frustum);
+        }
+        for (id, _, _) in qt.get_visible_tiles() {
+            // The deleted stage's own expression, rebuilt from public API: its box, its
+            // nearest-point distance, its metres, its threshold.
+            let node = QuadtreeNode::new(id);
+            let dist_m = node.obb.distance_to_point(frustum.eye) * MEGAMETERS_TO_METERS;
+            let fog = cesium_fog(dist_m, density);
+            thickest = thickest.max(fog);
+            visible_total += 1;
+            if fog >= 1.0 {
+                would_cull += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "  [E1c] {} poses, {visible_total} visible tiles: the deleted Stage::Fog would have \
+         culled {would_cull}; thickest fog on any surviving tile = {thickest:.9} \
+         (it gets close — see the altitude table — and never arrives)",
+        poses.len()
+    );
+    eprintln!(
+        "  [E1c] {:>10} {:>14} {:>14} {:>10}",
+        "alt (m)", "fog=1 at (km)", "horizon (km)", "ratio"
+    );
+    for alt_m in [
+        10.0_f32, 100.0, 900.0, 4_500.0, 11_000.0, 100_000.0, 400_000.0, 790_000.0,
+    ] {
+        let density = fog_density_for(alt_m, &fog_cfg);
+        // Smallest distance with `cesium_fog >= 1.0`, by bisection on the real function
+        // rather than on an analytic inverse: `1 − exp(−x²)` saturates to exactly 1.0 at a
+        // point that depends on f32's own rounding, and that is the value that matters.
+        let (mut lo, mut hi) = (0.0_f32, 1.0e9_f32);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if cesium_fog(mid, density) >= 1.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let r = 6_371_000.0_f64;
+        let h = alt_m as f64;
+        let horizon_m = (2.0 * r * h + h * h).sqrt();
+        eprintln!(
+            "  [E1c] {:>10.0} {:>14.1} {:>14.1} {:>10.2}",
+            alt_m,
+            hi as f64 / 1000.0,
+            horizon_m / 1000.0,
+            hi as f64 / horizon_m
+        );
+    }
+
+    assert_eq!(
+        would_cull, 0,
+        "the deleted Stage::Fog would now remove {would_cull} tiles — the fog constants \
+         have moved far enough that E1c's deletion needs revisiting, not this assertion"
+    );
 }

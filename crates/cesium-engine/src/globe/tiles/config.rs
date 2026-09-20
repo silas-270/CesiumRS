@@ -270,11 +270,10 @@ pub struct TileEngineConfig {
     /// Atmospheric fog — WP5 of `docs/pre-terrain-plan.md`, ported from CesiumJS's
     /// `Scene/Fog.js` defaults. Consumed by `wgpu_state::update_logic` to derive
     /// this frame's fog density (`crate::globe::quadtree::fog_density_for`) from
-    /// camera altitude, which drives both `Stage::Fog` (an outright cull, present
-    /// only in `CullPipeline::DEFAULT_WITH_FOG` — **never** in `DEFAULT`, which the
-    /// culling harness builds and every FN = 0 guarantee is proved against) and
-    /// `QuadtreeNode::apply_lod`'s threshold relaxation. See
-    /// `crate::globe::quadtree::fog`'s module doc comment for the full story.
+    /// camera altitude, which drives `QuadtreeNode::apply_lod`'s threshold relaxation —
+    /// since E1c deleted `Stage::Fog`, the only consumer there is. See
+    /// `crate::globe::quadtree::fog`'s module doc comment for the full story, including
+    /// what that stage was measured to remove (nothing) before it went.
     pub fog: crate::globe::quadtree::FogConfig,
     pub prefetch_radius: u32,
     pub enable_prefetch: bool,

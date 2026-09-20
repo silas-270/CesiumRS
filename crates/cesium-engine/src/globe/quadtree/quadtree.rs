@@ -718,17 +718,6 @@ pub enum Stage {
     /// case is unreachable — a grid-less node is always settled there — but the
     /// stage is still total, because a pipeline may list it alone.
     SubPatchGrid,
-    /// Outright atmospheric-fog cull — WP5 of `docs/pre-terrain-plan.md`. `Cull`
-    /// when [`cesium_fog`] of the node's distance to the eye reaches `1.0`;
-    /// `Undecided` otherwise (including whenever `ctx.fog_density == 0.0`, i.e. no
-    /// fog set, or the camera is above `FogConfig::max_height_m`). Never `Keep`:
-    /// fog only ever *removes* geometry that other stages already proved visible,
-    /// it is never itself proof that something is visible.
-    ///
-    /// **Not geometrically sound, and not in [`CullPipeline::DEFAULT`].** See the
-    /// warning on [`super::fog`]'s module doc comment before touching this stage's
-    /// placement in any pipeline.
-    Fog,
     /// **D3** — the tile is behind a *mountain*, not behind the planet
     /// ([`super::terrain_occlusion`], `docs/terrain-plan.md` §3.3). `Cull` when the
     /// circumsphere of the node's D1 box lies entirely below the guaranteed ridge this
@@ -737,18 +726,21 @@ pub enum Stage {
     /// no `CullContext::terrain` at all — which is always, on the flat arm). Never
     /// `Keep`: like the limb and frustum stages it proves invisibility and nothing else.
     ///
-    /// # Sound, unlike [`Stage::Fog`] — and that is why it sits in a default pipeline
+    /// # Sound, and that is why it sits in a default pipeline
     ///
-    /// The two are adjacent in this `enum` and their contracts are opposite, so this is
-    /// worth stating where both are in view. `Fog` **deliberately discards geometry that
-    /// is genuinely visible**; that is what atmospheric fog culling is, it makes false
-    /// negatives non-zero by design, and it is fenced out of [`CullPipeline::DEFAULT`]
-    /// for exactly that reason. `TerrainOcclusion` discards only what it has proved
-    /// invisible. It therefore belongs in [`CullPipeline::TERRAIN_DEFAULT`] — the
-    /// pipeline the terrain arm of [`super::any::AnyQuadtree`] runs *and* the one the
-    /// terrain harness measures — and is held to FN = 0 by
+    /// It discards only what it has proved invisible, so it belongs in
+    /// [`CullPipeline::TERRAIN_DEFAULT`] — the pipeline the terrain arm of
+    /// [`super::any::AnyQuadtree`] runs *and* the one the terrain harness measures — and
+    /// is held to FN = 0 by
     /// `testing::terrain::test_terrain_occlusion::d3_never_hides_a_visible_vertex`
     /// rather than being kept away from the thing that would notice.
+    ///
+    /// There used to be a `Stage::Fog` next to it whose contract was the opposite — it
+    /// deliberately discarded geometry that is genuinely visible, and was fenced out of
+    /// [`CullPipeline::DEFAULT`] for exactly that reason. E1c measured what it removed
+    /// and the answer was **nothing, at any camera**; it is gone, and the fog *relaxation*
+    /// in `apply_lod`, where every measured effect of WP5 always lived, is not. See
+    /// `docs/terrain-plan.md` §8.
     ///
     /// # Why it is placed second, right after [`Stage::Horizon`]
     ///
@@ -807,22 +799,6 @@ impl Stage {
                 }
                 None => StageVerdict::Undecided,
             },
-            Stage::Fog => {
-                if ctx.fog_density <= 0.0 {
-                    return StageVerdict::Undecided;
-                }
-                // The tile's own nearest-point distance, in metres — same choice
-                // `QuadtreeNode::apply_lod`'s fog relaxation makes, and independent
-                // of `LodDistanceMode` (a separate, orthogonal WP4/C experiment):
-                // fog concealment is a property of the tile's own geometry, not of
-                // which LOD distance metric happens to be active.
-                let dist_m = node.obb.distance_to_point(ctx.frustum.eye) * MEGAMETERS_TO_METERS;
-                if cesium_fog(dist_m, ctx.fog_density) >= 1.0 {
-                    StageVerdict::Cull
-                } else {
-                    StageVerdict::Undecided
-                }
-            }
             Stage::TerrainOcclusion => {
                 let Some(horizon) = ctx.terrain else {
                     return StageVerdict::Undecided;
@@ -845,20 +821,23 @@ impl Stage {
 
 /// The most stages a pipeline can hold — one of each [`Stage`].
 ///
-/// # Raised from 4 to 5 by D3, and what that cost the flat path
+/// # 4 → 5 (D3) → 4 again (E1c), and what each move cost the flat path
 ///
 /// [`CullPipeline::keeps`] loops over `0..MAX_STAGES` with a `break` at `len`
 /// deliberately, so the trip count is a constant and the three-way `match` in
 /// [`Stage::run`] unrolls into one specialised copy per slot (measured: 6.9 µs against
-/// 7.3 µs for a slice loop — see that function's doc comment). Raising the constant adds
-/// a **fifth** such copy, which `CullPipeline::DEFAULT` (three stages) breaks out of
-/// before reaching. The cost is therefore code size, not frame time, and `bench_update`
-/// confirms it: mean `QuadtreeManager::update` over the 204 bench poses is unchanged
-/// inside run-to-run variance, and `size_of::<QuadtreeNode<Ellipsoid>>()` cannot move
-/// because a pipeline is not stored per node. `CullPipeline` itself grows from 4 B to
-/// 6 B; it lives on [`QuadtreeManager`] and is copied by value into [`CullContext`]
-/// once per frame.
-pub const MAX_STAGES: usize = 5;
+/// 7.3 µs for a slice loop — see that function's doc comment). Each step of this constant
+/// therefore adds or removes one such copy, which `CullPipeline::DEFAULT` (three stages)
+/// breaks out of before reaching: the cost is code size, not frame time.
+///
+/// D3 raised it to 5 for `TERRAIN_DEFAULT_WITH_FOG`, and `bench_update` read a mean
+/// `QuadtreeManager::update` unchanged inside run-to-run variance. E1c deleted
+/// `Stage::Fog` — measured to cull nothing at any camera — and with it both `*_WITH_FOG`
+/// pipelines, so the longest list is `TERRAIN_DEFAULT`'s four and the constant comes back
+/// down. `bench_update` again: 9.3 µs before, 9.4 µs after, on a machine whose same-code
+/// spread is wider than that. `size_of::<QuadtreeNode<Ellipsoid>>()` cannot move either
+/// way, because a pipeline is not stored per node.
+pub const MAX_STAGES: usize = 4;
 
 /// An ordered, switchable list of culling stages. `Copy`, 4 bytes, no allocation.
 ///
@@ -923,40 +902,21 @@ impl CullPipeline {
     pub const DEFAULT: CullPipeline =
         CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid]);
 
-    /// `DEFAULT` plus [`Stage::Fog`] — WP5 of `docs/pre-terrain-plan.md`. **This is
-    /// what `wgpu_state.rs` actually runs in production**; `DEFAULT` alone is not.
-    ///
-    /// # Do not use this in the culling harness. Ever.
-    ///
-    /// Fog culling is not geometrically sound — it deliberately discards tiles that
-    /// are genuinely visible, so `Stage::Fog` makes false negatives non-zero *by
-    /// design*. Every FN = 0 guarantee in `docs/culling-math.md`, and every sweep in
-    /// `src/testing/culling/`, is proved against `CullPipeline::DEFAULT` — put this
-    /// constant in place of it (in the harness, in `all_pipelines()`, in a bench) and
-    /// every one of those sweeps goes red, correctly, because the thing they check
-    /// (nothing visible is ever culled) is no longer true and was never supposed to
-    /// be while measuring this pipeline. That is not a bug to fix; it is the reason
-    /// `Stage::Fog` exists as an *addition* on top of `DEFAULT` rather than a change
-    /// to it. See [`super::fog`]'s module doc comment for the full story.
-    pub const DEFAULT_WITH_FOG: CullPipeline = CullPipeline::of(&[
-        Stage::Horizon,
-        Stage::NodeFrustum,
-        Stage::SubPatchGrid,
-        Stage::Fog,
-    ]);
-
     /// **The terrain arm's default** — `DEFAULT` with [`Stage::TerrainOcclusion`]
     /// inserted second, right behind the limb test. D3 of `docs/terrain-plan.md` §7.
     ///
     /// # This one *is* sound, and is measured as such
     ///
-    /// The opposite of [`Self::DEFAULT_WITH_FOG`] in every respect that matters. Fog
-    /// removes geometry that is genuinely visible, so it may never appear in a pipeline
-    /// the culling harness measures. Terrain occlusion removes only geometry it has
-    /// proved invisible, so it belongs in the default the terrain engine runs *and* in
-    /// the one the terrain harness measures, and
+    /// It removes only geometry it has proved invisible, so it belongs in the default the
+    /// terrain engine runs *and* in the one the terrain harness measures, and
     /// `testing::terrain::test_terrain_occlusion` holds it to FN = 0 against the drawn
     /// mesh. Putting it here and then measuring something else would defeat the point.
+    ///
+    /// Until E1c there was a `TERRAIN_DEFAULT_WITH_FOG` beside it, five stages long, and
+    /// production ran that. `Stage::Fog` was measured to cull **nothing, at any camera**,
+    /// and was deleted — see `docs/terrain-plan.md` §8 E1c. This constant is now what the
+    /// terrain arm runs as well as what its harness measures, which is the arrangement
+    /// the section above was arguing for anyway.
     ///
     /// `CullPipeline::DEFAULT` is untouched and stays what the flat globe runs and what
     /// every sweep in `src/testing/culling/` is proved against — a new `Stage` variant
@@ -973,17 +933,6 @@ impl CullPipeline {
         Stage::TerrainOcclusion,
         Stage::NodeFrustum,
         Stage::SubPatchGrid,
-    ]);
-
-    /// [`Self::TERRAIN_DEFAULT`] plus [`Stage::Fog`] — what `wgpu_state.rs` runs on the
-    /// terrain arm, exactly as [`Self::DEFAULT_WITH_FOG`] is what it runs on the flat
-    /// one. **Not for the harness**, for fog's reason and fog's reason only.
-    pub const TERRAIN_DEFAULT_WITH_FOG: CullPipeline = CullPipeline::of(&[
-        Stage::Horizon,
-        Stage::TerrainOcclusion,
-        Stage::NodeFrustum,
-        Stage::SubPatchGrid,
-        Stage::Fog,
     ]);
 
     /// Builds a pipeline from a stage list. Panics above [`MAX_STAGES`] stages —
@@ -1467,18 +1416,17 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         //   subdivide_dist' = subdivide_dist * (1 - fog(dist, density))
         //
         // At `fog = 0` (no fog, or this node outside it) the threshold is
-        // unchanged. At `fog -> 1` — the boundary `Stage::Fog` culls the node
-        // outright at, in `CullPipeline::DEFAULT_WITH_FOG` — the threshold shrinks
-        // to 0, so a heavily-fogged node stops accepting further refinement in the
-        // frames just before it disappears rather than staying maximally refined
-        // right up to the cull. `fog.sse` is deliberately **not** used here: it is
-        // a pixel-space screen-space-error constant, and this formula has no error
-        // term in those units to scale — see `FogConfig::sse`'s doc comment for
-        // where it is reserved instead. Distance is the node's own nearest-point
-        // distance (`obb.distance_to_point`), matching `Stage::Fog`'s choice and
-        // independent of `LodDistanceMode` — fog concealment is a property of the
-        // tile's own geometry, not of which experimental LOD distance metric is
-        // active.
+        // unchanged. At `fog -> 1` the threshold shrinks to 0, so a heavily-fogged
+        // node stops accepting further refinement. (Until E1c there was a
+        // `Stage::Fog` that culled such a node outright a little later; it was
+        // measured to cull nothing at any camera and deleted, so this relaxation is
+        // now the whole of what fog does to the tree.) `fog.sse` is deliberately
+        // **not** used here: it is a pixel-space screen-space-error constant, and
+        // this formula has no error term in those units to scale — see
+        // `FogConfig::sse`'s doc comment for what E1b measured it against instead. Distance is the node's own nearest-point
+        // distance (`obb.distance_to_point`), independent of `LodDistanceMode` — fog
+        // concealment is a property of the tile's own geometry, not of which
+        // experimental LOD distance metric is active.
         let fog_relaxation = if ctx.fog_density > 0.0 {
             let fog_dist_m = self.obb.distance_to_point(ctx.frustum.eye) * MEGAMETERS_TO_METERS;
             1.0 - cesium_fog(fog_dist_m, ctx.fog_density)

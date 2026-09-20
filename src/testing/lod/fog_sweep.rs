@@ -3,13 +3,20 @@
 //! Deliberately **does not** share code with [`super::sweep::measure_pose_with_config`]
 //! / [`super::sweep::measure_poses_with_config`], even though the bodies are almost
 //! identical. Every other LOD test in this crate trusts that
-//! `sweep::measure_pose_with_config` always runs `CullPipeline::DEFAULT` — that
-//! trust is exactly what makes it safe for `docs/culling-baseline.md`'s numbers to
-//! be compared against each other across packages. Branching that one shared
-//! function on a "use fog or not" flag would put the harness-safety property behind
-//! a conditional a future edit could flip by accident. Duplicating the handful of
-//! lines that differ keeps the unsafe choice (`CullPipeline::DEFAULT_WITH_FOG`)
-//! visible in a file whose name says what it is, used from nowhere else.
+//! `sweep::measure_pose_with_config` measures the un-fogged tree — that trust is exactly
+//! what makes it safe for `docs/culling-baseline.md`'s numbers to be compared against each
+//! other across packages. Branching that one shared function on a "use fog or not" flag
+//! would put the harness-safety property behind a conditional a future edit could flip by
+//! accident. Duplicating the handful of lines that differ keeps the fogged measurement in
+//! a file whose name says what it is, used from nowhere else.
+//!
+//! **What changed at E1c.** This module used to run `CullPipeline::DEFAULT_WITH_FOG`, and
+//! that constant's whole point was to keep an unsound stage out of the harness. The stage
+//! was measured to cull nothing at any camera and deleted (`docs/terrain-plan.md` §8), so
+//! the pipeline here is now plain `DEFAULT` and the only difference from the baseline
+//! sweep is `fog_density` — which is the only difference that ever produced a number.
+//! Re-running WP5's whole suite across that deletion returned **byte-identical CSVs**,
+//! which is the measurement rather than the hope.
 //!
 //! **Never import this module from anything that is not itself a WP5 measurement.**
 
@@ -29,17 +36,16 @@ fn fog_density_at(cam: &Camera, fog_cfg: &FogConfig) -> f32 {
     fog_density_for(cam.altitude() * MEGAMETERS_TO_METERS, fog_cfg)
 }
 
-/// As [`super::sweep::measure_pose_with_config`], but the quadtree runs
-/// `CullPipeline::DEFAULT_WITH_FOG` with `fog_cfg`'s density for this pose's camera
-/// altitude, instead of `CullPipeline::DEFAULT` with no fog. See the module doc
-/// comment for why this is not the same function with a flag.
+/// As [`super::sweep::measure_pose_with_config`], but with `fog_cfg`'s density for this
+/// pose's camera altitude instead of no fog at all. See the module doc comment for why
+/// this is not the same function with a flag.
 pub fn measure_pose_with_fog(p: &ViewParams, cfg: LodConfig, fog_cfg: &FogConfig) -> PoseResult {
     let cam = build_camera(p);
     let aspect = p.aspect();
     let frustum = frustum_for(&cam, aspect as f32);
 
     let mut qt = QuadtreeManager::new();
-    qt.pipeline = CullPipeline::DEFAULT_WITH_FOG;
+    qt.pipeline = CullPipeline::DEFAULT;
     qt.lod_distance_mode = cfg.lod_distance_mode;
     qt.lod_factor = cesium_engine::globe::quadtree::lod_factor_for(
         cfg.target_texel_ratio,
