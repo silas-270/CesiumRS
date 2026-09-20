@@ -1213,10 +1213,18 @@ expression by hand and comparing all 16 matrix elements **by bit pattern**, f32 
 five poses × two camera modes × three aspect ratios, including a camera that has been given a
 ground height and then handed `None` again.
 
-*What it buys.* On the Inn valley floor (900 m over a 574 m floor) the old near plane is
-`0.1 × 900 m = 90 m` and the new one `0.1 × 326 m = 33 m`. Clamped at zero, because the
-bilinear sample and the 16×16 drawn patch of the same field disagree by metres and a camera
-can be a little under its own sampled ground.
+*What it buys, measured.* Standing on the Nordkette ridge at 2 045 m with 2 m of clearance,
+the old near plane is `0.1 × 2 045 m = 204 m` and the new one `0.1 × 2 m = 0.2 m`. The same
+pose rendered by the pre-E3 build (`2d4f2e9`) and by this one differ by a **wedge of missing
+ground at the crest — 3.4 % of the lower half of the frame is empty in the old shot and 0.1 %
+in the new one**. That hole is §8's "near terrain clips", photographed. Clamped at zero,
+because the bilinear sample and the 16×16 drawn patch of the same field disagree by metres and
+a camera can be a little under its own sampled ground.
+
+*What it does not buy.* `znear` only enters the projection's depth row, so a pose with nothing
+inside the old near plane renders identically. All fifteen `rendering::terrain_capture` shots
+are **bit-identical** to `2d4f2e9` — same tile counts, zero differing pixels — which is the
+strongest available statement that E3.2 changed nothing except the case it was for.
 
 **3. The ground is a floor.** `enforce_bounds` kept the camera 2 m off the ellipsoid and flew
 it through the Alps. Cesium's shape, ported: `MIN_COLLISION_TERRAIN_HEIGHT` = 15 km
@@ -1268,6 +1276,38 @@ function), not the radius — 0.19° apart at mid-latitude. The test that checks
 vertical measures the sideways component in f64 as a rejection: an `acos` of two f32 unit
 vectors near 1 has no significant digits left and reports ~2 km of drift for a pair one ulp
 apart.
+
+**5. Picking and pan — not done.** `intersect_ellipsoid` still intersects the ellipsoid, so a
+drag started on a mountainside grabs the point where the ray crosses sea level instead. §8
+already rated this lowest priority (sub-pixel except in mountains at low altitude), and two
+things argue for leaving it rather than squeezing it in:
+
+- **There is no green baseline to regress against.** `camera::test_touch`'s
+  `test_touch_interpreter_single_finger_pan` and `test_camera_inertia_decay` fail at `2d4f2e9`,
+  before any of this work. Changing what a drag ray hits, with the only two tests covering drag
+  already red, means shipping a change nobody can tell is correct. Fixing those tests is its
+  own piece of work and not part of E3.
+- **It is not the same shape as 1-4.** Those four are a sample under a known point; this one is
+  a ray-vs-heightfield march, with its own step schedule, its own miss cases (a ray that grazes
+  a ridge, a ray that leaves the loaded set) and its own refinement. The closed form is the
+  right first guess, as §8 says, but the refinement around it is a piece of geometry, not a
+  wiring change.
+
+The rest of E3 does not depend on it: the drag ray's error is in *where the gesture anchors*,
+and nothing in 1-4 reads that anchor.
+
+### E3 — captures
+
+`rendering::terrain_e3_capture` (`#[ignore]`d, needs the network) renders the two mountain
+airports and the Nordkette. What the shots show, with terrain on throughout:
+
+| shot | what it says |
+|---|---|
+| `lowi_innsbruck_on_ground` | 305 m over the runway 26 threshold, the Inn valley and both walls in relief, the runway markings sharp in the near field. The plan's 584 m and the DEM's 579 m agree. |
+| `lowi_innsbruck_sea_level` | the old default asked for 303 m — 278 m inside the valley floor. E3.3 puts the camera on the runway at 2.1 m instead, and E3.2 draws the tarmac under it rather than clipping it. |
+| `lowi_innsbruck_flat_globe` | the documented caveat: the same 884 m eye over a sea-level sphere. Dead flat horizon, the Alps a painted texture, the aircraft floating by exactly the field elevation. |
+| `skbo_bogota_on_ground` | 305 m over SKBO at 2 851 m, the sabana and the Cerros Orientales standing up on the horizon. |
+| `nordkette_sunk_terrain_on` | asked for 600 m, 1 400 m inside the ridge; came out at 2 045.4 m, which is the 2 043 m ridge plus the 2 m clearance. The Karwendel beyond is drawn, not rock. |
 
 ---
 
