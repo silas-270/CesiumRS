@@ -199,6 +199,52 @@ impl HeightTile {
     pub fn mip_max(&self, cx: usize, cy: usize) -> i16 {
         self.max_mip[cy.min(HEIGHT_MIP_DIM - 1) * HEIGHT_MIP_DIM + cx.min(HEIGHT_MIP_DIM - 1)]
     }
+
+    /// `(min, max)` in metres over every texel the `[u0,u1] × [v0,v1]` rectangle
+    /// touches — Phase D1's bounding-volume source.
+    ///
+    /// The rectangle is rounded **outward** to whole mip cells, so the answer is an
+    /// upper bound on the true extrema over it and never an under-estimate: an
+    /// under-estimate is a box that does not contain its own geometry, i.e. a false
+    /// negative, and by I-7 a hole in the globe (I-6).
+    ///
+    /// # The one-cell halo
+    ///
+    /// [`Self::sample_bilinear`] places texel *centres* at `(i + 0.5)/256`, so a sample
+    /// taken exactly on a cell boundary reads one texel on each side of it — the far one
+    /// belonging to the neighbouring mip cell. The covered cell range is therefore
+    /// grown by one cell on every side, which is 16 texels where half a texel would do:
+    /// 32× more slack than the argument needs, and still only 1/16 of the tile, against
+    /// the alternative of a boundary case that is right in every test and wrong in the
+    /// one frame a summit sits on a cell edge.
+    ///
+    /// The halo does not break the containment that makes the inheritance margin zero
+    /// below z15: `floor` is monotone, so a dyadic sub-rectangle's grown cell range is
+    /// still a subset of its parent's grown range.
+    ///
+    /// The whole tile (`0,0 → 1,1`) returns exactly [`Self::h_min`] and [`Self::h_max`],
+    /// which is what a tile at or above the source's deepest level asks for.
+    pub fn mip_extrema_over(&self, u0: f64, v0: f64, u1: f64, v1: f64) -> (i16, i16) {
+        let n = HEIGHT_MIP_DIM as f64;
+        let last = HEIGHT_MIP_DIM as isize - 1;
+        let cell = |t: f64, halo: isize| -> usize {
+            let x = (t.clamp(0.0, 1.0) * n).floor() as isize;
+            (x + halo).clamp(0, last) as usize
+        };
+        let (cx0, cx1) = (cell(u0.min(u1), -1), cell(u0.max(u1), 1));
+        let (cy0, cy1) = (cell(v0.min(v1), -1), cell(v0.max(v1), 1));
+
+        let mut lo = i16::MAX;
+        let mut hi = i16::MIN;
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                let c = cy * HEIGHT_MIP_DIM + cx;
+                lo = lo.min(self.min_mip[c]);
+                hi = hi.max(self.max_mip[c]);
+            }
+        }
+        (lo, hi)
+    }
 }
 
 impl std::fmt::Debug for HeightTile {

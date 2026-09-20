@@ -6,3 +6,5 @@ pub mod test_heightfield;
 pub mod test_parametric_sweeps;
 #[cfg(test)]
 pub mod test_terrain_parser;
+#[cfg(test)]
+pub mod test_terrain_visibility;

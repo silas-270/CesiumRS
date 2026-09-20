@@ -441,6 +441,227 @@ hurt, real data is there. Confirm that rather than believing it.
 D1, D2 and D3 independently and together. FP recorded per stage so D3's benefit is visible
 against its cost. Flat mode: Phase A's list, still unchanged.
 
+*(D1 and D2 landed 2026-09-20. D3 is still open. Everything below is what doing them
+produced or corrected.)*
+
+### How the bounds reach a node
+
+The quadtree has no access to the height cache and Phase D did not give it one. Three
+pieces, each as narrow as it goes:
+
+1. **`HeightTileManager::height_bounds_for(id, segments, exaggeration)`** — the only
+   question the quadtree ever asks the cache. Answers `None` unless `status_of(id)` is
+   `Ready`, which is deliberately the *same* predicate the mesh builder uses: the two
+   disagree exactly while a coarse ancestor has landed and the tile's own height tile is
+   still in flight, and bounds from the ancestor paired with geometry from the tile is
+   precisely how a summit ends up outside its own box.
+2. **`NodeExtraSource`**, a trait on the *outside* — `globe::terrain` implements it,
+   `globe::quadtree` only calls it. Not a field on `CullContext`: that struct is `Copy`,
+   is read per node per frame, and giving it a lifetime parameter for the benefit of one
+   surface model is the wrong trade. Nothing implements it for `Ellipsoid`.
+3. **`QuadtreeManager::refresh_extras`**, one top-down walk per frame before `update`.
+   Not an argument threaded through `update → apply_lod → subdivide`, because that puts an
+   extra parameter on the hottest recursion in the culler for a mode that is usually off.
+
+A node therefore has *no* data of its own at birth — by construction, since the quadtree
+decides to look at a tile before anything is fetched for it. It inherits
+(`SurfaceModel::child_extra`, below), and the next frame's refresh tightens it. One frame
+of looseness, which costs false positives and never a false negative.
+
+`QuadtreeNode::set_extra` is what a tightening costs: refit the box and the `k × k`
+sub-grid, once, the frame the tile's heights land. It early-outs on an unchanged payload,
+and for `Ellipsoid` that comparison is `() == ()`, folds to a constant, and the body is
+dead code the flat path never reaches.
+
+### Which quadtree runs — one match per frame, at the manager boundary
+
+`TerrainConfig::enabled` is a run-time flag and the surface model is a type, so something
+has to bridge them. §1's "fallback if the generics get ugly" is taken here **deliberately
+and not as a fallback**: `globe::quadtree::any::AnyQuadtree` is an enum of two whole
+`QuadtreeManager`s, so the `match` runs five times a frame at the boundary, against tens of
+thousands of nodes visited inside. The flat arm is a fully monomorphised
+`QuadtreeManager<Ellipsoid>` — byte-for-byte the engine that shipped — and pays nothing
+for the terrain arm's existence but binary size. The rejected alternative is the one §1
+rejects: a `terrain_enabled` field read in the per-node loop, which costs a branch in the
+hottest code *and* puts every terrain field on `QuadtreeNode` whether or not terrain is on.
+
+### The margin, measured
+
+`assets/terrain_fixtures/pyramid_extrema.csv` — 788 tiles, the z1…z15 chain over 16
+regions with all four children at each step, 720 parent/child pairs, full-tile extrema
+only (4 bytes a tile; the PNGs would have been 4.8 MB for the same numbers). The
+requirement is on the *box spans* `height_bounds_for` produces, not the raw extrema, so it
+covers the skirt allowance's level dependence too, and it is evaluated under **both** ocean
+policies because the constant cannot know which is configured.
+
+| child z | pairs | max needed (m) | p99 (m) | median (m) | margin (m) | headroom |
+|--:|--:|--:|--:|--:|--:|--:|
+| 2  | 32  | 698       | 383   | −339   | 20 000 | 28.7× |
+| 3  | 72  | **4 566** | 1 668 | −903   | 20 000 | 4.4× |
+| 4  | 88  | 492       | 384   | −1 052 | 20 000 | 40.7× |
+| 5  | 112 | 461       | 183   | −721   | 8 000  | 17.4× |
+| 6  | 120 | 1 061     | 889   | −676   | 8 000  | 7.5× |
+| 7  | 120 | 1 292     | 787   | −288   | 8 000  | 6.2× |
+| 8  | 128 | 1 365     | 221   | −246   | 8 000  | 5.9× |
+| 9  | 128 | 166       | 155   | −304   | 6 000  | 36.1× |
+| 10 | 128 | 833       | 637   | −38    | 6 000  | 7.2× |
+| 11 | 128 | 1 359     | 50    | −137   | 6 000  | 4.4× |
+| 12 | 128 | 36        | 25    | −113   | 1 500  | 42.1× |
+| 13 | 128 | 11        | 9     | −76    | 750    | 68.2× |
+| 14 | 128 | 3         | 2     | −134   | 400    | 133× |
+| 15 | 128 | 3         | 3     | −29    | 200    | 66.7× |
+
+**The z3 row is the whole argument in one number.** The z3 tile over eastern Greenland
+reports a 7 796 m maximum where its z2 parent reports 3 230 m: one z2 texel is ~150 km
+across and averages that spike out of existence, the z3 tile at ~75 km resolves it. A child
+interval inherited unmodified would have been **4.6 km too shallow** there, and by I-7 that
+is the whole subtree.
+
+**Every median is negative.** In the typical case the parent's interval already contains
+the child's and no margin is needed at all — it is the tail this table is sized for. 720
+pairs bound a tail only so far, hence 4× headroom at the tightest level rather than a
+fitted curve. Measured at `exaggeration = 1.0`; the height-dependent part of the
+requirement scales linearly with it, so that headroom covers exaggeration up to ~4.
+
+**What the plan asked for and what was measured instead.** §7 above says
+`child_max − parent_interpolated_max`. The quantity the implemented policy actually needs
+is `child_max − parent_max` with `parent_max` the parent node's *declared* interval, which
+is the parent tile's whole-tile extremum, not an interpolation of it over the child's
+quadrant. The tile-wide figure is the larger of the two (it covers four times the ground),
+so this is the more conservative requirement, and it is the one the inheritance chain
+composes over: with `extra(parent) ⊇ Ready(parent)` as the induction hypothesis,
+`Ready(child) ⊆ widen(Ready(parent), M) ⊆ widen(extra(parent), M)` closes it, with the
+global `[−11 500, +9 500] m` root interval as the base case.
+
+**The margin accumulates down an unloaded chain, and that is the cold-start cost.** A z15
+node under a Ready z11 ancestor inherits `1 500 + 750 + 400 + 200 = 2 850 m` of slack —
+fine. A z15 node with *nothing* loaded above it inherits the sum of the whole column,
+≈ 113 km, over a tile 1.2 km wide. That is sound and it is transient: `TileSystem::update`
+requests the entire height ancestor chain, so the chain fills from the top within a frame
+or two and each arrival restarts the accumulation from there. It is deliberately **not**
+clamped to the global interval: `hi` is a real height with `TerrainConfig::exaggeration`
+already multiplied in, `child_extra` is a static dispatch with no access to that factor,
+and a clamp that is right at exaggeration 1.0 and wrong at 2.0 is a worse trade than a
+loose box for two frames.
+
+**The mesh can be one frame ahead of the bounds, and the margin is what covers it.**
+`update_logic` refreshes the intervals, then culls, then streams — and it is the streaming
+step that drains height fetches *and* builds meshes. So a height tile that lands in frame
+N produces a mesh in frame N and a tightened interval in frame N+1, and for that one frame
+the node was culled against its **inherited** interval while holding a **data**-derived
+mesh. That pairing is exactly `Ready(child) ⊆ widen(Ready(parent), M)`, which is the
+property the table above measures — it is not a separate hazard, but it is the reason the
+table is measured on the full box spans rather than on the raw extrema.
+
+**Below z15 the margin is exactly zero, and that is exact rather than optimistic.** Past
+the source's deepest level a child reads the *same* height tile as its parent over a dyadic
+sub-rectangle of the parent's, so its covering mip cells are a subset of the parent's and
+its extrema are contained by construction. Checked on the real data path over 87 380
+child/parent pairs, worst excess 0.0 m. The structural argument §7 hoped for ("data stops
+at z15 and ancestors are prefetched at `Low`") turned out to be unnecessary: it is not that
+the margin is *probably* small there, it is that no margin is needed at all.
+
+### The skirt is in the box, and it is the expensive part
+
+A node's interval is not the height field's range. C3 made the skirt content-dependent, and
+a skirt vertex outside the box is a drawable point outside the box — the same false
+negative as a summit outside it. So `lo = h_min − skirt_allowance`, where
+`skirt_allowance = (h_max − h_min) + R·(1 − cos(2δ))` bounds C3's `max_k(edge mismatch +
+sagitta)` from the two things the quadtree knows: an edge's deviation from its own
+coarsening cannot exceed the tile's height range, and the sagitta is maximised at `k = 4`
+with `δ` the larger of the tile's longitude and latitude grid steps (latitude matters — a
+Mercator tile at low zoom is far taller than it is wide).
+
+**Measured price: the node interval is 1.53× the mesh interval it must contain.** The
+range term is the loose half — on the Everest z12 fixture C3's real skirt is 741 m against
+a 4 700 m range. Bounding the mismatch by the range over the *boundary* mip cells, or over
+sliding quarter-tile windows along them, would tighten it; that is a follow-up, recorded
+here with its number rather than left as a surprise.
+
+### False positives — what the bigger boxes cost
+
+`testing::terrain::test_terrain_visibility::terrain_sweep_has_no_false_negatives`, 96 poses
+over four regions × six altitudes (2 km … 2 000 km) × four pitches, both models on the same
+poses with the same criterion:
+
+| | visible leaves | FP leaves | FP rate |
+|---|--:|--:|--:|
+| `Ellipsoid` | 1 590 | 3 | **0.19 %** |
+| `Heightfield` | 2 627 | 273 | **10.39 %** |
+
+and the terrain model keeps **65.2 % more leaves**. Both numbers need their caveats stated:
+
+- **This is not `culling::sweep`'s FP definition** and the two are not comparable. That one
+  samples a tile's ground area against the ellipsoid oracle (2.05 % aggregate); this one
+  asks whether any of a tile's own mesh vertices is unambiguously visible. The flat column
+  is measured the same way in the same run precisely so the comparison has a scale.
+- **Part of the +65 % is not FP at all.** Relief genuinely lifts tiles into view over the
+  limb and over intervening ground; those tiles are correctly kept.
+- **The sweep's field is Everest-grade everywhere**, with the relief/tile-width relation
+  fitted to the real fixtures (`relief_range_m`) but applied to every tile on the globe. A
+  real camera spends most of its time over terrain far gentler than that.
+
+On real data the cost is much smaller, and the captures measure it: over the Alps at 4.5 km
+the visible set goes **36 → 46 tiles** (+28 %), over the Zugspitze at 9 km 39 → 45 (+15 %),
+over Everest at 11 km 33 → 42 (+27 %), at the 400 km limb 11 → 12 (+9 %). D3 is what buys
+some of this back, and the number to beat is in this table.
+
+### What the captures show
+
+`rendering::terrain_capture`, regenerated at 1280×720 after D1/D2:
+
+- **`alps_low` (4.5 km, 35 km south of the main ridge) — the acceptance shot, and it is
+  now gapless.** Phase C's version lost its entire near field to black with the skirts
+  hanging off the break as vertical streaks; the visible set was byte-identically the same
+  **36 tiles** as with terrain off, lifted by up to 2 900 m, so the near edge of the
+  coverage rose in screen space and exposed the background under it. It is now 46 tiles
+  and the relief runs continuously from the ridge line down to the bottom edge of the
+  frame: valleys, a lake basin at the left, no break, no streaks, no skirt visible
+  anywhere. The top third is sky, which is what it is supposed to be.
+- **`alps_zugspitze` (9 km)** — full frame of ridges out to the Bavarian foreland,
+  continuous to the bottom edge; 39 → 45 tiles.
+- **`himalaya_everest` (11 km)** — the massif in the near field with the Tibetan plateau
+  behind it, continuous to the bottom edge; 33 → 42 tiles.
+- **`himalaya_limb_400km`** — the limb is clean and the plateau is fully covered to the
+  bottom edge, which is where §6 records Phase C's version losing geometry too; 11 → 12
+  tiles. On and off are near-indistinguishable at this scale, which is the right answer:
+  400 km up, 2.9 km of relief is a pixel.
+
+The terrain-off captures are unchanged by construction: with `TerrainConfig::enabled`
+false, `AnyQuadtree::Flat` holds the same `QuadtreeManager<Ellipsoid>` this engine has
+always run.
+
+**Does the sphere cull noticeably looser than the rectangle?** At these poses, no — not
+measurably. The limb stage is not what is keeping the extra tiles: at 4.5 km almost nothing
+in frame is anywhere near the limb, and the 400 km pose, which is the one that is, gains a
+single tile. The sphere's conservatism is real and is largest at coarse zoom (a z1 tile's
+bounding sphere is enormous next to its rectangle), but coarse tiles near the limb are also
+the ones the frustum has already settled. `Ellipsoid::is_occluded` keeps the exact
+rectangle supremum regardless — §1's rule, unchanged.
+
+### Two things D1/D2 found
+
+**`unstretched_radius` is deliberately left on the zero-altitude span.** Relief does grow a
+tile's true extent, and feeding that into `unstretched_radius` grows `subdivide_dist` with
+it, refining terrain mode deeper than flat mode at the same camera distance. That is a
+real and probably desirable effect — and it is an **LOD** change, it is `apply_lod`'s
+dispatch site in §1's table, and that site is E1. Smuggling it in with D1 would have made
+the tile-count deltas in the table above unreadable. `fit_obb_flat` is the one-line
+function that keeps it honest.
+
+**`SubGrid`'s per-sub-patch payload rides inside the existing `obbs` vector.** D2 needs a
+bounding sphere per sub-patch, and a second `Vec<S::PatchExtra>` would have cost the flat
+path 24 B per gridded node for a vector that can never hold anything — visible in
+`bench_update`'s bytes-per-node, which §4's acceptance list quotes. `SubPatch<S> { obb,
+extra }` is layout-identical to a bare `OrientedBoundingBox` for `Ellipsoid`, so the size
+and the heap accounting do not move at all.
+
+**Sizes, for the record:** `QuadtreeNode<Ellipsoid>` 192 B and `TilePatch<Ellipsoid>` 64 B,
+unchanged and un-re-pinned; `QuadtreeNode<Heightfield>` 240 B, `TilePatch<Heightfield>`
+96 B. That asymmetry is the zero-sized payload doing exactly the job §1 designed it for,
+and `testing::terrain::test_terrain_visibility::the_zero_sized_payload_still_costs_the_flat_node_nothing`
+asserts it where it cannot change the gate's count.
+
 ---
 
 ## 8. Phase E — LOD and integration
@@ -495,6 +716,8 @@ A ── B ──┬── C ──┬── D1 ── D2 ── D3 ──┬─
 - **A gates everything.** It is where constraint 1 is proved.
 - **C alone, with terrain on, is unsound** — relief with flat-mode culling is the FN the whole
   culling effort exists to prevent. C behind `enabled: false` is fine.
+  *(Closed by D1/D2, 2026-09-20. `enabled` stays `false`, now for D3's sake and Phase F's,
+  not for soundness.)*
 - **E3.1 can jump the queue** as soon as C looks right; it is one line and the most visible
   thing here.
 - **D3 is the constraint-2 deliverable.** Do not let it slide to the end.

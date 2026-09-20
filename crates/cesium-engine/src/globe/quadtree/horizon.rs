@@ -23,10 +23,12 @@
 //! # Invariant I-1
 //!
 //! The collapse to `q·c ≤ 1` is licensed by `TileMesh::generate` placing every
-//! vertex at altitude ≤ 0. If terrain relief is ever applied, replace
-//! [`TilePatch::is_occluded`] with the scaled-space cone test (§3.7, Theorem 3.7);
-//! [`point_is_occluded`] below is its `ρ = 0` special case and is the natural place
-//! to grow the radius term.
+//! vertex at altitude ≤ 0, which is a fact about [`Ellipsoid`] and **only** about it.
+//! A surface model with relief dispatches [`TilePatch::is_occluded`] to
+//! [`sphere_is_occluded`] instead — the scaled-space cone test (§3.7, Theorem 3.7),
+//! added in Phase D2 of `docs/terrain-plan.md`. [`point_is_occluded`] is that test's
+//! `ρ = 0` special case, and `test_theorem_37_reduces_to_the_point_test_at_zero_radius`
+//! in `testing::terrain::test_terrain_visibility` pins the two against each other.
 //!
 //! # Invariant I-4
 //!
@@ -140,6 +142,132 @@ pub fn point_is_occluded(cam: &HorizonCamera, p: DVec3) -> bool {
     s > h2 && s * s > h2 * v.dot(v)
 }
 
+/// Conservative slack added to a bounding sphere's **scaled-space** radius before
+/// [`sphere_is_occluded`] tests it — Phase D2.
+///
+/// The counterpart of [`HORIZON_EPS_BOUNDS_RAD`] for the cone test, and applied the
+/// same way (I-6): growing `ρ` makes the sphere harder to prove occluded, never
+/// easier. `1e-9` of a unit sphere is 6.4 mm of ground, five orders above the f64
+/// rounding of the ≈30-flop evaluation below and eleven orders below a tile.
+///
+/// It is a *length* in scaled space rather than a bound on `S` because that is what
+/// the cone test's three inequalities compare against — there is no `q·c` here to
+/// perturb.
+const SPHERE_EPS_SCALED: f64 = 1.0e-9;
+
+/// A bounding sphere **in scaled space** — [`SurfaceModel::PatchExtra`] for a surface
+/// model with relief.
+///
+/// # Why it is fitted in scaled space rather than converted into it
+///
+/// `docs/culling-math.md` §3.7 offers two routes: map a real-space sphere of radius
+/// `ρ_real` to a scaled sphere of radius `ρ_real / b`, or fit the sphere in scaled
+/// space directly. The first is both looser and, more importantly, easy to get
+/// *wrong*: `T` scales x and z by `1/a` and y by `1/b`, so `ρ_real / b` is the correct
+/// bound only because `b < a`, and a reader who expects an isotropic scale will write
+/// `ρ_real / a` and produce a sphere that does not contain its own patch — a false
+/// negative, and by I-7 a hole in the globe. `T` is linear, so fitting in scaled space
+/// costs nothing at construction and removes the question.
+///
+/// [`SurfaceModel::PatchExtra`]: super::surface::SurfaceModel::PatchExtra
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScaledSphere {
+    /// Centre `m = T(obb.center)`.
+    pub m: DVec3,
+    /// Radius, in scaled-space units (1 = semi-major axis).
+    pub rho: f64,
+}
+
+impl ScaledSphere {
+    /// The smallest sphere about `T(obb.center)` containing `T(obb)`.
+    ///
+    /// `T` is linear, so `T(obb)` is the parallelepiped spanned by the three
+    /// transformed half-axes about `T(centre)`, and its convex hull is exactly the
+    /// eight sign combinations below. A sphere about the centre containing all eight
+    /// vertices therefore contains the whole parallelepiped, hence the whole patch —
+    /// **exactly**, with no sampling argument. The eight combinations are enumerated
+    /// rather than bounded by `‖a‖+‖b‖+‖c‖`, which is the same number only when the
+    /// three axes are collinear and is otherwise needlessly loose.
+    ///
+    /// Runs once per node (and once per sub-patch) at construction, never per frame.
+    pub fn around_obb(obb: &super::bounding_volume::OrientedBoundingBox) -> Self {
+        let m = transform_to_scaled_space(obb.center);
+        let axis = |i: usize| {
+            let h = obb.half_axes[i];
+            // The half-axes are f32 offsets, not absolute positions, so widening them
+            // here loses nothing (I-2 is about the *centre*).
+            transform_to_scaled_space(DVec3::new(h.x as f64, h.y as f64, h.z as f64))
+        };
+        let (a, b, c) = (axis(0), axis(1), axis(2));
+
+        let mut worst = 0.0_f64;
+        for sx in [-1.0, 1.0] {
+            for sy in [-1.0, 1.0] {
+                for sz in [-1.0, 1.0] {
+                    let v = a * sx + b * sy + c * sz;
+                    worst = worst.max(v.length_squared());
+                }
+            }
+        }
+        Self {
+            m,
+            rho: worst.sqrt(),
+        }
+    }
+}
+
+/// **Theorem 3.7** (`docs/culling-math.md` §3.7) — is the scaled-space ball
+/// `B(m, ρ)` entirely inside the shadow of the unit sphere seen from `c`?
+///
+/// The sound replacement for the surface-point collapse `q·c ≤ 1` once geometry
+/// leaves the surface: an elevated point can satisfy `q·c < 1` and still be visible
+/// over the limb, so [`span_is_occluded`] is a false-negative source at non-zero
+/// relief (§3.2 of `docs/terrain-plan.md`) and this is not.
+///
+/// ```text
+/// w = m − c ,  s = C² − m·c ,  h² = C² − 1
+///
+/// s ≥ h² + ρ·C                          (beyond the polar plane)
+/// s ≥ ρ·C²                              (forward of the apex — licenses the squaring)
+/// (s − ρ·C²)² ≥ h²·( C²‖w‖² − s² )      (inside the tangent cone)
+/// ```
+///
+/// All three are required, in this order: the second is what makes the third's
+/// squaring valid, and the first excludes the backward nappe of the cone.
+///
+/// `C²‖w‖² − s²` is `(r_⊥·C)²` and is non-negative in exact arithmetic; where
+/// rounding makes it slightly negative the third inequality holds trivially, which is
+/// the correct answer (a sphere on the cone axis has no radial offset to clear).
+///
+/// Returns `false` — cull nothing — when the eye is at or inside the surface, for the
+/// reason [`point_is_occluded`] does: there is no useful polar plane there (§3.1).
+/// This is the **opposite** convention to [`span_is_occluded`], which deliberately has
+/// no such guard because the surface-point form stays exact for `C² ≤ 1`. The cone
+/// form does not: `h² < 0` makes the third line vacuously true and would report the
+/// whole globe occluded.
+#[inline]
+pub fn sphere_is_occluded(cam: &HorizonCamera, sphere: &ScaledSphere) -> bool {
+    if !cam.active {
+        return false;
+    }
+    let h2 = cam.c2 - 1.0;
+    let c_len = cam.c2.sqrt();
+    // I-6: inflating the sphere can only keep a tile, never discard one.
+    let rho = sphere.rho + SPHERE_EPS_SCALED;
+
+    let w = sphere.m - cam.c;
+    let s = cam.c2 - sphere.m.dot(cam.c);
+
+    if s < h2 + rho * c_len {
+        return false;
+    }
+    let lhs = s - rho * cam.c2;
+    if lhs < 0.0 {
+        return false;
+    }
+    lhs * lhs >= h2 * (cam.c2 * w.length_squared() - s * s)
+}
+
 /// A tile's lon/lat rectangle, pre-reduced to the eight trig constants the closed
 /// form needs. 64 B per node; no transcendentals at run time.
 ///
@@ -166,12 +294,20 @@ impl TilePatch<Ellipsoid> {
     /// this concrete wrapper is what keeps `TilePatch::new(&bounds)` resolving at
     /// call sites that never mention a surface model.
     pub fn new(b: &TileBounds) -> Self {
-        Self::for_surface(b)
+        Self::for_surface(b, ())
     }
 }
 
 impl<S: SurfaceModel> TilePatch<S> {
-    pub fn for_surface(b: &TileBounds) -> Self {
+    /// The rectangle's eight trig constants, plus whatever the surface model wants to
+    /// carry alongside them.
+    ///
+    /// `extra` is passed in rather than derived here because Phase D2's payload is a
+    /// bounding **sphere**, which is a property of the node's fitted box — a thing
+    /// this constructor has no access to and should not acquire. `QuadtreeNode` fits
+    /// the box first and hands the result to [`SurfaceModel::patch_extra`]; flat mode
+    /// passes `()` and the field vanishes.
+    pub fn for_surface(b: &TileBounds, extra: S::PatchExtra) -> Self {
         let (s0, c0) = b.lon_min.to_radians().sin_cos();
         let (s1, c1) = b.lon_max.to_radians().sin_cos();
         let (t0, d0) = b.lat_min.to_radians().sin_cos();
@@ -181,7 +317,7 @@ impl<S: SurfaceModel> TilePatch<S> {
             sin_lon: [s0, s1],
             cos_lat: [d0, d1],
             sin_lat: [t0, t1],
-            extra: S::PatchExtra::default(),
+            extra,
         }
     }
 
