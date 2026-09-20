@@ -80,8 +80,32 @@ today's test. It does not; it recovers the exact *point* test, Theorem 3.1.)
 
 **Fallback if the generics get ugly.** If threading `<S>` through `quadtree.rs` turns into
 turbofish soup, the escape hatch is two concrete instantiations behind a small enum at the
-`QuadtreeManager` level, keeping the generic only on `QuadtreeNode`/`TilePatch`. Decide when
-the code is in front of you, not now.
+`QuadtreeManager` level, keeping the generic only on `QuadtreeNode`/`TilePatch`.
+*(Not needed — Phase A carried the generic all the way to `QuadtreeManager<S>`.)*
+
+### Two things Phase A found that this section had wrong
+
+**A default type parameter does not apply in expression position.** `<S: SurfaceModel =
+Ellipsoid>` makes `size_of::<TilePatch>()` and `-> QuadtreeNode` resolve as intended, but
+`QuadtreeNode::new(id)` fails with **E0283**: an elided generic argument in an expression path
+becomes an inference variable, never the default. The fix costs nothing and preserves every
+call site — a concrete two-line wrapper in front of each generic constructor:
+
+```rust
+impl QuadtreeNode<Ellipsoid> { pub fn new(id: TileId) -> Self { Self::for_surface(id) } }
+```
+
+`TileMesh::generate` needs the same treatment for a different reason: a free generic
+parameter cannot have a default at all, so `generate` wraps `generate_on::<Ellipsoid>`.
+
+**Altitudes in the trait are megametres, and `lon_lat_alt_to_ecef_f64` is not.** That helper
+(`geometry.rs:55-75`) takes **metres** and divides by 10⁶ internally, while `skirt_height` and
+everything in `EARTH_RADIUS_*` are **megametres**. Reusing it inside `fit_obb` is the obvious
+move and it is a 10⁶× unit trap — invisible in Phase A, where the altitude span is zero, and
+detonating in Phase C/D as a mountain a million times too tall. The trait is megametres
+throughout; `fit_obb` samples through a local `patch_point(lon, lat, alt_mm)` that returns
+`surface_point` bit-for-bit when `alt_mm == 0.0`. **Keep every new altitude path in
+megametres** and convert only at the ECEF boundary.
 
 ---
 
