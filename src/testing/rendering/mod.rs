@@ -21,3 +21,5 @@ pub mod light_audit;
 pub mod fog_capture;
 #[cfg(test)]
 pub mod haze_capture;
+#[cfg(test)]
+pub mod terrain_capture;

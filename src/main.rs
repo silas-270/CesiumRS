@@ -118,12 +118,14 @@ mod inner {
         pub map_style: cesium_rs::MapStyle,
 
 
-        /// Fetch and cache terrain height tiles (Terrarium, AWS Open Data). Phase B of
-        /// docs/terrain-plan.md: this populates a height cache only — it does not render relief.
+        /// Render real terrain relief from Terrarium height tiles (AWS Open Data).
+        /// Phase C of docs/terrain-plan.md. Culling is still fitted to the ellipsoid, so
+        /// low-altitude views lose near-field tiles until Phase D.
         #[arg(long = "terrain", default_value_t = false)]
         pub terrain: bool,
 
-        /// Vertical exaggeration for terrain relief. Stored now, applied in Phase C.
+        /// Vertical exaggeration for terrain relief. Applied once, when a tile's heights
+        /// are sampled, so every bound derived from them inherits it.
         #[arg(long = "terrain-exaggeration", default_value_t = 1.0)]
         pub terrain_exaggeration: f32,
 
@@ -331,12 +333,14 @@ fn main() {
         pub map_style: cesium_rs::MapStyle,
 
 
-        /// Fetch and cache terrain height tiles (Terrarium, AWS Open Data). Phase B of
-        /// docs/terrain-plan.md: this populates a height cache only — it does not render relief.
+        /// Render real terrain relief from Terrarium height tiles (AWS Open Data).
+        /// Phase C of docs/terrain-plan.md. Culling is still fitted to the ellipsoid, so
+        /// low-altitude views lose near-field tiles until Phase D.
         #[arg(long = "terrain", default_value_t = false)]
         pub terrain: bool,
 
-        /// Vertical exaggeration for terrain relief. Stored now, applied in Phase C.
+        /// Vertical exaggeration for terrain relief. Applied once, when a tile's heights
+        /// are sampled, so every bound derived from them inherits it.
         #[arg(long = "terrain-exaggeration", default_value_t = 1.0)]
         pub terrain_exaggeration: f32,
 

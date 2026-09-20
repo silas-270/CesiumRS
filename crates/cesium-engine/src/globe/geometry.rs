@@ -81,6 +81,23 @@ pub struct TileMesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
     pub center_f64: [f64; 3],
+    /// **Invariant I-1′** (`docs/terrain-plan.md` §6): every vertex above lies at an
+    /// altitude inside this `[min, max]` interval, in **megametres**, skirts included.
+    ///
+    /// For `Ellipsoid` that is `[-skirt, 0]`, i.e. I-1 restated as an interval. For a
+    /// height field it is the patch's own extrema, exaggeration already applied. This
+    /// is the number Phase D fits the node's bounding box over, and
+    /// `test_generated_mesh_stays_within_declared_height_bounds` is what makes it a
+    /// promise rather than a comment.
+    pub height_bounds: [f64; 2],
+    /// The height tile this mesh's relief was sampled from, `None` in flat mode.
+    ///
+    /// Carried for Phase E2 (`docs/terrain-plan.md` §8): once relief exists a mesh is
+    /// no longer a pure function of its `TileId` — it also depends on *which* height
+    /// tile had arrived when it was built, normally an ancestor. That makes the mesh
+    /// cache key `(id, height_source)` and `missing_meshes` a staleness test. Recording
+    /// it now costs one `Option<TileId>` and saves E2 from re-deriving it.
+    pub height_source: Option<TileId>,
 }
 
 impl TileMesh {
@@ -105,17 +122,23 @@ impl TileMesh {
     /// rather than a defaulted type parameter because Rust applies such a default
     /// only in *type* position, never in an expression path like this one.
     pub fn generate(id: &TileId, segments: u32) -> Self {
-        Self::generate_on::<Ellipsoid>(id, segments)
+        Self::generate_on::<Ellipsoid>(id, segments, &())
     }
 
     /// `generate`, with the surface model spelled out — Phase A of
-    /// `docs/terrain-plan.md` §4.
+    /// `docs/terrain-plan.md` §4, extended by Phase C's `ctx`.
     ///
-    /// Two of the five dispatch sites live in this loop: the vertex's altitude and
-    /// its normal. Everything else — the shared f64 bounds (I-5), the pole caps, the
-    /// skirt rows, the f64-relative-to-f64-centre positions (I-2) — is
-    /// model-independent and stays here.
-    pub fn generate_on<S: SurfaceModel>(id: &TileId, segments: u32) -> Self {
+    /// Four dispatch sites live here: the tile's skirt depth and its declared height
+    /// bounds, once per tile, and the vertex's altitude and normal, once per vertex.
+    /// Everything else — the shared f64 bounds (I-5), the pole caps, the skirt rows,
+    /// the f64-relative-to-f64-centre positions (I-2) — is model-independent and stays
+    /// here.
+    ///
+    /// **A pure function of `(id, segments, ctx)`.** It reads no cache and takes no
+    /// lock, which is what lets it run on a rayon worker and what lets Phase E2 decide
+    /// staleness by comparing `ctx`'s provenance rather than by re-running it. See
+    /// [`SurfaceModel::BuildCtx`].
+    pub fn generate_on<S: SurfaceModel>(id: &TileId, segments: u32, ctx: &S::BuildCtx) -> Self {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
@@ -128,8 +151,10 @@ impl TileMesh {
         let center_lat = bounds.center_lat();
         let center_f64 = lon_lat_to_ecef_f64(center_lon, center_lat);
 
-        // Base skirt height in megameters (approx 500km at z=0, scaled down)
-        let skirt_height = 0.5 / 2.0_f32.powi(id.z as i32);
+        // Dispatch site 3 — the skirt depth, once per tile. `Ellipsoid` returns the
+        // `0.5 / 2^z` megametres this line used to compute inline, as the same
+        // expression; a height field measures its own edge mismatch (C3).
+        let skirt_height = S::skirt_depth(id, segments, ctx);
 
         let grid_size = segments + 3; // +2 for skirts
 
@@ -185,31 +210,44 @@ impl TileMesh {
 
                 let surface_pos_f64 = [x, y, z];
 
+                // The analytic WGS-84 gradient, computed once per vertex exactly as
+                // before. It is the **displacement direction** for every surface model
+                // — relief is radial, I-5 — and, for `Ellipsoid` alone, also the
+                // shading normal.
+                let nx = x * INV_A2_F64;
+                let ny = y * INV_B2_F64;
+                let nz = z * INV_A2_F64;
+                let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
+                let up_f64 = [nx / n_len, ny / n_len, nz / n_len];
+
                 let sample = VertexSample {
                     id: *id,
+                    row,
+                    col,
                     lon_deg: lon,
                     lat_deg: lat,
                     u,
                     v,
                     surface_pos: surface_pos_f64,
+                    up: up_f64,
                     is_skirt,
                     is_pole_cap,
                     skirt_height,
                 };
 
-                // Dispatch site 2 — for `Ellipsoid`, the analytic WGS-84 gradient
-                // this line used to compute inline.
-                let normal_f64 = S::vertex_normal(&sample);
+                // Dispatch site 2 — for `Ellipsoid`, `up_f64` straight back; for a
+                // height field, the height gradient in the local east/north frame.
+                let normal_f64 = S::vertex_normal(&sample, ctx);
 
                 // Dispatch site 1 — for `Ellipsoid`, 0 or `-skirt_height`.
-                let alt_f64 = S::vertex_altitude(&sample);
+                let alt_f64 = S::vertex_altitude(&sample, ctx);
                 let pos_f64 = if alt_f64 == 0.0 {
                     surface_pos_f64
                 } else {
                     [
-                        surface_pos_f64[0] + normal_f64[0] * alt_f64,
-                        surface_pos_f64[1] + normal_f64[1] * alt_f64,
-                        surface_pos_f64[2] + normal_f64[2] * alt_f64,
+                        surface_pos_f64[0] + up_f64[0] * alt_f64,
+                        surface_pos_f64[1] + up_f64[1] * alt_f64,
+                        surface_pos_f64[2] + up_f64[2] * alt_f64,
                     ]
                 };
 
@@ -252,6 +290,11 @@ impl TileMesh {
             vertices,
             indices,
             center_f64,
+            // I-1′, declared by the model that built the vertices, with the skirt the
+            // loop above actually used. Stated after the fact rather than guessed
+            // beforehand, so it cannot drift from the geometry it describes.
+            height_bounds: S::declared_height_bounds(ctx, skirt_height),
+            height_source: S::height_source(ctx),
         }
     }
 }

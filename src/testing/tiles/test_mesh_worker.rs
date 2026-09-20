@@ -1,5 +1,5 @@
 use cesium_engine::globe::quadtree::TileId;
-use cesium_engine::globe::tiles::mesh_worker::MeshWorkerPool;
+use cesium_engine::globe::tiles::mesh_worker::{MeshBuild, MeshWorkerPool};
 use std::time::Duration;
 
 #[test]
@@ -7,7 +7,7 @@ fn test_mesh_worker_spawns_and_returns() {
     let mut pool = MeshWorkerPool::new();
     let id = TileId { z: 0, x: 0, y: 0 };
 
-    pool.request_mesh(id, 16);
+    pool.request_mesh(id, 16, MeshBuild::Flat);
 
     // Poll until result is ready (rayon is sync, but result is on a thread)
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -29,9 +29,9 @@ fn test_mesh_worker_deduplicates_requests() {
     let mut pool = MeshWorkerPool::new();
     let id = TileId { z: 1, x: 0, y: 0 };
 
-    pool.request_mesh(id, 16);
-    pool.request_mesh(id, 16);
-    pool.request_mesh(id, 16);
+    pool.request_mesh(id, 16, MeshBuild::Flat);
+    pool.request_mesh(id, 16, MeshBuild::Flat);
+    pool.request_mesh(id, 16, MeshBuild::Flat);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut results = vec![];
@@ -49,7 +49,7 @@ fn test_mesh_worker_multiple_concurrent_requests() {
     let mut pool = MeshWorkerPool::new();
 
     for i in 0..10 {
-        pool.request_mesh(TileId { z: 2, x: i, y: 0 }, 16);
+        pool.request_mesh(TileId { z: 2, x: i, y: 0 }, 16, MeshBuild::Flat);
     }
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);

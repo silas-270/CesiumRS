@@ -58,11 +58,13 @@ pub enum OceanPolicy {
     Raw,
 }
 
-/// Terrain height data — `docs/terrain-plan.md` §4 A3 and §5.
+/// Terrain height data — `docs/terrain-plan.md` §4 A3, §5 and §6.
 ///
-/// Off by default and off for the whole of Phase B: this phase fetches, decodes,
-/// caches and answers queries against height tiles, and renders **nothing**. The
-/// `Heightfield` surface model that would consume it is Phase C/D.
+/// Off by default, and still off at the end of Phase C. Phase C gives the tiles real
+/// relief, normals and skirts; the quadtree still culls against the bare ellipsoid, so
+/// terrain on is **unsound** until Phase D fits the bounding volumes to `[h_min, h_max]`
+/// (§10: "C alone, with terrain on, is unsound"). §9 is where this flips to `true`, in
+/// its own commit.
 #[derive(Clone, Debug)]
 pub struct TerrainConfig {
     /// Master switch. While `false` no height fetcher, no height cache and no height
@@ -77,12 +79,16 @@ pub struct TerrainConfig {
     pub max_level: u8,
     /// Vertical exaggeration.
     ///
-    /// Stored here in Phase B and **deliberately not applied** by any Phase B code
-    /// path: `docs/terrain-plan.md` §6 C1 puts the single multiplication in
-    /// `Heightfield::vertex_altitude`, "here and nowhere else", so that §3.1's boxes
-    /// and §3.2's spheres inherit it automatically. `height_at` returning raw metres
-    /// is what makes that possible — if it exaggerated too, the factor would be
-    /// applied twice.
+    /// Applied in exactly one place — [`crate::globe::terrain::HeightPatch::sample`],
+    /// where a tile's heights are read out of the cache — and nowhere else
+    /// (`docs/terrain-plan.md` §6 C1: "here and nowhere else"). Because that is
+    /// upstream of the patch's own `[h_min, h_max]`, §3.1's boxes and §3.2's spheres
+    /// inherit it automatically instead of having to remember it.
+    ///
+    /// [`crate::globe::terrain::HeightTileManager::height_at`] deliberately returns
+    /// the **raw** field: if it exaggerated too, the factor would be applied twice.
+    /// `terrain::test_heightfield::exaggeration_scales_heights_and_bounds_exactly_once`
+    /// is what holds that.
     pub exaggeration: f32,
     /// How sub-sea-level samples are treated. See [`OceanPolicy`].
     pub ocean: OceanPolicy,

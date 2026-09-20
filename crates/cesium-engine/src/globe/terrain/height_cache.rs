@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::globe::quadtree::TileId;
 use crate::globe::terrain::height_tile::{decode_terrarium, HeightTile};
+use crate::globe::terrain::heightfield::PatchStatus;
 use crate::globe::tiles::config::{
     tile_cache_entries_for, OceanPolicy, TileEngineConfig, HEIGHT_TILE_BYTES,
 };
@@ -232,15 +233,92 @@ impl HeightTileManager {
     /// of B2 whose off-by-one is invisible except as a landscape displaced by hundreds
     /// of metres — is testable on its own.
     pub fn ancestor_uv(child: TileId, ancestor: TileId, u: f64, v: f64) -> (f64, f64) {
+        Self::ancestor_uv_unclamped(child, ancestor, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
+    }
+
+    /// [`Self::ancestor_uv`] with the `[0,1]` clamp on its **input** left off.
+    ///
+    /// The map is affine, so it is perfectly well defined outside the child's own
+    /// rectangle, and Phase C's mesh patch needs exactly that: its gradient halo asks
+    /// for the height one grid step *outside* the tile, which is inside the ancestor
+    /// whenever the ancestor is a real ancestor. Clamping the input would collapse the
+    /// halo onto the tile edge and turn every edge normal into a half-slope.
+    ///
+    /// The *output* is not clamped either. `HeightTile::sample_bilinear` clamps into
+    /// its own tile, which is the right degradation: a halo that falls outside the
+    /// source reads the source's border sample, and the caller
+    /// (`HeightPatch::halo_valid`) knows it happened.
+    pub fn ancestor_uv_unclamped(child: TileId, ancestor: TileId, u: f64, v: f64) -> (f64, f64) {
         if child == ancestor {
-            return (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+            return (u, v);
         }
         let [scale_x, scale_y, offset_x, offset_y] =
             TileSystem::compute_fallback_uv(child, ancestor);
         (
-            offset_x as f64 + u.clamp(0.0, 1.0) * scale_x as f64,
-            offset_y as f64 + v.clamp(0.0, 1.0) * scale_y as f64,
+            offset_x as f64 + u * scale_x as f64,
+            offset_y as f64 + v * scale_y as f64,
         )
+    }
+
+    /// Whether `id`'s heights are usable yet, and if not, whether waiting will help.
+    ///
+    /// The three-way answer is what lets Phase C's mesh builder honour §5 B2's
+    /// "unknown is not sea level": [`PatchStatus::Pending`] means retry next frame,
+    /// [`PatchStatus::Unavailable`] means the whole ancestor chain has failed and a
+    /// flat mesh is the honest answer. Only the second is a terminating condition, so
+    /// a stalled fetch can never be mistaken for flat ground.
+    ///
+    /// Non-promoting, like every readiness check in this engine.
+    /// # Why an already-loaded ancestor is not good enough
+    ///
+    /// [`Self::resolve_source`] answers with the *deepest ready* ancestor, which is the
+    /// right answer for a query. It is the wrong answer for a **mesh**, because a mesh
+    /// is built once and Phase E2 — the rebuild-on-better-data pass — does not exist
+    /// yet. `TileSystem::update` prefetches the whole ancestor chain at `Low`, so a
+    /// coarse ancestor routinely lands before the tile's own height tile does; building
+    /// from it bakes a smoothed, hundreds-of-metres-too-low surface into the cache with
+    /// nothing to correct it. Measured, not reasoned: the first Phase C capture over
+    /// the Alps at 4.5 km had its whole foreground flattened this way.
+    ///
+    /// So the answer is `Ready` only once `source_tile_for(id)` — the deepest level the
+    /// source actually serves for this tile — has arrived, or has **failed**, in which
+    /// case the best available ancestor is genuinely the best there will ever be. While
+    /// it is still in flight the tile is `Pending` and the engine draws the parent's
+    /// mesh, exactly as it already draws the parent's texture: coarser geometry, not a
+    /// hole, and not a wrong shape that sticks.
+    ///
+    /// This is **not** E2. It removes the common case that would need a rebuild; a
+    /// tile that falls back to an ancestor because its own fetch failed still wants one,
+    /// which is why the mesh records [`crate::globe::geometry::TileMesh::height_source`].
+    pub fn status_of(&self, id: TileId) -> PatchStatus {
+        let mut curr = self.source_tile_for(id);
+        loop {
+            match self.cache.peek_state(&curr) {
+                Some(TileState::Ready(_)) => return PatchStatus::Ready,
+                // Fetching, or never requested at all: something better is still coming.
+                None | Some(TileState::Fetching) => return PatchStatus::Pending,
+                // Failed: this level will not answer. Fall back to the parent.
+                _ => {}
+            }
+            match curr.parent() {
+                Some(p) => curr = p,
+                None => return PatchStatus::Unavailable,
+            }
+        }
+    }
+
+    /// The decoded tile that answers for `id`, together with its id, promoted in the
+    /// LRU so the ancestor a mesh is being built from cannot be evicted by the build.
+    ///
+    /// Phase C samples a whole `(segments+3)²` grid at once; resolving the source once
+    /// and sampling the `Arc` directly is what keeps that from being 361 walks up the
+    /// ancestor chain.
+    pub fn source_for(&mut self, id: TileId) -> Option<(TileId, Arc<HeightTile>)> {
+        let src = self.resolve_source(id)?;
+        match self.cache.get_state(&src)? {
+            TileState::Ready(tile) => Some((src, Arc::clone(tile))),
+            _ => None,
+        }
     }
 
     /// Tiles currently held, and the byte-budget-derived ceiling on them. Reported
