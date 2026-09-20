@@ -288,6 +288,30 @@ impl TileSystem {
         self.height_manager.as_mut()?.height_at(id, u, v)
     }
 
+    /// Height of the **drawn** surface in megametres under an ECEF position, or `None`
+    /// when terrain is off or no height data covering it has arrived.
+    ///
+    /// Phase E3's entry point for the parts of the engine that used to assume the
+    /// surface was the ellipsoid — camera clearance, the collision floor, label
+    /// placement. Unlike [`Self::height_at`] it takes `&self`, promotes nothing and
+    /// enqueues nothing, so it is safe to call once per frame from the render path.
+    ///
+    /// **Exaggeration is applied here**, and only here on this path:
+    /// `HeightTileManager::peek_height_at_lon_lat` hands back the raw DEM value, and
+    /// `HeightPatch::sample` multiplies the same factor into the vertices the renderer
+    /// draws. Leaving it off would put the camera's idea of the ground a factor
+    /// `exaggeration` away from the ground it can see.
+    ///
+    /// `None` is a deliberate third state, not a zero. With terrain off the answer is
+    /// always `None` and every caller falls back to the ellipsoid arithmetic it used
+    /// before — that is what makes the flat path the *same* code rather than a code path
+    /// that happens to add zero.
+    pub fn ground_height_at(&self, pos: glam::DVec3) -> Option<f64> {
+        let h = self.height_manager.as_ref()?;
+        let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
+        Some(h.peek_height_at_lon_lat(lon, lat)? * self.config.terrain.exaggeration as f64)
+    }
+
     pub fn is_loading_complete(&self) -> bool {
         self.texture_manager.is_loading_complete()
             && self.mesh_worker.is_loading_complete()

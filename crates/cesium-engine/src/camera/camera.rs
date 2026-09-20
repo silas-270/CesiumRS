@@ -103,6 +103,30 @@ pub struct Camera {
     pub inertia_axis: glam::Vec3,
     pub inertia_velocity: f32,
     pub last_drag_time: std::time::Instant,
+
+    /// Height of the terrain directly below the camera, in megametres above the
+    /// ellipsoid — `None` whenever there is no terrain to speak of.
+    ///
+    /// Phase E3 (`docs/terrain-plan.md` §8). The camera cannot reach the height cache:
+    /// it is constructed before the tile system, borrowed mutably by the extension, and
+    /// used by tests that have no `WgpuState` at all. So the ground comes *to* it —
+    /// `WgpuState::update_logic` samples it once per frame from
+    /// `TileSystem::ground_height_at` and writes it here through
+    /// [`set_ground_height`](Self::set_ground_height), and the camera reads a plain
+    /// field.
+    ///
+    /// # `None` is the flat path, exactly
+    ///
+    /// `TileSystem::ground_height_at` returns `None` whenever
+    /// `TerrainConfig::enabled` is false, so with terrain off this field is `None` on
+    /// every frame of every run, and every consumer below takes a branch that is
+    /// character-for-character the arithmetic it did before Phase E3. This is not "the
+    /// same to within a rounding error"; it is the same expression on the same operands.
+    ///
+    /// Default `None`, so a `Camera` nobody feeds — the LOD harness, the culling tests,
+    /// a headless pose — behaves exactly as it always did without opting out of
+    /// anything.
+    ground_height: Option<f32>,
 }
 
 impl Camera {
@@ -125,6 +149,7 @@ impl Camera {
             inertia_axis: glam::Vec3::Y,
             inertia_velocity: 0.0,
             last_drag_time: std::time::Instant::now(),
+            ground_height: None,
         };
         cam.set_eye(position, target);
         cam
@@ -433,6 +458,14 @@ impl Camera {
         Mat4::from_rotation_translation(ori, pos).inverse()
     }
 
+    /// Height above the **ellipsoid**, in megametres.
+    ///
+    /// Left exactly as it was, deliberately. Several things genuinely want the distance
+    /// to the reference surface and not to the ground: the fog density (an atmospheric
+    /// depth, and its consumer in `apply_lod` is under review in §7b/§7c), the label
+    /// zoom bucket (a map scale), and `TerrainHorizon::begin`'s own altitude gate, which
+    /// D3 calibrated against this quantity. What wanted the ground all along is
+    /// [`altitude_agl`](Self::altitude_agl).
     pub fn altitude(&self) -> f32 {
         let (pos_dvec, _) = self.global_transform_f64();
 
@@ -444,6 +477,46 @@ impl Camera {
                 .sqrt();
 
         (pos_dvec.length() - t) as f32
+    }
+
+    /// Height above the **ground**, in megametres: [`altitude`](Self::altitude) minus the
+    /// terrain height below the camera, or exactly [`altitude`](Self::altitude) when no
+    /// terrain height is known.
+    ///
+    /// The quantity `znear` always meant. Flying up the Inn valley at 900 m the old
+    /// number is 900 m and this one is ~330 m; standing at the foot of the Nordkette the
+    /// old number is unchanged while the wall 400 m ahead is well inside a near plane
+    /// chosen as `0.1 × 900 m = 90 m` — which is why near terrain clipped. The rock is
+    /// at the distance this function measures, not the other one.
+    ///
+    /// Clamped at zero: a camera below the sampled ground (it happens — the sample is
+    /// bilinear over a 30 m post spacing, the drawn mesh is a 16×16 patch of it, and they
+    /// disagree by metres) would otherwise ask for a negative near plane.
+    ///
+    /// **With terrain off this is `altitude()`**, the same call, not a recomputation of
+    /// it — see [`ground_height`](Self::set_ground_height).
+    pub fn altitude_agl(&self) -> f32 {
+        match self.ground_height {
+            Some(ground) => (self.altitude() - ground).max(0.0),
+            None => self.altitude(),
+        }
+    }
+
+    /// The terrain height below the camera as last sampled, in megametres above the
+    /// ellipsoid. `None` when terrain is off or nothing has arrived.
+    pub fn ground_height(&self) -> Option<f32> {
+        self.ground_height
+    }
+
+    /// Hands the camera this frame's terrain height below it, in megametres above the
+    /// ellipsoid.
+    ///
+    /// Called once per frame by `WgpuState::update_logic` with
+    /// `TileSystem::ground_height_at(camera_position)`, which is `None` whenever terrain
+    /// is off. Passing `None` restores the pre-Phase-E3 camera exactly, which is what
+    /// running flat does on every frame.
+    pub fn set_ground_height(&mut self, ground_height: Option<f32>) {
+        self.ground_height = ground_height;
     }
 
     /// Vertical field of view, in radians — the one the projection matrix uses.
@@ -476,7 +549,9 @@ impl Camera {
     }
 
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        let alt = self.altitude().max(0.000002);
+        // Phase E3.2: clearance over the *ground*, which is what the near plane was
+        // always trying to express. `altitude_agl()` is `altitude()` with terrain off.
+        let alt = self.altitude_agl().max(0.000002);
         let znear = match self.mode {
             CameraMode::Free => (alt * 0.1).clamp(0.0000001, 10.0),
             CameraMode::Tracking => {
@@ -502,7 +577,9 @@ impl Camera {
     }
 
     pub fn get_projection_matrix_f64(&self, aspect_ratio: f64) -> glam::DMat4 {
-        let alt = self.altitude().max(0.000002) as f64;
+        // The f32 matrix's `alt`, to the bit — this is the culling frustum and it must
+        // not disagree with the drawn one about where the near plane is.
+        let alt = self.altitude_agl().max(0.000002) as f64;
         let znear = match self.mode {
             CameraMode::Free => (alt * 0.1).clamp(0.0000001, 10.0),
             CameraMode::Tracking => {
