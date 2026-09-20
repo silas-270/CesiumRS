@@ -1,5 +1,13 @@
 //! **D3 acceptance** — culling tiles hidden *behind mountains*
-//! (`docs/terrain-plan.md` §3.3 and §7). Nothing here touches the network.
+//! (`docs/terrain-plan.md` §3.3, §7b and §7c).
+//!
+//! **Nothing in the gate touches the network.** The three `#[ignore]`d measurements at the
+//! bottom of this file do: they run the stage against the **real** DEM, because §7b's
+//! central finding is that the synthetic ridge world and real terrain disagree by an order
+//! of magnitude about what D3 is worth, and a harness that cannot be run in a loop over
+//! real data cannot settle that. They cache the terrarium tiles under
+//! `CESIUM_HEIGHT_CACHE` and fetch with `curl`, so the root crate acquires no HTTP
+//! dependency for a measurement.
 //!
 //! # Why this is not in `culling::`, and why `culling` is not in its path
 //!
@@ -54,9 +62,9 @@ use std::sync::Arc;
 use cesium_engine::camera::camera::CameraMode;
 use cesium_engine::globe::geometry::{TileMesh, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 use cesium_engine::globe::quadtree::{
-    tile_bounds, transform_to_scaled_space, web_mercator_y_to_lat_f64, CullPipeline, Frustum,
-    HorizonCamera, QuadtreeManager, QuadtreeNode, TerrainOcclusionConfig, TileId, AZIMUTH_SECTORS,
-    RANGE_RINGS,
+    lod_factor_for, tile_bounds, transform_to_scaled_space, web_mercator_y_to_lat_f64,
+    CullPipeline, Frustum, HorizonCamera, QuadtreeManager, QuadtreeNode, TerrainHorizon,
+    TerrainOcclusionConfig, TileId, AZIMUTH_SECTORS, RANGE_RINGS,
 };
 use cesium_engine::globe::terrain::height_tile::{HEIGHT_TILE_DIM, HEIGHT_TILE_TEXELS};
 use cesium_engine::globe::terrain::{
@@ -855,5 +863,534 @@ fn bench_terrain_occlusion_cost() {
             "    {name:<14} march {march_us:7.1} us   update D1+D2 {without_us:7.1} us   \
              update +D3 {with_us:7.1} us"
         );
+    }
+}
+
+// ── real terrain, and what a finer occludee granularity would buy on it ──────────
+
+// Everything above this line is the synthetic ridge world. What follows measures the same
+// stage on the **real** DEM at the poses `rendering::terrain_capture` photographs, because
+// `docs/terrain-plan.md` §7b's finding is that the two disagree — and the disagreement,
+// not the agreement, is what decides whether this stage is worth its march.
+
+/// Where the terrarium PNGs are cached between runs. Set `CESIUM_HEIGHT_CACHE` to keep
+/// them; otherwise the system temp dir, which is still shared between runs on one
+/// machine.
+fn height_cache_dir() -> std::path::PathBuf {
+    let dir = std::env::var_os("CESIUM_HEIGHT_CACHE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("cesium_terrarium_cache"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn terrarium_path(dir: &std::path::Path, id: TileId) -> std::path::PathBuf {
+    dir.join(format!("{}_{}_{}.png", id.z, id.x, id.y))
+}
+
+/// Downloads whatever is not on disk yet, in parallel, with `curl`.
+///
+/// `curl` rather than a Rust client on purpose: the root crate has no HTTP dependency
+/// and a measurement harness is not a reason to add one to the shipped dependency graph.
+fn fetch_missing(dir: &std::path::Path, ids: &[TileId]) {
+    let missing: Vec<TileId> = ids
+        .iter()
+        .copied()
+        .filter(|id| !terrarium_path(dir, *id).exists())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    for chunk in missing.chunks(48) {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.arg("-sS")
+            .arg("--parallel")
+            .arg("--parallel-max")
+            .arg("12");
+        for id in chunk {
+            cmd.arg("-o").arg(terrarium_path(dir, *id)).arg(format!(
+                "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{}/{}/{}.png",
+                id.z, id.x, id.y
+            ));
+        }
+        let _ = cmd.status();
+    }
+}
+
+/// The real DEM, tile by tile, off disk.
+struct RealWorld {
+    dir: std::path::PathBuf,
+    tiles: HashMap<TileId, Arc<HeightTile>>,
+}
+
+impl RealWorld {
+    fn new() -> Self {
+        Self {
+            dir: height_cache_dir(),
+            tiles: HashMap::new(),
+        }
+    }
+
+    fn tile(&mut self, id: TileId) -> Arc<HeightTile> {
+        if let Some(t) = self.tiles.get(&id) {
+            return t.clone();
+        }
+        fetch_missing(&self.dir, &[id]);
+        let path = terrarium_path(&self.dir, id);
+        let decoded = std::fs::read(&path).ok().and_then(|bytes| {
+            let img = image::load_from_memory(&bytes).ok()?;
+            let rgba = img.to_rgba8();
+            cesium_engine::globe::terrain::height_tile::decode_terrarium(
+                rgba.width(),
+                rgba.height(),
+                rgba.as_raw(),
+                OceanPolicy::ClampToZero,
+            )
+            .ok()
+        });
+        // A tile the source does not serve is flat zero, which is the same thing the
+        // engine's own fetcher ends up with and is a *low* floor, i.e. it occludes less.
+        let t = Arc::new(decoded.unwrap_or_else(HeightTile::flat_zero));
+        self.tiles.insert(id, t.clone());
+        t
+    }
+}
+
+fn real_config() -> TileEngineConfig {
+    TileEngineConfig {
+        mesh_segments: SEGMENTS,
+        target_texel_ratio: 1.0,
+        terrain: TerrainConfig {
+            enabled: true,
+            exaggeration: 1.0,
+            // Production's default, so the floors are the ones the engine would use.
+            ocean: OceanPolicy::ClampToZero,
+            height_cache_budget_bytes: 1024 * 1024 * 1024,
+            ..TerrainConfig::default()
+        },
+        ..TileEngineConfig::default()
+    }
+}
+
+/// Every height source the tree currently wants, so one `curl` invocation can fetch
+/// them all instead of one round trip per node.
+fn collect_sources(
+    node: &QuadtreeNode<Heightfield>,
+    heights: &HeightTileManager,
+    out: &mut Vec<TileId>,
+) {
+    let src = heights.source_tile_for(node.id);
+    if heights.status_of(node.id) != PatchStatus::Ready {
+        out.push(src);
+    }
+    if let Some(children) = &node.children {
+        for c in children.iter() {
+            collect_sources(c, heights, out);
+        }
+    }
+}
+
+fn fill_cache_real(
+    node: &QuadtreeNode<Heightfield>,
+    heights: &mut HeightTileManager,
+    w: &mut RealWorld,
+) {
+    let src = heights.source_tile_for(node.id);
+    if heights.status_of(node.id) != PatchStatus::Ready {
+        let t = w.tile(src);
+        heights.insert_ready(src, t);
+    }
+    if let Some(children) = &node.children {
+        for c in children.iter() {
+            fill_cache_real(c, heights, w);
+        }
+    }
+}
+
+/// The capture poses of `rendering::terrain_capture`, as `ViewParams`.
+///
+/// That harness takes a pitch *below the horizontal*; `ViewParams::pitch_deg` measures
+/// from nadir, so the two differ by 90°. Everything else — longitude, latitude, altitude
+/// and the due-north bearing — is copied from `terrain_capture::poses` verbatim, which is
+/// what makes the numbers here comparable to the table in `docs/terrain-plan.md` §7b.
+fn real_poses() -> Vec<(&'static str, ViewParams)> {
+    let p = |name: &'static str, lon: f64, lat: f64, alt_m: f64, below: f64, yaw: f64| {
+        (
+            name,
+            ViewParams {
+                sweep: "real",
+                lat_deg: lat,
+                lon_deg: lon,
+                alt_m,
+                pitch_deg: 90.0 - below,
+                yaw_deg: yaw,
+                roll_deg: 0.0,
+                width: 1280,
+                height: 720,
+                mode: CameraMode::Free,
+            },
+        )
+    };
+    vec![
+        p("alps_inn_valley", 11.40, 47.26, 900.0, 1.5, 0.0),
+        p("alps_low", 10.985, 47.10, 4_500.0, 8.0, 0.0),
+        p("alps_zugspitze", 10.985, 46.79, 9_000.0, 12.0, 0.0),
+        p("himalaya_everest", 86.925, 27.35, 11_000.0, 11.0, 0.0),
+        p("himalaya_limb_400km", 86.925, 23.0, 400_000.0, 18.0, 0.0),
+        // Five more low poses, added here rather than to the capture set. §7b's own
+        // statement of where D3 should pay is "a valley floor, a plain behind a range,
+        // water, a plateau", and one Alpine valley is a thin basis for either verdict.
+        //
+        // **Every one of these is placed a few hundred metres over ground whose height
+        // was looked up first**, because the first attempt at this list was not: three of
+        // four poses picked off a map — 11.75 E / 47.28 N "in the Inn valley" (1 998 m,
+        // the Tuxer Alpen), 11.00 E / 45.60 N "the Po plain" (499 m, the Lessini hills),
+        // 86.83 E / 27.80 N "the Khumbu valley" (5 440 m) — put the camera *inside* a
+        // mountain, where `TerrainHorizon::finish`'s enclosure guard correctly switches
+        // the whole march off. Four poses reporting a flat zero for a reason that has
+        // nothing to do with the thing under test is exactly how a negative result gets
+        // faked by accident.
+        p("po_plain_to_alps", 11.30, 45.15, 300.0, 1.0, 0.0),
+        p("terai_to_himalaya", 86.90, 26.90, 600.0, 1.0, 0.0),
+        p("rhone_valley", 7.60, 46.30, 900.0, 1.0, 0.0),
+        p("salzach_to_alps", 13.04, 47.80, 800.0, 1.0, 180.0),
+        p("aosta_valley", 7.32, 45.74, 900.0, 1.0, 0.0),
+    ]
+}
+
+/// A settled terrain quadtree over the real DEM at `p`, with D3 on or off.
+///
+/// `lod_factor` is the capture's, not `QuadtreeManager`'s default 2.0: the tile counts
+/// this prints are meant to be read next to `rendering::terrain_capture`'s, and the LOD
+/// threshold is what decides how coarse the far field is — which is half of §7b's
+/// explanation for why D3 finds nothing out there.
+fn settled_real_tree(
+    p: &ViewParams,
+    frustum: &Frustum,
+    occlusion: Option<TerrainOcclusionConfig>,
+    world: &mut RealWorld,
+) -> (QuadtreeManager<Heightfield>, HeightTileManager) {
+    let config = real_config();
+    let mut heights = HeightTileManager::new(&config);
+    let mut qt = QuadtreeManager::<Heightfield>::for_surface();
+    let cam = build_camera(p);
+    // Both of these are the capture's, not the harness defaults: `lod_factor` decides how
+    // coarse the far field is (half of §7b's explanation for why D3 finds nothing out
+    // there) and `max_zoom` decides how fine the near field is. `QuadtreeManager` defaults
+    // to `MAX_ZOOM = 20`; `TileEngineConfig` — which is what `wgpu_state` actually feeds it
+    // — defaults to **19**, and one level of near-field refinement doubles the tile count.
+    qt.lod_factor = lod_factor_for(1.0, 256.0, p.height as f32, cam.fovy());
+    qt.max_zoom = config.max_zoom;
+    // **And the fog density, which is not cosmetic here.** WP5's `apply_lod` relaxation
+    // multiplies `subdivide_dist` by `1 − fog(distance)`, so at 900 m — where fog is
+    // thickest — the far field never refines past z10/z11 in the first place. Leaving it
+    // at 0, as the ridge-world sweep does, doubles the visible set (100 tiles against the
+    // capture's 49 at `alps_inn_valley`) and hands D3 a far field production never draws.
+    // That difference is most of the gap between the synthetic reduction and §7b's
+    // captures, and a harness that did not reproduce it would be measuring a globe the
+    // engine does not render.
+    qt.fog_density = cesium_engine::globe::quadtree::fog_density_for(p.alt_m as f32, &config.fog);
+    qt.pipeline = match occlusion {
+        Some(_) => CullPipeline::TERRAIN_DEFAULT,
+        None => CullPipeline::DEFAULT,
+    };
+    let cam_alt = p.alt_m * 1.0e-6;
+
+    for _ in 0..UPDATE_ITERATIONS {
+        let mut wanted = Vec::new();
+        for root in qt.roots.iter() {
+            collect_sources(root, &heights, &mut wanted);
+        }
+        wanted.sort_unstable_by_key(|id| (id.z, id.x, id.y));
+        wanted.dedup();
+        fetch_missing(&world.dir, &wanted);
+        for root in qt.roots.iter() {
+            fill_cache_real(root, &mut heights, world);
+        }
+        qt.refresh_extras(&bounds_source(&heights));
+        match &occlusion {
+            Some(cfg) => qt.refresh_terrain_horizon(frustum.eye, cam_alt, cfg),
+            None => qt.clear_terrain_horizon(),
+        }
+        qt.update(frustum);
+    }
+    let mut wanted = Vec::new();
+    for root in qt.roots.iter() {
+        collect_sources(root, &heights, &mut wanted);
+    }
+    wanted.sort_unstable_by_key(|id| (id.z, id.x, id.y));
+    wanted.dedup();
+    fetch_missing(&world.dir, &wanted);
+    for root in qt.roots.iter() {
+        fill_cache_real(root, &mut heights, world);
+    }
+    qt.refresh_extras(&bounds_source(&heights));
+    (qt, heights)
+}
+
+// ── the granularity probe ────────────────────────────────────────────────────────
+
+/// Is **every** sub-rectangle of a `2^depth × 2^depth` division of this node hidden?
+///
+/// The ceiling of `docs/terrain-plan.md` §7b's proposal, measured without committing to
+/// an implementation of it. A sub-rectangle's box is built by
+/// [`QuadtreeNode::for_surface_with`] on the *descendant tile id* with the **parent's**
+/// height interval, which is exactly what `SubGrid::build` does one level of abstraction
+/// down: the node's `[lo, hi]` bounds every drawn point over any part of its ground
+/// (I-1′), so a box fitted over a sub-rectangle at that span contains the geometry over
+/// that sub-rectangle. Culling when every one of them is hidden is sound for the same
+/// reason `SubGrid::has_surviving_sub_patch` is — the sub-rectangles' union is the whole
+/// patch.
+///
+/// `depth = 0` is the shipped node-level test, so the probe brackets it.
+fn occluded_at_depth(
+    horizon: &TerrainHorizon,
+    node: &QuadtreeNode<Heightfield>,
+    depth: u8,
+) -> bool {
+    if depth == 0 {
+        return horizon.occludes(&node.obb, &tile_bounds(&node.id));
+    }
+    let n = 1u32 << depth;
+    let z = node.id.z + depth;
+    if z > 30 {
+        return horizon.occludes(&node.obb, &tile_bounds(&node.id));
+    }
+    for dy in 0..n {
+        for dx in 0..n {
+            let id = TileId {
+                z,
+                x: node.id.x * n + dx,
+                y: node.id.y * n + dy,
+            };
+            let sub = QuadtreeNode::<Heightfield>::for_surface_with(id, node.extra);
+            if !horizon.occludes(&sub.obb, &tile_bounds(&id)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Per-level tallies of what the stage decides on one settled tree.
+#[derive(Default, Clone)]
+struct GranularityTally {
+    /// Nodes the traversal reached and offered to the stage, by level.
+    seen: HashMap<u8, usize>,
+    /// …of which the node-level test (depth 0) culls, and each finer depth.
+    culled: Vec<HashMap<u8, usize>>,
+}
+
+fn probe_node(
+    node: &QuadtreeNode<Heightfield>,
+    horizon: &TerrainHorizon,
+    depths: &[u8],
+    tally: &mut GranularityTally,
+) {
+    *tally.seen.entry(node.id.z).or_insert(0) += 1;
+    for (i, d) in depths.iter().enumerate() {
+        if occluded_at_depth(horizon, node, *d) {
+            *tally.culled[i].entry(node.id.z).or_insert(0) += 1;
+        }
+    }
+    if let Some(children) = &node.children {
+        for c in children.iter() {
+            probe_node(c, horizon, depths, tally);
+        }
+    }
+}
+
+/// **The refutation of `docs/terrain-plan.md` §7b's follow-up, kept re-runnable without
+/// the code it refutes** — what a per-sub-patch occludee test would buy on real terrain.
+///
+/// §7b proposes testing per sub-patch "the way `Stage::SubPatchGrid` does", on the
+/// grounds that `k²` small boxes hug a ridge line far more closely than one big box over
+/// a node's own `h_max`. §7c built exactly that, measured it and removed it again: two to
+/// four more tiles out of forty to sixty-seven, for six to ten times the cost of the whole
+/// D1+D2 pass. This test is what survives, and deliberately so — it needs **no engine
+/// support at all**, so the measurement outlives the implementation.
+///
+/// It runs the proposal at **its ceiling**: not `SubGrid`'s `k`, but a 2×2, 4×4 and 8×8
+/// division of every node the traversal reaches, each sub-rectangle given its own box by
+/// [`QuadtreeNode::for_surface_with`] on the descendant tile id at the *parent's* height
+/// interval — which is what `SubGrid::build` does one abstraction down — and the node
+/// counted as culled only when every sub-rectangle is hidden.
+///
+/// **Read the level histogram, not just the totals.** It is what says the extra culls are
+/// all at z1–z6 and none below: a far-field z10 tile 19–39 km across is never wholly
+/// hidden however finely it is cut, so what a finer bound removes is a coarse *leaf*, and
+/// what hides it is the terrain-aware curvature horizon rather than a ridge.
+///
+/// The ridge world runs alongside as a positive control: a probe that finds nothing
+/// everywhere is indistinguishable from a probe that is broken.
+///
+/// `#[ignore]`d — it needs the network for the DEM (cached under `CESIUM_HEIGHT_CACHE`)
+/// and it is a measurement, not a gate.
+///
+/// ```text
+/// CESIUM_HEIGHT_CACHE=/tmp/dem \
+///   cargo test --release --lib terrain::test_terrain_occlusion::d3_sub_patch -- \
+///   --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "measurement, needs the network for real height tiles"]
+fn d3_sub_patch_granularity_probe() {
+    const DEPTHS: [u8; 4] = [0, 1, 2, 3];
+    let cfg = TerrainOcclusionConfig::default();
+    let mut world = RealWorld::new();
+
+    println!("  [D3 granularity] nodes the stage culls, by occludee granularity");
+    println!(
+        "    {:<22} {:>7} {:>8} {:>8} {:>8} {:>8}",
+        "pose", "nodes", "node", "2x2", "4x4", "8x8"
+    );
+
+    for (name, p) in real_poses() {
+        let (frustum, _) = frustum_for(&p);
+        let (qt, _) = settled_real_tree(&p, &frustum, Some(cfg), &mut world);
+        let Some(horizon) = qt.terrain_horizon() else {
+            println!("    {name:<22} no march");
+            continue;
+        };
+        if !horizon.is_active() {
+            println!("    {name:<22} march inactive (altitude gate)");
+            continue;
+        }
+        let mut tally = GranularityTally {
+            seen: HashMap::new(),
+            culled: vec![HashMap::new(); DEPTHS.len()],
+        };
+        for root in qt.roots.iter() {
+            probe_node(root, horizon, &DEPTHS, &mut tally);
+        }
+        let seen: usize = tally.seen.values().sum();
+        let totals: Vec<usize> = tally.culled.iter().map(|m| m.values().sum()).collect();
+        println!(
+            "    {name:<22} {seen:>7} {:>8} {:>8} {:>8} {:>8}",
+            totals[0], totals[1], totals[2], totals[3]
+        );
+        // The level histogram is the point of the whole probe: §7b blames the far field's
+        // coarseness, and `sub_boxes_per_axis` gives no sub-grid at all from z8 down.
+        let mut levels: Vec<u8> = tally.seen.keys().copied().collect();
+        levels.sort_unstable();
+        for z in levels {
+            let s = tally.seen[&z];
+            let c: Vec<usize> = tally
+                .culled
+                .iter()
+                .map(|m| m.get(&z).copied().unwrap_or(0))
+                .collect();
+            if c.iter().all(|v| *v == 0) {
+                continue;
+            }
+            println!(
+                "        z{z:<3} seen {s:>5}   node {:>5}  2x2 {:>5}  4x4 {:>5}  8x8 {:>5}",
+                c[0], c[1], c[2], c[3]
+            );
+        }
+    }
+
+    println!("  [D3 granularity] positive control — the synthetic ridge world");
+    let ridge_cfg = TerrainOcclusionConfig {
+        max_camera_altitude_m: 40_000.0,
+        ..TerrainOcclusionConfig::default()
+    };
+    for (name, p) in reduction_poses() {
+        let (frustum, _) = frustum_for(&p);
+        let (qt, _, _) = settled_tree(&p, &frustum, Some(ridge_cfg), RIDGE_M);
+        let Some(horizon) = qt.terrain_horizon() else {
+            continue;
+        };
+        if !horizon.is_active() {
+            println!("    {name:<22} march inactive");
+            continue;
+        }
+        let mut tally = GranularityTally {
+            seen: HashMap::new(),
+            culled: vec![HashMap::new(); DEPTHS.len()],
+        };
+        for root in qt.roots.iter() {
+            probe_node(root, horizon, &DEPTHS, &mut tally);
+        }
+        let seen: usize = tally.seen.values().sum();
+        let totals: Vec<usize> = tally.culled.iter().map(|m| m.values().sum()).collect();
+        println!(
+            "    {name:<22} {seen:>7} {:>8} {:>8} {:>8} {:>8}",
+            totals[0], totals[1], totals[2], totals[3]
+        );
+    }
+}
+
+/// **The real-terrain reduction and the real-terrain cost**, in one table — what D3
+/// removes at the capture poses and five more low ones, and what it charges for it.
+///
+/// `rendering::terrain_capture` measures the reduction too, but only alongside a render,
+/// so it cannot be run in a loop while a change is being tuned. This is the same tree,
+/// the same LOD threshold and — the part that turns out to matter most — the same **fog
+/// relaxation**, counted instead of drawn. It agrees with the capture to a tile
+/// (`alps_inn_valley` 50 → 48 here, 49 → 48 there).
+///
+/// The cost columns are what `docs/terrain-plan.md` §7c's optimisation pass is measured
+/// against, and they are charged to different places: `refresh_terrain_horizon` is **once
+/// per frame**, `Stage::TerrainOcclusion` is per node and shows up inside `update`.
+#[test]
+#[ignore = "measurement, needs the network for real height tiles"]
+fn d3_on_real_terrain() {
+    use std::time::Instant;
+
+    let cfg = TerrainOcclusionConfig::default();
+    let mut world = RealWorld::new();
+
+    println!("  [D3 real] visible tiles at the capture poses and five more low ones");
+    println!(
+        "    {:<22} {:>8} {:>8} {:>9} {:>9}",
+        "pose", "D1+D2", "with D3", "delta", "alt (m)"
+    );
+    let mut poses: Vec<(&'static str, ViewParams)> = Vec::new();
+    for (name, p) in real_poses() {
+        let (frustum, _) = frustum_for(&p);
+        let (reference, _) = settled_real_tree(&p, &frustum, None, &mut world);
+        let (qt, _) = settled_real_tree(&p, &frustum, Some(cfg), &mut world);
+        let before = reference.get_visible_tiles().len();
+        let after = qt.get_visible_tiles().len();
+        println!(
+            "    {name:<22} {before:>8} {after:>8} {:>7.1} % {:>9.0}",
+            100.0 * (after as f64 / before.max(1) as f64 - 1.0),
+            p.alt_m
+        );
+        poses.push((name, p));
+    }
+
+    println!("  [D3 real cost] per frame, same trees");
+    println!(
+        "    {:<22} {:>10} {:>12} {:>12}",
+        "pose", "march", "upd D1+D2", "upd +D3"
+    );
+    const REPS: u32 = 400;
+    for (name, p) in &poses {
+        let (frustum, _) = frustum_for(p);
+        let cam_alt = p.alt_m * 1.0e-6;
+        let (mut qt, _) = settled_real_tree(p, &frustum, Some(cfg), &mut world);
+
+        let t = Instant::now();
+        for _ in 0..REPS {
+            qt.refresh_terrain_horizon(frustum.eye, cam_alt, &cfg);
+        }
+        let march = t.elapsed().as_secs_f64() * 1.0e6 / REPS as f64;
+        let t = Instant::now();
+        for _ in 0..REPS {
+            qt.update(&frustum);
+        }
+        let with_us = t.elapsed().as_secs_f64() * 1.0e6 / REPS as f64;
+
+        qt.clear_terrain_horizon();
+        qt.pipeline = CullPipeline::DEFAULT;
+        let t = Instant::now();
+        for _ in 0..REPS {
+            qt.update(&frustum);
+        }
+        let without_us = t.elapsed().as_secs_f64() * 1.0e6 / REPS as f64;
+
+        println!("    {name:<22} {march:>8.1} us {without_us:>10.1} us {with_us:>10.1} us");
     }
 }

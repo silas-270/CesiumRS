@@ -614,6 +614,32 @@ impl TerrainHorizon {
                 break;
             }
         }
+        // What the enclosure guard just decided, and the two numbers it decided it from.
+        // Not decoration: a camera placed a few hundred metres over what a map calls a
+        // valley floor but what the DEM calls a mountainside switches the entire march off
+        // here, silently and correctly, and §7c lost three measurement poses to exactly
+        // that before this line existed. `D3_DEBUG` is the same switch the floor dump
+        // below uses.
+        if std::env::var_os("D3_DEBUG").is_some() {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            let mut inf = 0;
+            for a in 0..AZIMUTH_SECTORS {
+                let f = self.floor[a][0];
+                if f.is_finite() {
+                    lo = lo.min(f);
+                    hi = hi.max(f);
+                } else {
+                    inf += 1;
+                }
+            }
+            eprintln!(
+                "D3 finish: cam_alt {:.0} m, ring0 floor min {:.0} max {:.0} m, {inf} unstamped, enclosed {enclosed}",
+                self.cam_alt * 1.0e6,
+                lo * 1.0e6,
+                hi * 1.0e6
+            );
+        }
         if enclosed {
             self.active = false;
             return;
@@ -636,32 +662,51 @@ impl TerrainHorizon {
         }
         let safety = RIDGE_SAFETY_M * 1.0e-6;
         let scale = std::f64::consts::TAU / AZIMUTH_SECTORS as f64;
-        for a in 0..AZIMUTH_SECTORS {
-            // Sector centre bearing. The elevation angle to a ridge depends on the
-            // bearing only through the ellipsoid's local radius, which is why this is
-            // evaluated per sector rather than once per ring.
-            let (sin_b, cos_b) = ((a as f64 + 0.5) * scale).sin_cos();
-            let bearing_dir = self.east * sin_b + self.north * cos_b;
 
-            let mut run = f64::NEG_INFINITY;
-            // Every finite cell is evaluated. A tempting optimisation — skip a ring that
-            // is farther than one already seen and no higher — is **wrong**, and it was
-            // measured to be: the elevation angle to a fixed altitude below the eye is not
-            // monotone in range. It climbs steeply from −90° just under the camera toward
-            // its maximum and only then falls away with the curvature drop, so the ring
-            // that matters is usually one whose floor equals the near field's. Skipping on
-            // that basis left `run` pinned at the near field's −54° and cost the ridge
-            // world's valley pose its entire 20 % reduction.
-            for r in 0..RANGE_RINGS {
+        // Sector centre bearings, once. The elevation angle to a ridge depends on the
+        // bearing only through the ellipsoid's local radius, which is why the direction is
+        // still needed per sector — but the `sin_cos` that builds it is not a function of
+        // the ring, so it belongs outside.
+        let mut bearing_dir = [DVec3::ZERO; AZIMUTH_SECTORS];
+        for (a, dir) in bearing_dir.iter_mut().enumerate() {
+            let (sin_b, cos_b) = ((a as f64 + 0.5) * scale).sin_cos();
+            *dir = self.east * sin_b + self.north * cos_b;
+        }
+
+        // **Rings outside, sectors inside** — §7c's second optimisation, and the only
+        // reason the loops are this way round. `elevation_of` opens with `gamma.sin_cos()`
+        // and `gamma` is the ring's, not the sector's, so the sector-major order computed
+        // the same 48 sine-cosine pairs 24 times over. Hoisting them turns 1 152 into 48
+        // and takes `finish` from 52 µs to 35 µs. The running maximum is per sector, so it
+        // becomes an array rather than a scalar; nothing else about the accumulation
+        // changes, and in particular each sector still sees its rings in increasing order.
+        //
+        // Every finite cell is still evaluated. A tempting optimisation — skip a ring that
+        // is farther than one already seen and no higher — is **wrong**, and it was
+        // measured to be: the elevation angle to a fixed altitude below the eye is not
+        // monotone in range. It climbs steeply from −90° just under the camera toward
+        // its maximum and only then falls away with the curvature drop, so the ring
+        // that matters is usually one whose floor equals the near field's. Skipping on
+        // that basis left `run` pinned at the near field's −54° and cost the ridge
+        // world's valley pose its entire 20 % reduction.
+        let mut run = [f64::NEG_INFINITY; AZIMUTH_SECTORS];
+        for r in 0..RANGE_RINGS {
+            let gamma = self.ring_far[r];
+            let (sin_g, cos_g) = gamma.sin_cos();
+            let up_term = self.up * cos_g;
+            for a in 0..AZIMUTH_SECTORS {
                 let f = self.floor[a][r];
                 if f.is_finite() {
-                    let e = self.elevation_of(bearing_dir, self.ring_far[r], f - safety);
-                    if e > run {
-                        run = e;
+                    let n = up_term + bearing_dir[a] * sin_g;
+                    let e = self.elevation_along(n, f - safety);
+                    if e > run[a] {
+                        run[a] = e;
                     }
                 }
-                self.ridge[a][r] = run as f32;
+                self.ridge[a][r] = run[a] as f32;
             }
+        }
+        for a in 0..AZIMUTH_SECTORS {
             let top = self.ridge[a][RANGE_RINGS - 1];
             if top > self.ridge_ceiling {
                 self.ridge_ceiling = top;
@@ -669,16 +714,22 @@ impl TerrainHorizon {
         }
     }
 
-    /// Elevation angle, from the eye, of the point at angular distance `gamma` along
-    /// `bearing_dir` at altitude `alt` megametres.
+    /// Elevation angle, from the eye, of the ridge point whose outward ellipsoid normal
+    /// is `n`, at altitude `alt` megametres.
     ///
     /// Exact on the ellipsoid up to the altitude being measured radially rather than
     /// along the normal (a sub-centimetre difference at 3 km of relief), which is what
     /// [`RIDGE_SAFETY_M`] covers along with the rest of the small-angle slop.
+    ///
+    /// # Why it takes the normal and not `(bearing, gamma)`
+    ///
+    /// It used to take the bearing direction and the angular distance and open with
+    /// `gamma.sin_cos()`. `gamma` is the **ring's** and the bearing is the sector's, so
+    /// [`Self::finish`]'s sector-major loop recomputed the same 48 sine-cosine pairs 24
+    /// times over. Taking the finished normal moves that line up one loop level — 1 152
+    /// `sin_cos` calls become 48 — and is the whole of §7c's second optimisation.
     #[inline]
-    fn elevation_of(&self, bearing_dir: DVec3, gamma: f64, alt: f64) -> f64 {
-        let (sin_g, cos_g) = gamma.sin_cos();
-        let n = self.up * cos_g + bearing_dir * sin_g;
+    fn elevation_along(&self, n: DVec3, alt: f64) -> f64 {
         let p = surface_point_for_normal(n) + n * alt;
         let v = p - self.eye;
         let vert = v.dot(self.up);
