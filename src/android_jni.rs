@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use jni::{
     objects::JClass,
-    sys::{jdouble, jint, jlong},
+    sys::{jboolean, jdouble, jint, jlong},
     JNIEnv,
 };
 
@@ -127,6 +127,21 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
             _ => MapStyle::Standard,
         };
         handle.map_set_style(s);
+    }
+}
+
+/// Turn terrain height fetching on or off.
+///
+/// Phase B of `docs/terrain-plan.md`: this starts and stops the height cache. Nothing
+/// on screen changes — the relief that consumes the data is Phase C.
+#[no_mangle]
+pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetTerrainEnabled(
+    mut _env: JNIEnv,
+    _cls: JClass,
+    enabled: jboolean,
+) {
+    if let Some(handle) = VIEWER_HANDLE.lock().unwrap().as_ref() {
+        handle.terrain_set_enabled(enabled != 0);
     }
 }
 

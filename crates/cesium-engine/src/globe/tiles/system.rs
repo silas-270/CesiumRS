@@ -1,4 +1,5 @@
 use crate::globe::quadtree::TileId;
+use crate::globe::terrain::HeightTileManager;
 use crate::globe::tiles::config::TileEngineConfig;
 use crate::globe::tiles::mesh_worker::MeshWorkerPool;
 use crate::globe::tiles::texture_manager::TileTextureManager;
@@ -16,6 +17,13 @@ pub struct RenderData<'a> {
 pub struct TileSystem {
     pub config: TileEngineConfig,
     pub texture_manager: TileTextureManager,
+    /// Height tiles — `Some` **only** while `config.terrain.enabled`
+    /// (`docs/terrain-plan.md` §5). `None` is the flat path, and on it nothing in this
+    /// file does any extra work at all: no cache, no fetcher, no request.
+    ///
+    /// Phase B stops here. The data is fetched, decoded, cached and queryable; no mesh
+    /// and no cull reads it yet.
+    pub height_manager: Option<HeightTileManager>,
     pub mesh_worker: MeshWorkerPool,
     last_camera_pos: Option<Vec3>,
 }
@@ -24,10 +32,24 @@ impl TileSystem {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: TileEngineConfig) -> Self {
         Self {
             texture_manager: TileTextureManager::new(device, queue, &config),
+            height_manager: Self::build_height_manager(&config),
             mesh_worker: MeshWorkerPool::new(),
             config,
             last_camera_pos: None,
         }
+    }
+
+    /// A [`HeightTileManager`] when terrain is on, `None` when it is off.
+    ///
+    /// Also the re-entry point for a runtime toggle (debug panel, `ViewerCommand`):
+    /// flipping `config.terrain.enabled` and reassigning `height_manager` from this is
+    /// the whole switch, and turning terrain back off drops the cache and the fetcher's
+    /// runtime with it.
+    pub fn build_height_manager(config: &TileEngineConfig) -> Option<HeightTileManager> {
+        config
+            .terrain
+            .enabled
+            .then(|| HeightTileManager::new(config))
     }
 
     pub fn update(
@@ -104,6 +126,26 @@ impl TileSystem {
                 }
                 curr = p;
             }
+        }
+
+        // Height tiles, only when terrain is on. Visible tiles go in at `High`: a
+        // missing texture is a blur, a missing height tile is the wrong shape. The
+        // ancestor chain follows at `Low` for the same reason imagery prefetches it —
+        // and more so here, because past z15 the ancestor is not a fallback, it is the
+        // only data that will ever exist (`docs/terrain-plan.md` §2).
+        if let Some(heights) = self.height_manager.as_mut() {
+            for (id, _, _) in visible_tiles {
+                heights.request_tile(*id, TilePriority::High);
+
+                let mut curr = heights.source_tile_for(*id);
+                while let Some(p) = curr.parent() {
+                    if heights.cache.get_state(&p).is_none() {
+                        heights.request_tile(p, TilePriority::Low);
+                    }
+                    curr = p;
+                }
+            }
+            heights.update();
         }
 
         self.texture_manager.update(device, queue);
@@ -203,7 +245,19 @@ impl TileSystem {
         })
     }
 
+    /// Height at `(u, v)` of `id` in **megametres**, or `None` when terrain is off or
+    /// no ancestor's data has arrived. Phase B's single query entry point; Phase C's
+    /// mesh builder is its first real caller.
+    pub fn height_at(&mut self, id: TileId, u: f64, v: f64) -> Option<f64> {
+        self.height_manager.as_mut()?.height_at(id, u, v)
+    }
+
     pub fn is_loading_complete(&self) -> bool {
-        self.texture_manager.is_loading_complete() && self.mesh_worker.is_loading_complete()
+        self.texture_manager.is_loading_complete()
+            && self.mesh_worker.is_loading_complete()
+            && self
+                .height_manager
+                .as_ref()
+                .is_none_or(|h| h.is_loading_complete())
     }
 }

@@ -10,7 +10,7 @@ pub mod testing;
 pub mod android_jni;
 
 // ── Primary public API ────────────────────────────────────────────────────────
-pub use api::{CameraMode, CameraState, CesiumViewer, MapStyle, ViewerHandle};
+pub use api::{CameraMode, CameraState, CesiumViewer, MapStyle, TerrainOcean, ViewerHandle};
 
 // ── Legacy path (kept for the test harness) ───────────────────────────────────
 #[cfg(not(target_os = "android"))]

@@ -156,7 +156,10 @@ impl TileTextureManager {
             bind_group_layout,
             sampler,
             fallback_bind_group,
-            budget_bytes: config.tile_cache_budget_bytes,
+            // The slice of the tile budget left after terrain's declared share, which is
+            // `tile_cache_budget_bytes` verbatim while terrain is off — see
+            // `TileEngineConfig::imagery_cache_budget_bytes`.
+            budget_bytes: config.imagery_cache_budget_bytes(),
             max_entries: config.max_cache_size,
             bytes_per_tile: None,
             texture_size: ObservedTextureSize::default(),
