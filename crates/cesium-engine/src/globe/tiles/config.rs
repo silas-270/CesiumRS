@@ -63,22 +63,52 @@ pub enum OceanPolicy {
     Raw,
 }
 
+/// Whether [`TerrainConfig::enabled`] defaults to `true` on **this** target —
+/// `docs/terrain-plan.md` §9 F4, and the one line where the platform split lives.
+///
+/// **Desktop: `true`.** F1 and F2 cover it. The visible set over the ten real DEM poses
+/// costs 702 tiles against 483 flat, the drawn geometric error sits inside the shipped
+/// 12 px budget at every pose but the Himalayan cliffs, and the memory split is measured
+/// (`testing::terrain::test_mesh_density::f2_where_the_bytes_go_at_the_real_poses`):
+/// 103 MiB of imagery against a 480 MiB share, 32 MiB of heights, 1.6 MB of vertex
+/// buffers at the heaviest pose.
+///
+/// **Android: `false`, and this is a deliberate hole, not an oversight.** §9 binds the
+/// flip to an S23 soak with terrain on against terrain off, and that soak **has not been
+/// run** — the machine Phase F was written on has no `adb` and no phone attached. Nothing
+/// here is a prediction that terrain is too expensive on device; it is the statement that
+/// nobody has looked. §9 F3 is the runbook that closes it, and this constant is what it
+/// flips.
+///
+/// It is a constant rather than a per-entry-point assignment because Android reaches this
+/// engine through more than one door — `android_main` in the root crate builds the live
+/// viewer from `TileEngineConfig::default()` directly (the builder's own config is *not*
+/// what it runs), and `headless::api`'s FFI still renderer is compiled for Android too. A
+/// flag set at one door would have been silently missed at the other.
+///
+/// On device the soak's terrain-on arm does **not** need a rebuild to get past this: the
+/// live viewer already exposes `nativeSetTerrainEnabled`, which goes through
+/// `ViewerCommand::TerrainSetEnabled` and rebuilds the height manager in place.
+pub const TERRAIN_ENABLED_BY_DEFAULT: bool = !cfg!(target_os = "android");
+
 /// Terrain height data — `docs/terrain-plan.md` §4 A3, §5, §6 and §7.
 ///
-/// Off by default, and still off at the end of D2. The unsoundness §10 warned about is
-/// **gone**: D1 fits the bounding volumes over each node's `[h_min, h_max]` and D2 runs
-/// the limb test on its scaled-space bounding sphere, so turning this on no longer loses
-/// geometry — the sweep in `testing::terrain::test_terrain_visibility` measures FN = 0 and
-/// the headless captures over the Alps are gapless.
+/// **On by default since §9 F4 — on desktop.** See [`TERRAIN_ENABLED_BY_DEFAULT`] for the
+/// platform split and for why Android is not in it.
 ///
-/// **D3** — the occlusion march of §3.3, tiles hidden behind mountains — landed too; see
-/// [`Self::occlusion`]. The flip of this flag to `true` belongs to §9 (Phase F), after the
-/// on-device measurements, in its own commit.
+/// The unsoundness §10 warned about is **gone**: D1 fits the bounding volumes over each
+/// node's `[h_min, h_max]` and D2 runs the limb test on its scaled-space bounding sphere,
+/// so turning this on does not lose geometry — the sweep in
+/// `testing::terrain::test_terrain_visibility` measures FN = 0 and the headless captures
+/// over the Alps are gapless. **D3** — the occlusion march of §3.3, tiles hidden behind
+/// mountains — landed too; see [`Self::occlusion`].
 #[derive(Clone, Debug)]
 pub struct TerrainConfig {
-    /// Master switch. While `false` no height fetcher, no height cache and no height
-    /// request exists — [`crate::globe::tiles::system::TileSystem::height_manager`] is
-    /// `None` — so the flat path is byte-for-byte what it was before terrain existed.
+    /// Master switch, defaulting to [`TERRAIN_ENABLED_BY_DEFAULT`]. While `false` no
+    /// height fetcher, no height cache and no height request exists —
+    /// [`crate::globe::tiles::system::TileSystem::height_manager`] is `None` — so the flat
+    /// path is byte-for-byte what it was before terrain existed, which is what the 204-pose
+    /// LOD harness and the culling gate keep measuring after F4's flip.
     pub enabled: bool,
     /// XYZ template for the height source, `{z}`/`{x}`/`{y}` placeholders, same
     /// convention as [`TileEngineConfig::base_imagery_url`].
@@ -166,7 +196,8 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // §9 F4. Desktop on, Android still off — see `TERRAIN_ENABLED_BY_DEFAULT`.
+            enabled: TERRAIN_ENABLED_BY_DEFAULT,
             source_url: TERRARIUM_URL.to_string(),
             max_level: TERRARIUM_MAX_LEVEL,
             exaggeration: 1.0,
@@ -291,7 +322,8 @@ pub struct TileEngineConfig {
     pub map_brightness: f32,
     pub transparent_background: bool,
     pub mesh_segments: u32,
-    /// Terrain height data. Off by default; see [`TerrainConfig`].
+    /// Terrain height data. On by default except on Android — see [`TerrainConfig`] and
+    /// [`TERRAIN_ENABLED_BY_DEFAULT`].
     pub terrain: TerrainConfig,
 }
 
@@ -427,15 +459,41 @@ mod tests {
         assert_eq!(config.max_zoom, 19);
     }
 
-    /// Terrain off is the whole of Phase B, and it must leave the imagery budget
-    /// literally untouched — the flat path may not move.
+    /// Terrain off must leave the imagery budget literally untouched — the flat path may
+    /// not move. Since §9 F4 that is no longer the default on desktop, so the flag is set
+    /// here rather than assumed; the property is about the flag, not about the default.
     #[test]
     fn terrain_off_leaves_the_imagery_budget_alone() {
-        let config = TileEngineConfig::default();
-        assert!(!config.terrain.enabled);
+        let mut config = TileEngineConfig::default();
+        config.terrain.enabled = false;
         assert_eq!(
             config.imagery_cache_budget_bytes(),
             config.tile_cache_budget_bytes
+        );
+    }
+
+    /// **§9 F4** — the flip, and the hole in it, as one assertion each.
+    ///
+    /// Desktop ships terrain on; Android does not, because the soak §9 F3 specifies has
+    /// not been run. If this test is what fails after someone runs it and flips the
+    /// constant, that is the test doing its job: the Android arm of F4 is a decision, and
+    /// decisions are meant to be visible when they change.
+    #[test]
+    fn terrain_ships_on_everywhere_except_android() {
+        assert_eq!(
+            TerrainConfig::default().enabled,
+            TERRAIN_ENABLED_BY_DEFAULT,
+            "the default must come from the one constant that states the split"
+        );
+        #[cfg(not(target_os = "android"))]
+        assert!(
+            TERRAIN_ENABLED_BY_DEFAULT,
+            "desktop ships terrain on — `docs/terrain-plan.md` §9 F1/F2"
+        );
+        #[cfg(target_os = "android")]
+        assert!(
+            !TERRAIN_ENABLED_BY_DEFAULT,
+            "Android stays off until the S23 soak of `docs/terrain-plan.md` §9 F3 is run"
         );
     }
 
@@ -451,17 +509,22 @@ mod tests {
     }
 
     /// The "256 resident = 32 MB" line of §5 B4, with the mips counted: 254.
+    ///
+    /// The literal below was `132_096` — the figure from **before** E1 added its two-byte
+    /// error term — and had been failing since, which nothing noticed because this crate's
+    /// own unit tests are not in the `culling::` gate. `HEIGHT_TILE_BYTES`'s doc comment
+    /// already quotes the right number (and the right derived count, which does not move),
+    /// and so does `terrain::test_terrain_lod::the_error_term_costs_two_bytes_a_tile`.
     #[test]
     fn the_default_height_budget_lands_on_254_tiles() {
         let terrain = TerrainConfig::default();
-        assert_eq!(HEIGHT_TILE_BYTES, 132_096);
+        assert_eq!(HEIGHT_TILE_BYTES, 132_098);
         assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 254);
     }
 
     #[test]
-    fn terrain_defaults_are_off_terrarium_and_clamped() {
+    fn terrain_defaults_are_terrarium_and_clamped() {
         let terrain = TerrainConfig::default();
-        assert!(!terrain.enabled);
         assert_eq!(terrain.source_url, TERRARIUM_URL);
         assert_eq!(terrain.max_level, 15);
         assert_eq!(terrain.exaggeration, 1.0);

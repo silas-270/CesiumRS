@@ -215,11 +215,19 @@ impl CesiumViewerBuilder {
         self
     }
 
-    /// Fetch, decode and cache terrain height tiles. Default `false`.
+    /// Draw the globe with relief: fetch, decode and cache terrain height tiles, and
+    /// build the surface out of them.
     ///
-    /// **Phase B of `docs/terrain-plan.md`: this does not render relief.** Turning it
-    /// on populates a height cache and nothing more; the globe is still the bare
-    /// ellipsoid. The surface model that consumes the data is Phase C.
+    /// Defaults to
+    /// [`TERRAIN_ENABLED_BY_DEFAULT`](cesium_engine::globe::tiles::config::TERRAIN_ENABLED_BY_DEFAULT)
+    /// since §9 F4 of `docs/terrain-plan.md` — `true` on desktop, `false` on Android
+    /// until the soak §9 F3 describes has been run. Phases C through E are what made it
+    /// more than a cache: relief, height-aware culling, the occlusion march and an LOD
+    /// term that refines on the shape of the ground.
+    ///
+    /// **Note for the Android target**: `android_main` builds its engine config from
+    /// `TileEngineConfig::default()` and not from this builder, so setting this there
+    /// changes nothing. `nativeSetTerrainEnabled` is the switch that works on device.
     pub fn terrain(mut self, enabled: bool) -> Self {
         self.terrain = enabled;
         self

@@ -186,11 +186,12 @@ impl<'a> App<'a> {
 
                 ui.separator();
                 ui.collapsing("Terrain (height data)", |ui| {
-                    // Phase B of docs/terrain-plan.md: this switch controls fetching,
-                    // decoding and caching only. Nothing here moves a vertex yet.
+                    // Since §9 F4 this ships on (except on Android), and since Phase C it
+                    // moves vertices: the switch rebuilds the height manager, and E2
+                    // rebuilds the meshes that were flat when it was off.
                     let mut on = state.tile_system.config.terrain.enabled;
                     if ui
-                        .checkbox(&mut on, "Enable height tiles (no relief yet — Phase B)")
+                        .checkbox(&mut on, "Draw the globe with relief")
                         .changed()
                     {
                         state.tile_system.config.terrain.enabled = on;
