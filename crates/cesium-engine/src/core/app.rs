@@ -539,7 +539,30 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                         state.resize(state.size);
                     }
                     Err(wgpu::SurfaceError::OutOfMemory) => {
-                        log::error!("FATAL: GPU Surface out of memory! Exiting event loop.");
+                        // Write directly to the log file — env_logger's internal pipe
+                        // buffer may not be flushed before event_loop.exit() unwinds,
+                        // which is why this error previously disappeared from cesium.log.
+                        let unix_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        let msg = format!(
+                            "[{}.{}s UNIX ERROR cesium_engine::core::app] \
+                             FATAL: GPU Surface out of memory (SurfaceError::OutOfMemory)! \
+                             VRAM exhausted — likely a burst texture upload spike. \
+                             Exiting event loop.\n",
+                            unix_ms / 1000,
+                            unix_ms % 1000,
+                        );
+                        eprint!("{}", msg);
+                        use std::io::Write as _;
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .append(true)
+                            .open("cesium.log")
+                        {
+                            let _ = f.write_all(msg.as_bytes());
+                            let _ = f.flush();
+                        }
                         event_loop.exit();
                     }
                     Err(wgpu::SurfaceError::Timeout) => {
