@@ -44,6 +44,14 @@ impl<'a> FlickerTrackingApp<'a> {
             mesh_cache_size: std::num::NonZeroUsize::new(config.cache_size).unwrap(),
             max_cache_size: std::num::NonZeroUsize::new(config.cache_size).unwrap(),
             enable_prefetch: config.prefetch,
+            // Section 9 F4 flipped terrain on by default; this instrument counts how
+            // often a tile's *texture* changes, and relief would add mesh rebuilds and a
+            // different visible set to a measurement whose committed numbers were taken
+            // on the flat globe. Stated rather than inherited.
+            terrain: cesium_engine::globe::tiles::config::TerrainConfig {
+                enabled: false,
+                ..cesium_engine::globe::tiles::config::TerrainConfig::default()
+            },
             ..cesium_engine::globe::tiles::config::TileEngineConfig::default()
         };
 
