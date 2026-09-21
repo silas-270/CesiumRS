@@ -327,6 +327,14 @@ impl TileSystem {
         }
 
         for id in missing_meshes {
+            // Skip tiles whose mesh build is already in flight — `request_mesh`
+            // deduplicates on `is_requested`, but `HeightPatch::sample` (361 bilinear
+            // LRU lookups at mesh_segments=16) ran *before* that guard every frame,
+            // burning hundreds of ms per burst for tiles that didn't need re-sampling.
+            if self.mesh_worker.is_requested(id) {
+                continue;
+            }
+
             let segments = self.config.mesh_segments;
             let build = match self.height_manager.as_mut() {
                 None => MeshBuild::Flat,
