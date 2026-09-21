@@ -5,9 +5,8 @@ mod tests {
     use cesium_engine::render::wgpu_state::WgpuState;
     use std::time::Instant;
 
-    #[test]
-    fn test_tracking_flight_orbit_terrain_render() {
-        let handle = std::thread::spawn(|| {
+    fn run_orbit_benchmark(mode_name: &'static str, terrain_enabled: bool, base_url: &'static str) {
+        let handle = std::thread::spawn(move || {
             pollster::block_on(async {
                 let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
                     std::sync::Arc::new(std::sync::Mutex::new(0.05)), // 5% progress on STR-FRA (near climb)
@@ -25,8 +24,8 @@ mod tests {
                 flight_app.reset_viewport = true;
 
                 let mut config = TileEngineConfig::default();
-                config.base_imagery_url = SATELLITE_IMAGERY_URL.to_string();
-                config.terrain.enabled = true;
+                config.base_imagery_url = base_url.to_string();
+                config.terrain.enabled = terrain_enabled;
 
                 let mut state = WgpuState::new(
                     None,
@@ -36,22 +35,25 @@ mod tests {
                 )
                 .await;
 
-                println!("--- Warming up state with actual renders ---");
-                for frame in 0..10 {
+                println!("=== Benchmark: {} (terrain={}) ===", mode_name, terrain_enabled);
+                for _ in 0..10 {
                     #[cfg(feature = "debug_panel")]
                     let res = state.render(None, false, |_, _| {});
                     #[cfg(not(feature = "debug_panel"))]
                     let res = state.render(None, false);
-                    assert!(res.is_ok(), "Render failed: {:?}", res);
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    assert!(res.is_ok(), "Warmup render failed: {:?}", res);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
 
-                println!("--- Simulating camera orbit around plane with full renders ---");
-                let mut total_time_ms = 0.0;
-                for frame in 0..60 {
+                let mut frame_times: Vec<f64> = Vec::with_capacity(120);
+                let mut peak_frame_idx = 0;
+                let mut peak_frame_time = 0.0;
+                let mut peak_breakdown = (0.0, 0.0, 0.0, 0.0, 0.0);
+
+                for frame in 0..120 {
                     let start = Instant::now();
-                    
-                    // Orbit camera around plane
+
+                    // Continuous orbit around the aircraft
                     state.camera.orbit_anchor(glam::Quat::from_axis_angle(glam::Vec3::Y, 0.05));
 
                     #[cfg(feature = "debug_panel")]
@@ -59,30 +61,64 @@ mod tests {
                     #[cfg(not(feature = "debug_panel"))]
                     let res = state.render(None, false);
                     assert!(res.is_ok(), "Render failed: {:?}", res);
-                    
-                    let dt = start.elapsed().as_secs_f64() * 1000.0;
-                    total_time_ms += dt;
 
-                    let (requested, missing) = state.get_fetch_stats();
-                    println!(
-                        "Frame {:02}: render_total={:.2}ms | update_logic={:.2}ms quadtree={:.2}ms march={:.2}ms streaming={:.2}ms draw={:.2}ms | req={} miss={} dstate={} | alt_agl={:.2}m",
-                        frame,
-                        dt,
-                        state.last_timings.update_logic_us / 1000.0,
-                        state.last_subsystem_timings.quadtree_us / 1000.0,
-                        state.last_subsystem_timings.terrain_horizon_us / 1000.0,
-                        state.last_subsystem_timings.tile_streaming_us / 1000.0,
-                        state.last_subsystem_timings.terrain_draw_us / 1000.0,
-                        requested,
-                        missing,
-                        state.display_state.len(),
-                        state.camera.altitude_agl() * 1_000_000.0,
-                    );
+                    let dt = start.elapsed().as_secs_f64() * 1000.0;
+                    frame_times.push(dt);
+
+                    if dt > peak_frame_time {
+                        peak_frame_time = dt;
+                        peak_frame_idx = frame;
+                        peak_breakdown = (
+                            state.last_timings.update_logic_us / 1000.0,
+                            state.last_subsystem_timings.quadtree_us / 1000.0,
+                            state.last_subsystem_timings.terrain_horizon_us / 1000.0,
+                            state.last_subsystem_timings.tile_streaming_us / 1000.0,
+                            state.last_subsystem_timings.terrain_draw_us / 1000.0,
+                        );
+                    }
+
                     std::thread::sleep(std::time::Duration::from_millis(16));
                 }
-                println!("Average frame render time: {:.2}ms ({:.1} FPS)", total_time_ms / 60.0, 1000.0 / (total_time_ms / 60.0));
+
+                let mut sorted = frame_times.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+                let mean: f64 = frame_times.iter().sum::<f64>() / frame_times.len() as f64;
+                let p50 = sorted[sorted.len() * 50 / 100];
+                let p90 = sorted[sorted.len() * 90 / 100];
+                let p95 = sorted[sorted.len() * 95 / 100];
+                let p99 = sorted[sorted.len() * 99 / 100];
+                let min = sorted[0];
+                let max = sorted[sorted.len() - 1];
+
+                println!("--- [{}] 120-frame Orbit Latency Distribution ---", mode_name);
+                println!("  Min Frame Time:  {:.2} ms ({:.1} FPS)", min, 1000.0 / min);
+                println!("  Avg Frame Time:  {:.2} ms ({:.1} FPS)", mean, 1000.0 / mean);
+                println!("  p50 (Median):    {:.2} ms ({:.1} FPS)", p50, 1000.0 / p50);
+                println!("  p90:             {:.2} ms ({:.1} FPS)", p90, 1000.0 / p90);
+                println!("  p95:             {:.2} ms ({:.1} FPS)", p95, 1000.0 / p95);
+                println!("  p99:             {:.2} ms ({:.1} FPS)", p99, 1000.0 / p99);
+                println!("  PEAK Max Time:   {:.2} ms ({:.1} FPS) at frame {:02}", max, 1000.0 / max, peak_frame_idx);
+                println!(
+                    "    Peak Breakdown: update_logic={:.2}ms (quadtree={:.2}ms, march={:.2}ms, streaming={:.2}ms) | draw={:.2}ms",
+                    peak_breakdown.0, peak_breakdown.1, peak_breakdown.2, peak_breakdown.3, peak_breakdown.4
+                );
             });
         });
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn test_tracking_flight_orbit_terrain_3d_render() {
+        run_orbit_benchmark("Satellite + Terrain 3D", true, SATELLITE_IMAGERY_URL);
+    }
+
+    #[test]
+    fn test_tracking_flight_orbit_standard_2d_render() {
+        run_orbit_benchmark(
+            "Standard Carto 2D",
+            false,
+            cesium_engine::globe::tiles::config::STANDARD_IMAGERY_URL,
+        );
     }
 }
