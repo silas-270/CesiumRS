@@ -680,17 +680,11 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
 
         let now = Instant::now();
         let dt = if let Some(last) = self.last_frame_time {
-            let elapsed = now.duration_since(last);
-            let target = std::time::Duration::from_secs_f32(1.0 / 60.0);
-            if elapsed < target {
-                let _span = crate::core::trace::ScopedTrace::new("cesium.frame.throttle_sleep");
-                std::thread::sleep(target - elapsed);
-            }
-            Instant::now().duration_since(last).as_secs_f32()
+            now.duration_since(last).as_secs_f32().clamp(0.0001, 0.1)
         } else {
             0.016
         };
-        self.last_frame_time = Some(Instant::now());
+        self.last_frame_time = Some(now);
 
         if let Some(state) = &mut self.wgpu_state {
             #[cfg(feature = "debug_panel")]
