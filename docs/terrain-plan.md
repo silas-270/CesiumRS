@@ -1142,6 +1142,189 @@ commit as each other rather than in this one.
 
 ---
 
+## 7d. The terrain step — the one shape D3 was specified for, and it does not fire
+
+§3.3's worked example is a camera at eye height with a wall in front of it and *flat ground
+behind the wall*. §7b's own statement of where D3 should pay is "a valley floor, a plain
+behind a range, water, **a plateau**". §7c then measured ten poses, all Alpine or Himalayan
+— and §7b had already explained why those cannot show it: "in the Alps the ground behind a
+ridge is more ridges". **The shape the feature was specified for was never measured.**
+
+`testing::terrain::test_terrain_step` measures it, at two places that have it:
+
+| pose | eye | step | behind it |
+|---|--:|---|---|
+| `reutlingen_albtrauf` | 377.7 m, 2 m over the ground, bearing 135° | the Albtrauf at 8 km, **+2.743°** | 40 km of Alb plateau, none of it above +0.9° past 20 km |
+| `stuttgart_kessel` | 252.0 m, 2 m over the ground, bearing 180° | the basin rim at 2 km, **+5.222°** | the Filder plateau and the Alb, nothing above +0.6° past 12 km |
+
+### The answer, in tile counts
+
+| pose | D1+D2 | +D3 | beyond the step | scored | **hidden by the DEM** | **D3 removes** |
+|---|--:|--:|--:|--:|--:|--:|
+| `reutlingen_albtrauf` | 62 | 62 | 21 | 10 | **9** | **0** |
+| `stuttgart_kessel` | 80 | 79 | 30 | 21 | **19** | **0** |
+
+`rendering::terrain_step_capture` renders the same two poses through the real engine and
+reads **62 → 62** and **71 → 71**; the Reutlingen pair is byte-identical, `cmp`, over two
+runs. The one tile D3 removes at Stuttgart is not one of the nineteen — it is a coarse
+far-field leaf behind the terrain-aware *curvature* horizon, which is the same thing §7b's
+flat-world control column and §7c's level histogram already said about where D3's culls
+come from.
+
+"Scored" is the subset the DEM oracle answers on: a 17 × 17 grid over the tile's own
+rectangle, each sample marched to against the real terrarium tiles at z14, the tile called
+hidden only when **every** sample is blocked. Tiles reaching past the oracle's 60 km fan —
+which is past both poses' `√(2Rh)` horizon — are counted and reported, never folded into
+either column.
+
+### It is not the inherited margin, and that is worth measuring rather than assuming
+
+The obvious suspect is D1's inheritance: a plateau tile with no height data of its own gets
+§7's per-level margin — 6 000 m at z10, 1 500 m at z12 — and a box 6 km tall is not hidden
+behind a 400 m step. And it would be self-stabilising if it were true, because a culled node
+requests nothing (§9 F2b), so no data would ever arrive to tighten it.
+
+**It is not what happens.** The harness runs both fetch policies — `Fill::Visible`, which
+requests heights for the visible set and its ancestor chain exactly as `TileSystem::update`
+does, and `Fill::Everything`, which is what `d3_on_real_terrain` does — and traces every
+frame:
+
+| frame | visible | height tiles | **visible leaves on an inherited interval** |
+|--:|--:|--:|--:|
+| 1 | 88 | 0 | 88 |
+| 2 | 62 | 121 | **0** |
+| 3–8 | 62 | 121 | **0** |
+
+The loop closes in **one frame**. A tile that is not culled is in `visible_tiles`, so its
+heights are requested, so its interval tightens — and the interval it tightens to is
+*tight*: across all 28 hidden-and-kept tiles at the two poses, the box top sits between
+**−0 m and +23 m** of the tile's true maximum off the DEM. The occludee side of D3's
+comparison is as good as it can get.
+
+### What actually stops it, in degrees
+
+The stage's first test is `theta_max >= ridge_ceiling`, and that is where every one of the
+28 tiles settles:
+
+| pose | real ridge | **the march's ridge ceiling** | what the kept tiles need |
+|---|--:|--:|---|
+| `reutlingen_albtrauf` | +3.934° | **+1.059°** | +1.372° … +3.908° |
+| `stuttgart_kessel` | +6.137° | **+1.779°** | +0.616° … +5.839° |
+
+The occluder never builds the step. And the loss is **not** in the node floors — those are
+nearly exact:
+
+* Reutlingen: the drawn leaf over the crest is z13, 3.2 km wide, crest 766 m, and its best
+  `floor_grid` sub-cell reads **740 m** — 26 m of ridge lost, worth +2.558° against the
+  true +2.743°.
+* Stuttgart: z15, 0.8 km wide, crest 485 m, best sub-cell **482 m** — **3 m** lost, +5.249°
+  against +5.322°.
+
+So D1's occluder holds a 2.5°/5.2° wall, and by the time it has been stamped into the
+24 × 48 polar grid the wall is +0.056° / −1.202° at the step's own range. **The cell is
+where the ridge dies**, and it dies for the reason `RANGE_RINGS`' own doc comment gives one
+axis over: a cell's floor is a minimum over its whole footprint, and on an escarpment every
+cell that contains the crest also contains the slope under it.
+
+### What closing it would cost, measured rather than estimated
+
+`terrain_step_occluder_resolution_probe` prices the only lever there is. It recomputes
+exactly what `TerrainHorizon::finish` computes — the running maximum over rings of a wall
+at the cell's far edge standing at the cell's minimum — but reads the minimum from the
+**DEM directly**, so what it reports is the ceiling of the *whole approach* at that
+resolution rather than of one implementation of it, and it needs no engine change to run.
+
+| sectors × rings | cell at 2 km | peak ridge | …with `RIDGE_SAFETY_M = 0` | real |
+|---|--:|--:|--:|--:|
+| **24 × 48** (shipped) | 524 m | 1.221° | 1.774° | 3.934° |
+| 96 × 96 | 131 m | 1.767° | 2.974° | 3.934° |
+| 384 × 384 | 33 m | 2.588° | 3.814° | 3.934° |
+
+…and at Stuttgart:
+
+| sectors × rings | cell at 2 km | peak ridge | …with `RIDGE_SAFETY_M = 0` | real |
+|---|--:|--:|--:|--:|
+| **24 × 48** (shipped) | 524 m | 2.547° | 4.780° | 6.137° |
+| 96 × 96 | 131 m | 3.020° | 5.600° | 6.137° |
+| 384 × 384 | 33 m | 3.219° | 6.072° | 6.137° |
+
+Three prices, in the order they are worth paying:
+
+1. **`RIDGE_SAFETY_M` is a flat 100 m and it is the single largest loss at short range.**
+   Its own doc comment says the error it covers is bounded by the curvature drop rate
+   `s/R`, "under 10 m at 250 km" — so at 2 km the quantity being bounded is under a
+   *millimetre* and the constant is 100 m. It costs **0.55° at Reutlingen and 2.23° at
+   Stuttgart**, on the shipped grid, for nothing. Making it range-proportional at the same
+   order of headroom is one multiply in `finish` and **costs no frame time at all**. On the
+   measured table it alone takes Stuttgart's ceiling from 2.547° to 4.780°, which puts
+   **18 of the 19** hidden tiles past the stage's first test, and Reutlingen's from 1.221°
+   to 1.774°, which puts **3 of 9** past it. That test is `theta_max >= ridge_ceiling` and
+   it is *necessary*, not sufficient — the cull still needs the ridge to hold up in the
+   candidate's own sector span, which the ceiling does not promise, so these counts are an
+   upper bound on the tiles recovered rather than a prediction of them. It is a
+   soundness-relevant constant, so the price is not the
+   multiply — it is re-running `d3_never_hides_a_visible_vertex` and
+   `terrain_sweep_has_no_false_negatives`, and `EXTENT_SLACK`'s history (131 false
+   negatives without it) is the reason that is not a formality.
+2. **The grid, at 96 × 96.** Eight times the cells: `finish` goes from 48 × 24 = 1 152
+   elevation angles to 96 × 96 = 9 216, i.e. **35 µs → ~280 µs**, and each node's stamp
+   writes into ~4× as many sectors, so the march goes from 170–250 µs to roughly
+   **500–650 µs a frame**. The two grids grow 13.8 kB → 110 kB, which is nothing. With the
+   safety constant also fixed this reaches 2.974° / 5.600°, putting **7 of 9** and **18 of
+   19** past that same first test. `QuadtreeNode` does not change; neither does the flat arm, which never calls
+   `refresh_terrain_horizon` at all.
+3. **384 × 384 closes it completely and is not affordable.** 128× the cells puts `finish`
+   alone in the **milliseconds**, for a stage whose entire measured benefit elsewhere is one
+   to two tiles.
+
+A fourth lever, **not** on this list: a finer *occludee* bound. §7c built it, measured it
+and threw it away, and these numbers say why it would not have helped here either — the box
+tops are within 23 m of the truth, so there is nothing left to tighten on that side.
+
+### What this changes about §7b's verdict
+
+§7b's "D3 removes almost nothing on real terrain" gave two reasons: relief does not stop at
+the ridge, and the far field is coarse. §7c corrected the second (it is fog, not the imagery
+LOD; and E1b has since changed that again). This section adds the one that turns out to
+dominate on the shape D3 was specified for, where the first reason does **not** apply:
+
+> **The occluder resolution is the binding constraint, not the occludee's.** A 24 × 48
+> polar grid cannot represent an escarpment at all — the cell that holds the crest holds
+> the foot of the slope too, and the minimum wins. D1 hands the march a wall accurate to
+> 3 m; the grid throws 2.7°–6.4° of it away before any candidate is tested.
+
+So the honest statement of D3 today is narrower than §7c's: it removes tiles behind the
+*terrain-aware curvature horizon*, and it does not remove tiles behind a terrain step,
+which is what it was built for. The two poses here are the measurement that says so, and
+the resolution probe is the measurement that says what it would take.
+
+*(Measured 2026-09-21. **Nothing in the engine was changed** — this is `src/testing` and
+this section. The culling gate reads 32 passed, 0 failed, 1 ignored with no re-pin, and
+`cargo test -p cesium-engine --lib` is green.)*
+
+### Two pose traps, both caught, both worth recording
+
+§7c lost three poses to coordinates that were inside a mountain and wrote down the lesson.
+Two more of the same family turned up here, and neither is about coordinates:
+
+1. **`ViewParams::yaw_deg` is not a compass heading.** It is documented as one, and
+   `camera_transform` composes it as `Rz(yaw)` about the **nadir**-aligned view axis — local
+   *down*. A rotation of `+yaw` about `−up` is a rotation of `−yaw` about `+up`, so
+   `yaw_deg = 135` builds a camera looking along bearing **225°**. Every pose in
+   `test_terrain_occlusion::real_poses` uses 0° or 180°, where the sign cannot show. The
+   first Reutlingen run measured the Albvorland to the southwest and reported it as the Alb.
+   `terrain_step_pose_is_where_it_says_it_is` now measures the heading off the **built
+   camera** and fails if it disagrees with the profile's bearing by more than a degree.
+2. **`d3_on_real_terrain` stopped tracking the renderer when E1 landed.** `wgpu_state`
+   calls `set_terrain_lod` right after `set_frame_params`; that harness sets only the
+   latter, so `terrain_lod_factor` stays at its default and the near field refines deeper
+   than production — 72 tiles against the capture's 62 at `reutlingen_albtrauf`. The new
+   harness sets all three and lands on the capture **to the tile** (62 and 62). §7c's claim
+   that the counting harness "agrees with the capture to a tile" was true when written and
+   has not been true since §8 E1.
+
+---
+
 ## 8. Phase E — LOD and integration
 
 - **E1. A real geometric error.** `apply_lod` keeps its shape and its 20 % hysteresis; the

@@ -21,6 +21,8 @@ pub mod test_terrain_lod;
 #[cfg(test)]
 pub mod test_terrain_occlusion;
 #[cfg(test)]
+pub mod test_terrain_step;
+#[cfg(test)]
 pub mod test_terrain_parser;
 #[cfg(test)]
 pub mod test_terrain_visibility;
