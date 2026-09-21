@@ -481,6 +481,10 @@ impl<'a> WgpuState<'a> {
         qt.set_frame_params(2.0, self.tile_system.config.max_zoom, 0.0);
         self.quadtree_manager = qt;
         self.tile_cache.clear();
+        self.tile_system.mesh_worker.clear();
+        self.tile_system.texture_manager.set_budget_bytes(
+            self.tile_system.config.imagery_cache_budget_bytes(),
+        );
         self.display_state.clear();
         self.last_visible_set.clear();
     }
@@ -489,13 +493,10 @@ impl<'a> WgpuState<'a> {
         if self.tile_system.config.base_imagery_url == url {
             return;
         }
-        self.tile_system.config.base_imagery_url = url;
-        self.tile_system.texture_manager =
-            crate::globe::tiles::texture_manager::TileTextureManager::new(
-                &self.device,
-                &self.queue,
-                &self.tile_system.config,
-            );
+        self.tile_system.config.base_imagery_url = url.clone();
+        self.tile_system
+            .texture_manager
+            .set_base_url(url, self.tile_system.config.offline_mode);
         self.display_state.clear();
         self.last_visible_set.clear();
     }

@@ -60,9 +60,17 @@ impl Ord for PrioritizedRequest {
 }
 
 pub struct TileFetcher {
-    _runtime: Runtime,
+    runtime: Option<Runtime>,
     queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
     notify: Arc<Notify>,
+}
+
+impl Drop for TileFetcher {
+    fn drop(&mut self) {
+        if let Some(rt) = self.runtime.take() {
+            rt.shutdown_background();
+        }
+    }
 }
 
 impl TileFetcher {
@@ -102,7 +110,7 @@ impl TileFetcher {
         });
 
         Self {
-            _runtime: runtime,
+            runtime: Some(runtime),
             queue,
             notify,
         }

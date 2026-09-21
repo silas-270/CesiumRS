@@ -285,14 +285,13 @@ impl Camera {
         }
 
         if self.mode == CameraMode::Tracking {
-            let mut dist_to_plane = self.local_pos.length();
+            let dist_to_plane = self.local_pos.length();
             if dist_to_plane < 0.00002 {
                 if dist_to_plane > 1e-8 {
                     self.local_pos = (self.local_pos / dist_to_plane) * 0.00002;
                 } else {
                     self.local_pos = Vec3::new(0.0, 0.0, 0.00002);
                 }
-                dist_to_plane = 0.00002;
             }
 
             let (global_pos_dvec, _) = self.global_transform_f64();
@@ -312,15 +311,11 @@ impl Camera {
                 let new_global_pos_dvec = dir * dynamic_min_distance;
                 let local_pos_dvec =
                     self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
-                let new_local_dir = glam::Vec3::new(
+                self.local_pos = glam::Vec3::new(
                     local_pos_dvec.x as f32,
                     local_pos_dvec.y as f32,
                     local_pos_dvec.z as f32,
-                )
-                .normalize_or_zero();
-                if new_local_dir.length_squared() > 0.001 {
-                    self.local_pos = new_local_dir * dist_to_plane;
-                }
+                );
                 self.look_at_plane();
             }
             return;
@@ -500,7 +495,7 @@ impl Camera {
         let delta_pitch = dy * self.pitch_sensitivity * 0.2;
 
         let new_yaw = cur_yaw + delta_yaw;
-        let new_pitch = (cur_pitch + delta_pitch).clamp(-80.0_f32.to_radians(), 85.0_f32.to_radians());
+        let target_pitch = (cur_pitch + delta_pitch).clamp(-80.0_f32.to_radians(), 85.0_f32.to_radians());
 
         let test_pos = |p: f32, y: f32| -> Vec3 {
             Vec3::new(
@@ -524,17 +519,29 @@ impl Camera {
             d >= floor
         };
 
-        let candidate_both = test_pos(new_pitch, new_yaw);
+        let candidate_both = test_pos(target_pitch, new_yaw);
         if is_above_ground(candidate_both) {
             self.local_pos = candidate_both;
         } else {
-            // New pitch hits ground: try keeping previous pitch with new yaw
-            let candidate_yaw_only = test_pos(cur_pitch, new_yaw);
-            if is_above_ground(candidate_yaw_only) {
-                self.local_pos = candidate_yaw_only;
+            // Target pitch penetrates ground: find the minimum pitch for new_yaw that stays above ground.
+            let max_pitch = 85.0_f32.to_radians();
+            if is_above_ground(test_pos(max_pitch, new_yaw)) {
+                let mut low = target_pitch;
+                let mut high = max_pitch;
+                for _ in 0..8 {
+                    let mid = (low + high) * 0.5;
+                    if is_above_ground(test_pos(mid, new_yaw)) {
+                        high = mid;
+                    } else {
+                        low = mid;
+                    }
+                }
+                self.local_pos = test_pos(high, new_yaw);
             } else {
-                // Still allow yaw and let enforce_bounds handle surface clearance
-                self.local_pos = candidate_both;
+                let candidate_yaw_only = test_pos(cur_pitch, new_yaw);
+                if is_above_ground(candidate_yaw_only) {
+                    self.local_pos = candidate_yaw_only;
+                }
             }
         }
 

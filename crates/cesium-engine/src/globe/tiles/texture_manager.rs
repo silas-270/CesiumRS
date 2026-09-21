@@ -343,4 +343,30 @@ impl TileTextureManager {
         self.cache.clear();
         while self.rx.try_recv().is_ok() {}
     }
+
+    /// Changes the base imagery URL, resetting the cache and fetcher while keeping
+    /// the GPU bind_group_layout, sampler, and fallback_bind_group intact and compatible
+    /// with the compiled render pipelines.
+    pub fn set_base_url(&mut self, url: String, offline_mode: bool) {
+        self.clear();
+        self.bytes_per_tile = None;
+        self.texture_size = ObservedTextureSize::default();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.rx = rx;
+        self.fetcher = TileFetcher::new(tx, url, offline_mode);
+    }
+
+    /// Updates the imagery cache byte budget (e.g. when terrain is toggled) and
+    /// resizes the cache accordingly if the decoded tile size is known.
+    pub fn set_budget_bytes(&mut self, budget_bytes: usize) {
+        self.budget_bytes = budget_bytes;
+        if let Some(bpt) = self.bytes_per_tile {
+            let capacity = crate::globe::tiles::config::tile_cache_entries_for(
+                self.budget_bytes,
+                bpt,
+                self.max_entries,
+            );
+            self.cache.resize(capacity);
+        }
+    }
 }
