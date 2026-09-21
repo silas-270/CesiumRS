@@ -121,4 +121,107 @@ mod tests {
             cesium_engine::globe::tiles::config::STANDARD_IMAGERY_URL,
         );
     }
+
+    #[test]
+    fn test_tracking_mouse_orbit_circling_plane_str_fra() {
+        let handle = std::thread::spawn(move || {
+            pollster::block_on(async {
+                let progress_arc = std::sync::Arc::new(std::sync::Mutex::new(0.0)); // Ground at STR
+                let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
+                    progress_arc.clone(),
+                ));
+                flight_app.add_flight_path(
+                    "STR-FRA",
+                    9.2219, 48.6899, // STR
+                    8.5706, 50.0333, // FRA
+                    1_800_000,
+                    false,
+                    Vec::new(),
+                );
+                flight_app.view_mode = CameraMode::Tracking;
+                flight_app.last_view_mode = CameraMode::Free;
+                flight_app.reset_viewport = true;
+
+                let mut config = TileEngineConfig::default();
+                config.base_imagery_url = SATELLITE_IMAGERY_URL.to_string();
+                config.terrain.enabled = true;
+
+                let mut state = WgpuState::new(
+                    None,
+                    Some(winit::dpi::PhysicalSize::new(1280, 720)),
+                    config,
+                    Some(flight_app),
+                )
+                .await;
+
+                // Warm up
+                for _ in 0..5 {
+                    #[cfg(feature = "debug_panel")]
+                    let _ = state.render(None, false, |_, _| {});
+                    #[cfg(not(feature = "debug_panel"))]
+                    let _ = state.render(None, false);
+                }
+
+                let mut prev_pos = state.camera.local_pos;
+
+                // 1. Circle around plane horizontally 360 degrees
+                for step in 0..36 {
+                    state.camera.orbit_mouse(20.0, 0.0);
+
+                    #[cfg(feature = "debug_panel")]
+                    let res = state.render(None, false, |_, _| {});
+                    #[cfg(not(feature = "debug_panel"))]
+                    let res = state.render(None, false);
+                    assert!(res.is_ok(), "Render failed during horizontal orbit: {:?}", res);
+
+                    let cur_pos = state.camera.local_pos;
+                    assert!(
+                        (cur_pos - prev_pos).length() > 1e-6,
+                        "Camera locked! Step {}: pos remained {:?}",
+                        step, cur_pos
+                    );
+                    assert!(!cur_pos.x.is_nan() && !cur_pos.y.is_nan() && !cur_pos.z.is_nan());
+                    prev_pos = cur_pos;
+                }
+
+                // 2. Pitch up (looking down at plane)
+                for _ in 0..10 {
+                    state.camera.orbit_mouse(0.0, 15.0);
+                    #[cfg(feature = "debug_panel")]
+                    let _ = state.render(None, false, |_, _| {});
+                    #[cfg(not(feature = "debug_panel"))]
+                    let _ = state.render(None, false);
+                }
+                assert!(state.camera.local_pos.y > 0.0, "Camera should be above plane when pitched up");
+
+                // 3. Pitch down towards ground: should not lock or go below terrain clearance
+                for _ in 0..30 {
+                    state.camera.orbit_mouse(0.0, -20.0);
+                    #[cfg(feature = "debug_panel")]
+                    let _ = state.render(None, false, |_, _| {});
+                    #[cfg(not(feature = "debug_panel"))]
+                    let _ = state.render(None, false);
+                }
+
+                // Camera should still be able to orbit horizontally even when down near ground!
+                let ground_pos = state.camera.local_pos;
+                state.camera.orbit_mouse(25.0, 0.0);
+                assert!(
+                    (state.camera.local_pos - ground_pos).length() > 1e-6,
+                    "Camera must not lock when near ground!"
+                );
+
+                // 4. Capture screenshot of the aircraft orbiting at STR on runway
+                let capture_file = "tracking_orbit_str_fra.png";
+                #[cfg(feature = "debug_panel")]
+                let cap_res = state.render(Some(capture_file), false, |_, _| {});
+                #[cfg(not(feature = "debug_panel"))]
+                let cap_res = state.render(Some(capture_file), false);
+                assert!(cap_res.is_ok(), "Capture render failed: {:?}", cap_res);
+                assert!(std::path::Path::new(capture_file).exists(), "Capture file not found!");
+                let _ = std::fs::remove_file(capture_file);
+            });
+        });
+        handle.join().unwrap();
+    }
 }

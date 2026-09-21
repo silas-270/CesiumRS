@@ -176,7 +176,7 @@ impl TileTextureManager {
     }
 
     pub fn request_tile(&mut self, id: TileId, priority: TilePriority) {
-        if self.cache.get_state(&id).is_some() {
+        if self.cache.peek_state(&id).is_some() {
             return;
         }
 
@@ -197,14 +197,8 @@ impl TileTextureManager {
         id: TileId,
         result: Result<TileImage, String>,
     ) {
-        // Check if we still care about this tile (it hasn't been evicted from LRU)
-        let is_still_needed = matches!(
-            self.cache.get_state(&id),
-            Some(crate::globe::tiles::tile_cache::TileState::Fetching)
-        );
-
-        if !is_still_needed {
-            return; // Drop the result, we don't need it anymore
+        if let Some(crate::globe::tiles::tile_cache::TileState::Ready(_)) = self.cache.peek_state(&id) {
+            return; // Already ready
         }
 
         match result {

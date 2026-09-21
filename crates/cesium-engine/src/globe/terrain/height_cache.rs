@@ -126,7 +126,7 @@ impl HeightTileManager {
     /// prefetched imagery.
     pub fn request_tile(&mut self, id: TileId, priority: TilePriority) {
         let src = self.source_tile_for(id);
-        if self.cache.get_state(&src).is_some() {
+        if self.cache.peek_state(&src).is_some() {
             return;
         }
 
@@ -151,10 +151,7 @@ impl HeightTileManager {
     /// most a handful of times per frame.
     pub fn update(&mut self) {
         while let Ok((id, result)) = self.rx.try_recv() {
-            // Same guard as the texture manager's: if the entry was evicted while the
-            // fetch was in flight, the result is stale and re-inserting it would
-            // resurrect a tile nothing asked for.
-            if !matches!(self.cache.get_state(&id), Some(TileState::Fetching)) {
+            if let Some(TileState::Ready(_)) = self.cache.peek_state(&id) {
                 continue;
             }
 

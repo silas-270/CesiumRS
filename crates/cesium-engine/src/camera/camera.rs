@@ -263,16 +263,67 @@ impl Camera {
         self.enforce_bounds();
     }
 
-    fn enforce_bounds(&mut self) {
+    pub fn look_at_plane(&mut self) {
+        let forward = -self.local_pos.normalize_or_zero();
+        if forward.length_squared() > 0.001 {
+            let mut up = Vec3::Y;
+            if forward.dot(up).abs() > 0.95 {
+                up = Vec3::Z;
+            }
+            let right = forward.cross(up).normalize_or_zero();
+            if right.length_squared() > 0.001 {
+                let actual_up = right.cross(forward).normalize_or_zero();
+                let rot_mat = glam::Mat3::from_cols(right, actual_up, -forward);
+                self.local_ori = Quat::from_mat3(&rot_mat);
+            }
+        }
+    }
+
+    pub fn enforce_bounds(&mut self) {
+        if self.mode == CameraMode::Cockpit {
+            return;
+        }
+
         if self.mode == CameraMode::Tracking {
-            let dist_to_plane = self.local_pos.length();
+            let mut dist_to_plane = self.local_pos.length();
             if dist_to_plane < 0.00002 {
                 if dist_to_plane > 1e-8 {
                     self.local_pos = (self.local_pos / dist_to_plane) * 0.00002;
                 } else {
                     self.local_pos = Vec3::new(0.0, 0.0, 0.00002);
                 }
+                dist_to_plane = 0.00002;
             }
+
+            let (global_pos_dvec, _) = self.global_transform_f64();
+            let dist = global_pos_dvec.length();
+            let dir = global_pos_dvec.normalize_or_zero();
+            let t = 1.0
+                / (dir.x * dir.x * INV_A2_F64
+                    + dir.y * dir.y * INV_B2_F64
+                    + dir.z * dir.z * INV_A2_F64)
+                    .sqrt();
+            let dynamic_min_distance = match self.terrain_collision_floor(t, dist) {
+                Some(floor) => floor,
+                None => t + 0.000002,
+            };
+
+            if dist < dynamic_min_distance {
+                let new_global_pos_dvec = dir * dynamic_min_distance;
+                let local_pos_dvec =
+                    self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
+                let new_local_dir = glam::Vec3::new(
+                    local_pos_dvec.x as f32,
+                    local_pos_dvec.y as f32,
+                    local_pos_dvec.z as f32,
+                )
+                .normalize_or_zero();
+                if new_local_dir.length_squared() > 0.001 {
+                    self.local_pos = new_local_dir * dist_to_plane;
+                }
+                self.look_at_plane();
+            }
+            return;
         }
 
         let (global_pos_dvec, _) = self.global_transform_f64();
@@ -284,12 +335,6 @@ impl Camera {
                 + dir.y * dir.y * INV_B2_F64
                 + dir.z * dir.z * INV_A2_F64)
                 .sqrt();
-        // Phase E3.3 (`docs/terrain-plan.md` §8): the floor is the ground when there is
-        // ground to stand on and the camera is low enough for the sample to be worth
-        // trusting, and the ellipsoid otherwise. `terrain_collision_floor` returns `None`
-        // whenever `ground_height` is `None`, which with terrain off is every frame — so
-        // the flat path evaluates the same `t + 0.000002` it always did, unchanged and
-        // unreachable-from.
         let dynamic_min_distance = match self.terrain_collision_floor(t, dist) {
             Some(floor) => floor,
             None => t + 0.000002,
@@ -396,6 +441,11 @@ impl Camera {
         self.rotate_local(roll_quat);
     }
 
+    pub fn set_local_pos(&mut self, pos: Vec3) {
+        self.local_pos = pos;
+        self.enforce_bounds();
+    }
+
     pub fn zoom(&mut self, delta: f32) {
         if delta == 0.0 {
             return;
@@ -406,15 +456,24 @@ impl Camera {
             return;
         }
 
-        let speed = match self.mode {
-            CameraMode::Tracking => {
-                let dist_to_plane = self.local_pos.length();
-                dist_to_plane.max(0.00002) // 20 meters threshold
-            }
-            _ => {
-                let altitude = self.altitude();
-                altitude.max(0.000002) // 2 meters threshold
-            }
+        if self.mode == CameraMode::Tracking {
+            let mut dist = self.local_pos.length();
+            dist *= (1.0 - delta * 0.1).clamp(0.2, 5.0);
+            dist = dist.clamp(0.00002, 0.020); // 20m to 20km
+            let dir = self.local_pos.normalize_or_zero();
+            self.local_pos = if dir.length_squared() > 0.001 {
+                dir * dist
+            } else {
+                Vec3::new(0.0, 0.0, dist)
+            };
+            self.enforce_bounds();
+            self.look_at_plane();
+            return;
+        }
+
+        let speed = {
+            let altitude = self.altitude();
+            altitude.max(0.000002) // 2 meters threshold
         };
         let move_distance = speed * 0.15 * delta;
 
@@ -428,59 +487,59 @@ impl Camera {
     }
 
     pub fn orbit_mouse(&mut self, dx: f32, dy: f32) {
-        let yaw = -dx * self.pitch_sensitivity * 0.2;
-        let pitch = dy * self.pitch_sensitivity * 0.2;
+        if self.mode != CameraMode::Tracking {
+            return;
+        }
 
-        let right = Vec3::Y.cross(-self.local_pos).normalize_or_zero();
-        if right.length_squared() > 0.001 {
-            let rot_yaw = Quat::from_axis_angle(Vec3::Y, yaw);
-            let rot_pitch = Quat::from_axis_angle(right, pitch);
+        let dist = self.local_pos.length().max(0.00002);
+        // Pitch: angle from XZ plane towards +Y (up)
+        let cur_pitch = (self.local_pos.y / dist).clamp(-0.999, 0.999).asin();
+        let cur_yaw = self.local_pos.x.atan2(self.local_pos.z);
 
-            let new_pos_both = (rot_yaw * rot_pitch) * self.local_pos;
-            let new_pos_yaw = rot_yaw * self.local_pos;
+        let delta_yaw = -dx * self.pitch_sensitivity * 0.2;
+        let delta_pitch = dy * self.pitch_sensitivity * 0.2;
 
-            // Helper to check if a local_pos is above the ground
-            let is_above_ground = |pos: Vec3| -> bool {
-                let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
-                let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
-                let dist = global_pos.length();
-                let dir = global_pos.normalize_or_zero();
-                let t = 1.0
-                    / (dir.x * dir.x * INV_A2_F64
-                        + dir.y * dir.y * INV_B2_F64
-                        + dir.z * dir.z * INV_A2_F64)
-                        .sqrt();
-                let floor = self.terrain_collision_floor(t, dist).unwrap_or(t + 0.000002);
-                dist >= floor
-            };
+        let new_yaw = cur_yaw + delta_yaw;
+        let new_pitch = (cur_pitch + delta_pitch).clamp(-80.0_f32.to_radians(), 85.0_f32.to_radians());
 
-            let dot_y_both = new_pos_both.normalize_or_zero().dot(Vec3::Y);
+        let test_pos = |p: f32, y: f32| -> Vec3 {
+            Vec3::new(
+                dist * p.cos() * y.sin(),
+                dist * p.sin(),
+                dist * p.cos() * y.cos(),
+            )
+        };
 
-            let final_pos = if dot_y_both.abs() < 0.99 && is_above_ground(new_pos_both) {
-                Some(new_pos_both)
-            } else if new_pos_yaw.normalize_or_zero().dot(Vec3::Y).abs() < 0.99
-                && is_above_ground(new_pos_yaw)
-            {
-                Some(new_pos_yaw)
+        let is_above_ground = |pos: Vec3| -> bool {
+            let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
+            let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
+            let d = global_pos.length();
+            let dir = global_pos.normalize_or_zero();
+            let t = 1.0
+                / (dir.x * dir.x * INV_A2_F64
+                    + dir.y * dir.y * INV_B2_F64
+                    + dir.z * dir.z * INV_A2_F64)
+                    .sqrt();
+            let floor = self.terrain_collision_floor(t, d).unwrap_or(t + 0.000002);
+            d >= floor
+        };
+
+        let candidate_both = test_pos(new_pitch, new_yaw);
+        if is_above_ground(candidate_both) {
+            self.local_pos = candidate_both;
+        } else {
+            // New pitch hits ground: try keeping previous pitch with new yaw
+            let candidate_yaw_only = test_pos(cur_pitch, new_yaw);
+            if is_above_ground(candidate_yaw_only) {
+                self.local_pos = candidate_yaw_only;
             } else {
-                None
-            };
-
-            if let Some(pos) = final_pos {
-                self.local_pos = pos;
-                self.enforce_bounds();
-
-                let forward = -self.local_pos.normalize_or_zero();
-                if forward.length_squared() > 0.1 {
-                    let actual_right = forward.cross(Vec3::Y).normalize_or_zero();
-                    if actual_right.length_squared() > 0.1 {
-                        let up = actual_right.cross(forward).normalize_or_zero();
-                        let rot_mat = glam::Mat3::from_cols(actual_right, up, -forward);
-                        self.local_ori = Quat::from_mat3(&rot_mat);
-                    }
-                }
+                // Still allow yaw and let enforce_bounds handle surface clearance
+                self.local_pos = candidate_both;
             }
         }
+
+        self.enforce_bounds();
+        self.look_at_plane();
     }
 
     pub fn look_around(&mut self, dx: f32, dy: f32) {

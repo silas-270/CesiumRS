@@ -298,7 +298,9 @@ impl TileSystem {
                             let max_x_y = (1 << id.z) - 1;
                             for n in neighbors {
                                 if n.x <= max_x_y && n.y <= max_x_y {
-                                    self.texture_manager.request_tile(n, TilePriority::Low);
+                                    if self.texture_manager.cache.peek_state(&n).is_none() {
+                                        self.texture_manager.request_tile(n, TilePriority::Low);
+                                    }
                                 }
                             }
                         }
@@ -351,37 +353,33 @@ impl TileSystem {
         }
 
         for (id, _, _) in visible_tiles {
-            self.texture_manager.request_tile(*id, TilePriority::High);
+            if self.texture_manager.cache.peek_state(id).is_none() {
+                self.texture_manager.request_tile(*id, TilePriority::High);
+            }
 
-            // Proactively fetch missing parent textures at low priority so they
-            // are available as fallbacks before the own texture arrives.
-            let mut curr = *id;
-            while let Some(p) = curr.parent() {
-                if self.texture_manager.cache.get_state(&p).is_none() {
+            // Proactively fetch immediate parent texture at low priority so it
+            // is available as a fallback before the own texture arrives.
+            if let Some(p) = id.parent() {
+                if self.texture_manager.cache.peek_state(&p).is_none() {
                     self.texture_manager.request_tile(p, TilePriority::Low);
                 }
-                curr = p;
             }
         }
 
         self.texture_manager.update(device, queue);
     }
 
-    /// Queues `id`'s height tile and its whole ancestor chain, if they are not known.
-    ///
-    /// The tile itself goes in at `High`: a missing texture is a blur, a missing height
-    /// tile is the wrong shape. The ancestor chain follows at `Low` for the same reason
-    /// imagery prefetches it — and more so here, because past z15 the ancestor is not a
-    /// fallback, it is the only data that will ever exist (`docs/terrain-plan.md` §2).
+    /// Queues `id`'s height tile and its immediate parent fallback, if they are not known.
     fn request_height_chain(heights: &mut HeightTileManager, id: TileId) {
-        heights.request_tile(id, TilePriority::High);
+        let src = heights.source_tile_for(id);
+        if heights.cache.peek_state(&src).is_none() {
+            heights.request_tile(src, TilePriority::High);
+        }
 
-        let mut curr = heights.source_tile_for(id);
-        while let Some(p) = curr.parent() {
-            if heights.cache.get_state(&p).is_none() {
+        if let Some(p) = src.parent() {
+            if heights.cache.peek_state(&p).is_none() {
                 heights.request_tile(p, TilePriority::Low);
             }
-            curr = p;
         }
     }
 
