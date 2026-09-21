@@ -160,8 +160,9 @@ impl<'a> App<'a> {
                 ui.horizontal(|ui| {
                     ui.label("Map Style:");
                     let current_url = &state.tile_system.config.base_imagery_url;
-                    let is_sat = current_url == crate::globe::tiles::config::SATELLITE_IMAGERY_URL;
-                    let mut selected_sat = is_sat;
+                    let is_sat_terrain = current_url == crate::globe::tiles::config::SATELLITE_IMAGERY_URL
+                        && state.tile_system.config.terrain.enabled;
+                    let mut selected_sat = is_sat_terrain;
                     if ui.radio_value(&mut selected_sat, false, "Standard (Carto Dark)").changed() {
                         state.tile_system.config.base_imagery_url =
                             crate::globe::tiles::config::STANDARD_IMAGERY_URL.to_string();
@@ -172,13 +173,18 @@ impl<'a> App<'a> {
                                 &state.tile_system.config,
                             );
                     }
-                    if ui.radio_value(&mut selected_sat, true, "Satellite (Esri)").changed() {
+                    if ui.radio_value(&mut selected_sat, true, "Satellite + Terrain (Esri)").changed() {
                         state.tile_system.config.base_imagery_url =
                             crate::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string();
                         state.tile_system.texture_manager =
                             crate::globe::tiles::texture_manager::TileTextureManager::new(
                                 &state.device,
                                 &state.queue,
+                                &state.tile_system.config,
+                            );
+                        state.tile_system.config.terrain.enabled = true;
+                        state.tile_system.height_manager =
+                            crate::globe::tiles::system::TileSystem::build_height_manager(
                                 &state.tile_system.config,
                             );
                     }

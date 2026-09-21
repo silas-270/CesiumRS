@@ -121,6 +121,38 @@ materials authored white, and every material in the present GLB is 0.02–0.22. 
 kept because it is the right mechanism if the model is replaced with one using white
 placeholders, which is what it was written for.
 
+Two more effects sit on top of that base model:
+
+- **Clearcoat Fresnel.** `rim` is no longer a hand-picked `pow(1 - N·V, 3)` edge falloff; it
+  is a Schlick Fresnel reflectance for a dielectric clearcoat, `F0 + (1 - F0) * (1 - N·V)^5`
+  with `F0 = 0.04` — the textbook reflectance of polyurethane gloss paint at normal
+  incidence, which is what every aircraft surface here is modelled as wearing. The same term
+  (evaluated at the half-vector instead, `F0 + (1 - F0) * (1 - V·H)^5`, normalised by `F0` so
+  it equals 1 at normal incidence and only grows from there) now also scales the specular
+  catch-light, so the highlight itself brightens toward grazing angles the way a clearcoat's
+  does, rather than staying a fixed-intensity Blinn-Phong spot. The gloss exponent went from
+  32 to 64 in the same change, for a tighter, sleeker glint instead of a soft blob. None of
+  this touches `push.rim_strength`'s meaning from the reader's point of view — it is still
+  the per-model dial for how much edge/grazing sheen a surface gets, and the cockpit still
+  keeps it at 0 for the reason above.
+- **Hemispherical ambient occlusion / ground bounce.** Ambient used to be perfectly
+  isotropic: a belly panel facing straight down at the ground received exactly as much
+  ambient as the top of the fuselage facing open sky — backwards, since the ground is
+  exactly the thing an ambient *sky* term should not count as a light source. `world_up =
+  normalize(push.camera_pos.xyz + in.view_pos)` — the fragment's own radial direction, a
+  fine stand-in for "up" at aircraft scale, unlike the sphere-vs-ellipsoid error that
+  matters for terrain (`ellipsoid_frame`, discussed under haze below) — feeds
+  `dot(normal, world_up)` to split ambient between a `ground_ratio` of 0.40 for
+  downward-facing surfaces and the full floor for upward-facing ones.
+  **This reuses `push.rim_strength` as the exterior/interior switch**:
+  `is_exterior = step(0.001, push.rim_strength)`, so the cockpit interior — which already
+  sets `rim_strength = 0.0` to keep the window posts from glowing — rides that same zero to
+  fall back to old uniform, direction-independent ambient, because an interior has no
+  "ground" a few centimetres away to bounce off; it has a floor lit by whatever comes
+  through the windows. That is a real coupling, not a coincidence: a future model that wants
+  a nonzero rim on an interior part, or a zero rim on an exterior one, silently gains or
+  loses ground-bounce shading along with it.
+
 ## The sky
 
 `sky_pipeline/mod.rs` owns both `sky.wgsl` and the pipeline that runs it — a full-screen
@@ -213,6 +245,58 @@ same `camera.sun_dir.w` input and, now, matching `toward_sun`/`toward_sun_terrai
 constants at each call site, so the horizon colour they compute cannot drift apart without
 the source itself drifting, which is visible in a diff. Both also carry the same
 `EARTH_RADIUS_MM` and the same altitude dimming.
+
+### Terrain lighting: the mesopic night curve and the daytime highlight roll-off
+
+The ambient/diffuse split in `fs_solid` (`globe_pipeline/shader.wgsl`) is keyed off
+`day_amount` / `night_amount` — `smoothstep(0.0, 0.10, sun_elevation)` and
+`smoothstep(-0.02, -0.22, sun_elevation)`, the identical six-degree `DAY_ELEVATION`
+crossing and dusk-ramp thresholds already documented under "The sun and the moon" — so the
+ground's day/night transition and the sky's reddening are pinned to the same moment by
+construction, not by two constants that happen to agree today.
+
+- **Ambient now depends on day/night, not only on depth.** It used to be
+  `ambient = mix(1.0, 0.8, altitude_scalar)` — full daylight and a clear night sky lit the
+  ground through the same 0.8–1.0 floor, depth (climb/cruise/descent) being the only thing
+  it heard from. `base_ambient` now mixes a `day_ambient` (`0.70` at cruise down to `0.58`
+  on the ground) against a `night_ambient` (`0.18` at cruise up to `0.26` on the ground) by
+  `night_amount`. Diffuse follows the same split: by day it caps at
+  `0.38 * mix(0.2, 1.0, altitude_scalar)` — effectively off at cruise (`≈0.076`) and full
+  on the ground, the existing "flatten toward ambient as the flight climbs" rule from
+  depth, just applied inside the terrain's own lighting model instead of overriding it from
+  outside — while by night it is a flat `0.08` regardless of altitude, because moonlight
+  is a much weaker direct source than sunlight and has no reason to track the flight's
+  depth the way the sun's diffuse term does. In full daylight the two floors sum to at most
+  `0.58 + 0.38 = 0.96`, always under 1 — headroom the highlight roll-off below depends on.
+  (The code's own comment claims a `~0.12` night-ambient floor at cruise; the constant it
+  sits next to is `0.18`. Read the constant, not the comment.)
+- **Daytime highlight roll-off.** Texture values above `0.75` have up to 45% of the excess
+  subtracted (`* 0.45 * day_amount`) before grading, so runway concrete and light-coloured
+  roofs — which would otherwise clip straight to white — keep some visible surface detail.
+  It rides `day_amount` rather than a flat constant, so it fades through the same twilight
+  window as everything else instead of snapping off at some elevation.
+- **Mesopic night curve.** Real night vision is rod-dominated: colour discrimination
+  collapses at low light and the eye reads mostly luminance, with what tint survives a cool
+  Purkinje-shifted blue rather than the daylight white point. `night_lum` — the luminance of
+  the texture *after* the highlight roll-off above — feeds
+  `photo_gate = smoothstep(0.04, 0.35, night_lum)`, which only opens for bright pixels.
+  Scaled by `night_amount * photo_gate`, two things ride that gate: a gamma push
+  (`pow(color, mix(1.0, 1.35, …))`) that darkens the tile, and a 65%-weighted blend toward
+  `luminance * vec3(0.75, 0.82, 0.95)` — grey tinted cold blue, not black. Gating on the
+  *texture's own brightness*, rather than on which basemap is configured, is what keeps this
+  model-agnostic: the default "Dark Matter" vector basemap (`STANDARD_IMAGERY_URL`) is
+  already near-black everywhere its roads aren't, so `night_lum` never clears 0.04,
+  `photo_gate` stays at 0, and the curve leaves it alone — which is the entire point, since
+  crushing an already-dark map toward monochrome would erase the roads it exists to keep
+  legible. Point the engine at photographic imagery (`SATELLITE_IMAGERY_URL`) instead and
+  the same code now has bright pixels to gate on, and the curve applies without any
+  per-basemap branch.
+- **The final `clamp` moved outside the colour-grading `if`.** It used to run only when
+  saturation/contrast/brightness were non-default, which was fine while nothing upstream
+  could push a channel out of `[0, 1]` on its own. The highlight roll-off and the mesopic
+  gamma/tint both can, independent of any user grading, so the clamp is now unconditional.
+  Skipping it would not fail loudly — it would produce an out-of-range colour that only
+  shows up as a wrong pixel later, with nothing near the actual cause.
 
 `globe_pipeline/shader.wgsl`'s side of the seam — the haze near the terrain's visual
 horizon — is one term, `aerial_blend`, and there is a long history of it being two. The
@@ -384,6 +468,21 @@ cargo test --release --lib haze_capture -- --ignored --nocapture
 It shoots a nadir ladder from 10km out to 30 000km (`Camera::max_distance`, as far as the
 user can ever zoom) plus grazing looks at three altitudes. The map must stay legible in
 every frame of the nadir ladder; the grazing frames are the ones that must keep their haze.
+
+`light_audit_sweep` and `haze_capture` both vary progress and camera/altitude, but neither
+ever changes which basemap is loaded — every frame renders the default "Dark Matter" vector
+tiles. That was fine until the terrain shader grew a mesopic night curve gated on the
+sampled texture's own brightness (`photo_gate`, see "The sky" above): a bug in that gate
+would be invisible to both sweeps, since Dark Matter's near-black pixels never open it.
+`light_audit_dark_vs_satellite_sweep` closes that gap by adding a second dimension — the
+imagery source — instead of another altitude or camera angle: it runs the same six
+progress values (`0.0, 0.2, … 1.0`, spanning the full depth arc, taxi to cruise and back) in
+`Tracking` mode twice, once against `TileEngineConfig::default()` and once with
+`base_imagery_url` swapped to `SATELLITE_IMAGERY_URL` (Esri World Imagery, photographic),
+via a new `shoot_with_config` that threads the tile config through instead of always taking
+the default. The output pairs up as `dark_*.png` / `sat_*.png` per progress value, so a
+regression that only shows up on bright photographic tiles at night — the exact failure
+mode `photo_gate` exists to prevent — has a frame that will actually show it.
 
 The measurement behind "there is no fog on the surface from space": render the ladder
 twice, once normally and once with `final_color = shaded_color` (haze disabled), and diff.

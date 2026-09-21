@@ -63,9 +63,15 @@ pub enum MapStyle {
     #[default]
     #[value(name = "standard", alias = "carto", alias = "dark")]
     Standard,
-    /// Satellite aerial imagery.
-    #[value(name = "satellite", alias = "esri", alias = "sat")]
-    Satellite,
+    /// Satellite aerial imagery with 3D terrain relief.
+    #[value(
+        name = "satellite-terrain",
+        alias = "satellite_terrain",
+        alias = "satellite",
+        alias = "sat",
+        alias = "esri"
+    )]
+    SatelliteTerrain,
 }
 
 /// What the terrain decoder does with the Terrarium source's sub-sea-level samples.
@@ -191,9 +197,12 @@ impl CesiumViewerBuilder {
         self
     }
 
-    /// Set the base map imagery style (e.g. Standard CARTO dark basemap vs. Esri Satellite).
+    /// Set the base map imagery style (e.g. Standard CARTO dark basemap vs. Esri Satellite + Terrain).
     pub fn map_style(mut self, style: MapStyle) -> Self {
         self.map_style = style;
+        if style == MapStyle::SatelliteTerrain {
+            self.terrain = true;
+        }
         self
     }
 
@@ -262,7 +271,12 @@ impl CesiumViewerBuilder {
     pub fn build(self) -> CesiumViewer {
         let base_imagery_url = match self.map_style {
             MapStyle::Standard => STANDARD_IMAGERY_URL.to_string(),
-            MapStyle::Satellite => SATELLITE_IMAGERY_URL.to_string(),
+            MapStyle::SatelliteTerrain => SATELLITE_IMAGERY_URL.to_string(),
+        };
+
+        let terrain_enabled = match self.map_style {
+            MapStyle::SatelliteTerrain => true,
+            MapStyle::Standard => self.terrain,
         };
 
         let config = TileEngineConfig {
@@ -279,7 +293,7 @@ impl CesiumViewerBuilder {
             map_brightness: self.map_brightness,
             max_zoom: self.max_zoom,
             terrain: TerrainConfig {
-                enabled: self.terrain,
+                enabled: terrain_enabled,
                 exaggeration: self.terrain_exaggeration,
                 ocean: self.terrain_ocean.into(),
                 ..TerrainConfig::default()
@@ -419,17 +433,25 @@ impl ViewerHandle {
         let _ = self.tx.try_send(ViewerCommand::MapSetBrightness(value));
     }
 
-    /// Switch the base map imagery live (e.g. standard vs. satellite). The tile
-    /// texture cache is rebuilt, so already-loaded tiles briefly show the
+    /// Switch the base map imagery and terrain mode live (e.g. standard vs. satellite + terrain).
+    /// The tile texture cache is rebuilt, so already-loaded tiles briefly show the
     /// fallback color while the new imagery re-fetches.
     pub fn map_set_style(&self, style: MapStyle) {
-        let url = match style {
-            MapStyle::Standard => STANDARD_IMAGERY_URL,
-            MapStyle::Satellite => SATELLITE_IMAGERY_URL,
-        };
-        let _ = self
-            .tx
-            .try_send(ViewerCommand::MapSetImageryUrl(url.to_string()));
+        match style {
+            MapStyle::Standard => {
+                let _ = self
+                    .tx
+                    .try_send(ViewerCommand::MapSetImageryUrl(STANDARD_IMAGERY_URL.to_string()));
+            }
+            MapStyle::SatelliteTerrain => {
+                let _ = self
+                    .tx
+                    .try_send(ViewerCommand::MapSetImageryUrl(SATELLITE_IMAGERY_URL.to_string()));
+                let _ = self
+                    .tx
+                    .try_send(ViewerCommand::TerrainSetEnabled(true));
+            }
+        }
     }
 
     /// Turn terrain height fetching on or off at runtime.

@@ -123,7 +123,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 ) {
     if let Some(handle) = VIEWER_HANDLE.lock().unwrap().as_ref() {
         let s = match style {
-            1 => MapStyle::Satellite,
+            1 => MapStyle::SatelliteTerrain,
             _ => MapStyle::Standard,
         };
         handle.map_set_style(s);
