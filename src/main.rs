@@ -113,7 +113,7 @@ mod inner {
         #[arg(long)]
         pub free_routes: bool,
 
-        /// Base map imagery style: 'standard' (Carto dark) or 'satellite' (Esri satellite)
+        /// Base map imagery style: 'standard' (Carto dark) or 'satellite-terrain' (Esri satellite + 3D terrain)
         #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
         pub map_style: cesium_rs::MapStyle,
 
@@ -328,7 +328,7 @@ fn main() {
     #[derive(Parser, Debug)]
     #[command(author, version, about, long_about = None)]
     struct Cli {
-        /// Base map imagery style: 'standard' (Carto dark) or 'satellite' (Esri satellite)
+        /// Base map imagery style: 'standard' (Carto dark) or 'satellite-terrain' (Esri satellite + 3D terrain)
         #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
         pub map_style: cesium_rs::MapStyle,
 
