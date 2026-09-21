@@ -1749,9 +1749,307 @@ airports and the Nordkette. What the shots show, with terrain on throughout:
 
 ## 9. Phase F — turn it on
 
-`mesh_segments` and the D1 margin fixed at measured values. S23 soak with terrain on vs off
-(`tools/phone_soak.sh`, cockpit, alpine airport and cruise), memory split recorded as imagery
-vs height vs vertex bytes. `TerrainConfig.enabled` defaults to `true` in its own commit.
+Four pieces: the density decision C4 deferred (F1), the memory split (F2), the on-device soak
+(F3) and the flip (F4). Three of them landed 2026-09-21. **The fourth could not be run**, and
+that is the first thing this section has to say.
+
+### The device line, stated before anything else
+
+**`adb` is not installed on the machine Phase F was written on, and no phone is attached.**
+`tools/phone_soak.sh` cannot run here, was not run here, and none of the numbers below came off
+a device. Everything in F1 and F2 is a desktop measurement over the real DEM; F3 is the runbook
+that closes the gap, written so that the person with the phone can execute it cold; F4 flips the
+default on desktop and leaves Android explicitly off, because the flip §9 originally described
+was conditioned on exactly the measurement that is missing.
+
+### F1 — `mesh_segments` stays 16, and here is the margin it stays on
+
+C4 (§6) measured the error and the bytes on the committed fixtures and deliberately refused to
+decide, deferring to "device measurements". There are none, so F1 decides on what exists:
+`testing::terrain::test_mesh_density::f1_mesh_density_at_the_real_poses`, the same ten real-DEM
+poses E1a used, at the shipped `max_geometric_error_px = 12`.
+
+| `mesh_segments` | Σ tiles, 10 poses | verts/tile | buffer B/tile | drawn buffers at `alps_inn_valley` | 512-entry mesh cache | drawn p95 error at `alps_inn_valley` | `4 × HeightPatch::sample` per frame |
+|--:|--:|--:|--:|--:|--:|--:|--:|
+| **16** | **702** | **361** | **15 440** | **1.6 MB** | **7.9 MB** | **10.7 px** | **31.3 µs** |
+| 32 | 703 | 1 225 | 53 072 | 5.6 MB | 27.2 MB | 7.8 px | 123.9 µs |
+| 64 | 703 | 4 489 | 195 920 | 20.8 MB | 100.3 MB | 4.8 px | 329.8 µs |
+
+The last column is E2's table (§8), repeated because it is part of the price. The mesh-cache
+column counts the index buffer, which §6's 5.8 / 19.6 / 71.8 MB figures did not.
+
+**Read the marginal column, the way E1a read its own.** 16 → 32 buys 2.9 px of shape for
++19.3 MB of resident geometry and +93 µs a frame; 32 → 64 buys 3.0 px for +73 MB and +206 µs.
+Per megabyte of mesh cache that is 0.15 px, then 0.04 px. There is no knee in favour of
+refining — the first step is already the expensive one, because the tile count does not fall to
+pay for it.
+
+**And the tile count really does not move: 702 → 703 → 703.** Density reaches the quadtree
+through exactly one path, `heightfield::skirt_allowance`, whose sagitta term shrinks with it;
+the LOD term does not see it at all. So a denser mesh is pure cost in every column except
+error. This is the opposite of E1a's trade, where the knob bought error *with* tiles.
+
+**The finding that makes this more than an arithmetic preference — the two knobs are coupled,
+and the coupling is invisible at 16.** `HeightTile::detail` is documented as *the* geometric
+error of the drawn surface. It is a deviation from a **16:1 decimation** (`HEIGHT_DETAIL_STEP`),
+which is the mesh lattice at `mesh_segments = 16` and at no other setting. At 32 the mesh is
+twice as fine and the stored number is simply stale:
+
+| fixture (z12) | `detail()` = 16:1 | 8:1 (`= 32`) | 4:1 (`= 64`) | over-statement at 64 |
+|---|--:|--:|--:|--:|
+| Everest | 602 m | 494 m | 247 m | 2.4× |
+| Zugspitze | 261 m | 167 m | 119 m | 2.2× |
+| Monterey coast | 30 m | 24 m | 22 m | 1.4× |
+
+(These are the **decimation** metric the engine stores, not C4's drawn-mesh error, which also
+carries the map projection and the triangulation — hence 602 m here against C4's 658.5 m for
+the same fixture at the same density. The three columns are comparable with each other and with
+what `apply_lod` reads, which is the point of measuring them this way.)
+
+`test_mesh_density::the_error_term_measures_a_sixteen_to_one_decimation_whatever_the_mesh_draws`
+is the mechanical statement: a ridge whose crests land exactly on the 32-lattice is drawn
+*exactly* by a `mesh_segments = 32` mesh, and `detail()` still reports its full 800 m. The
+decode has no access to the configuration, so the number cannot follow the mesh.
+
+What that costs is precisely E1's calibration. At 32 the engine would refine on an error it has
+already removed — paying tiles for shape it is drawing — and `max_geometric_error_px = 12`,
+which was fitted against the *measured* error, would no longer be measuring anything. Moving to
+32 is therefore not a one-line config change; it is "make the error term follow
+`mesh_segments`", which means moving the measurement out of the decode or storing it per step.
+That work has a reason to exist only once someone has a device number saying 16 is not enough.
+
+**Where 16 already is.** At the shipped budget the drawn p95 error at 16 is 10.7 px at
+`alps_inn_valley`, and seven of the other nine poses land between 3.7 and 11.0 px — *inside* the
+12 px budget E1a picked. The two that do not are `terai_to_himalaya` at 13.1 px and
+`himalaya_everest` at 93.5 px, and neither is fixed by density (below). Refining the mesh spends memory to reduce an error that is already under budget,
+while the knob that is calibrated (`max_geometric_error_px`) is the one that would spend it on
+error that is over.
+
+**One pose refuses to improve at any density, and it is worth stating**: `himalaya_everest`
+reads 93.5 → 93.6 → 93.7 px across 16/32/64. Both error columns are a p95 over a per-tile
+*maximum*, and a cliff deviates from its chord by roughly half its own height at every lattice
+spacing — C4's "max error is not monotone" finding, at the scale of the Khumbu. A density
+argument made from that pose alone would conclude, wrongly, that density does nothing anywhere.
+
+**So: 16 stays, until someone measures on the device.** Not because 32 is wrong — its error
+column is genuinely better — but because the cost is 3.4× the resident geometry and 4× the
+per-frame sample cost, the benefit is below a budget that is already met, and collecting the
+benefit honestly requires decoupling `detail` from `HEIGHT_DETAIL_STEP` first. The measurement
+that would overturn this is in F3: if the S23's frame time is *not* the binding constraint and
+its thermal headroom is comfortable, 32 becomes an argument about VRAM alone, and §11's
+"desktop at 32, S23 at 16" split becomes a live option rather than a hypothetical.
+
+### F2 — where the bytes go
+
+§9 asks for the split as imagery vs height vs vertex bytes. B4 also makes a claim about it that
+no config listing can settle — that the height cache is a *declared slice* of
+`tile_cache_budget_bytes` and not an addition to it — so
+`test_mesh_density::f2_where_the_bytes_go_at_the_real_poses` measures it at the **shipped**
+budget, not at the 1 GiB the occlusion harness uses to keep itself from evicting.
+
+Declared, from `TileEngineConfig::default()` with terrain on:
+
+| | bytes | entries |
+|---|--:|--:|
+| `tile_cache_budget_bytes` | 512.0 MiB | — |
+| ├ imagery share | 480.0 MiB | 480 at 512²×4 |
+| └ height share | 32.0 MiB | 254 at 132 098 B |
+| vertex buffers | 7.9 MB | 512 meshes at 15 440 B |
+
+Measured, per pose, at the default Carto `@2x` style:
+
+| pose | tiles | imagery | height sources wanted | height resident | height | vertex |
+|---|--:|--:|--:|--:|--:|--:|
+| `alps_inn_valley` | 103 | 103.0 MiB | 312 | **254 / 254** | 32.0 MiB | 1.6 MB |
+| `alps_low` | 73 | 73.0 MiB | 276 | **254 / 254** | 32.0 MiB | 1.1 MB |
+| `alps_zugspitze` | 47 | 47.0 MiB | 208 | 208 / 254 | 26.2 MiB | 0.7 MB |
+| `himalaya_everest` | 75 | 75.0 MiB | 204 | 204 / 254 | 25.7 MiB | 1.2 MB |
+| `himalaya_limb_400km` | 11 | 11.0 MiB | 52 | 52 / 254 | 6.6 MiB | 0.2 MB |
+| `po_plain_to_alps` | 43 | 43.0 MiB | 204 | 204 / 254 | 25.7 MiB | 0.7 MB |
+| `terai_to_himalaya` | 58 | 58.0 MiB | 200 | 200 / 254 | 25.2 MiB | 0.9 MB |
+| `rhone_valley` | 65 | 65.0 MiB | 240 | 240 / 254 | 30.2 MiB | 1.0 MB |
+| `salzach_to_alps` | 85 | 85.0 MiB | 268 | **254 / 254** | 32.0 MiB | 1.3 MB |
+| `aosta_valley` | 52 | 52.0 MiB | 240 | 240 / 254 | 30.2 MiB | 0.8 MB |
+
+(The same run at the Esri 256² style the §7/§8 tables use draws 701 tiles for 175.2 MiB of
+imagery and the same height and vertex columns within a few percent; its `lod_factor` is twice
+as eager, so it is the heavier case for tiles and the lighter one for bytes.)
+
+Three things this says, none of which were visible from the config:
+
+1. **The declared slice holds, and imagery is nowhere near its share.** The worst pose draws
+   103 MiB of texture against a 480 MiB budget — 21 %. Terrain's 32 MiB came out of slack.
+2. **The height slice is the one that binds, at three of the ten poses.** `alps_inn_valley`
+   asks for 312 distinct source tiles over a settle and the cache holds 254, so tiles are
+   evicted and re-fetched while the camera has not moved. That is not a correctness problem —
+   `status_of` treats a missing tile as "not ready yet" and the mesh comes from an ancestor —
+   but it is churn, and it is exactly where terrain matters most: low, in a valley, with both
+   walls and their ancestor chains resident. The obvious remedy is to move the split (48 MiB of
+   heights would cover every pose here and still leave imagery 4× its measured peak), and the
+   reason this section does **not** do it is that it is a device-memory decision and F3 is where
+   device memory gets measured.
+3. **Vertex bytes are not in the byte budget at all.** `mesh_cache_size` is a *count* — 512 —
+   so the geometry ceiling is whatever 512 meshes happen to weigh: 7.9 MB at `mesh_segments`
+   16, 100.3 MB at 64. This is the same failure mode the imagery budget was introduced to fix
+   (§B4's note: a count-only cap let textures climb past 1.9 GB on device), and it is a second,
+   independent reason F1 does not raise the density on an unmeasured platform.
+
+### F3 — the S23 soak, ready to run
+
+Everything below is executable on the machine with the phone, in order, with no decisions left
+open. It is written for someone who has not read the rest of this document.
+
+**What is being decided.** Whether terrain can be turned on for Android. Desktop is already on
+(F4); Android is off, pinned by `TERRAIN_ENABLED_BY_DEFAULT` in
+`crates/cesium-engine/src/globe/tiles/config.rs`, and this run is what unpins it.
+
+#### 0. Prerequisites
+
+```sh
+adb devices          # expect: RFCX20QDV0T   device
+```
+
+The instrumented APK on the phone predates Phase F, so it **must** be rebuilt: the `.so` on the
+device knows nothing about relief. `handoff.md` §1 "If the APK needs rebuilding" is the path and
+it is unchanged — build on `lxhalle` (never locally), `llvm-strip`, transfer with
+`base64 | grep`, `./gradlew :app:assembleDebug -x cargoNdkBuild`, `adb install -r -d`. Copy that
+block verbatim; the only thing Phase F adds is that it is now mandatory rather than optional.
+
+#### 1. The two arms
+
+| arm | how to get it | what it is |
+|---|---|---|
+| **terrain off** | the APK as built — Android's default is off | the shipping baseline, the flat globe |
+| **terrain on** | call `nativeSetTerrainEnabled(true)` from the Kotlin bridge once the flight is running | the same process, same textures, relief switched on live |
+
+The runtime switch is the honest way round: `ViewerCommand::TerrainSetEnabled` rebuilds the
+height manager in place and E2 rebuilds the flat meshes four per frame, so both arms are the
+same binary and the same session and nothing else can have changed between them. If the Kotlin
+side has no button wired to that JNI entry, the fallback is to rebuild with
+`TERRAIN_ENABLED_BY_DEFAULT` forced to `true` (one line, the `cfg!` in `config.rs`) and install
+the second APK — in which case run the two arms in the **same** order on the same charge state,
+because the comparison is then across builds.
+
+#### 2. The runs
+
+Cockpit view, foreground, screen on, the same flight in every run. **Two poses × two arms, plus
+one long run** — five invocations, in this order, each from a phone that has returned to ambient:
+
+```sh
+# 1. alpine airport, terrain OFF — fly LOWI (Innsbruck), hold 300-900 m AGL in the valley.
+tools/phone_soak.sh 1800 20      # 30 min, sampling every 20 s
+
+# 2. same pose, terrain ON  (nativeSetTerrainEnabled(true), then let it settle ~30 s)
+tools/phone_soak.sh 1800 20
+
+# 3. cruise, terrain OFF — 10-11 km, mostly far field, the common case.
+tools/phone_soak.sh 1800 20
+
+# 4. same pose, terrain ON
+tools/phone_soak.sh 1800 20
+
+# 5. the long one: whichever arm looked worse in 1-4, an hour of it. Thermal behaviour
+#    does not show up in thirty minutes.
+tools/phone_soak.sh 3600 30
+```
+
+The alpine pose is the one that matters: it is where the desktop measurement puts the height
+cache at its ceiling (F2, 312 sources wanted against 254 resident) and where the visible set
+roughly doubles. Tile counts on the phone will not equal the desktop table's — the S23's
+viewport gives it its own `lod_factor`, see `docs/culling-baseline.md`'s viewport ladder — so
+compare arm against arm, never phone against desktop.
+
+Each run writes `tools/soak_<HHMMSS>/samples.csv` and `logcat.txt` and prints a first-third vs
+last-third trend table; label the directories by arm immediately, because they are named by
+clock time only. Charging keeps the phone warm and makes throttling *more* likely, so either
+run everything unplugged over `adb tcpip` or run everything plugged in — and write down which.
+
+#### 3. What decides it
+
+Read the trend table twice: terrain-on against terrain-off (the cost of the feature) and
+last-third against first-third within each arm (degradation over time). The second is the one
+the flat globe has already been through; the first is new.
+
+| number | what it means here | abort criterion |
+|---|---|---|
+| frame **p50** | the steady-state cost of relief | terrain-on p50 above 16.6 ms while off is below — the feature has eaten the frame |
+| frame **p90 / p99** | mesh rebuilds and fetch stalls landing on the frame | p99 more than 2× the off arm's, or rising across thirds in the on arm while flat is flat |
+| **jank %** | the same, where the user feels it | more than 5 points above the off arm |
+| **total PSS** | the whole process | delta over the off arm above ~150 MB, or climbing monotonically across thirds (a leak, not a working set) |
+| **native heap** | where the height cache and the decoded tiles live | delta above 64 MiB — twice the declared 32 MiB slice. If the slice is not bounding, B4's claim is wrong on this platform and that is the finding |
+| **battery temp** | thermal headroom | on-arm ending more than 3 °C above the off arm at the same charge state |
+| **prime clock** | throttling, the mechanism behind the above | last-third prime clock dropping in the on arm while the off arm holds |
+| `logcat` | correctness | any `panic`, `FATAL EXCEPTION`, `OutOfMemory` — the script greps for these already |
+
+Expected, from the desktop numbers, so that a surprise is recognisable as one: **+32 MiB**
+native heap (the height cache, at its declared ceiling in the valley), **+2 MB** of vertex
+buffers, imagery *unchanged or slightly lower* (its budget shrank by the height slice), and a
+visible set roughly 2× the flat one at low alpine poses (106 against 43-53) with the per-frame
+mesh work bounded at 31.3 µs by E2's four-rebuild budget.
+
+#### 4. What to do with the result
+
+* **Passes** — flip `TERRAIN_ENABLED_BY_DEFAULT` to an unconditional `true`, delete the
+  platform `cfg!`, and record the trend tables here under an "F3 — measured" heading.
+* **PSS or native heap binds** — the first knob is `TerrainConfig::height_cache_budget_bytes`,
+  and F2 already says which way it wants to move (up, not down: 254 entries is short at three
+  poses). Moving it down instead trades churn for residency and needs the same soak again.
+* **Frame time binds** — the first knob is `MESH_REBUILD_BUDGET_PER_FRAME` (E2, currently 4),
+  then `max_geometric_error_px` (E1a's table gives the tile cost of every value), and only then
+  `mesh_segments`, whose coupling F1 describes.
+* **Thermals bind** — nothing in terrain is a per-frame CPU cost worth tuning at 0.19 % of a
+  frame; look at the tile count first, which means `max_geometric_error_px`.
+
+**The desktop comparison basis left for that run** is F1's and F2's tables above, E2's
+per-rebuild costs (§8), E1a's tile-count-against-budget table (§8) and the five
+`rendering::terrain_capture` poses' tile counts (§8 acceptance) — all of them re-measured on
+2026-09-21 and unchanged by F4.
+
+### F4 — the flip, and the hole in it
+
+`TerrainConfig::enabled` now defaults to `TERRAIN_ENABLED_BY_DEFAULT`
+(`crates/cesium-engine/src/globe/tiles/config.rs`), which is `true` everywhere except Android.
+
+**Desktop, on.** Covered by F1 and F2: the visible set is measured, the geometric error is
+inside its budget, the memory split is measured at the shipped budget, and the captures are
+unchanged.
+
+**Android, off, and deliberately so.** §9 bound this flip to the soak. The soak did not happen.
+Turning Android on anyway would be presenting an unmeasured configuration as a measured one,
+and the specific risk is not hypothetical — F2 shows the height cache at its ceiling at the
+poses a flight tracker spends its interesting minutes in, on a device whose memory pressure has
+already forced one budget into existence (§B4's 1.9 GB note). So Android keeps the flat globe
+until the F3 run says otherwise, and the switch is one constant with the reason attached.
+
+**Why one constant rather than a flag at the entry point.** Android reaches this engine through
+more than one door. `android_main` builds its config from `TileEngineConfig::default()` directly
+— *the builder's config is not what it runs*, which is worth knowing independently of terrain —
+and `headless::api`'s FFI still renderer is compiled for Android too. A flag set at one door
+would have been missed at the other; a constant in `Default` cannot be.
+
+**What the flip moved, and what it did not.** Five rendering harnesses inherited
+`TileEngineConfig::default()` and would have silently gained relief: the fog and haze captures,
+the Free-mode route shots, the S23 cockpit shots and the flicker tracker. Each now states
+`enabled: false` with its reason, because an instrument whose baseline was recorded flat has to
+stay flat to be an instrument. The LOD harness and the culling gate were checked for the same
+exposure and do not have it — both construct `QuadtreeManager` directly and never build a
+`TileEngineConfig` — which is why the 204-pose CSVs are byte-identical across the flip.
+
+### Phase F — acceptance
+
+* `cargo test --release --lib culling::` — **32 passed, 0 failed, 1 ignored**, no re-pin of
+  `size_of::<QuadtreeNode<Ellipsoid>>() == 192`, `TilePatch<Ellipsoid> == 64`,
+  `HorizonCamera == 56` or `test_visible_set_digest_is_stable`.
+* **All 14 LOD-harness CSVs byte-identical** (`cmp`) across the flip, `aggregate_ratio = 1.663`,
+  204 poses — the flat path did not move when the default did.
+* `testing::terrain::test_mesh_density`: two gate tests (the error term's decimation, and C4's
+  buffer columns still being the buffer columns) and three `#[ignore]`d measurements.
+* The five `rendering::terrain_capture` poses re-run after the flip and unchanged to the tile:
+  `terrain_off` 34 / 39 / 36 / 33 / 11, `terrain_on_d3` 110 / 52 / 75 / 75 / 12. Looked at, not
+  only counted — the Inn valley and the Everest massif are gapless, and the limb pose still
+  shows no hole.
+* **Not done, and not simulated: the S23 soak.** F3 is the runbook; the numbers it asks for do
+  not exist yet, and no table in this document pretends they do.
 
 ---
 
@@ -1766,8 +2064,9 @@ A ── B ──┬── C ──┬── D1 ── D2 ── D3 ──┬─
 - **A gates everything.** It is where constraint 1 is proved.
 - **C alone, with terrain on, is unsound** — relief with flat-mode culling is the FN the whole
   culling effort exists to prevent. C behind `enabled: false` is fine.
-  *(Closed by D1/D2, 2026-09-20. `enabled` stays `false`, now for D3's sake and Phase F's,
-  not for soundness.)*
+  *(Closed by D1/D2, 2026-09-20. `enabled` stayed `false` afterwards for D3's sake and
+  Phase F's, not for soundness; F4 flipped it on desktop 2026-09-21 and left Android off
+  pending the soak — §9.)*
 - **E3.1 can jump the queue** as soon as C looks right; it is one line and the most visible
   thing here.
 - **D3 is the constraint-2 deliverable.** Do not let it slide to the end.
@@ -1781,7 +2080,13 @@ A ── B ──┬── C ──┬── D1 ── D2 ── D3 ──┬─
 
 1. **Vertical exaggeration** — user knob or fixed at 1.0? Nearly free in C1, not free to
    retrofit after D1.
-2. **Android in the same release?** Phase F may answer "desktop at `mesh_segments = 32`, S23 at
-   16" — supported, but it means two tuning targets.
+2. **Android in the same release?** *Answered, provisionally and in the other direction:
+   **no**, not until the §9 F3 soak runs. F1 found the split this line anticipated is not
+   available as a free config choice either — `HeightTile::detail` is a 16:1 decimation, so
+   "desktop at 32" would decalibrate E1's error budget unless the error term is made to follow
+   `mesh_segments` first. Both targets run 16 today.*
 3. **Terrain shadows / AO** — out. `render_scene` is a single pass; that is a renderer change,
    not a terrain change.
+4. **The height cache's share of the tile budget.** F2 measured 32 MiB / 254 entries binding at
+   three of ten real poses, against imagery using 21 % of its 480 MiB. Moving the split is a
+   two-line change and a device-memory decision; it waits on F3.

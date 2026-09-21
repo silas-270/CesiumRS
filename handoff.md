@@ -28,6 +28,14 @@ The script refuses to start if the app is not actually rendering, so a bad setup
 heap, battery temperature and prime-core clock, then prints a first-third vs last-third
 trend table. Artifacts land in `tools/soak_<HHMMSS>/` (`samples.csv`, `logcat.txt`).
 
+> **2026-09-21 — the next soak has a specification, and it is not this one.**
+> `docs/terrain-plan.md` §9 F3 states exactly what to run for the terrain decision: both
+> arms (terrain off is the shipped Android default, terrain on via
+> `nativeSetTerrainEnabled`), which poses, which columns decide, and what each abort
+> criterion is. **The installed APK predates terrain and must be rebuilt** — the rebuild
+> block below is the path. The generic trend table here still applies; §9 F3 adds the
+> numbers to compare it against.
+
 **What the run is looking for** (none of this has been measured yet — it's the open
 question):
 
