@@ -33,3 +33,5 @@ pub mod terrain_e2_capture;
 pub mod terrain_e3_capture;
 #[cfg(test)]
 pub mod terrain_f5_capture;
+#[cfg(test)]
+pub mod terrain_balance;

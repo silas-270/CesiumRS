@@ -27,6 +27,13 @@ pub struct FrameTimings {
 pub struct SubsystemTimings {
     pub extension_update_us: f64,
     pub quadtree_us: f64,
+    /// **D3's march alone** — `QuadtreeManager::refresh_terrain_horizon`, once per frame.
+    ///
+    /// Split out of `quadtree_us` because the whole of `docs/terrain-plan.md` §7's
+    /// argument turns on how the stage's cost divides between the once-per-frame march
+    /// and the per-node test inside `update`, and a single quadtree number cannot say.
+    /// Always zero on the flat arm, where the call is not made at all.
+    pub terrain_horizon_us: f64,
     pub tile_streaming_us: f64,
     pub display_state_us: f64,
     pub terrain_draw_us: f64,
@@ -636,11 +643,19 @@ impl<'a> WgpuState<'a> {
             // has just tightened, then cull against it. A no-op on the flat arm, and
             // gated on camera altitude inside `TerrainHorizon::begin` — see
             // `globe::quadtree::terrain_occlusion`.
+            // §7f: `altitude_agl`, not `altitude` — the gate is written in height above
+            // the ground, because that is what decides what a ridge can hide. It degrades
+            // to `altitude` when no ground sample exists yet, which is what
+            // `max_camera_altitude_m` is still there to catch.
+            let horizon_start = Instant::now();
             self.quadtree_manager.refresh_terrain_horizon(
-                frustum_obj.eye,
+                &frustum_obj,
                 altitude as f64,
+                self.camera.altitude_agl() as f64,
                 &self.tile_system.config.terrain.occlusion,
             );
+            self.last_subsystem_timings.terrain_horizon_us =
+                horizon_start.elapsed().as_secs_f64() * 1_000_000.0;
             self.quadtree_manager.update(&frustum_obj);
             self.last_subsystem_timings.quadtree_us =
                 quadtree_start.elapsed().as_secs_f64() * 1_000_000.0;
