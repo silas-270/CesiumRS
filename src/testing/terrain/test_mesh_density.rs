@@ -381,7 +381,7 @@ pub(crate) fn settled_at_density(
             exaggeration,
             config.terrain.detail_max_z,
         ));
-        qt.refresh_terrain_horizon(frustum.eye, cam_alt, &config.terrain.occlusion);
+        qt.refresh_terrain_horizon(frustum, cam_alt, cam_alt, &config.terrain.occlusion);
         qt.update(frustum);
         if let Some(f) = frames.as_deref_mut() {
             f.push(

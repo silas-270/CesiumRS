@@ -440,7 +440,7 @@ fn settle(
         }
         qt.refresh_extras(&bounds_source(&heights));
         match &occlusion {
-            Some(cfg) => qt.refresh_terrain_horizon(frustum.eye, cam_alt, cfg),
+            Some(cfg) => qt.refresh_terrain_horizon(frustum, cam_alt, cam_alt, cfg),
             None => qt.clear_terrain_horizon(),
         }
         qt.update(frustum);

@@ -450,7 +450,7 @@ fn settled_real_tree(
             fill_cache_real(root, &mut heights, world);
         }
         qt.refresh_extras(&bounds_source(&heights));
-        qt.refresh_terrain_horizon(frustum.eye, cam_alt, &config.terrain.occlusion);
+        qt.refresh_terrain_horizon(frustum, cam_alt, cam_alt, &config.terrain.occlusion);
         qt.update(frustum);
     }
     let mut wanted = Vec::new();
