@@ -401,6 +401,49 @@ pub struct TerrainOcclusionConfig {
     /// 124 km at 1.2 km, 390 km at 12 km — so the band where terrain rather than the limb
     /// is the occluder is comfortably inside it.
     pub max_range_m: f32,
+    /// **§7g's pre-check**: how much provable relief has to stand above the eye, as an
+    /// **elevation angle in degrees**, before the march is built at all.
+    ///
+    /// [`Self::max_camera_agl_m`] is §7f's gate and it measures the wrong thing for four
+    /// of the five poses it lets through: §7f's own closing section says "the
+    /// discriminator is not height, it is **relief in view**", and its table has
+    /// `alps_approach` at 584 m AGL and `alps_cockpit` at 2 m each spending ~460 µs to
+    /// remove nothing beside `alps_inn_valley` at 317 m removing twenty.
+    ///
+    /// The statistic is
+    /// [`ReliefProbe`](super::terrain_relief::ReliefProbe)'s: the largest elevation angle,
+    /// taken at each visible leaf's **nearest** point, of the highest altitude D1
+    /// *guarantees* over it. Measured over 34 poses in six families (`terrain::
+    /// test_terrain_relief::terrain_relief_statistic_separates_the_family`) it tracks the
+    /// removal closely — the nine poses where D3 removes nine tiles or more all read
+    /// **8.79° or above**, they carry 158 of the family's 168 removed tiles between the
+    /// seventeen poses above the threshold, and every plain, every coast and every
+    /// above-the-relief pose reads under 5°.
+    ///
+    /// **8.0° is where the threshold goes**, and it is a keep-side choice inside a band
+    /// the data says nobody can split: the lowest-reading pose at which D3 still removes
+    /// a paying number of tiles is the Inn valley at 700 m AGL — §7f's own ladder rung,
+    /// **11 tiles** — at 8.79°, and the two non-paying poses just above it read 9.37° and
+    /// 9.72°. Anything from 8° to 10° is worth the same to within a hundred microseconds
+    /// over the family; 8° is the end that keeps the paying pose rather than the end that
+    /// trades it for two break-evens.
+    ///
+    /// `f32::NEG_INFINITY` disables the pre-check and restores §7f's behaviour exactly.
+    /// Setting it *above* the relief of a pose can only cost tiles that would have been
+    /// culled, never show one that should have been hidden — see
+    /// [`super::terrain_relief`]'s module doc.
+    pub min_relief_deg: f32,
+}
+
+impl TerrainOcclusionConfig {
+    /// The altitude gates, as one predicate — §7f's pair, in the one place both
+    /// [`TerrainHorizon::begin`] and the pre-check's caller read them from.
+    #[inline]
+    pub fn gate_shut(&self, cam_alt: f64, cam_agl: f64) -> bool {
+        !self.enabled
+            || cam_agl * 1.0e6 > self.max_camera_agl_m as f64
+            || cam_alt * 1.0e6 > self.max_camera_altitude_m as f64
+    }
 }
 
 impl Default for TerrainOcclusionConfig {
@@ -410,6 +453,7 @@ impl Default for TerrainOcclusionConfig {
             max_camera_altitude_m: 12_000.0,
             max_camera_agl_m: 1_000.0,
             max_range_m: 120_000.0,
+            min_relief_deg: 8.0,
         }
     }
 }
@@ -511,11 +555,72 @@ pub struct TerrainHorizon {
 /// `p_x²/a² + p_y²/b² + p_z²/a² = 1` gives `λ = 1/√(a²(n_x²+n_z²) + b²n_y²)`. The
 /// engine's polar axis is **y** (`geometry::lon_lat_to_ecef_f64`).
 #[inline]
-fn surface_point_for_normal(n: DVec3) -> DVec3 {
+pub(crate) fn surface_point_for_normal(n: DVec3) -> DVec3 {
     const A2: f64 = EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64;
     const B2: f64 = EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64;
     let lambda = 1.0 / (A2 * (n.x * n.x + n.z * n.z) + B2 * (n.y * n.y)).sqrt();
     DVec3::new(A2 * n.x, B2 * n.y, A2 * n.z) * lambda
+}
+
+/// The camera's local ground frame: the ellipsoid normal at the eye, the east and north
+/// axes every bearing is measured against, and the eye's own longitude and latitude.
+///
+/// Lifted out of [`TerrainHorizon::begin`] **unchanged** — the same expressions in the
+/// same order, so the march's numbers are the ones it always had — because
+/// [`super::terrain_relief::ReliefProbe`] needs exactly this and needs it *before*
+/// `begin` allocates the grid. A second, parallel derivation of the camera's ground
+/// position is the one thing this file cannot afford: getting it wrong by one power of
+/// the flattening moved the camera 10.6 km and cost the sweep 122 false negatives (see
+/// [`Self::at`]).
+#[derive(Clone, Copy, Debug)]
+pub struct GroundFrame {
+    /// Outward ellipsoid normal at the eye — the "up" every elevation angle is measured
+    /// against.
+    pub up: DVec3,
+    pub east: DVec3,
+    pub north: DVec3,
+    /// The eye's own ground longitude, degrees.
+    pub cam_lon: f64,
+    /// The eye's own ground latitude, degrees.
+    pub cam_lat: f64,
+}
+
+impl GroundFrame {
+    pub fn at(eye: DVec3) -> Self {
+        let up = ellipsoid_normal_at(eye);
+        // East analytically from the normal's horizontal part, the same construction
+        // `quadtree::tangent_frame` uses and for the same reason: no `cos φ → 0` division
+        // and no non-orthogonal fallback at a pole. `up ∝ (cos λ, ·, −sin λ)` in this
+        // engine's frame, so `(u_z, 0, −u_x)` normalised is due east.
+        let m = (up.x * up.x + up.z * up.z).sqrt();
+        let east = if m > 1.0e-12 {
+            DVec3::new(up.z / m, 0.0, -up.x / m)
+        } else {
+            DVec3::X
+        };
+        let north = up.cross(east).normalize();
+        // The camera's own ground position, inverted from the ellipsoid normal.
+        //
+        // `geometry::lon_lat_to_ecef_f64` parameterises the surface as
+        // `(a cos φ cos θ, b sin φ, −a cos φ sin θ)`, whose gradient is
+        // `(cos φ cos θ / a, sin φ / b, −cos φ sin θ / a)`. So the horizontal part gives
+        // `θ` directly, and `n_y / ‖n_h‖ = (a/b)·tan φ`, i.e. **`tan φ = (b/a)·n_y/‖n_h‖`**
+        // — one power of the flattening, not two. Squaring both radii here (the obvious
+        // slip, and the one that was made) moves the camera 0.096° of latitude, **10.6 km**
+        // on the ground, which puts every bearing and every range in this file at the
+        // wrong place and cost the sweep 122 false negatives.
+        let cam_lon = (-up.z).atan2(up.x).to_degrees();
+        let cam_lat = (up.y * EARTH_RADIUS_B_F64)
+            .atan2(m * EARTH_RADIUS_A_F64)
+            .to_degrees();
+        Self {
+            up,
+            east,
+            north,
+            cam_lon,
+            cam_lat,
+        }
+    }
 }
 
 impl TerrainHorizon {
@@ -555,39 +660,17 @@ impl TerrainHorizon {
         cfg: &TerrainOcclusionConfig,
     ) -> Self {
         let eye = frustum.eye;
-        if !cfg.enabled
-            || cam_agl * 1.0e6 > cfg.max_camera_agl_m as f64
-            || cam_alt * 1.0e6 > cfg.max_camera_altitude_m as f64
-        {
+        if cfg.gate_shut(cam_alt, cam_agl) {
             return Self::inactive();
         }
 
-        let up = ellipsoid_normal_at(eye);
-        // East analytically from the normal's horizontal part, the same construction
-        // `quadtree::tangent_frame` uses and for the same reason: no `cos φ → 0` division
-        // and no non-orthogonal fallback at a pole. `up ∝ (cos λ, ·, −sin λ)` in this
-        // engine's frame, so `(u_z, 0, −u_x)` normalised is due east.
-        let m = (up.x * up.x + up.z * up.z).sqrt();
-        let east = if m > 1.0e-12 {
-            DVec3::new(up.z / m, 0.0, -up.x / m)
-        } else {
-            DVec3::X
-        };
-        let north = up.cross(east).normalize();
-        // The camera's own ground position, inverted from the ellipsoid normal.
-        //
-        // `geometry::lon_lat_to_ecef_f64` parameterises the surface as
-        // `(a cos φ cos θ, b sin φ, −a cos φ sin θ)`, whose gradient is
-        // `(cos φ cos θ / a, sin φ / b, −cos φ sin θ / a)`. So the horizontal part gives
-        // `θ` directly, and `n_y / ‖n_h‖ = (a/b)·tan φ`, i.e. **`tan φ = (b/a)·n_y/‖n_h‖`**
-        // — one power of the flattening, not two. Squaring both radii here (the obvious
-        // slip, and the one that was made) moves the camera 0.096° of latitude, **10.6 km**
-        // on the ground, which puts every bearing and every range in this file at the
-        // wrong place and cost the sweep 122 false negatives.
-        let cam_lon = (-up.z).atan2(up.x).to_degrees();
-        let cam_lat = (up.y * EARTH_RADIUS_B_F64)
-            .atan2(m * EARTH_RADIUS_A_F64)
-            .to_degrees();
+        let GroundFrame {
+            up,
+            east,
+            north,
+            cam_lon,
+            cam_lat,
+        } = GroundFrame::at(eye);
 
         // Log-spaced ring far edges, as angular distances. `EARTH_RADIUS_A_F64` rather
         // than a mean radius: a *larger* radius makes each ring's angular extent
@@ -656,52 +739,67 @@ impl TerrainHorizon {
         self.extent_of(b)
     }
 
+    #[inline]
     fn extent_of(&self, b: &super::tile_id::TileBounds) -> (f64, f64, f64) {
-        let lat_c = 0.5 * (b.lat_min + b.lat_max);
-        let lon_c = 0.5 * (b.lon_min + b.lon_max);
-        let dlat = (b.lat_max - b.lat_min).to_radians() * 0.5;
-        // The east-west half-extent shrinks with latitude; take it at whichever edge is
-        // nearer the equator, which is the wider one.
-        let cos_lat = b
-            .lat_min
-            .abs()
-            .min(b.lat_max.abs())
-            .to_radians()
-            .cos()
-            .max(0.0);
-        let dlon = (b.lon_max - b.lon_min).to_radians() * 0.5 * cos_lat;
-        let gr = (dlat * dlat + dlon * dlon).sqrt();
-
-        let ang = |lon: f64, lat: f64| -> f64 {
-            let (dlo, dla) = (
-                wrap_deg(lon - self.cam_lon).to_radians(),
-                (lat - self.cam_lat).to_radians(),
-            );
-            let e = dlo * (0.5 * (lat + self.cam_lat)).to_radians().cos();
-            (dla * dla + e * e).sqrt()
-        };
-
-        let gamma = ang(lon_c, lat_c);
-        // Nearest point of the rectangle: the camera's own position clamped into it.
-        let clamped_lat = self.cam_lat.clamp(b.lat_min, b.lat_max);
-        let clamped_lon = {
-            let d = wrap_deg(self.cam_lon - lon_c);
-            let half = 0.5 * (b.lon_max - b.lon_min);
-            lon_c + d.clamp(-half, half)
-        };
-        // Both ends rounded outward. The equirectangular `ang` above and the
-        // clamped-point construction of `near` are small-angle approximations of a
-        // great-circle distance on an ellipsoid, and their error goes the wrong way on
-        // both counts: a `near` that is too large lets a ring that is not actually in
-        // front of the tile cull it, and a `gr` that is too small narrows the sector range
-        // the ridge is minimised over. `EXTENT_SLACK` is what keeps the approximation from
-        // being load-bearing — measured, not assumed: without it the ridge world's sweep
-        // reports 131 false negatives, with it none.
-        let near =
-            (ang(clamped_lon, clamped_lat) * (1.0 - EXTENT_SLACK) - gr * EXTENT_SLACK).max(0.0);
-        (gamma, gr * (1.0 + EXTENT_SLACK), near)
+        extent_of_at(self.cam_lon, self.cam_lat, b)
     }
+}
 
+/// [`TerrainHorizon::extent_of`]'s body, as a free function of the camera's ground
+/// position — moved here **verbatim** so [`super::terrain_relief::ReliefProbe`] can ask
+/// the same question of the same rectangle without a second approximation and without a
+/// second `EXTENT_SLACK` to keep in step with this one.
+pub(crate) fn extent_of_at(
+    cam_lon: f64,
+    cam_lat: f64,
+    b: &super::tile_id::TileBounds,
+) -> (f64, f64, f64) {
+    let lat_c = 0.5 * (b.lat_min + b.lat_max);
+    let lon_c = 0.5 * (b.lon_min + b.lon_max);
+    let dlat = (b.lat_max - b.lat_min).to_radians() * 0.5;
+    // The east-west half-extent shrinks with latitude; take it at whichever edge is
+    // nearer the equator, which is the wider one.
+    let cos_lat = b
+        .lat_min
+        .abs()
+        .min(b.lat_max.abs())
+        .to_radians()
+        .cos()
+        .max(0.0);
+    let dlon = (b.lon_max - b.lon_min).to_radians() * 0.5 * cos_lat;
+    let gr = (dlat * dlat + dlon * dlon).sqrt();
+
+    let ang = |lon: f64, lat: f64| -> f64 {
+        let (dlo, dla) = (
+            wrap_deg(lon - cam_lon).to_radians(),
+            (lat - cam_lat).to_radians(),
+        );
+        let e = dlo * (0.5 * (lat + cam_lat)).to_radians().cos();
+        (dla * dla + e * e).sqrt()
+    };
+
+    let gamma = ang(lon_c, lat_c);
+    // Nearest point of the rectangle: the camera's own position clamped into it.
+    let clamped_lat = cam_lat.clamp(b.lat_min, b.lat_max);
+    let clamped_lon = {
+        let d = wrap_deg(cam_lon - lon_c);
+        let half = 0.5 * (b.lon_max - b.lon_min);
+        lon_c + d.clamp(-half, half)
+    };
+    // Both ends rounded outward. The equirectangular `ang` above and the
+    // clamped-point construction of `near` are small-angle approximations of a
+    // great-circle distance on an ellipsoid, and their error goes the wrong way on
+    // both counts: a `near` that is too large lets a ring that is not actually in
+    // front of the tile cull it, and a `gr` that is too small narrows the sector range
+    // the ridge is minimised over. `EXTENT_SLACK` is what keeps the approximation from
+    // being load-bearing — measured, not assumed: without it the ridge world's sweep
+    // reports 131 false negatives, with it none.
+    let near =
+        (ang(clamped_lon, clamped_lat) * (1.0 - EXTENT_SLACK) - gr * EXTENT_SLACK).max(0.0);
+    (gamma, gr * (1.0 + EXTENT_SLACK), near)
+}
+
+impl TerrainHorizon {
     /// Bearing of `center` from the camera, radians clockwise from north.
     #[inline]
     fn bearing(&self, center: DVec3) -> f64 {

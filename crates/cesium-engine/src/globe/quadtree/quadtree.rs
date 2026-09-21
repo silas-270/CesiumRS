@@ -1716,6 +1716,44 @@ fn refresh_node<S: SurfaceModel, X: NodeExtraSource<S>>(
     }
 }
 
+/// Offers every **visible leaf** to the relief probe — §7g's pre-check walk.
+///
+/// Returns `true` as soon as the probe has cleared its threshold, so the walk stops at
+/// the first wall that settles the question. It descends only into visible subtrees, so
+/// at a pose where the pre-check says "no" it still costs the visible set (59–341 nodes
+/// measured) and not the tree.
+///
+/// A node whose surface model has no occluder at all — the flat globe, whose
+/// `occluder_floor` is `−∞` in every sub-cell — contributes nothing, so the probe never
+/// clears and the march is never built. That is the same answer the flat arm has always
+/// given, reached one step earlier.
+fn probe_relief<S: SurfaceModel>(
+    node: &QuadtreeNode<S>,
+    probe: &mut super::terrain_relief::ReliefProbe,
+) -> bool {
+    if !node.visible {
+        return false;
+    }
+    if let Some(children) = &node.children {
+        for c in children.iter() {
+            if probe_relief(c, probe) {
+                return true;
+            }
+        }
+        return false;
+    }
+    // The highest of the node's sixteen provable sub-cell floors. **Not** the box top and
+    // not the scalar floor — see `terrain_relief`'s module doc for what each of those
+    // reads at a pose with no relief in it.
+    let top = S::occluder_floor(&node.extra)
+        .iter()
+        .fold(f32::NEG_INFINITY, |a, b| a.max(*b));
+    if !top.is_finite() {
+        return false;
+    }
+    probe.consider(&tile_bounds(&node.id), top as f64)
+}
+
 /// One node of [`QuadtreeManager::refresh_terrain_horizon`]'s occluder walk — **D3**.
 ///
 /// Three outcomes, and the middle one is what keeps the walk bounded:
@@ -2265,8 +2303,19 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
         cam_agl: f64,
         cfg: &super::terrain_occlusion::TerrainOcclusionConfig,
     ) {
-        let mut horizon =
-            super::terrain_occlusion::TerrainHorizon::begin(frustum, cam_alt, cam_agl, cfg);
+        // **§7g's pre-check, and it comes before `begin`.** Not after: `begin` allocates
+        // and zeroes the 55 kB of polar grid, which is work the pre-check exists to avoid
+        // paying at a pose where nothing can be culled. The altitude gates are asked
+        // first because they are two comparisons, then the relief probe walks the visible
+        // leaves — the set the renderer is about to draw, not the tree.
+        //
+        // A `false` here is exactly a shut gate: D3 answers `Undecided` and the frame
+        // runs on D1+D2. Nothing about it can hide a tile that should be drawn.
+        let mut horizon = if cfg.gate_shut(cam_alt, cam_agl) || self.relief_clears(frustum, cfg) {
+            super::terrain_occlusion::TerrainHorizon::begin(frustum, cam_alt, cam_agl, cfg)
+        } else {
+            super::terrain_occlusion::TerrainHorizon::inactive()
+        };
         if horizon.is_active() {
             for root in self.roots.iter() {
                 stamp_occluders(root, &mut horizon);
@@ -2274,6 +2323,41 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
             horizon.finish();
         }
         self.terrain_horizon = Some(Box::new(horizon));
+    }
+
+    /// **§7g's pre-check**: is there enough provable relief above the eye, anywhere in
+    /// the visible set, for the march to have anything to cull?
+    ///
+    /// One walk of the *visible* subtree — the nodes the renderer is about to draw —
+    /// stopping at the first leaf that clears the threshold. See
+    /// [`super::terrain_relief`] for how the statistic was derived and why being wrong
+    /// about it costs a cull and never a tile.
+    ///
+    /// The tree it reads is the previous frame's, exactly like the occluder walk below it
+    /// and for the same reason: a node's provable ground does not go stale when the camera
+    /// moves. On the very first frame nothing is marked visible yet, so this reads `false`
+    /// and D3 sits out one frame — which is also the frame on which no height tile has
+    /// landed and the march could not have culled anything.
+    fn relief_clears(
+        &self,
+        frustum: &Frustum,
+        cfg: &super::terrain_occlusion::TerrainOcclusionConfig,
+    ) -> bool {
+        let mut probe = super::terrain_relief::ReliefProbe::new(frustum.eye, cfg.min_relief_deg);
+        for root in self.roots.iter() {
+            if probe_relief(root, &mut probe) {
+                break;
+            }
+        }
+        if std::env::var_os("D3_DEBUG").is_some() {
+            eprintln!(
+                "D3 pre-check: relief {:.2} deg against {:.2} deg — {}",
+                probe.relief_deg(),
+                cfg.min_relief_deg,
+                if probe.clears() { "march" } else { "skipped" }
+            );
+        }
+        probe.clears()
     }
 
     /// Forgets this frame's march. The next [`Self::update`] runs D1+D2 only.
