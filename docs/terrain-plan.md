@@ -2230,6 +2230,142 @@ stay flat to be an instrument. The LOD harness and the culling gate were checked
 exposure and do not have it — both construct `QuadtreeManager` directly and never build a
 `TileEngineConfig` — which is why the 204-pose CSVs are byte-identical across the flip.
 
+### F5 — `DETAIL_MAX_Z` was Cesium's argument, borrowed where it does not hold
+
+E1a clamped the geometric term at `DETAIL_MAX_Z = 15` and gave Cesium's reason:
+
+> Past the source's deepest level a node's mesh is an interpolation of its z15 ancestor's
+> samples … what it is converging to is the DEM's own resolution, not the ground's, so the
+> refinement it would buy is arithmetic and not shape.
+
+**That is true of Cesium and false here, and the difference is one line of data layout.** In
+Cesium a `HeightmapTerrainData`'s `width × height` **is** the mesh lattice, and
+`HeightmapTerrainData.upsample` (`Core/HeightmapTerrainData.js:579-586`) resamples the parent's
+*mesh*; a descendant there holds nothing new by construction. Here the source tile is
+**256 × 256** (`height_tile.rs`) and the mesh is **17 × 17** (`mesh_segments = 16`), so a z15
+tile is already drawing a **16:1 decimation of data it holds**. Its descendants draw 8:1, 4:1,
+2:1, and only at z19 does the lattice land on every texel:
+
+| level | decimation of the z15 source | p95 drawn error, real DEM |
+|--:|--:|--:|
+| z15 | 16:1 | **342 m** |
+| z16 | 8:1 | **63 m** |
+| z17 | 4:1 | **15 m** |
+| z18 | 2:1 | **4 m** |
+| z19 | 1:1 | **0 m, exactly** |
+
+(`test_detail_below_ceiling::f5_which_error_term_tracks_the_truth_below_the_ceiling`, over every
+descendant of every z15 source the settled trees rest on at fourteen poses — 54 901 nodes. The
+z19 zero is not a rounding: the mesh samples every texel of its window, so it *is* the data.)
+
+#### The error term had to be rebuilt, and the cheap version does not work
+
+`HeightBounds::detail` was the **source tile's whole-tile 16:1 error**, which is the node's own
+error only while `src == id`. Below the ceiling both halves are wrong — wrong lattice and wrong
+window — so three candidates were scored against the error the mesh really leaves. The column
+that decides is **under**: an error that is too large costs tiles, one that is too small costs
+shape, silently.
+
+| level | candidate | p50 cand/truth | p5 | under-states | worst |
+|--:|---|--:|--:|--:|--:|
+| z16 | A `detail/2^k`, first order | 1.23 | 0.61 | **189 / 644** | 2.3× |
+| z16 | B per step, whole tile | 1.25 | 1.00 | 0 / 644 | — |
+| z16 | C per step, **per window** | 1.00 | 1.00 | 0 / 644 | — |
+| z17 | A | 1.92 | 0.50 | **471 / 2 576** | 4.0× |
+| z17 | B | 2.00 | 1.00 | 0 / 2 576 | — |
+| z17 | C | 1.00 | 1.00 | 0 / 2 576 | — |
+| z18 | A | 3.00 | 0.25 | **1 999 / 10 304** | 8.0× |
+| z18 | B | 2.00 | 1.00 | 0 / 10 304 | — |
+| z18 | C | 1.00 | 1.00 | 0 / 10 304 | — |
+
+**The first-order interpolant is refuted, and it fails in both directions at once.** Its median
+is 1.9× to 3× *too large* — because a whole-tile maximum is dominated by cliffs and C4 already
+found that max error does not halve with the lattice — while on a fifth of nodes it is up to
+**8× too small**, because a smooth ancestor can contain one rough child window. Halving a
+maximum is not a convergence argument; C4's first-order finding was about **RMS**, and this
+number is a max.
+
+**B is sound and still 2× loose**, which at z17/z18 is 4^k nodes paying for shape already drawn.
+**C — `HeightTile::detail_below`, a pyramid of 4 + 16 + 64 sub-tile maxima at the three finer
+lattices — is exact by construction** and costs **168 bytes a tile** (0.13 % of the 132 kB
+entry; `HEIGHT_TILE_BYTES` 132 098 → 132 266, and the derived cache count 381 → 380) plus three
+extra passes over a grid the decode already walks. C ships.
+
+The clamp moved with it. `Heightfield::geometric_error` is now a plain read of `extra.detail`,
+and both the ceiling (`TerrainConfig::detail_max_z`, new, default 19) and the measurement happen
+in `height_bounds_for`, which has the tile and the config in hand. E1a put the clamp in
+`geometric_error` because it was "a statement about the LOD rule, not about the data"; since F5
+the number below the ceiling *is* about the data, so one site is better than two.
+
+#### The cost, in E1a's form — and the reserve is **one level, not four**
+
+The ten forward poses of §7b/§8 and F5's four approach poses, at the shipped
+`max_geometric_error_px = 12`:
+
+| `detail_max_z` | Σ tiles, 10 forward | vs 15 | Σ tiles, 4 approaches | vs 15 | deepest z\* | drawn p95 px\* |
+|--:|--:|--:|--:|--:|--:|--:|
+| **15 (E1)** | 612 | — | 319 | — | z15 | 11.6 |
+| 16 | 639 | +4 % | 330 | +3 % | z16 | 11.3 |
+| 17 | 651 | +6 % | 330 | +3 % | z16 | 11.3 |
+| 18 | 651 | +6 % | 330 | +3 % | z16 | 11.3 |
+| **19 (F5)** | **651** | **+6 %** | **330** | **+3 %** | **z16** | **11.3** |
+
+(\* at `lowi_final`. Height-cache pressure does not move at all: 380 entries against a working
+set that stays where §9 F2b measured it. Vertex bytes at the pose: 1.1 MB either way.)
+
+**The rows below 16 are flat, and that is the finding.** The lattice reserve is four levels; the
+**demand** at a 12 px budget is one. By z16 the measured error has already fallen under the
+budget — 63 m at 12 px is met at any distance an approach actually flies — so the term stops
+asking. Per level at the approach poses, `terrain_dist / dist` at p95: z15 **1.22**, z16
+**0.96**. It crosses 1 exactly once.
+
+So the reserve is real and it is **not spendable at the shipped knob**. What F5 removes is the
+ceiling that made the knob *unspendable*:
+
+| `max_geometric_error_px` | `detail_max_z = 15` (E1) | `detail_max_z = 19` (F5) |
+|--:|---|---|
+| 12 | 319 tiles / z15 / 11.6 px | 330 / z16 / 11.3 px |
+| **8** | **550 / z15 / 10.6 px** | **616 / z17 / 8.0 px** |
+| 6 | 886 / z17 / 7.2 px | 901 / z17 / 6.6 px |
+| 4 | 1 798 / z17 / 3.8 px | 1 816 / z17 / 3.8 px |
+
+**Read the 8 px row.** With E1's ceiling, tightening the budget from 12 to 8 buys 231 tiles and
+moves the drawn error 11.6 → 10.6 px, and the near field does not refine at all — every one of
+those tiles went to the far field, because below z15 no budget could buy anything. With F5's,
+the same tightening reaches z17 and the drawn error falls to **8.0 px**: +12 % tiles over E1 at
+the same budget, for 2.6 px of real shape. That is the trade E1a's table was written to make and
+could not.
+
+**`max_geometric_error_px` stays at 12 in this commit.** Moving it is a second measurement on a
+budget §9 F1/F2 calibrated, and §9's own warning about compounding two changes applies; F5's job
+is to make 8 mean something, not to pick it.
+
+#### The picture
+
+`rendering::terrain_f5_capture`, four approach poses, each rendered at both ceilings at both
+budgets, with the ground height and the `√(2Rh)` horizon of every pose checked against the DEM
+first (`test_detail_below_ceiling::the_approach_poses_are_above_their_own_ground`, in the gate —
+579 m / 1 700 m / 2 843 m / 541 m ground, 421-559 m AGL).
+
+| pose | 12 px, tiles → | pixels | 8 px, tiles → | pixels | where |
+|---|--:|--:|--:|--:|---|
+| `f5_lowi_final` | 122 → 126 | 5.9 % | 190 → **241** | **18.8 %** | **54 % in band 1, 24 % in band 2** — the Nordkette slope — and **0.00 % in the bottom half**: runway, apron and the flat Inn floor are bit-identical |
+| `f5_lukla_final` | 139 → 168 | 1.3 % | 244 → **429** | **53.1 %** | every band, 23-67 %: the gorge wall fills the frame |
+| `f5_samedan_final` | 54 → 54 | 0.00 % | 122 → 122 | **0.00 %** | the control — never reaches z16, so F5 has nothing to act on |
+| `f5_aosta_final` | 77 → 77 | 0.00 % | 117 → 117 | **0.00 %** | the second control, same reason |
+
+Looked at, not only counted. At **Lukla** the difference is not subtle: at E1's ceiling the near
+wall is a smeared surface of long flat facets — the chorded look a 17×17 mesh gives a 400 m tile
+of a 30 m DEM — and at F5's the same wall resolves its gullies, its terraces and the ravine
+cutting down the centre of the frame. Nothing was fetched to draw it; the texels were already in
+the cache and the LOD rule had been told they were worth zero. At **Innsbruck** the gain is on
+the Nordkette and the bottom half of the frame does not change by one pixel, which is E1a's *"the
+extra tiles land on the mountains"* one ceiling deeper — and two of the four poses do not move at
+all, because F5 **removes a ceiling; it does not add a demand**.
+
+The three existing E1 captures were re-run and are unchanged to the tile — 48 → 110, 40 → 46,
+64 → 67, the numbers §8 records — because those poses never reach z16 either.
+
 ### Phase F — acceptance
 
 * `cargo test --release --lib culling::` — **32 passed, 0 failed, 1 ignored**, no re-pin of

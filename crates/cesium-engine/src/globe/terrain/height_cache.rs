@@ -528,6 +528,7 @@ impl HeightTileManager {
         id: TileId,
         segments: u32,
         exaggeration: f32,
+        detail_max_z: u8,
     ) -> Option<HeightBounds> {
         if self.status_of(id) != PatchStatus::Ready {
             return None;
@@ -577,16 +578,20 @@ impl HeightTileManager {
             // skirt allowance. See [`HeightBounds::floor`].
             floor: lo_m,
             floor_grid,
-            // **E1** — the measured geometric error, read off the tile that answers for
-            // `id`. Whole-tile, not per sub-rectangle, and that is exact rather than
-            // approximate wherever it matters: `status_of` above only answers `Ready`
-            // once `source_tile_for(id)` itself has landed, so below the source's ceiling
-            // `src == id` and this is `id`'s own error. Past the ceiling, and in the rare
-            // case where `id`'s own tile 404s and an ancestor answers, it is the
-            // ancestor's error over four or more times the ground — an over-statement,
-            // which refines early and costs tiles rather than shape, and which
-            // `Heightfield::geometric_error` clamps to zero past the ceiling anyway.
-            detail: (tile.detail() as f64 * METRES_TO_MEGAMETRES * exaggeration) as f32,
+            // **E1, as F5 rewrote it** — the measured geometric error of *this node's own
+            // mesh*, read off the tile that answers for `id`.
+            //
+            // Until F5 this was `tile.detail()` unconditionally: the source's whole-tile
+            // 16:1 error, which is `id`'s own error only while `src == id`. Below the
+            // source ceiling `src` is the z15 ancestor and the node draws its 17×17 lattice
+            // over a `4^k`-times smaller window, so both the lattice and the window were
+            // wrong — and `Heightfield::geometric_error` then threw the number away
+            // entirely. `HeightTile::detail_below` is the same measurement at the right
+            // lattice over the right window, taken at decode; see §9 F5 for the table that
+            // rejects the two cheaper approximations.
+            detail: (detail_metres(tile, id, src, detail_max_z) as f64
+                * METRES_TO_MEGAMETRES
+                * exaggeration) as f32,
         })
     }
 
@@ -642,6 +647,36 @@ impl HeightTileManager {
     pub fn insert_failed(&mut self, id: TileId) {
         self.cache.mark_failed(id);
     }
+}
+
+/// **F5** — the measured geometric error of the mesh drawn over `id`, in **metres**, read
+/// out of `tile`, the decoded source that answers for `id`.
+///
+/// `k = id.z − src.z` is how many levels the node sits below the data it is drawn from, and
+/// `(ix, iy)` is which of that level's `2^k × 2^k` sub-tiles of `src` it covers. Both come
+/// straight from the tile indices — a descendant's `x`/`y` are its ancestor's shifted left
+/// by `k` plus its own offset — so no UV arithmetic and no rounding is involved.
+///
+/// `detail_max_z` is the LOD ceiling (`TerrainConfig::detail_max_z`): at and below it the
+/// term is switched off and this returns zero. It lives here rather than in
+/// `Heightfield::geometric_error` because that is a static dispatch with no access to the
+/// configuration, and because since F5 the number below the ceiling is a property of the
+/// data — putting the two in one place keeps them from disagreeing.
+#[inline]
+fn detail_metres(tile: &HeightTile, id: TileId, src: TileId, detail_max_z: u8) -> i16 {
+    if id.z >= detail_max_z {
+        return 0;
+    }
+    let k = id.z.saturating_sub(src.z) as u32;
+    if k == 0 {
+        return tile.detail();
+    }
+    if k > crate::globe::terrain::HEIGHT_DETAIL_LEVELS {
+        // The mesh lands on every texel of its window; it draws the data exactly.
+        return 0;
+    }
+    let mask = (1u32 << k) - 1;
+    tile.detail_below(k, id.x & mask, id.y & mask)
 }
 
 /// `id`'s ancestor at `level`, or `id` when it is already at or above it.

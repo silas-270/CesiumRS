@@ -215,6 +215,9 @@ pub(crate) fn bounds_source(heights: &HeightTileManager) -> HeightBoundsSource<'
         heights,
         segments: SEGMENTS,
         exaggeration: 1.0,
+        // The shipped ceiling, so §7b/§7c keep measuring the engine that ships — §9 F5
+        // raised it from 15 to 19 and the D3 numbers move with it, which is the point.
+        detail_max_z: TerrainConfig::default().detail_max_z,
     }
 }
 

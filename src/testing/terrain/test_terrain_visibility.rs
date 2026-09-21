@@ -64,6 +64,11 @@ use crate::testing::culling::oracle::{VisibilityOracle, NDC_MARGIN};
 /// is the geometry that ships (`docs/terrain-plan.md` §6 C4 keeps 16).
 const SEGMENTS: u32 = 16;
 
+/// `TerrainConfig::detail_max_z` as it ships — **19 since §9 F5**, where E1 had 15. The
+/// harnesses here measure the engine that ships, so they read it from the config rather
+/// than from a literal of their own.
+const SHIPPED_DETAIL_MAX_Z: u8 = cesium_engine::globe::terrain::DETAIL_MAX_Z;
+
 /// How many times `update` is run per pose before the tree is read.
 ///
 /// The same count `culling::sweep` uses, and for the same reason: `apply_lod`'s 20 %
@@ -191,6 +196,8 @@ fn bounds_source<'a>(heights: &'a HeightTileManager) -> HeightBoundsSource<'a> {
         heights,
         segments: SEGMENTS,
         exaggeration: 1.0,
+        // The shipped ceiling — §9 F5's 19, not E1's 15.
+        detail_max_z: SHIPPED_DETAIL_MAX_Z,
     }
 }
 
@@ -690,7 +697,7 @@ fn below_the_source_ceiling_a_child_interval_is_contained_by_what_it_inherits() 
     for _ in 0..8 {
         let mut next = Vec::new();
         for p in parents.drain(..) {
-            let Some(pb) = heights.height_bounds_for(p, SEGMENTS, 1.0) else {
+            let Some(pb) = heights.height_bounds_for(p, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z) else {
                 continue;
             };
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -699,7 +706,8 @@ fn below_the_source_ceiling_a_child_interval_is_contained_by_what_it_inherits() 
                     x: p.x * 2 + dx,
                     y: p.y * 2 + dy,
                 };
-                let Some(cb) = heights.height_bounds_for(c, SEGMENTS, 1.0) else {
+                let Some(cb) = heights.height_bounds_for(c, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z)
+                else {
                     continue;
                 };
                 checked += 1;
@@ -767,7 +775,7 @@ fn a_node_interval_contains_the_mesh_interval_it_is_fitted_against() {
             let id = TileId { z, x, y };
             heights.insert_ready(id, fields.get(z));
             let node_bounds = heights
-                .height_bounds_for(id, SEGMENTS, 1.0)
+                .height_bounds_for(id, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z)
                 .expect("just inserted");
             let patch = HeightPatch::sample(&mut heights, id, SEGMENTS, 1.0).expect("Ready");
             let mesh = TileMesh::generate_on::<Heightfield>(&id, SEGMENTS, &patch);
@@ -885,7 +893,7 @@ fn d1_edge_window_skirt_allowance_against_the_fixtures() {
         let mesh = TileMesh::generate_on::<Heightfield>(&id, SEGMENTS, &patch);
         let [mlo, mhi] = mesh.height_bounds;
         let bounds = heights
-            .height_bounds_for(id, SEGMENTS, 1.0)
+            .height_bounds_for(id, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z)
             .expect("just inserted");
 
         // The box span the old bound would have produced, against the one in force now.

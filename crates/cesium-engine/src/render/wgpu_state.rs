@@ -630,6 +630,7 @@ impl<'a> WgpuState<'a> {
                 self.tile_system.height_manager.as_ref(),
                 self.tile_system.config.mesh_segments,
                 self.tile_system.config.terrain.exaggeration,
+                self.tile_system.config.terrain.detail_max_z,
             );
             // Phase D3: build this frame's occlusion march from the tree the bounds pass
             // has just tightened, then cull against it. A no-op on the flat arm, and
