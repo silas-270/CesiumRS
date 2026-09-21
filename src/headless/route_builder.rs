@@ -35,6 +35,13 @@ impl RoutesExtension {
             // and the terminal-area detail is invisible at map scale. What it does need
             // is a true great circle, because the shape of the route across the globe is
             // the entire point of the image.
+            let mut config = FlightPlanConfig::default();
+            if let Some(elev) = cesium_flight::preset::lookup_airport_elevation(start.lat, start.lon) {
+                config.dep_elevation_m = elev;
+            }
+            if let Some(elev) = cesium_flight::preset::lookup_airport_elevation(end.lat, end.lon) {
+                config.arr_elevation_m = elev;
+            }
             let points = cesium_flight::telemetry::generate(&FlightRequest {
                 departure: LatLon::new(start.lat, start.lon),
                 arrival: LatLon::new(end.lat, end.lon),
@@ -42,7 +49,7 @@ impl RoutesExtension {
                 dep_heading_deg: None,
                 arr_heading_deg: None,
                 runways: Vec::new(),
-                config: FlightPlanConfig::default(),
+                config,
             });
 
             // Compute the average reference point for precision

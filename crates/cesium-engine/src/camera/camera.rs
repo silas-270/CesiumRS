@@ -285,40 +285,92 @@ impl Camera {
         }
 
         if self.mode == CameraMode::Tracking {
-            let dist_to_plane = self.local_pos.length();
-            if dist_to_plane < 0.00002 {
-                if dist_to_plane > 1e-8 {
-                    self.local_pos = (self.local_pos / dist_to_plane) * 0.00002;
-                } else {
-                    self.local_pos = Vec3::new(0.0, 0.0, 0.00002);
-                }
+            let mut dist = self.local_pos.length();
+            if dist.is_nan() || dist < 1e-6 {
+                dist = 250.0 / 1_000_000.0;
+                self.local_pos = Vec3::new(0.0, dist * 0.3746, dist * 0.9271);
+            } else if dist < 0.00002 {
+                dist = 0.00002;
+                self.local_pos = self.local_pos.normalize_or_zero() * dist;
+            } else if dist > 0.020 {
+                dist = 0.020;
+                self.local_pos = self.local_pos.normalize_or_zero() * dist;
             }
 
-            let (global_pos_dvec, _) = self.global_transform_f64();
-            let dist = global_pos_dvec.length();
-            let dir = global_pos_dvec.normalize_or_zero();
-            let t = 1.0
-                / (dir.x * dir.x * INV_A2_F64
-                    + dir.y * dir.y * INV_B2_F64
-                    + dir.z * dir.z * INV_A2_F64)
+            let cur_yaw = if self.local_pos.x.abs() > 1e-8 || self.local_pos.z.abs() > 1e-8 {
+                self.local_pos.x.atan2(self.local_pos.z)
+            } else {
+                0.0
+            };
+            let cur_pitch = (self.local_pos.y / dist).clamp(-0.999, 0.999).asin();
+
+            let anchor_dist = self.anchor_pos.length();
+            let anchor_floor = if anchor_dist > 1.0 {
+                let adir = self.anchor_pos.normalize_or_zero();
+                let at = 1.0
+                    / (adir.x * adir.x * INV_A2_F64
+                        + adir.y * adir.y * INV_B2_F64
+                        + adir.z * adir.z * INV_A2_F64)
                     .sqrt();
-            let dynamic_min_distance = match self.terrain_collision_floor(t, dist) {
-                Some(floor) => floor,
-                None => t + 0.000002,
+                self.terrain_collision_floor(at, anchor_dist).unwrap_or(at + SURFACE_CLEARANCE)
+            } else {
+                EARTH_RADIUS_A_F64 + SURFACE_CLEARANCE
             };
 
-            if dist < dynamic_min_distance {
+            let h_plane = (anchor_dist - anchor_floor) as f32;
+            let min_sin_pitch = ((SURFACE_CLEARANCE as f32 - h_plane) / dist).clamp(-0.999, 0.999);
+            let min_pitch = min_sin_pitch.asin();
+
+            let test_pos = |p: f32| -> Vec3 {
+                Vec3::new(
+                    dist * p.cos() * cur_yaw.sin(),
+                    dist * p.sin(),
+                    dist * p.cos() * cur_yaw.cos(),
+                )
+            };
+
+            let is_above_ground = |pos: Vec3| -> bool {
+                let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
+                let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
+                let d = global_pos.length();
+                let dir = global_pos.normalize_or_zero();
+                let t = 1.0
+                    / (dir.x * dir.x * INV_A2_F64
+                        + dir.y * dir.y * INV_B2_F64
+                        + dir.z * dir.z * INV_A2_F64)
+                    .sqrt();
+                let floor = self.terrain_collision_floor(t, d).unwrap_or(t + SURFACE_CLEARANCE);
+                d >= floor
+            };
+
+            if cur_pitch < min_pitch || !is_above_ground(self.local_pos) {
+                let target_pitch = cur_pitch.max(min_pitch);
+                let max_pitch = 85.0_f32.to_radians();
+                let new_pitch = if is_above_ground(test_pos(target_pitch)) {
+                    target_pitch
+                } else if is_above_ground(test_pos(max_pitch)) {
+                    let mut low = target_pitch;
+                    let mut high = max_pitch;
+                    for _ in 0..12 {
+                        let mid = (low + high) * 0.5;
+                        if is_above_ground(test_pos(mid)) {
+                            high = mid;
+                        } else {
+                            low = mid;
+                        }
+                    }
+                    high
+                } else {
+                    target_pitch
+                };
+
+                self.local_pos = test_pos(new_pitch);
                 log::info!(
-                    "[CAMERA CLAMP TRACKING] dist={:.7} < floor={:.7} -> clamped to surface",
-                    dist, dynamic_min_distance
-                );
-                let new_global_pos_dvec = dir * dynamic_min_distance;
-                let local_pos_dvec =
-                    self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
-                self.local_pos = glam::Vec3::new(
-                    local_pos_dvec.x as f32,
-                    local_pos_dvec.y as f32,
-                    local_pos_dvec.z as f32,
+                    "[CAMERA CLAMP TRACKING] lifted pitch from {:.1}° to {:.1}° (dist={:.1}m, h_plane={:.1}m)",
+                    cur_pitch.to_degrees(),
+                    new_pitch.to_degrees(),
+                    dist * 1_000_000.0,
+                    h_plane * 1_000_000.0
                 );
                 self.look_at_plane();
             }
@@ -496,10 +548,24 @@ impl Camera {
             return;
         }
 
-        let dist = self.local_pos.length().max(0.00002);
-        // Pitch: angle from XZ plane towards +Y (up)
+        let mut dist = self.local_pos.length();
+        if dist.is_nan() || dist < 1e-6 {
+            dist = 250.0 / 1_000_000.0;
+            self.local_pos = Vec3::new(0.0, dist * 0.3746, dist * 0.9271);
+        } else if dist < 0.00002 {
+            dist = 0.00002;
+            self.local_pos = self.local_pos.normalize_or_zero() * dist;
+        } else if dist > 0.020 {
+            dist = 0.020;
+            self.local_pos = self.local_pos.normalize_or_zero() * dist;
+        }
+
+        let cur_yaw = if self.local_pos.x.abs() > 1e-8 || self.local_pos.z.abs() > 1e-8 {
+            self.local_pos.x.atan2(self.local_pos.z)
+        } else {
+            0.0
+        };
         let cur_pitch = (self.local_pos.y / dist).clamp(-0.999, 0.999).asin();
-        let cur_yaw = self.local_pos.x.atan2(self.local_pos.z);
 
         let delta_yaw = -dx * self.pitch_sensitivity * 0.2;
         let delta_pitch = dy * self.pitch_sensitivity * 0.2;
@@ -525,45 +591,56 @@ impl Camera {
                     + dir.y * dir.y * INV_B2_F64
                     + dir.z * dir.z * INV_A2_F64)
                     .sqrt();
-            let floor = self.terrain_collision_floor(t, d).unwrap_or(t + 0.000002);
+            let floor = self.terrain_collision_floor(t, d).unwrap_or(t + SURFACE_CLEARANCE);
             d >= floor
         };
 
-        let candidate_both = test_pos(target_pitch, new_yaw);
-        if is_above_ground(candidate_both) {
-            self.local_pos = candidate_both;
+        let anchor_dist = self.anchor_pos.length();
+        let anchor_floor = if anchor_dist > 1.0 {
+            let adir = self.anchor_pos.normalize_or_zero();
+            let at = 1.0
+                / (adir.x * adir.x * INV_A2_F64
+                    + adir.y * adir.y * INV_B2_F64
+                    + adir.z * adir.z * INV_A2_F64)
+                    .sqrt();
+            self.terrain_collision_floor(at, anchor_dist).unwrap_or(at + SURFACE_CLEARANCE)
         } else {
-            // Target pitch penetrates ground: find the minimum pitch for new_yaw that stays above ground.
-            let max_pitch = 85.0_f32.to_radians();
-            if is_above_ground(test_pos(max_pitch, new_yaw)) {
-                let mut low = target_pitch;
-                let mut high = max_pitch;
-                for _ in 0..8 {
-                    let mid = (low + high) * 0.5;
-                    if is_above_ground(test_pos(mid, new_yaw)) {
-                        high = mid;
-                    } else {
-                        low = mid;
-                    }
-                }
-                self.local_pos = test_pos(high, new_yaw);
-            } else {
-                let candidate_yaw_only = test_pos(cur_pitch, new_yaw);
-                if is_above_ground(candidate_yaw_only) {
-                    self.local_pos = candidate_yaw_only;
+            EARTH_RADIUS_A_F64 + SURFACE_CLEARANCE
+        };
+        let h_plane = (anchor_dist - anchor_floor) as f32;
+        let min_sin_pitch = ((SURFACE_CLEARANCE as f32 - h_plane) / dist).clamp(-0.999, 0.999);
+        let min_pitch = min_sin_pitch.asin();
+
+        let clamped_target_pitch = target_pitch.max(min_pitch);
+        let max_pitch = 85.0_f32.to_radians();
+
+        let new_pitch = if is_above_ground(test_pos(clamped_target_pitch, new_yaw)) {
+            clamped_target_pitch
+        } else if is_above_ground(test_pos(max_pitch, new_yaw)) {
+            let mut low = clamped_target_pitch;
+            let mut high = max_pitch;
+            for _ in 0..12 {
+                let mid = (low + high) * 0.5;
+                if is_above_ground(test_pos(mid, new_yaw)) {
+                    high = mid;
+                } else {
+                    low = mid;
                 }
             }
-        }
+            high
+        } else {
+            clamped_target_pitch
+        };
 
-        self.enforce_bounds();
+        self.local_pos = test_pos(new_pitch, new_yaw);
         self.look_at_plane();
 
         log::info!(
-            "[CAMERA ORBIT] dx={:.1} dy={:.1} | cur(pitch={:.1}°, yaw={:.1}°) -> new(pitch={:.1}°, yaw={:.1}°) | local_pos={:?}",
+            "[CAMERA ORBIT] dx={:.1} dy={:.1} | cur(pitch={:.1}°, yaw={:.1}°) -> new(pitch={:.1}°, yaw={:.1}°) | dist={:.1}m",
             dx, dy,
             cur_pitch.to_degrees(), cur_yaw.to_degrees(),
-            target_pitch.to_degrees(), new_yaw.to_degrees(),
-            self.local_pos
+            new_pitch.to_degrees(), new_yaw.to_degrees(),
+            dist * 1_000_000.0
         );
     }
 
