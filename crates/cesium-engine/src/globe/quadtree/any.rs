@@ -136,12 +136,14 @@ impl AnyQuadtree {
         heights: Option<&HeightTileManager>,
         segments: u32,
         exaggeration: f32,
+        detail_max_z: u8,
     ) {
         if let (Self::Terrain(q), Some(heights)) = (self, heights) {
             q.refresh_extras(&HeightBoundsSource {
                 heights,
                 segments,
                 exaggeration,
+                detail_max_z,
             });
         }
     }

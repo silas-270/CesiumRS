@@ -655,23 +655,33 @@ pub fn inherit_allowance_mm(child: &TileId) -> f64 {
 /// `docs/terrain-plan.md` §8.
 const LEVEL_ZERO_DETAIL_M: f64 = 616_538.0;
 
-/// The deepest level the terrain LOD term is allowed to demand refinement *into*.
+/// The deepest level the terrain LOD term is allowed to demand refinement *into* — the
+/// default of `TerrainConfig::detail_max_z`, and **19 since §9 F5**, not 15.
 ///
-/// Matches `TerrainConfig::max_level` (`TERRARIUM_MAX_LEVEL`, 15), and is a separate
-/// constant for the same reason `INHERIT_SEGMENTS` is: [`Heightfield::geometric_error`]
-/// is a static dispatch with no access to the configuration. A source that served deeper
-/// data would want both raised together.
+/// # What F5 corrected
 ///
-/// # Why the term must stop, and why *here*
+/// E1 set this to `TERRARIUM_MAX_LEVEL` with Cesium's argument: *"past the source's deepest
+/// level a node's mesh is an interpolation of its z15 ancestor's samples, so the refinement
+/// it would buy is arithmetic and not shape"*. That argument is sound **for Cesium**, where
+/// `HeightmapTerrainData`'s `width × height` *is* the mesh lattice and `upsample` resamples
+/// the parent's mesh, so a descendant genuinely holds nothing new.
 ///
-/// Past the source's deepest level a node's mesh is an interpolation of its z15 ancestor's
-/// samples. Its measured error against that ancestor keeps falling — a z19 node's mesh
-/// samples the DEM almost texel for texel — but what it is converging to is the DEM's own
-/// resolution, not the ground's, so the refinement it would buy is arithmetic and not
-/// shape. A level-based term past the ceiling is worse still: it keeps *demanding*
-/// refinement for detail that provably is not there. Imagery is unaffected and still
-/// drives to z19/z20 — the picture keeps sharpening, the surface does not.
-pub const DETAIL_MAX_Z: u8 = 15;
+/// It does not hold here. The source tile is 256 × 256 and the mesh is 17 × 17, so a z15
+/// tile already decimates its own data **16:1**. A z16 node draws the same lattice over a
+/// quarter of that tile — 8:1 — z17 draws 4:1, z18 draws 2:1, and only at **z19** does the
+/// lattice land on every texel and the mesh become exact. Four levels of resolved,
+/// already-fetched shape were being reported as zero error.
+///
+/// # Why 19 is a fact and not a taste
+///
+/// `HeightTile::detail_below` returns exactly zero for a descendant four or more levels
+/// below its source, because at that depth the mesh reproduces the field. So the clamp is
+/// redundant with the data at 19 and the constant is kept for two narrower jobs: it bounds
+/// [`fallback_detail_mm`], the level-based stand-in for a node whose tile has not arrived
+/// and which therefore has no data to be bounded by; and it is the knob §9 F5's cost table
+/// sweeps and a device measurement could lower. `mesh_segments = 16` is baked into the 4 —
+/// at 32 the ladder would reach 1:1 one level earlier.
+pub const DETAIL_MAX_Z: u8 = 19;
 
 /// The level-based geometric error for a node at level `z`, **megametres** — E1's
 /// fallback for a node whose own height tile has not landed.
@@ -749,13 +759,18 @@ pub struct HeightBoundsSource<'a> {
     pub segments: u32,
     /// `TerrainConfig::exaggeration`, as [`HeightPatch::sample`] will apply it.
     pub exaggeration: f32,
+    /// `TerrainConfig::detail_max_z` — **F5**. The deepest level the geometric term may
+    /// demand refinement into; at and below it a node's stored error is zero. It rides here
+    /// rather than in [`Heightfield::geometric_error`] because that is a static dispatch
+    /// with no access to the configuration, which is the same reason `segments` rides here.
+    pub detail_max_z: u8,
 }
 
 impl NodeExtraSource<Heightfield> for HeightBoundsSource<'_> {
     #[inline]
     fn extra_for(&self, id: &TileId) -> Option<HeightBounds> {
         self.heights
-            .height_bounds_for(*id, self.segments, self.exaggeration)
+            .height_bounds_for(*id, self.segments, self.exaggeration, self.detail_max_z)
     }
 }
 
@@ -912,21 +927,20 @@ impl SurfaceModel for Heightfield {
     /// **E1** — this globe has relief, so it has an error to refine against.
     const HAS_GEOMETRIC_ERROR: bool = true;
 
-    /// **E1** — the node's measured deviation from the DEM, clamped off at the data
-    /// ceiling.
+    /// **E1, as F5 left it** — the node's measured deviation from the DEM, read and
+    /// nothing else.
     ///
-    /// The clamp is here and not in [`HeightBounds`] on purpose: it is a statement about
-    /// *this engine's LOD rule*, not about the data, and the same node's `detail` is a
-    /// perfectly good number for anything else that wants to know how rough the ground is.
-    /// Putting it at the one site that acts on it keeps it from having to be remembered
-    /// twice — see `DETAIL_MAX_Z`.
+    /// E1 clamped here, at `id.z >= DETAIL_MAX_Z`, on the argument that the ceiling is a
+    /// statement about the LOD rule rather than about the data. F5 moved it, because that
+    /// stopped being true: below the source ceiling the error is
+    /// `HeightTile::detail_below`'s per-window, per-lattice measurement, which reaches
+    /// exactly zero on its own four levels down, and the remaining ceiling is a
+    /// configuration value (`TerrainConfig::detail_max_z`) this static dispatch cannot see.
+    /// Both now happen in `HeightTileManager::height_bounds_for`, which has the tile and the
+    /// config in hand, so there is one site rather than two that could disagree.
     #[inline]
-    fn geometric_error(extra: &HeightBounds, id: &TileId) -> f32 {
-        if id.z >= DETAIL_MAX_Z {
-            0.0
-        } else {
-            extra.detail
-        }
+    fn geometric_error(extra: &HeightBounds, _id: &TileId) -> f32 {
+        extra.detail
     }
 
     /// **D3** — the node's ground floor, not its box floor. See

@@ -38,7 +38,7 @@ use cesium_engine::globe::terrain::height_tile::{
 };
 use cesium_engine::globe::terrain::{
     fallback_detail_mm, HeightBounds, HeightTileManager, Heightfield, DETAIL_MAX_Z,
-    OCCLUDER_GRID_CELLS,
+    HEIGHT_DETAIL_PYRAMID_CELLS, OCCLUDER_GRID_CELLS,
 };
 use glam::DVec3;
 
@@ -211,34 +211,106 @@ fn rugged_ground_refines_before_flat_ground_at_the_same_screen_size() {
     );
 }
 
-/// **The term stops at the data ceiling.**
+/// **The term stops where the mesh becomes exact — z19, not z15.**
 ///
-/// The same error, the same relative distance, one level apart across z15: the z14 node
-/// refines because a z15 child has real data behind it, and the z15 node does not,
-/// because a z16 child is an interpolation of the same samples and buys no shape. Imagery
-/// is untouched and still drives past here — `DETAIL_MAX_Z` is a cap on the *geometric*
-/// demand, not on refinement.
+/// This test used to assert the opposite, and §9 F5 is why it changed. E1 read Cesium's
+/// rule across: past the source's deepest level a node's mesh is an interpolation of its
+/// ancestor and buys no shape. In Cesium that is true, because a heightmap tile's
+/// `width × height` **is** its mesh lattice. Here the source is 256² and the mesh is 17²,
+/// so a z15 tile already draws a **16:1 decimation of data it holds**, and its descendants
+/// draw 8:1, 4:1, 2:1 and finally 1:1 at z19.
+///
+/// So the ladder below is the claim now: a real relief tile inserted once, and its own
+/// `height_bounds_for` error read at every level from z14 to z20. It must fall — each level
+/// resolves half the spacing — and it must reach **exactly** zero at z19 and stay there,
+/// because at that depth the mesh samples every texel of its window.
 #[test]
-fn the_geometric_term_stops_at_the_source_ceiling() {
-    let lod_factor = 2.0_f32;
-    let terrain_lod_factor = terrain_lod_factor_for(2.0, 1080.0, 2.0f32 * (3.0f32 / 7.0).atan());
-    assert_eq!(DETAIL_MAX_Z, 15, "the ceiling this test is about");
+fn the_geometric_term_stops_where_the_mesh_becomes_exact() {
+    assert_eq!(DETAIL_MAX_Z, 19, "the ceiling this test is about — §9 F5");
 
-    // A distance well past the imagery threshold at each level, scaled with the level so
-    // the imagery term is equally irrelevant in both cases.
-    for (z, x, y) in [(14u8, 8704u32, 5752u32), (15, 17408, 11504)] {
-        let id = TileId { z, x, y };
-        let mut node = probe_node(id, 30.0);
-        let dist = (node.unstretched_radius * lod_factor * 4.0) as f64;
-        let refined = subdivides(&mut node, dist, lod_factor, terrain_lod_factor);
-        if z < DETAIL_MAX_Z {
-            assert!(refined, "z{z} must still refine on 30 m of measured error");
-        } else {
+    let config = cesium_engine::globe::tiles::config::TileEngineConfig {
+        terrain: cesium_engine::globe::tiles::config::TerrainConfig {
+            enabled: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut heights = HeightTileManager::new(&config);
+
+    // A field that is rough at *every* scale, so no decimation of it is exact until the
+    // lattice lands on every texel. A smooth one would reach zero early and prove nothing.
+    let src = TileId {
+        z: 15,
+        x: 17_408,
+        y: 11_504,
+    };
+    heights.insert_ready(
+        src,
+        std::sync::Arc::new(synthetic_tile(|x, y| {
+            (((x * 37 + y * 53) % 17) as f64) * 40.0 + ((x % 3) as f64) * 111.0
+        })),
+    );
+
+    // The corner descendant at each level, so the window is the one starting at texel 0.
+    let mut id = src;
+    let mut ladder = Vec::new();
+    for _ in 0..=5 {
+        let d = heights
+            .height_bounds_for(id, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z)
+            .map(|b| b.detail as f64 * 1.0e6)
+            .unwrap_or(-1.0);
+        ladder.push((id.z, d));
+        id = TileId {
+            z: id.z + 1,
+            x: id.x * 2,
+            y: id.y * 2,
+        };
+    }
+
+    for w in ladder.windows(2) {
+        let ((z0, d0), (z1, d1)) = (w[0], w[1]);
+        assert!(
+            d1 <= d0,
+            "z{z1} resolves half z{z0}'s spacing and cannot have more error: {d0} -> {d1}"
+        );
+    }
+    for (z, d) in &ladder {
+        if *z <= 18 {
             assert!(
-                !refined,
-                "z{z} is at the data ceiling and must not refine on an error that cannot fall"
+                *d > 0.0,
+                "z{z} still decimates its source {}:1 and has shape left to resolve",
+                16 >> (z - 15)
+            );
+        } else {
+            assert_eq!(
+                *d, 0.0,
+                "z{z} samples every texel of its window, so its mesh *is* the data"
             );
         }
+    }
+
+    // And the ceiling is a knob: set it to E1's 15 and every level from z15 down reads
+    // zero again, which is the behaviour this test used to assert.
+    for (z, _) in &ladder {
+        let id = {
+            let mut i = src;
+            for _ in 0..(z - 15) {
+                i = TileId {
+                    z: i.z + 1,
+                    x: i.x * 2,
+                    y: i.y * 2,
+                };
+            }
+            i
+        };
+        assert_eq!(
+            heights
+                .height_bounds_for(id, SEGMENTS, 1.0, 15)
+                .map(|b| b.detail)
+                .unwrap_or(-1.0),
+            0.0,
+            "at `detail_max_z = 15` the term is off from z15 down"
+        );
     }
 }
 
@@ -303,6 +375,9 @@ fn the_flat_globe_has_no_geometric_term_to_set() {
 // surface that has one. Two copies of that formula would be two chances for the terrain
 // numbers and the flat ones to stop being comparable.
 use crate::testing::lod::sweep::geometric_error_px;
+
+/// `TerrainConfig::detail_max_z` as it ships — **19 since §9 F5**, where E1 had 15.
+const SHIPPED_DETAIL_MAX_Z: u8 = cesium_engine::globe::terrain::DETAIL_MAX_Z;
 
 /// What one settled tree costs and how wrong its surface is.
 struct LodResult {
@@ -425,7 +500,7 @@ fn score(
         // that ancestor's own, scaled by how much of it this tile covers — which is what
         // reading the source tile's `detail` over this tile's rectangle amounts to.
         let error_mm = heights
-            .height_bounds_for(*id, SEGMENTS, 1.0)
+            .height_bounds_for(*id, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z)
             .map(|b| b.detail as f64)
             .unwrap_or_else(|| fallback_detail_mm(id.z));
         let err_px = geometric_error_px(error_mm, dist, p.height as f64, fovy);
@@ -548,20 +623,20 @@ fn e1_cost_of_the_geometric_term_on_real_terrain() {
     );
 }
 
-/// The residency cost of the error term, stated rather than assumed: it is two bytes per
-/// resident height tile and nothing else.
+/// The residency cost of the error term, stated rather than assumed: E1's two bytes per
+/// resident height tile, and F5's 168 on top of them, and nothing else.
 #[test]
-fn the_error_term_costs_two_bytes_a_tile() {
+fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight() {
     use cesium_engine::globe::tiles::config::HEIGHT_TILE_BYTES;
     assert_eq!(
         HEIGHT_TILE_BYTES,
-        256 * 256 * 2 + 2 * (16 * 16 * 2) + 2,
-        "E1 adds one i16 per tile; if this moved, the cache entry count in \
-         `docs/terrain-plan.md` §5 B4 needs re-deriving"
+        256 * 256 * 2 + 2 * (16 * 16 * 2) + 2 + 2 * HEIGHT_DETAIL_PYRAMID_CELLS,
+        "E1 adds one i16 per tile and F5 adds 84 more; if this moved, the cache entry \
+         count in `docs/terrain-plan.md` §5 B4 needs re-deriving"
     );
     // The derived entry count must follow from the one constant that states the budget and
     // nothing else. It is 381 on desktop since §9 F2b resized the slice to 48 MiB; Android
-    // keeps 254 until the soak of §9 F3 is run.
+    // keeps 253 until the soak of §9 F3 is run.
     let config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
     assert_eq!(
         config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
@@ -571,12 +646,16 @@ fn the_error_term_costs_two_bytes_a_tile() {
     #[cfg(not(target_os = "android"))]
     assert_eq!(
         config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
-        381
+        380
     );
     // Not a size_of pin: `HeightTile` boxes its grids, so the i16 lands in a struct whose
     // own size is dominated by three pointers. The accounting constant above is what the
     // cache budget actually divides by.
     assert_eq!(HeightTile::flat_zero().detail(), 0);
+    // …and a flat field has nothing to resolve at any depth either.
+    for k in 0..=4u32 {
+        assert_eq!(HeightTile::flat_zero().detail_below(k, 0, 0), 0);
+    }
 }
 
 /// **E1b** (`docs/terrain-plan.md` §8) — what fog is allowed to do to the *shape* budget.
@@ -816,7 +895,7 @@ fn e1_the_extra_tiles_land_on_the_mountains() {
         let visible = qt.get_visible_tiles();
         for (id, _, _) in &visible {
             let detail_m = heights
-                .height_bounds_for(*id, SEGMENTS, 1.0)
+                .height_bounds_for(*id, SEGMENTS, 1.0, SHIPPED_DETAIL_MAX_Z)
                 .map(|b| b.detail as f64 * 1.0e6)
                 .unwrap_or_else(|| fallback_detail_mm(id.z) * 1.0e6);
             if detail_m < 10.0 {

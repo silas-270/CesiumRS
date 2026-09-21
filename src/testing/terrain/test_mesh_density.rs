@@ -90,7 +90,7 @@ pub(crate) fn deviation_at_step(tile: &HeightTile, step: usize) -> f64 {
 /// on the far side of the valley for the icefall in the opposite corner, which is the same
 /// over-statement `test_terrain_lod::score`'s footnote in §8 names, and there is no reason
 /// to repeat it here when the window is known exactly.
-fn deviation_over(tile: &HeightTile, step: usize, [x0, x1, y0, y1]: [usize; 4]) -> f64 {
+pub(crate) fn deviation_over(tile: &HeightTile, step: usize, [x0, x1, y0, y1]: [usize; 4]) -> f64 {
     let step = step.max(1);
     if step == 1 {
         return 0.0;
@@ -144,7 +144,7 @@ fn deviation_over(tile: &HeightTile, step: usize, [x0, x1, y0, y1]: [usize; 4]) 
 /// samples over `2^(z − src.z)` times less ground per axis, so the same number of mesh
 /// samples land that many times closer together — and once they land on every texel the
 /// mesh reproduces the data it has and the error is zero.
-fn mesh_step_on_source(id: TileId, src: TileId, segments: u32) -> usize {
+pub(crate) fn mesh_step_on_source(id: TileId, src: TileId, segments: u32) -> usize {
     let levels = id.z.saturating_sub(src.z) as u32;
     let denom = (segments as u64) << levels.min(16);
     ((HEIGHT_TILE_DIM as u64) / denom.max(1)).max(1) as usize
@@ -152,7 +152,7 @@ fn mesh_step_on_source(id: TileId, src: TileId, segments: u32) -> usize {
 
 /// `id`'s own share of `src`'s texel grid, as `[x0, x1, y0, y1)` — the window
 /// [`deviation_over`] scores it on. `src == id` gives the whole tile.
-fn source_window(id: TileId, src: TileId) -> [usize; 4] {
+pub(crate) fn source_window(id: TileId, src: TileId) -> [usize; 4] {
     let (u0, v0) = HeightTileManager::ancestor_uv(id, src, 0.0, 0.0);
     let (u1, v1) = HeightTileManager::ancestor_uv(id, src, 1.0, 1.0);
     let n = HEIGHT_TILE_DIM as f64;
@@ -261,7 +261,7 @@ fn the_error_term_measures_a_sixteen_to_one_decimation_whatever_the_mesh_draws()
 /// Vertex and index bytes of one tile's mesh at `segments`, taken off a mesh the engine
 /// actually generates rather than from a formula — the topology (skirt ring included) is
 /// what it is, and a formula here would be a second place for it to be wrong.
-fn mesh_bytes(segments: u32) -> (usize, usize, usize) {
+pub(crate) fn mesh_bytes(segments: u32) -> (usize, usize, usize) {
     // A mid-latitude z12 tile: no pole cap, so this is the ordinary case. Relief moves
     // vertices, it does not add them, so the flat mesh has the same counts as a
     // `Heightfield` one at the same density.
@@ -310,7 +310,7 @@ fn the_vertex_cost_of_a_density_is_what_c4_quoted() {
 /// of request sets a camera arriving at this pose really produces, which is what
 /// [`super::test_height_residency`] replays. It is `None` for the tables here, which only
 /// ever look at the settled tree.
-fn settled_at_density(
+pub(crate) fn settled_at_density(
     p: &ViewParams,
     frustum: &Frustum,
     config: &TileEngineConfig,
@@ -348,11 +348,13 @@ fn settled_at_density(
         heights: &'a HeightTileManager,
         segments: u32,
         exaggeration: f32,
+        detail_max_z: u8,
     ) -> HeightBoundsSource<'a> {
         HeightBoundsSource {
             heights,
             segments,
             exaggeration,
+            detail_max_z,
         }
     }
     let exaggeration = config.terrain.exaggeration;
@@ -373,7 +375,12 @@ fn settled_at_density(
         for root in qt.roots.iter() {
             fill_cache_real(root, &mut heights, world);
         }
-        qt.refresh_extras(&source(&heights, segments, exaggeration));
+        qt.refresh_extras(&source(
+            &heights,
+            segments,
+            exaggeration,
+            config.terrain.detail_max_z,
+        ));
         qt.refresh_terrain_horizon(frustum.eye, cam_alt, &config.terrain.occlusion);
         qt.update(frustum);
         if let Some(f) = frames.as_deref_mut() {
@@ -403,7 +410,12 @@ fn settled_at_density(
     for root in qt.roots.iter() {
         fill_cache_real(root, &mut heights, world);
     }
-    qt.refresh_extras(&source(&heights, segments, exaggeration));
+    qt.refresh_extras(&source(
+        &heights,
+        segments,
+        exaggeration,
+        config.terrain.detail_max_z,
+    ));
     (qt, heights, asked.len())
 }
 
@@ -445,7 +457,7 @@ pub(crate) fn settled_shipped(
 }
 
 /// The frustum of one real pose.
-fn frustum_of(p: &ViewParams) -> Frustum {
+pub(crate) fn frustum_of(p: &ViewParams) -> Frustum {
     let cam = build_camera(p);
     let aspect = p.aspect() as f32;
     let (eye, _) = cam.global_transform_f64();
@@ -454,7 +466,7 @@ fn frustum_of(p: &ViewParams) -> Frustum {
 }
 
 /// p95 of a list, the same rule `test_terrain_lod::score` uses.
-fn p95(v: &mut Vec<f64>) -> f64 {
+pub(crate) fn p95(v: &mut Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if v.is_empty() {
         0.0
@@ -547,7 +559,12 @@ fn f1_mesh_density_at_the_real_poses() {
 
                 // What the engine believes, exactly as `test_terrain_lod::score` reads it.
                 let believed_mm = heights
-                    .height_bounds_for(*id, *d, config.terrain.exaggeration)
+                    .height_bounds_for(
+                        *id,
+                        *d,
+                        config.terrain.exaggeration,
+                        config.terrain.detail_max_z,
+                    )
                     .map(|b| b.detail as f64)
                     .unwrap_or_else(|| fallback_detail_mm(id.z));
                 believed.push(geometric_error_px(believed_mm, dist, p.height as f64, fovy));

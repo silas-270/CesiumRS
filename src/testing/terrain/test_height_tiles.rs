@@ -510,20 +510,22 @@ fn the_height_cache_reports_its_share_of_the_budget() {
     let (resident, capacity) = heights.residency();
     assert_eq!(resident, 0);
     // The declared slice divided by the tile size, whatever the platform split makes that:
-    // 48 MiB / 129 kB = 381 on desktop since §9 F2b, 32 MiB / 129 kB = 254 on Android.
+    // 48 MiB / 129 kB = 380 on desktop since §9 F2b, 32 MiB / 129 kB = 253 on Android
+    // (129 kB, not 128: the mips and E1's and F5's error terms are all in the entry).
     assert_eq!(
         capacity,
-        config.terrain.height_cache_budget_bytes / 132_098,
+        config.terrain.height_cache_budget_bytes / 132_266,
         "the capacity is the declared slice divided by the entry size, and nothing else"
     );
     #[cfg(not(target_os = "android"))]
-    assert_eq!(capacity, 381, "48 MiB / 129 kB per tile — §9 F2b");
+    assert_eq!(capacity, 380, "48 MiB / 129 kB per tile — §9 F2b");
 
     heights.insert_ready(ANCESTOR_Z15, x_ramp());
     assert_eq!(heights.residency().0, 1);
-    // 256² i16 samples + the two 16² mips + E1's one-i16 measured geometric error. The
-    // last term is two bytes and the derived capacity above does not move with it.
-    assert_eq!(heights.resident_bytes(), 132_098);
+    // 256² i16 samples + the two 16² mips + E1's one-i16 measured geometric error + F5's
+    // 84-entry pyramid of the same measurement for the descendants below this tile. The
+    // last two terms are 170 bytes together and cost the derived capacity one entry.
+    assert_eq!(heights.resident_bytes(), 132_266);
 
     // …and it is a slice of the imagery budget, not an addition to it.
     assert_eq!(

@@ -30,19 +30,23 @@ pub const TERRARIUM_URL: &str =
 pub const TERRARIUM_MAX_LEVEL: u8 = 15;
 
 /// Resident bytes one decoded [`crate::globe::terrain::height_tile::HeightTile`]
-/// costs: 256x256 `i16` samples, the 16x16 min and max mips, and E1's one-`i16`
-/// measured geometric error ([`crate::globe::terrain::HeightTile::detail`]).
+/// costs: 256x256 `i16` samples, the 16x16 min and max mips, E1's one-`i16` measured
+/// geometric error ([`crate::globe::terrain::HeightTile::detail`]) and F5's 84-entry
+/// pyramid of the same measurement for the descendants below it
+/// ([`crate::globe::terrain::HeightTile::detail_below`]).
 ///
 /// `docs/terrain-plan.md` §5 B4 rounds this to "128 kB per height tile; 256 resident
 /// = 32 MB". The real figure is 129 kB, because the mips are not free, so a 32 MiB
-/// slice derives **254** entries rather than 256 and §9 F2b's 48 MiB derives **381**.
+/// slice derives **253** entries rather than 256 and §9 F2b's 48 MiB derives **380**.
 /// The budget is the promise; the entry count is derived from it, exactly as it is for
 /// imagery — see [`HEIGHT_CACHE_BUDGET_BYTES`].
 ///
-/// E1's error term costs **two bytes per tile** — about a kilobyte across the whole
-/// resident set — and the derived entry count does not move with it: 50 331 648 / 132 098
-/// is 381 either way.
-pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2 + 2 * (16 * 16 * 2) + 2;
+/// E1's error term costs two bytes a tile and F5's pyramid another 168 — together **0.13 %**
+/// of the entry, and one entry off the derived count: 50 331 648 / 132 266 is 380 where
+/// 50 331 648 / 132 098 was 381. That is what four levels of measured shape cost in memory,
+/// and it is the whole of it.
+pub const HEIGHT_TILE_BYTES: usize =
+    256 * 256 * 2 + 2 * (16 * 16 * 2) + 2 + 2 * crate::globe::terrain::HEIGHT_DETAIL_PYRAMID_CELLS;
 
 /// What to do with the sub-sea-level samples the Terrarium source carries.
 ///
@@ -273,6 +277,20 @@ pub struct TerrainConfig {
     /// `po_plain_to_alps` — flat ground, same screen area — moves by **0 to 3 tiles**
     /// while `alps_inn_valley` doubles. The knob costs what the ground is worth.
     pub max_geometric_error_px: f32,
+    /// **F5** — the deepest level the geometric term may demand refinement *into*
+    /// (`docs/terrain-plan.md` §9 F5). At and below it a node's stored error is zero and
+    /// `apply_lod` refines on imagery sharpness alone.
+    ///
+    /// Defaults to [`DETAIL_MAX_Z`], which F5 raised from 15 to **19**: the source tile is
+    /// 256² and the mesh is 17², so a z15 tile draws a 16:1 decimation of data it already
+    /// holds and four more levels of it are resolvable before the lattice reaches 1:1. E1's
+    /// 15 came from Cesium, where the heightmap *is* the mesh lattice and the argument
+    /// holds; see `DETAIL_MAX_Z` for why it does not hold here.
+    ///
+    /// A knob rather than a constant because it is the one column §9 F5's cost table sweeps,
+    /// and because it is the natural thing for a device measurement to lower: it trades
+    /// near-field shape for tiles one level at a time.
+    pub detail_max_z: u8,
 }
 
 impl Default for TerrainConfig {
@@ -292,6 +310,8 @@ impl Default for TerrainConfig {
             // E1. Cesium's own `maximumScreenSpaceError` default, kept until the cost
             // table in `docs/terrain-plan.md` §8 gives a reason to move it.
             max_geometric_error_px: 12.0,
+            // F5. 19, not E1's 15 — `DETAIL_MAX_Z` carries the whole argument.
+            detail_max_z: crate::globe::terrain::DETAIL_MAX_Z,
         }
     }
 }
@@ -603,15 +623,16 @@ mod tests {
     #[test]
     fn the_default_height_budget_lands_on_the_measured_entry_count() {
         let terrain = TerrainConfig::default();
-        assert_eq!(HEIGHT_TILE_BYTES, 132_098);
+        // E1's two bytes plus F5's 168-byte pyramid, on top of the samples and the mips.
+        assert_eq!(HEIGHT_TILE_BYTES, 132_266);
         assert_eq!(
             terrain.height_cache_budget_bytes, HEIGHT_CACHE_BUDGET_BYTES,
             "the default must come from the one constant that states the platform split"
         );
         #[cfg(not(target_os = "android"))]
-        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 381);
+        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 380);
         #[cfg(target_os = "android")]
-        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 254);
+        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 253);
     }
 
     #[test]

@@ -38,6 +38,25 @@ pub const HEIGHT_MIP_BLOCK: usize = HEIGHT_TILE_DIM / HEIGHT_MIP_DIM;
 /// [`super::heightfield`].
 pub const HEIGHT_DETAIL_STEP: usize = HEIGHT_TILE_DIM / 16;
 
+/// Levels below this tile's own for which [`HeightTile::detail_below`] stores a measured
+/// error — **F5** of `docs/terrain-plan.md` §9.
+///
+/// A descendant `k` levels below this tile draws the same 17×17 mesh lattice over
+/// `4^k`-times less ground, so it decimates this tile's texels `HEIGHT_DETAIL_STEP / 2^k`:1.
+/// At `k = 4` that is 1:1 — the mesh lands on every texel and draws the data exactly — so
+/// `k ∈ {1, 2, 3}` is the whole of what there is to store, and everything deeper is
+/// **exactly** zero rather than approximately so.
+pub const HEIGHT_DETAIL_LEVELS: u32 = 3;
+
+/// Entries in [`HeightTile::detail_below`]'s pyramid: `4 + 16 + 64`.
+///
+/// One per descendant at each stored level — `4^k` sub-tiles at level `k` — because a whole
+/// -tile maximum is the wrong window for a descendant. F5 measured that: scored against the
+/// error the mesh really leaves, a whole-tile number at the right lattice over-states by a
+/// median 1.25× at z16 and **2.0×** at z17 and z18, and over-stating is what refines a level
+/// too deep across a whole near field.
+pub const HEIGHT_DETAIL_PYRAMID_CELLS: usize = 4 + 16 + 64;
+
 /// A decoded height tile: 256x256 samples in metres, plus the extrema and the
 /// min/max pyramid Phase D will cull with.
 ///
@@ -58,6 +77,9 @@ pub struct HeightTile {
     /// This tile's **measured geometric error**, metres — E1 of
     /// `docs/terrain-plan.md` §8. See [`Self::detail`].
     detail: i16,
+    /// The same measurement for each descendant one, two and three levels down — F5 of
+    /// `docs/terrain-plan.md` §9. See [`Self::detail_below`] for the layout.
+    detail_below: Box<[i16; HEIGHT_DETAIL_PYRAMID_CELLS]>,
 }
 
 /// Decodes one Terrarium PNG's RGBA bytes.
@@ -132,12 +154,18 @@ fn decode_texel(r: u8, g: u8, b: u8, ocean: OceanPolicy) -> i16 {
 /// samples, so a field that is already linear measures exactly zero deviation — the
 /// property the whole measurement rests on, and the one an assumed-uniform spacing would
 /// quietly break in the last row and column.
-fn detail_lattice() -> [(usize, usize, f64); HEIGHT_TILE_DIM] {
+/// `step` is [`HEIGHT_DETAIL_STEP`] for the tile's own mesh and `HEIGHT_DETAIL_STEP / 2^k`
+/// for a descendant `k` levels down — F5. A descendant's window always starts on a multiple
+/// of its own `step` (the window is `i · 256/2^k` texels wide and `step` divides that), so
+/// the *global* lattice below **is** that descendant's own mesh lattice restricted to its
+/// window, and there is one lattice rather than one per sub-tile.
+fn detail_lattice(step: usize) -> [(usize, usize, f64); HEIGHT_TILE_DIM] {
+    let step = step.max(1);
     let mut out = [(0usize, 0usize, 0.0f64); HEIGHT_TILE_DIM];
     let last = HEIGHT_TILE_DIM - 1;
     for (x, slot) in out.iter_mut().enumerate() {
-        let lo = (x / HEIGHT_DETAIL_STEP) * HEIGHT_DETAIL_STEP;
-        let hi = (lo + HEIGHT_DETAIL_STEP).min(last);
+        let lo = (x / step) * step;
+        let hi = (lo + step).min(last);
         let span = hi - lo;
         let w = if span == 0 {
             0.0
@@ -154,16 +182,30 @@ fn detail_lattice() -> [(usize, usize, f64); HEIGHT_TILE_DIM] {
 /// `ceil` rather than round: the number is used as an upper bound on the drawn surface's
 /// error, and rounding a 0.4 m deviation to zero would report a field as flat that is not.
 fn measure_detail(data: &[i16; HEIGHT_TILE_TEXELS]) -> i16 {
-    let lattice = detail_lattice();
+    measure_detail_over(
+        data,
+        &detail_lattice(HEIGHT_DETAIL_STEP),
+        [0, HEIGHT_TILE_DIM, 0, HEIGHT_TILE_DIM],
+    )
+}
+
+/// [`measure_detail`] on a `lattice` already built, restricted to the texel window
+/// `[x0, x1) × [y0, y1)` — the shape F5's pyramid needs, and the shape
+/// [`measure_detail`] is now one call of.
+fn measure_detail_over(
+    data: &[i16; HEIGHT_TILE_TEXELS],
+    lattice: &[(usize, usize, f64); HEIGHT_TILE_DIM],
+    [x0, x1, y0, y1]: [usize; 4],
+) -> i16 {
     let mut worst = 0.0f64;
-    for y in 0..HEIGHT_TILE_DIM {
-        let (y0, y1, wy) = lattice[y];
-        for x in 0..HEIGHT_TILE_DIM {
-            let (x0, x1, wx) = lattice[x];
-            let h00 = data[y0 * HEIGHT_TILE_DIM + x0] as f64;
-            let h10 = data[y0 * HEIGHT_TILE_DIM + x1] as f64;
-            let h01 = data[y1 * HEIGHT_TILE_DIM + x0] as f64;
-            let h11 = data[y1 * HEIGHT_TILE_DIM + x1] as f64;
+    for y in y0..y1.min(HEIGHT_TILE_DIM) {
+        let (ly0, ly1, wy) = lattice[y];
+        for x in x0..x1.min(HEIGHT_TILE_DIM) {
+            let (lx0, lx1, wx) = lattice[x];
+            let h00 = data[ly0 * HEIGHT_TILE_DIM + lx0] as f64;
+            let h10 = data[ly0 * HEIGHT_TILE_DIM + lx1] as f64;
+            let h01 = data[ly1 * HEIGHT_TILE_DIM + lx0] as f64;
+            let h11 = data[ly1 * HEIGHT_TILE_DIM + lx1] as f64;
             let top = h00 + (h10 - h00) * wx;
             let bottom = h01 + (h11 - h01) * wx;
             let interpolated = top + (bottom - top) * wy;
@@ -174,6 +216,46 @@ fn measure_detail(data: &[i16; HEIGHT_TILE_TEXELS]) -> i16 {
         }
     }
     worst.ceil().min(i16::MAX as f64) as i16
+}
+
+/// **F5** — [`HeightTile::detail_below`]'s pyramid, computed once over a finished grid.
+///
+/// Three passes over the 65 536 texels, one per stored level, each restricted to the
+/// `4^k` sub-tiles of that level in turn. The whole pyramid is the same arithmetic
+/// [`measure_detail`] already does, at three finer lattices and over smaller windows, so
+/// the number a descendant reads is the number its own mesh really leaves — not a scaled
+/// guess and not its ancestor's whole-tile maximum. F5's table scores both of those
+/// against this one.
+fn measure_detail_pyramid(
+    data: &[i16; HEIGHT_TILE_TEXELS],
+) -> Box<[i16; HEIGHT_DETAIL_PYRAMID_CELLS]> {
+    let mut out = Box::new([0i16; HEIGHT_DETAIL_PYRAMID_CELLS]);
+    for k in 1..=HEIGHT_DETAIL_LEVELS {
+        let lattice = detail_lattice(HEIGHT_DETAIL_STEP >> k);
+        let side = 1usize << k;
+        let span = HEIGHT_TILE_DIM / side;
+        let base = pyramid_base(k);
+        for iy in 0..side {
+            for ix in 0..side {
+                out[base + iy * side + ix] = measure_detail_over(
+                    data,
+                    &lattice,
+                    [ix * span, (ix + 1) * span, iy * span, (iy + 1) * span],
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Where level `k`'s `4^k` entries start in the flat pyramid: `0`, `4`, `20`.
+#[inline]
+const fn pyramid_base(k: u32) -> usize {
+    match k {
+        1 => 0,
+        2 => 4,
+        _ => 20,
+    }
 }
 
 impl HeightTile {
@@ -202,6 +284,7 @@ impl HeightTile {
         let h_max = *max_mip.iter().max().expect("mip is non-empty");
 
         let detail = measure_detail(&data);
+        let detail_below = measure_detail_pyramid(&data);
 
         Self {
             data,
@@ -210,6 +293,7 @@ impl HeightTile {
             min_mip,
             max_mip,
             detail,
+            detail_below,
         }
     }
 
@@ -250,6 +334,36 @@ impl HeightTile {
     #[inline]
     pub fn detail(&self) -> i16 {
         self.detail
+    }
+
+    /// **F5** — [`Self::detail`] for the descendant `k` levels below this tile whose share
+    /// of its texel grid is sub-tile `(ix, iy)` of the `2^k × 2^k` grid. Metres.
+    ///
+    /// `k = 0` is [`Self::detail`] itself. `k > `[`HEIGHT_DETAIL_LEVELS`] returns **exactly
+    /// zero**, and that is a fact rather than a cut-off: at `k = 4` the mesh's lattice lands
+    /// on every texel of its window, so it draws the data it has and there is no error left
+    /// to report. `ix`/`iy` out of range are clamped, so a caller that has rounded a UV is
+    /// answered rather than panicking.
+    ///
+    /// # This number is tied to `mesh_segments = 16`, exactly as [`HEIGHT_DETAIL_STEP`] is
+    ///
+    /// The stored lattices are `8`, `4` and `2` texels, which are the descendant's mesh
+    /// spacing only while the mesh lays 17 samples across a tile. At 32 the whole ladder
+    /// shifts one level and every entry over-states; at 8 it under-states. Same situation
+    /// and same remedy as `HEIGHT_DETAIL_STEP`'s, and §9 F1's reason for leaving
+    /// `mesh_segments` at 16 is unchanged by F5.
+    #[inline]
+    pub fn detail_below(&self, k: u32, ix: u32, iy: u32) -> i16 {
+        if k == 0 {
+            return self.detail;
+        }
+        if k > HEIGHT_DETAIL_LEVELS {
+            return 0;
+        }
+        let side = 1u32 << k;
+        let ix = ix.min(side - 1) as usize;
+        let iy = iy.min(side - 1) as usize;
+        self.detail_below[pyramid_base(k) + iy * side as usize + ix]
     }
 
     /// A tile of exact zeros — sea level everywhere, no relief.
