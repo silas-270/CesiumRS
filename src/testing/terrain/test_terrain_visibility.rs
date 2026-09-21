@@ -545,6 +545,134 @@ fn corpus_span(id: TileId, h_min_m: i32, h_max_m: i32, clamp: bool) -> HeightBou
     }
 }
 
+/// **D3's occluder floor has its own inheritance relation, and the corpus measures it
+/// directly** — `docs/terrain-plan.md` §7f.
+///
+/// `d1_inherit_margin_covers_the_corpus` next door measures the *interval*: `lo` with the
+/// skirt allowance already subtracted, and `hi`. `HeightBounds::floor` is neither. It is
+/// the raw `h_min`, and the statement `Heightfield::child_extra` needs for it is
+///
+/// ```text
+///   child.h_min ≥ parent.h_min − M[child.z]
+/// ```
+///
+/// which `pyramid_extrema.csv` answers **without a derivation**, because its rows are raw
+/// `h_min_m`/`h_max_m` rather than spans. Until §7f that relation was obtained from the
+/// interval's instead, and paying for the change of variable cost the parent's whole-tile
+/// skirt allowance — `inherit_allowance_mm`, built on four times the Earth's whole height
+/// range, **84 km a level and compounding**. A march cell's floor is a minimum over
+/// everything stamped into it, so one node on an inherited interval within range of the
+/// camera took the entire cell to the bottom of the world, and the stage's ridge with it.
+///
+/// What this test says is that the detour was never buying anything: the table already in
+/// `HEIGHT_INHERIT_MARGIN_M` clears the floor relation by **4.2×** at its worst level,
+/// against the 4.4× it clears the interval relation by at its own worst. Same corpus, same
+/// table, same order of headroom.
+///
+/// Both ocean policies, because the constant cannot know which one is configured — under
+/// `ClampToZero` the floor is `max(h_min, 0)` on both sides, which is the clamped column.
+///
+/// A relaxation of an occluder bound is the error class that loses geometry, so the
+/// margin is asserted with **`EXAGGERATION_HEADROOM`** folded in: the quantity scales with
+/// `TerrainConfig::exaggeration`, `child_extra` is a static dispatch that cannot read it,
+/// and `INHERIT_RANGE_M` already declares the table to cover a factor of four.
+#[test]
+fn d1_floor_inherit_margin_covers_the_corpus() {
+    /// The exaggeration the table is declared to cover — `INHERIT_RANGE_M`'s own factor.
+    const EXAGGERATION_HEADROOM: f64 = 4.0;
+
+    let csv = std::fs::read_to_string("assets/terrain_fixtures/pyramid_extrema.csv")
+        .expect("assets/terrain_fixtures/pyramid_extrema.csv — see the README there");
+
+    let mut rows: std::collections::HashMap<(u8, u32, u32), (i32, i32)> =
+        std::collections::HashMap::new();
+    for line in csv.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = line.split(',').collect();
+        assert_eq!(f.len(), 5, "malformed corpus row: {line}");
+        rows.insert(
+            (
+                f[0].parse().unwrap(),
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+            ),
+            (f[3].parse().unwrap(), f[4].parse().unwrap()),
+        );
+    }
+    assert!(rows.len() > 500, "corpus is too small to bound a tail");
+
+    // Per child level: (pairs, worst needed metres, the pair that needed it).
+    let mut per_level: Vec<(usize, f64, Option<(TileId, bool)>)> = vec![(0, f64::MIN, None); 32];
+    let mut failures: Vec<String> = Vec::new();
+
+    for (&(z, x, y), &(lo, _hi)) in &rows {
+        if z < 2 {
+            continue;
+        }
+        let parent = (z - 1, x / 2, y / 2);
+        let Some(&(plo, _phi)) = rows.get(&parent) else {
+            continue;
+        };
+        for clamp in [true, false] {
+            let (c_floor, p_floor) = if clamp {
+                (lo.max(0) as f64, plo.max(0) as f64)
+            } else {
+                (lo as f64, plo as f64)
+            };
+            // What `child_extra` has to lower the parent's floor by for it to stay a
+            // lower bound on the child's own ground.
+            let needed_m = p_floor - c_floor;
+
+            let slot = &mut per_level[z as usize];
+            slot.0 += 1;
+            if needed_m > slot.1 {
+                slot.1 = needed_m;
+                slot.2 = Some((TileId { z, x, y }, clamp));
+            }
+
+            let margin_m = cesium_engine::globe::terrain::inherit_margin_mm(z) * 1.0e6;
+            if needed_m * EXAGGERATION_HEADROOM > margin_m {
+                failures.push(format!(
+                    "z{z} {x}/{y} (clamp={clamp}): needs {needed_m:.0} m x{EXAGGERATION_HEADROOM} \
+                     exaggeration, HEIGHT_INHERIT_MARGIN_M gives {margin_m:.0} m"
+                ));
+            }
+        }
+    }
+
+    println!("  [D3 floor inherit margin] from assets/terrain_fixtures/pyramid_extrema.csv");
+    println!(
+        "    {:>3} {:>7} {:>15} {:>13} {:>9}",
+        "z", "pairs", "max needed (m)", "margin (m)", "headroom"
+    );
+    let mut worst_headroom = f64::INFINITY;
+    for (z, (pairs, worst, who)) in per_level.iter().enumerate() {
+        if *pairs == 0 {
+            continue;
+        }
+        let margin_m = cesium_engine::globe::terrain::inherit_margin_mm(z as u8) * 1.0e6;
+        let headroom = if *worst > 0.0 {
+            worst_headroom = worst_headroom.min(margin_m / worst);
+            format!("{:.1}x", margin_m / worst)
+        } else {
+            "n/a".to_string()
+        };
+        println!(
+            "    {z:>3} {pairs:>7} {worst:>15.0} {margin_m:>13.0} {headroom:>9}   worst: {:?}",
+            who.map(|(id, c)| (id.z, id.x, id.y, c))
+        );
+    }
+    println!("    worst headroom over the corpus: {worst_headroom:.2}x (exaggeration 1.0)");
+
+    assert!(
+        failures.is_empty(),
+        "the inherited occluder floor is not a lower bound on the child's ground at {} \
+         pair(s) — every one of these is a march cell standing over ground that is not \
+         there, i.e. a false negative:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
+
 /// **The one genuine soundness trap in D1** (`docs/terrain-plan.md` §7), measured.
 ///
 /// For every parent/child pair in the committed corpus, the child's own interval must fit

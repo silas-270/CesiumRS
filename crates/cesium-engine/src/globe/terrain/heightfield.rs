@@ -404,9 +404,14 @@ pub struct HeightBounds {
     /// interval it contains), so an occluder taken from `lo` would sit kilometres below
     /// the ridge it is supposed to represent and D3 would cull almost nothing.
     ///
-    /// Always `lo <= floor <= hi`. It widens downward with the inheritance margin like
-    /// `lo` does, so on an unloaded chain it is loose in the safe direction: a floor that
-    /// is too low occludes too little, which costs false positives and never a subtree.
+    /// Always `lo <= floor <= hi`. On an inherited interval it widens downward by
+    /// [`inherit_margin_mm`] — the table's per-level margin and **nothing else**, unlike
+    /// `lo`, which also hands back the parent's whole-tile skirt allowance. That
+    /// asymmetry is measured rather than assumed; see [`Heightfield::child_extra`]. Loose
+    /// in the safe direction either way: a floor that is too low occludes too little,
+    /// which costs false positives and never a subtree. The reason it is not *allowed* to
+    /// be arbitrarily loose is that a march cell's floor is a **minimum** over everything
+    /// stamped into it, so a single bottomless node takes its whole cell with it.
     pub floor: f64,
     /// [`Self::floor`] again, but per **sub-cell** of a
     /// [`OCCLUDER_GRID`]×[`OCCLUDER_GRID`] division of the tile — row-major, `u` along the
@@ -629,7 +634,8 @@ const INHERIT_RANGE_M: f64 = 4.0 * (GLOBAL_H_MAX_M - GLOBAL_H_MIN_M);
 
 /// An upper bound, **megametres**, on the *whole-tile* skirt allowance the **parent** of
 /// `child` could have had — what [`Heightfield::child_extra`] must hand back when it
-/// widens. See that function for the two reasons it is owed.
+/// widens **the interval**. See that function for why it is owed there, and for why
+/// [`HeightBounds::floor`] does not owe it at all.
 ///
 /// `skirt_allowance(parent, 16, INHERIT_RANGE_M)` is exactly `range + sagitta(parent)`
 /// with `range` at its global maximum, which bounds `allow_whole(parent)` for any data the
@@ -972,33 +978,60 @@ impl SurfaceModel for Heightfield {
     /// # The extra downward term, and why the corpus does not need re-measuring
     ///
     /// The margin table was measured on box spans whose skirt allowance was the *whole
-    /// tile's* height range. Two things since then read the lower end differently and
-    /// both need that difference paid back, in the same currency:
+    /// tile's* height range. **D1's follow-up** replaced that with the tight edge-window
+    /// bound ([`HeightTile::edge_window_range`](crate::globe::terrain::HeightTile::edge_window_range)),
+    /// which raises the child's `lo` — that helps — *and* the parent's, which does not.
+    /// With `allow` for the skirt allowance and `M` for the table's margin, the corpus
+    /// measured
     ///
-    /// 1. **D1's follow-up** replaced the whole-tile range with the tight edge-window
-    ///    bound ([`HeightTile::edge_window_range`](crate::globe::terrain::HeightTile::edge_window_range)).
-    ///    That raises the child's `lo`, which helps, *and* the parent's, which does not.
-    ///    With `allow` for the skirt allowance and `M` for the table's margin, the corpus
-    ///    measured
+    /// ```text
+    ///   child.h_min − allow_whole(child) ≥ parent.h_min − allow_whole(parent) − M
+    /// ```
     ///
-    ///    ```text
-    ///      child.h_min − allow_whole(child) ≥ parent.h_min − allow_whole(parent) − M
-    ///    ```
+    /// and what is needed now is the same line with `allow_edge` on both sides.
+    /// `allow_edge ≤ allow_whole` gives the child's side away, and
+    /// `allow_edge(parent) ≥ sagitta(parent)` gives the parent's for one extra
+    /// `range(parent)` of downward slack.
     ///
-    ///    and what is needed now is the same line with `allow_edge` on both sides.
-    ///    `allow_edge ≤ allow_whole` gives the child's side away, and
-    ///    `allow_edge(parent) ≥ sagitta(parent)` gives the parent's for one extra
-    ///    `range(parent)` of downward slack.
-    /// 2. **[`HeightBounds::floor`]**, D3's occluder, which the corpus never measured at
-    ///    all. What it measured is `parent.lo − child.lo`; turning that into a bound on
-    ///    `parent.h_min − child.h_min` — which is the statement `floor` needs — costs
-    ///    exactly `allow_whole(parent) = range(parent) + sagitta(parent)` back.
-    ///
-    /// So both want the *parent's* whole-tile allowance returned, and
+    /// So the *interval* wants the parent's whole-tile allowance returned, and
     /// [`inherit_allowance_mm`] is an upper bound on it that depends only on the parent's
     /// level. The composition then closes against the numbers already in
     /// [`HEIGHT_INHERIT_MARGIN_M`], rather than against a re-measurement the committed
     /// corpus (whole-tile extrema only) could not support.
+    ///
+    /// # [`HeightBounds::floor`] does **not** pay that allowance, and this is why
+    ///
+    /// D3's occluder was widened by the same `w` as `lo` on the argument that the corpus
+    /// measures `parent.lo − child.lo` and that turning it into the statement `floor`
+    /// needs — `parent.h_min − child.h_min ≤ M` — costs `allow_whole(parent)` back. The
+    /// argument is sound and the premise is wrong: `pyramid_extrema.csv` holds
+    /// **`h_min_m` and `h_max_m` raw**, one row per tile per level, so the relation
+    /// `floor` needs is not a derivation from the interval's — it is a *direct*
+    /// measurement on the same corpus, and
+    /// `testing::terrain::test_terrain_visibility::d1_floor_inherit_margin_covers_the_corpus`
+    /// is it:
+    ///
+    /// | z | worst `parent.h_min − child.h_min` | [`HEIGHT_INHERIT_MARGIN_M`] | headroom |
+    /// |--:|--:|--:|--:|
+    /// | 2 | 1 350 m | 20 000 m | 14.8× |
+    /// | 8 | 1 517 m | 8 000 m | 5.3× |
+    /// | **9** | **1 414 m** | **6 000 m** | **4.2×** |
+    /// | 12 | 16 m | 1 500 m | 94× |
+    /// | 15 | 2 m | 200 m | 100× |
+    ///
+    /// The worst level clears the table by 4.2×, against the 4.4× the *interval* relation
+    /// clears it by at z3 and z11 — i.e. the floor needs no more margin than the two ends
+    /// the table was measured for, and the allowance was never buying soundness on this
+    /// side. It was buying **84 km a level**, compounding, and a cell floor is a minimum
+    /// over everything stamped into it, so one node on an inherited interval anywhere near
+    /// the camera took its whole polar cell to the bottom of the march. That is why
+    /// `rendering::terrain_step_capture` read 62 → 62 and 71 → 71 while the counting
+    /// harness, whose fetch policy leaves no such node in range, read 80 → 70
+    /// (`docs/terrain-plan.md` §7e, "Where the renderer still reads 62 → 62").
+    ///
+    /// **A relaxation of the occluder bound is the error class that opens holes**, which
+    /// is why it is a measurement rather than an argument, and why `floor`'s new value is
+    /// still a *widening* — `parent.floor − M`, never `parent.floor`.
     ///
     /// **A level-constant, not `parent.hi − parent.lo`.** The parent's own interval is the
     /// obvious source for its range and it is a trap: down an unloaded chain the widening
@@ -1012,11 +1045,14 @@ impl SurfaceModel for Heightfield {
     /// measured.
     #[inline]
     fn child_extra(parent: &HeightBounds, child: &TileId) -> HeightBounds {
-        let w = inherit_margin_mm(child.z) + inherit_allowance_mm(child);
-        let floor = parent.floor - w;
+        let m = inherit_margin_mm(child.z);
+        let w = m + inherit_allowance_mm(child);
+        // **The floor pays the table and nothing else.** See the section above for why
+        // this is not `parent.floor - w`.
+        let floor = parent.floor - m;
         HeightBounds {
             lo: parent.lo - w,
-            hi: parent.hi + inherit_margin_mm(child.z),
+            hi: parent.hi + m,
             floor,
             // A parent's sub-cells are not a child's, and the child covers one quadrant of
             // the parent rather than a scaled copy of it. The scalar floor is what is still
