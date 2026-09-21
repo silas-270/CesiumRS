@@ -4,6 +4,18 @@ use crate::globe::tiles::tile_cache::TileCacheManager;
 use crate::globe::tiles::tile_fetcher::{TileFetcher, TileImage, TilePriority};
 use tokio::sync::mpsc;
 
+/// Maximum number of imagery textures uploaded to the GPU in a single frame.
+///
+/// When the camera zooms out rapidly, large numbers of tile fetches can complete
+/// simultaneously and pile up in the channel. Without a cap, the unbounded drain
+/// in [`TileTextureManager::update`] uploads all of them in one call, which can
+/// exhaust VRAM on integrated GPUs (causing `SurfaceError::OutOfMemory`). The
+/// remaining backlog drains naturally over subsequent frames at this budget per frame,
+/// which is imperceptible at 60 fps (worst-case a full burst of 200 tiles clears in
+/// ~7 frames, under 120 ms). Analogous to `MESH_REBUILD_BUDGET_PER_FRAME` in
+/// `globe/tiles/system.rs`.
+pub const TEXTURE_UPLOAD_BUDGET_PER_FRAME: usize = 30;
+
 /// Tracks the real decoded texel width of the current imagery style, live rather
 /// than the frozen [`DEFAULT_IMAGERY_TEXTURE_SIZE_PX`] this replaces (WP4/A,
 /// `docs/pre-terrain-plan.md`) — deliberately a small, GPU-free struct (no
@@ -185,8 +197,15 @@ impl TileTextureManager {
     }
 
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        while let Ok((id, result)) = self.rx.try_recv() {
-            self.process_tile_result(device, queue, id, result);
+        // Cap GPU uploads per frame to prevent VRAM exhaustion on burst completions.
+        // When the camera zooms out rapidly, hundreds of tiles can complete simultaneously;
+        // draining them all in one frame caused a `SurfaceError::OutOfMemory` crash on
+        // integrated GPUs. The remainder drains naturally over subsequent frames.
+        for _ in 0..TEXTURE_UPLOAD_BUDGET_PER_FRAME {
+            match self.rx.try_recv() {
+                Ok((id, result)) => self.process_tile_result(device, queue, id, result),
+                Err(_) => break,
+            }
         }
     }
 
