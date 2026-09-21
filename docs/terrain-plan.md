@@ -1456,6 +1456,159 @@ its own output format cannot make that statement.
 * One pin moved, and it is an accounting one: `resident_bytes` 132 096 → 132 098, E1's two
   bytes per height tile. The derived cache entry count stays 254.
 
+### E2 — what landed
+
+**The mesh cache entry carries its height source; it is not part of the key.** Phase C put
+`TileMesh::height_source` in place for this and it now has two readers: `TileBuffers`
+copies it on the way into `LruCache<TileId, TileBuffers>`, and `update_logic`'s
+`missing_meshes` pass reads it back out. A compound `(TileId, height_source)` key was the
+obvious alternative and it is the wrong shape: two meshes of the same tile never need to
+coexist — the later build replaces the earlier one — so a compound key buys nothing but a
+second live entry per tile for the LRU to evict, while what E2 needs is to ask an *existing*
+entry which data it was built from. That is a field.
+
+**The staleness test is the mesh builder's own two predicates, not a third one.**
+`tiles::system::fresher_height_source` runs `status_of` (may a build happen at all?) and
+`resolve_source` (which tile would answer?) — exactly what `HeightPatch::sample` runs. A
+different question here would let a rebuild be scheduled that then produced the identical
+mesh, every frame, forever.
+
+**No downgrade, and it is what makes the loop terminate.** A rebuild is offered only when
+the available source is *strictly deeper* than the recorded one. The two ways it could be
+shallower are an LRU eviction of the deep tile and a negative-cache entry expiring; in both
+the mesh already on the card is the better of the two, and replacing it would be a hillside
+visibly dropping. `display_state`'s rule 4 refuses the same thing for textures, and §8 is
+right that geometry is less forgiving. The rule also bounds the whole process: every
+accepted rebuild raises `height_source.z`, which stops at `max_level`. There is nothing that
+can flip back, so E2 needs no analogue of `display_state`'s 200 ms grace — that timer exists
+to absorb a set that oscillates, and this one cannot.
+
+#### The case E2 is for does not occur in normal flight, and that is a Phase C result
+
+§8 lists two triggers. Only one of them is a fetch failure, and the measurement says it is
+rare to the point of absence.
+
+`rendering::terrain_e2_capture::capture_an_approach_into_innsbruck` flies the real descent —
+eight settled steps from 6 000 m AGL to 100 m over runway 26, the same valley
+`terrain_e3_capture` lands in — and reads the engine's own rebuild counter at each:
+
+| eye AGL | 6 000 | 3 000 | 1 500 | 800 | 450 | 250 | 150 | 100 |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| visible tiles | 49 | 65 | 71 | 76 | 83 | 86 | 86 | 89 |
+| mesh rebuilds | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| still-frame delta | 0.000 % | 0.000 % | 0.000 % | 0.000 % | 0.000 % | 0.000 % | 0.000 % | 0.000 % |
+
+**Zero rebuilds over the whole approach**, and the *still-frame delta* — hold the camera
+exactly where it is, render one more frame, compare pixels — is exactly zero at every step.
+That column is the section's question asked directly: a non-zero value there is literally
+the ground moving while nobody moved the camera.
+
+The reason is Phase C, not luck. `status_of` answers `Ready` only once
+`source_tile_for(id)` has arrived *or failed*, so an ordinary mesh is built from the deepest
+data the source will ever serve for that tile and **nothing can improve on it**. A camera
+descending five levels over an alpine city does not invalidate the meshes it already has; it
+creates new nodes that have none, which is the `missing_meshes` path and predates terrain.
+So §8's worry — "a camera descending five levels can invalidate every visible mesh in one
+frame" — describes a globe where Phase C had not happened.
+
+What is left is genuinely narrow:
+
+1. **A tile's own height fetch fails**, the mesh comes from an ancestor, and the retry —
+   after `negative_cache_duration`, 10 s — succeeds. Real, because the negative cache does
+   expire and `request_height_chain` does re-queue; but not observed once in any capture in
+   this section, because the Terrarium source serves every level ≤ z15 worldwide and there
+   is no systematic 404 to trip over. Transient network failures are the only source, and
+   they are transient.
+2. **Terrain switched on at runtime** (the debug panel, `ViewerCommand::TerrainSetEnabled`),
+   after which every resident mesh is a flat one carrying `height_source: None`. Before E2
+   that switch did nothing to geometry already on the card; now it does. The reverse
+   direction deliberately rebuilds nothing — with no `HeightTileManager` there is no
+   staleness test to run, which is the same `None` arm that keeps the flat path free, and
+   the relief meshes simply age out of the LRU.
+
+Building the machinery anyway is still the right call, but the reason is (2) and the
+`insert_failed` path, not a descent.
+
+#### The budget, and what actually binds it
+
+`MESH_REBUILD_BUDGET_PER_FRAME = 4`, and the arithmetic is *not* what sets it.
+`testing::terrain::test_mesh_lifetime::e2_what_one_rebuild_costs`, measured the way
+`bench_update` measures — warm up, 200 iterations, mean per call, never a single-shot clock:
+
+| `mesh_segments` | `HeightPatch::sample` | `generate_on::<Heightfield>` | 4 × sample | of a 16.6 ms frame |
+|--:|--:|--:|--:|--:|
+| **16** (shipped) | **7.8 µs** | 16.1 µs | **31.3 µs** | **0.19 %** |
+| 32 | 31.0 µs | 51.5 µs | 123.9 µs | 0.75 % |
+| 64 | 82.4 µs | 190.2 µs | 329.8 µs | 1.99 % |
+
+Only the first column lands on the frame — the patch is sampled on the update thread so it
+can cross into a rayon worker without a borrow (§6's `BuildCtx` split), and the second column
+is off it. A budget of forty would still fit in a frame. What sets the number at four is the
+*visual* argument §8 states: four tiles changing shape over successive frames reads as the
+surface sharpening, forty in one frame reads as a jolt.
+
+**A budget of slots, not of offers.** The first version of this counted a tile against the
+budget every frame it was stale — and a tile stays stale in the cache until its replacement
+lands, several frames later. Measured on the staged burst below: **90 "rebuilds" to finish 74
+tiles**, the effective budget halved, and the nearest tiles head-of-line blocking the ones
+behind them. `select_mesh_rebuilds` now drops anything `MeshWorkerPool::is_requested` already
+has, and the same burst takes **45**.
+
+**Nearest to the camera first.** When a burst does land, a stale mesh 200 km out is a few
+pixels of silhouette and the one under the aircraft is the ground it is about to touch. Ties
+break on `(z, x, y)`, so a headless capture is reproducible frame for frame.
+
+#### The burst, forced and photographed
+
+A mechanism nobody has seen work is a mechanism nobody should trust, and the approach above
+never triggers it. `capture_a_staged_rebuild_burst` stages the worst case the engine can
+produce, at 900 m over Innsbruck: every height tile from z11 down marked failed *before the
+first mesh is built* (a mesh built from good data is never downgraded — that is the rule, not
+an accident), so all 74 visible meshes come from a **z10** ancestor; then all 120 real height
+tiles injected in one frame through `insert_ready`, which is the same call the fetcher makes
+when a retry lands, with the latency taken out.
+
+| | |
+|---|--:|
+| rebuilds | 45, over 34 frames |
+| worst single frame | **4**, the budget |
+| total change, coarse → rebuilt | 58.5 % of the frame |
+| worst single frame's share of it | 18.1 % |
+
+The two stills are unambiguous: the near hillsides and the valley floor sit metres too high
+and read as slabs in `e2_burst_0_coarse_ancestors.png`, and are the Inn valley in
+`e2_burst_1_rebuilt.png`. The per-frame column is the rate limit doing its job — a 58.5 %
+change delivered in twelve instalments instead of one. The worst instalment is still 18 %,
+and that is worth stating rather than hiding: nearest-first means the four biggest tiles on
+screen go first, so the early instalments are the large ones. The alternative orderings trade
+that against fixing the far field before the ground under the aircraft, which is the wrong
+trade.
+
+#### E2 — acceptance
+
+* `cargo test --release --lib culling::` — **32 passed, 0 failed, 1 ignored**, no re-pin of
+  `size_of::<QuadtreeNode<Ellipsoid>>() == 192`, `TilePatch<Ellipsoid> == 64`,
+  `HorizonCamera == 56` or `test_visible_set_digest_is_stable`.
+* **All 14 LOD-harness CSVs byte-identical** (`cmp`), `aggregate_ratio = 1.663`, 204 poses.
+  With terrain off `TileSystem::select_mesh_rebuilds` returns on its first `Option` test and
+  `missing_meshes` is bit-for-bit the list it was before E2.
+* `testing::terrain::test_mesh_lifetime`, seven tests and one `#[ignore]`d measurement. The
+  rebuild is driven end to end on the committed Zugspitze fixture — a z13 tile whose own
+  fetch failed, built from its z12 parent (which is that fixture box-filtered 2:1, the
+  relation a real pyramid has), then rebuilt when the retry lands:
+
+  | source | max vertex error vs the DEM | RMS | height span |
+  |---|--:|--:|--:|
+  | z12 ancestor | 979.0 m | 149.0 m | 1 991.8 m |
+  | own z13 tile | 0.0 m | 0.0 m | 2 032.7 m |
+
+  and the burst test drains 54 stale meshes over six levels at ≤ 4 per frame, in exactly
+  `ceil(54/4) = 14` frames, nearest first, with none starved.
+* The five `rendering::terrain_capture` poses are unchanged to the tile: `terrain_off`
+  34 / 39 / 36 / 33 / 11, `terrain_on_d3` 110 / 52 / 75 / 75 / 12 — E1's table exactly. The
+  three `terrain_e3_capture` shots likewise (Innsbruck 83 tiles, 305 m AGL). Looked at, not
+  only counted.
+
 ### E3 — what landed
 
 **1. Field elevation, flipped.** `FlightPlanConfig::terrain_elevation` now defaults to `true`.

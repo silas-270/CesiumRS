@@ -14,6 +14,140 @@ pub struct RenderData<'a> {
     pub uv_scale_offset: [f32; 4],
 }
 
+/// **Phase E2** (`docs/terrain-plan.md` §8) — how many meshes may be rebuilt in one
+/// frame, at most.
+///
+/// The cap exists because the rebuild path has no natural back-pressure of its own:
+/// [`MeshWorkerPool`] is a rayon pool behind a `sync_channel(512)` and will accept
+/// every request a frame can produce, so without a ceiling one frame that invalidates
+/// a hundred meshes costs a hundred [`HeightPatch::sample`]s on the update thread and
+/// two hundred buffer creations on the render thread, in that frame.
+///
+/// **Where the four comes from.** Measured by
+/// `testing::terrain::test_mesh_lifetime::e2_what_one_rebuild_costs`, in the style
+/// `culling::bench_update` uses — warm up, then 200 iterations, mean per call, never a
+/// single-shot clock:
+///
+/// | `mesh_segments` | `HeightPatch::sample` | `generate_on::<Heightfield>` | 4 × sample | of a 16.6 ms frame |
+/// |--:|--:|--:|--:|--:|
+/// | **16** (shipped) | **7.8 µs** | 16.1 µs | **31.3 µs** | **0.19 %** |
+/// | 32 | 31.0 µs | 51.5 µs | 123.9 µs | 0.75 % |
+/// | 64 | 82.4 µs | 190.2 µs | 329.8 µs | 1.99 % |
+///
+/// Only the first column lands on the frame — `HeightPatch::sample` runs on the update
+/// thread by construction, so the patch can cross into a rayon worker without a borrow
+/// (see [`crate::globe::quadtree::surface::SurfaceModel::BuildCtx`]); the second column
+/// is off it.
+///
+/// **So the arithmetic is not what binds, and saying so is the honest reading of the
+/// table.** A full budget costs 0.19 % of a frame at the shipped density and 2 % at the
+/// density §6 C4 measured as the outer option, and a budget of forty would still fit.
+/// What sets the number is the *visual* argument: a rebuild is the ground under one
+/// tile changing shape, and geometry is less forgiving than texture — a texture swap is
+/// a blur, a mesh swap is the ground moving. Four tiles rippling over successive frames
+/// reads as the surface sharpening; forty in one frame reads as a jolt. Four is also
+/// enough that the worst burst this engine can produce — 54 stale meshes over six
+/// levels, `a_five_level_descent_cannot_rebuild_more_than_the_budget_in_one_frame` —
+/// drains in 14 frames, under a quarter of a second.
+///
+/// It is a ceiling, not a rate: the ordinary frame has nothing stale in it at all
+/// (see [`fresher_height_source`] for why staleness is rare), and the budget is only
+/// reached in the burst case a failed-then-retried fetch produces.
+pub const MESH_REBUILD_BUDGET_PER_FRAME: usize = 4;
+
+/// The height source `id`'s mesh *should* have been built from, if that is strictly
+/// better than the one it *was* built from — otherwise `None`.
+///
+/// This is E2's staleness test, and it is deliberately the same predicate pair the
+/// mesh builder itself runs: [`HeightTileManager::status_of`] for "is a build allowed
+/// at all" and [`HeightTileManager::resolve_source`] for "which tile would answer".
+/// Asking a different question here than [`HeightPatch::sample`] asks would let a
+/// rebuild be scheduled that then produces the identical mesh, forever.
+///
+/// # No downgrade — the geometry half of `display_state`'s rule
+///
+/// A rebuild is only offered when the available source is **strictly deeper** than the
+/// recorded one. The two ways it could be shallower are an LRU eviction of the deep
+/// tile and a fetch that has since expired out of the negative cache; in both, the
+/// mesh already on the card is the better of the two, and swapping it for a coarser
+/// one would be the ground visibly flattening. `display_state` refuses exactly this
+/// for textures (rule 4, "never downgraded back to a parent fallback"), and geometry
+/// is the less forgiving of the two: a texture downgrade is a blur, a mesh downgrade
+/// is a hillside dropping.
+///
+/// The rule is also what makes the loop terminate. Every accepted rebuild strictly
+/// raises `height_source.z`, which is bounded by
+/// [`TerrainConfig::max_level`](crate::globe::tiles::config::TerrainConfig::max_level),
+/// so a tile can be rebuilt at most that many times before no further rebuild can be
+/// offered. There is no oscillation to damp, which is why E2 needs no grace period of
+/// the kind `display_state`'s 200 ms serves: that timer exists to absorb a set that
+/// flips back and forth, and this one cannot flip back.
+///
+/// # How rare this is, and why that is a Phase C result rather than an E2 gap
+///
+/// Phase C made `status_of` answer `Ready` only once `source_tile_for(id)` has
+/// arrived **or failed**. So the ordinary mesh is built from the deepest tile the
+/// source will ever serve for it, and nothing can improve on it — a camera descending
+/// five levels creates *new* nodes with no mesh, which is the `missing_meshes` path,
+/// not this one. What is left is the case Phase C explicitly deferred to here: a tile
+/// whose own height fetch **failed**, so the mesh was built from an ancestor, and
+/// whose retry — the negative cache expires after
+/// `TileEngineConfig::negative_cache_duration` — later succeeds. That, plus switching
+/// terrain on at runtime, at which point every resident mesh carries `None`.
+pub fn fresher_height_source(
+    heights: &HeightTileManager,
+    id: TileId,
+    built_from: Option<TileId>,
+) -> Option<TileId> {
+    // Same gate as `HeightPatch::sample`: while the tile's own source is in flight no
+    // mesh may be built from an ancestor, so no *re*build may be either.
+    if heights.status_of(id) != PatchStatus::Ready {
+        return None;
+    }
+    let available = heights.resolve_source(id)?;
+    match built_from {
+        // Strictly deeper only. Equal is the steady state; shallower is a downgrade.
+        Some(had) if available.z <= had.z => None,
+        _ => Some(available),
+    }
+}
+
+/// The at most `budget` meshes worth rebuilding this frame, nearest to the camera
+/// first.
+///
+/// Free function rather than a method so it can be measured and tested against a bare
+/// [`HeightTileManager`], with no GPU device in the picture —
+/// `testing::terrain::test_mesh_lifetime` drives the whole policy through it.
+///
+/// **Nearest first**, and the ordering is the policy's second half. When a burst of
+/// retries lands, the tiles that matter are the ones filling the screen: a stale mesh
+/// 200 km out is a silhouette a few pixels tall, while the one under the aircraft is
+/// the ground it is about to touch. Ties break on `(z, x, y)` so the choice is
+/// deterministic frame to frame and a headless capture is reproducible.
+pub fn select_mesh_rebuilds(
+    heights: &HeightTileManager,
+    camera_pos: Vec3,
+    drawn: &[(TileId, Vec3, Option<TileId>)],
+    budget: usize,
+) -> Vec<TileId> {
+    if budget == 0 {
+        return Vec::new();
+    }
+    let mut stale: Vec<(f32, TileId)> = drawn
+        .iter()
+        .filter(|(id, _, built_from)| fresher_height_source(heights, *id, *built_from).is_some())
+        .map(|(id, center, _)| ((*center - camera_pos).length_squared(), *id))
+        .collect();
+
+    let order = |a: &(f32, TileId), b: &(f32, TileId)| {
+        a.0.total_cmp(&b.0)
+            .then_with(|| (a.1.z, a.1.x, a.1.y).cmp(&(b.1.z, b.1.x, b.1.y)))
+    };
+    stale.sort_unstable_by(order);
+    stale.truncate(budget);
+    stale.into_iter().map(|(_, id)| id).collect()
+}
+
 pub struct TileSystem {
     pub config: TileEngineConfig,
     pub texture_manager: TileTextureManager,
@@ -310,6 +444,40 @@ impl TileSystem {
         let h = self.height_manager.as_ref()?;
         let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
         Some(h.peek_height_at_lon_lat(lon, lat)? * self.config.terrain.exaggeration as f64)
+    }
+
+    /// **Phase E2** — the meshes among `drawn` that a better height tile has outdated,
+    /// at most [`MESH_REBUILD_BUDGET_PER_FRAME`] of them, nearest first.
+    ///
+    /// `drawn` is `(tile, its mesh's world centre, the height source that mesh was
+    /// built from)`, which is what the renderer's mesh cache can answer and this module
+    /// cannot — hence the argument rather than a lookup.
+    ///
+    /// **With terrain off this returns an empty `Vec` before looking at anything.**
+    /// There is no `HeightTileManager`, so there is no height source, so no mesh can
+    /// ever be out of date: every mesh on the flat path is `MeshBuild::Flat` and stays
+    /// correct forever. That is the same shape as [`Self::ground_height_at`]'s leading
+    /// `?` — one `Option` test, not a branch inside a loop.
+    ///
+    /// Tiles whose rebuild is **already on a worker** are dropped before the budget is
+    /// applied, because a stale mesh stays stale in the cache until its replacement
+    /// lands — several frames later — and would otherwise be re-picked every frame and
+    /// block the tiles behind it. See [`MeshWorkerPool::is_requested`] for the
+    /// measurement that found this.
+    pub fn select_mesh_rebuilds(
+        &self,
+        camera_pos: Vec3,
+        drawn: &[(TileId, Vec3, Option<TileId>)],
+    ) -> Vec<TileId> {
+        let Some(heights) = self.height_manager.as_ref() else {
+            return Vec::new();
+        };
+        let pending: Vec<(TileId, Vec3, Option<TileId>)> = drawn
+            .iter()
+            .filter(|(id, _, _)| !self.mesh_worker.is_requested(id))
+            .copied()
+            .collect();
+        select_mesh_rebuilds(heights, camera_pos, &pending, MESH_REBUILD_BUDGET_PER_FRAME)
     }
 
     /// Whether this system has any terrain at all — `false` whenever

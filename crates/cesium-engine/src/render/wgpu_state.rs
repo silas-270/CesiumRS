@@ -62,6 +62,15 @@ pub struct WgpuState<'a> {
     pub debug_camera_initialized: bool,
     pub last_requested_tiles_count: usize,
     pub last_missing_tiles_count: usize,
+    /// **Phase E2** — meshes queued for *rebuild* last frame because better height data
+    /// arrived, capped at
+    /// [`MESH_REBUILD_BUDGET_PER_FRAME`](crate::globe::tiles::system::MESH_REBUILD_BUDGET_PER_FRAME).
+    ///
+    /// Reported separately from `last_missing_tiles_count` on purpose: a missing mesh is
+    /// a tile with no geometry, a rebuilt one is a tile whose geometry is about to get
+    /// better, and the headless captures settle on the first of those. Always `0` with
+    /// terrain off.
+    pub last_mesh_rebuilds: usize,
     #[cfg(feature = "debug_panel")]
     debug_pipeline: wgpu::RenderPipeline,
     #[cfg(feature = "debug_panel")]
@@ -331,6 +340,7 @@ impl<'a> WgpuState<'a> {
             debug_camera_initialized: false,
             last_requested_tiles_count: 0,
             last_missing_tiles_count: 0,
+            last_mesh_rebuilds: 0,
             #[cfg(feature = "debug_panel")]
             debug_pipeline: _debug_pipeline.unwrap(),
             #[cfg(feature = "debug_panel")]
@@ -463,6 +473,12 @@ impl<'a> WgpuState<'a> {
                     index_buffer,
                     num_indices: mesh.indices.len() as u32,
                     center_f64: mesh.center_f64,
+                    // E2: the entry remembers which height tile it was built from, so
+                    // the next frame can ask whether better data has landed since. A
+                    // rebuild arrives here exactly like a first build and `put`
+                    // replaces the old entry — the previous mesh is drawn until the
+                    // moment the new one is on the card, so a rebuild is never a hole.
+                    height_source: mesh.height_source,
                 },
             );
         }
@@ -703,6 +719,43 @@ impl<'a> WgpuState<'a> {
         for (id, _, _) in &renderable_tiles {
             if self.tile_cache.peek(id).is_none() && !missing_meshes.contains(id) {
                 missing_meshes.push(*id);
+            }
+        }
+
+        // **Phase E2** (`docs/terrain-plan.md` §8): a mesh is no longer a pure function
+        // of its `TileId`, so this pass has to collect the *stale* as well as the
+        // missing. Stale means the height tile the mesh was built from has since been
+        // bettered — see `tiles::system::fresher_height_source` for the one case in
+        // which that actually happens, and why it is rare.
+        //
+        // Deliberately after `missing_count` is taken: a stale mesh is still a mesh, and
+        // counting it as missing would make `last_missing_tiles_count` — which the
+        // headless captures settle on — report a globe with holes in it when what it
+        // has is a globe whose ground is about to get slightly better in two places.
+        //
+        // With terrain off `select_mesh_rebuilds` returns before it reads anything, so
+        // this is one `Option` test and an empty `Vec` on the flat path, and
+        // `missing_meshes` is bit-for-bit the list it was before E2.
+        self.last_mesh_rebuilds = 0;
+        if self.tile_system.has_terrain() {
+            let drawn: Vec<(TileId, Vec3, Option<TileId>)> = renderable_tiles
+                .iter()
+                .filter_map(|(id, center, _)| {
+                    self.tile_cache
+                        .peek(id)
+                        .map(|buffers| (*id, *center, buffers.height_source))
+                })
+                .collect();
+            let rebuilds = self
+                .tile_system
+                .select_mesh_rebuilds(camera_pos_f32, &drawn);
+            for id in rebuilds {
+                // A stale tile has a cache entry, so it cannot already be in the list;
+                // the check costs nothing and keeps the invariant local.
+                if !missing_meshes.contains(&id) {
+                    missing_meshes.push(id);
+                    self.last_mesh_rebuilds += 1;
+                }
             }
         }
         {

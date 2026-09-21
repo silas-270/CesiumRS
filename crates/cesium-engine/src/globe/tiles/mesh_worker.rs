@@ -79,6 +79,20 @@ impl MeshWorkerPool {
         results
     }
 
+    /// Whether a build for `id` is already queued or running.
+    ///
+    /// [`Self::request_mesh`] deduplicates on this already, so a repeat request is
+    /// harmless — but **Phase E2**'s rebuild budget is a budget of *slots*, and a slot
+    /// spent re-offering a tile that is already on a worker is a slot no other stale
+    /// tile gets. Measured before it was exposed: the staged burst in
+    /// `rendering::terrain_e2_capture` queued 90 "rebuilds" to finish 74 tiles, because
+    /// a tile stays stale in the cache until its new mesh lands and was therefore
+    /// re-picked on every intervening frame, halving the effective budget and letting
+    /// the nearest tiles block the ones behind them.
+    pub fn is_requested(&self, id: &TileId) -> bool {
+        self.requested.contains(id)
+    }
+
     pub fn is_loading_complete(&self) -> bool {
         self.requested.is_empty()
     }
