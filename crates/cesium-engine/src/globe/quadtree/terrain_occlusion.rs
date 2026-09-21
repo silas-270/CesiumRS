@@ -99,16 +99,47 @@
 
 use glam::DVec3;
 
+use super::bounding_volume::Frustum;
+
 use crate::globe::geometry::{EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 
-/// Azimuth sectors the march is cut into — 24, i.e. 15° each.
+/// Azimuth sectors the march is cut into — **96 since §7f**, i.e. 3.75° each.
 ///
 /// The sector is the resolution at which a *notch* in a ridge is still allowed to let
 /// sight through: a gap narrower than a sector does not prevent a cull on its own, it
 /// only pulls that sector's floor down (which prevents the cull anyway, because the
 /// floor is a minimum over the whole cell). Finer sectors therefore buy tighter floors,
 /// not soundness, and cost a linear amount of both build time and per-candidate lookups.
-pub const AZIMUTH_SECTORS: usize = 24;
+///
+/// # 24 was the wrong number, and only a balance could show it
+///
+/// §7d priced a finer grid as `96 × 96` and put it **second** on its list of three
+/// levers, behind the safety constant, on the strength of how far it moved the *ridge
+/// ceiling* — a necessary condition, not a sufficient one. Measured on what actually
+/// matters instead, at `rendering::terrain_balance`'s Inn-valley pose (900 m, 114 tiles
+/// drawn without D3), the two axes are not comparable at all:
+///
+/// | sectors × rings | tiles removed | march | net at 146 µs a tile |
+/// |---|--:|--:|--:|
+/// | 24 × 48 (§7b–§7e) | 7 | 460 µs | +562 µs |
+/// | 48 × 48 | 15 | 499 µs | +1 691 µs |
+/// | 48 × 96 | 16 | 593 µs | +1 743 µs |
+/// | **96 × 48** | **20** | **541 µs** | **+2 379 µs** |
+/// | 96 × 96 | 21 | 651 µs | +2 415 µs |
+/// | 144 × 48 | 21 | 572 µs | +2 421 µs |
+/// | 192 × 192 | 24 | 1 084 µs | +2 420 µs |
+///
+/// **It is the azimuth that buys the culls, and it saturates at 96–144.** Rings buy
+/// almost nothing past 48 — one tile from 48 to 96 — which is the opposite of what §7b's
+/// `RANGE_RINGS` note found when the grid was 24 wide, and not a contradiction of it:
+/// the radial resolution had already been fixed there, and what was left binding was the
+/// lateral one. [`TerrainHorizon::occludes`] takes the **minimum** of the ridge over
+/// every sector a candidate spans, so a 15° sector 10 km out is 2.6 km of ground, and one
+/// side valley inside it takes the whole candidate's cull with it.
+///
+/// 96 rather than 144: one tile is not worth 31 µs a frame, and the cells are already
+/// 55 kB of grid.
+pub const AZIMUTH_SECTORS: usize = 96;
 
 /// Range rings, logarithmically spaced between [`MIN_RANGE_M`] and
 /// `TerrainOcclusionConfig::max_range_m`.
@@ -134,6 +165,15 @@ pub const AZIMUTH_SECTORS: usize = 24;
 /// (`HeightBounds::floor_grid`), one axis over, and it went unnoticed for the same reason:
 /// the stage still culls plenty against the curvature horizon while the mountains do
 /// nothing at all.
+///
+/// # 48 survived §7f's sweep and [`AZIMUTH_SECTORS`]' 24 did not
+///
+/// The same grid sweep that took the azimuth from 24 to 96 tried the rings at 96 and 192
+/// and kept 48: at the Inn-valley pose `96 × 48` removes 20 tiles for a 541 µs march and
+/// `96 × 96` removes 21 for 651 µs. One tile is not worth 110 µs a frame. The radial
+/// resolution was already the one that had been measured — by the table above — and it
+/// was already enough; the lateral one had never been measured against anything but a
+/// ridge ceiling.
 pub const RANGE_RINGS: usize = 48;
 
 /// Nearest range the march resolves, metres. Inside this the camera is effectively on
@@ -261,6 +301,16 @@ pub fn ridge_safety_m(range_m: f64, alt_diff_m: f64) -> f64 {
     RIDGE_SAFETY_FLOOR_M + RIDGE_SAFETY_RATE * (alt_diff_m.abs() + range_m * range_m / R_M)
 }
 
+/// Sectors of slop added on each side of the view cone before the march decides a sector
+/// is dead — see [`TerrainHorizon::live`].
+///
+/// Two, i.e. 30°. Not for soundness (a dead sector is `−∞` and culls nothing) but for the
+/// culls at the edge of the frame: [`TerrainHorizon::occludes`] takes the **minimum** over
+/// every sector a candidate spans, so a tile straddling the frustum edge would lose its
+/// cull to a neighbouring dead sector. A coarse candidate spans several sectors, and 30°
+/// is what keeps the ones just inside the frame whole.
+pub const LIVE_SECTOR_MARGIN: usize = 8;
+
 /// Fractional slack applied to every angular extent — see
 /// [`TerrainHorizon::extent_of`].
 pub const EXTENT_SLACK: f64 = 0.10;
@@ -283,14 +333,63 @@ pub struct TerrainOcclusionConfig {
     /// plateau from 3 km to 8 km, and **exactly zero** from 12 km up, on an Alpine and a
     /// Himalayan crest alike.
     ///
-    /// The gate is put at the first altitude that measures zero rather than at the knee.
-    /// The knee, around 3 km, is where the benefit stops being *large*; shutting the stage
-    /// off there would give up a real 4.3 % at 5 and 8 km to save a march that
-    /// `test_terrain_occlusion::bench_terrain_occlusion_cost` charges once per frame.
-    /// 12 000 m also puts the gate just above airline cruise, where a camera is over
-    /// almost everything and the plan predicted the benefit would collapse — which it
-    /// does, and which is now a measurement rather than a prediction.
+    /// The gate was put at the first altitude that measures zero rather than at the knee,
+    /// on the argument that shutting the stage off at the knee would give up a real 4.3 %
+    /// at 5 and 8 km to save a march that runs once a frame. **§7f retired that
+    /// argument**: a 4.3 % reduction is not a benefit until it is worth more than the
+    /// march, and measured against the frame it is not. [`Self::max_camera_agl_m`] is now
+    /// the threshold that decides, and it is written in the variable that matters —
+    /// height above the **ground**, not above the ellipsoid, because over a 2 000 m
+    /// valley floor a camera 1 000 m up reads 3 000 m here and it is the 1 000 m that
+    /// decides what a ridge can hide.
+    ///
+    /// This one stays as the **outer guard**, unchanged at 12 000 m: `altitude_agl`
+    /// degrades to `altitude` when there is no ground sample yet, so something has to
+    /// shut the march off over an ocean at 400 km on a cold cache.
     pub max_camera_altitude_m: f32,
+    /// Camera altitude above the **ground**, in metres, above which the march is not
+    /// built at all — **§7f's gate, and the one the balance picks**.
+    ///
+    /// [`Self::max_camera_altitude_m`] is a ceiling on the altitude above the
+    /// *ellipsoid*, put at 12 000 m because that is the first altitude at which §7b's
+    /// synthetic ladder measured the stage removing **zero** tiles. Under the balance
+    /// rule that is the wrong question: the march costs what it costs whether or not it
+    /// removes anything, so the threshold has to be where the tiles it removes stop
+    /// **paying for it**. It also measured the wrong variable — over a 2 000 m valley
+    /// floor a camera 1 000 m up reads 3 000 m of ellipsoid altitude, and it is the
+    /// 1 000 m that decides what a ridge can hide.
+    ///
+    /// `rendering::terrain_balance::terrain_balance_altitude_ladder` walks the real DEM
+    /// through the real renderer at one horizontal pose and reads both halves at once —
+    /// at the shipped `96 × 48` grid, and with the frame time the two arms actually took:
+    ///
+    /// | AGL | tiles without D3 | with | removed | march | frame |
+    /// |--:|--:|--:|--:|--:|--:|
+    /// | 67 m | 126 | 104 | **22** | 539 µs | **−1 877 µs** |
+    /// | 317 m | 114 | 94 | **20** | 546 µs | **−1 734 µs** |
+    /// | 717 m | 106 | 95 | **11** | 537 µs | **−2 290 µs** |
+    /// | 1 217 m | 106 | 105 | 1 | 498 µs | +825 µs |
+    /// | 1 917 m | 102 | 101 | 1 | 475 µs | −277 µs |
+    /// | 2 917 m | 94 | 93 | 1 | 461 µs | +40 µs |
+    /// | 4 418 m | 87 | 87 | **0** | 436 µs | +1 066 µs |
+    ///
+    /// The benefit falls off a cliff between 717 m and 1 217 m — eleven tiles to one —
+    /// while the march keeps costing half a millisecond, so **1 000 m** is where the
+    /// threshold goes. The three rungs under it are also the only ones whose frame-time
+    /// column clears the machine's noise floor (±1.5 ms, calibrated on the cruise pose,
+    /// where D3 removes nothing and the frame time still moves by that much); above the
+    /// cliff the column is noise around zero, which is exactly what one tile against half
+    /// a millisecond should look like.
+    ///
+    /// [`Self::max_camera_altitude_m`] is kept as the outer guard, for the case this one
+    /// cannot answer: `Camera::altitude_agl` falls back to `altitude` when no ground
+    /// sample exists, so on the first frames of a cold start, or with the height cache
+    /// empty, AGL reads as ellipsoid altitude and the 12 km ceiling is what shuts the
+    /// march off over an ocean at 400 km.
+    ///
+    /// See `docs/terrain-plan.md` §7f for what a drawn tile was measured to be worth and
+    /// how the two halves were put on the same clock.
+    pub max_camera_agl_m: f32,
     /// How far out the march looks, **metres** — where *occluders* are looked for, not how
     /// far an occludee may be. A tile 500 km out behind a ridge 11 km out is exactly what
     /// D3 is for, and it is tested against the ridge, not skipped.
@@ -309,6 +408,7 @@ impl Default for TerrainOcclusionConfig {
         Self {
             enabled: true,
             max_camera_altitude_m: 12_000.0,
+            max_camera_agl_m: 1_000.0,
             max_range_m: 120_000.0,
         }
     }
@@ -357,6 +457,34 @@ pub struct TerrainHorizon {
     /// `max` over rings `0..=r` of the elevation angle to the top of that ring's
     /// guaranteed ridge, radians. `f32::NEG_INFINITY` where nothing is guaranteed.
     ridge: Box<[[f32; RANGE_RINGS]; AZIMUTH_SECTORS]>,
+    /// Bitmask of the sectors the march actually builds — **§7f's view cone**.
+    ///
+    /// # Why most of the grid was never readable
+    ///
+    /// [`Self::occludes`] reads `ridge[a][j]` only for the sectors a *candidate* spans,
+    /// and every candidate that a cull could save work on is one the renderer would
+    /// otherwise draw, i.e. one inside the frustum. The march nonetheless stamped and
+    /// finished all 24 sectors, so at a 76° horizontal field of view roughly **two thirds
+    /// of the polar grid was built for nobody**: the occluders behind the camera were
+    /// walked, their sub-cells' bearings and ranges were computed, and
+    /// [`Self::finish`] took an elevation angle for every one of their cells.
+    ///
+    /// A sector outside this mask keeps `f32::NEG_INFINITY` in [`Self::ridge`] for every
+    /// ring, and `occludes` takes the **minimum** over the sectors a candidate spans — so
+    /// a candidate that reaches into a dead sector is simply never culled. That is the
+    /// same weakening a missing occluder is, and it needs no separate soundness argument:
+    /// nothing the mask does can make a wall stand higher.
+    ///
+    /// The mask is derived from the frustum's four edge rays in [`live_sectors`], widened
+    /// by [`LIVE_SECTOR_MARGIN`], and falls back to *all sectors* whenever the view cone's
+    /// azimuth cannot be bounded — a camera looking at the nadir or the zenith, a
+    /// frustum built without corners, or a spread of half a turn or more.
+    ///
+    /// An array rather than a bitmask so that [`AZIMUTH_SECTORS`] can be swept past 32
+    /// without the mask silently truncating; it is one per *manager*, not per node.
+    live: [bool; AZIMUTH_SECTORS],
+    /// `1 / ln(step)` for [`Self::ring_of`]'s closed form.
+    inv_ln_step: f64,
     /// Angular distance (radians) of each ring's **far** edge, increasing.
     ring_far: [f64; RANGE_RINGS],
     /// `ring_far[RANGE_RINGS - 1]`, hoisted: the prune radius of the walk.
@@ -405,6 +533,8 @@ impl TerrainHorizon {
             cam_lat: 0.0,
             floor: Box::new([[f64::INFINITY; RANGE_RINGS]; AZIMUTH_SECTORS]),
             ridge: Box::new([[f32::NEG_INFINITY; RANGE_RINGS]; AZIMUTH_SECTORS]),
+            live: [false; AZIMUTH_SECTORS],
+            inv_ln_step: 1.0,
             ring_far: [0.0; RANGE_RINGS],
             max_ang: 0.0,
             ridge_ceiling: f32::NEG_INFINITY,
@@ -414,10 +544,21 @@ impl TerrainHorizon {
     /// Starts a march for this frame's camera, or returns an inactive horizon when the
     /// altitude gate is shut.
     ///
-    /// `eye` is the camera in ECEF megametres; `cam_alt` its altitude above the
-    /// ellipsoid, also megametres.
-    pub fn begin(eye: DVec3, cam_alt: f64, cfg: &TerrainOcclusionConfig) -> Self {
-        if !cfg.enabled || cam_alt * 1.0e6 > cfg.max_camera_altitude_m as f64 {
+    /// `frustum` supplies the eye and — through its four edge rays — the azimuth band
+    /// the march is built over (see [`Self::live`]); `cam_alt` is the camera's altitude
+    /// above the ellipsoid in megametres, and `cam_agl` its altitude above the **ground**,
+    /// which is what the gate is measured in.
+    pub fn begin(
+        frustum: &Frustum,
+        cam_alt: f64,
+        cam_agl: f64,
+        cfg: &TerrainOcclusionConfig,
+    ) -> Self {
+        let eye = frustum.eye;
+        if !cfg.enabled
+            || cam_agl * 1.0e6 > cfg.max_camera_agl_m as f64
+            || cam_alt * 1.0e6 > cfg.max_camera_altitude_m as f64
+        {
             return Self::inactive();
         }
 
@@ -473,6 +614,8 @@ impl TerrainHorizon {
             cam_lat,
             floor: Box::new([[f64::INFINITY; RANGE_RINGS]; AZIMUTH_SECTORS]),
             ridge: Box::new([[f32::NEG_INFINITY; RANGE_RINGS]; AZIMUTH_SECTORS]),
+            live: live_sectors(up, east, north, frustum),
+            inv_ln_step: 1.0 / step.ln(),
             ring_far,
             max_ang: ring_far[RANGE_RINGS - 1],
             ridge_ceiling: f32::NEG_INFINITY,
@@ -603,13 +746,44 @@ impl TerrainHorizon {
     /// the same cells and refining buys nothing. Combined with `Skip`, this is what keeps
     /// the walk proportional to the tree that actually exists near the camera rather than
     /// to the whole tree.
-    pub fn classify(&self, bounds: &super::tile_id::TileBounds) -> OccluderStep {
+    /// Is this sector one the march builds? See [`Self::live`].
+    #[inline]
+    fn is_live(&self, a: usize) -> bool {
+        self.live[a]
+    }
+
+    /// How many sectors this march builds — a read-only window for tests and debug
+    /// readouts. [`AZIMUTH_SECTORS`] means the view cone could not be bounded.
+    #[inline]
+    pub fn live_sector_count(&self) -> usize {
+        self.live.iter().filter(|b| **b).count()
+    }
+
+    pub fn classify(&self, bounds: &super::tile_id::TileBounds, center: DVec3) -> OccluderStep {
         if !self.active {
             return OccluderStep::Skip;
         }
-        let (_, gr, near) = self.extent_of(bounds);
+        let (gamma, gr, near) = self.extent_of(bounds);
         if near > self.max_ang {
             return OccluderStep::Skip;
+        }
+        // **§7f: out of the view cone, out of the walk.** A node whose footprint misses
+        // every live sector cannot write a cell that will ever be read, and neither can
+        // anything under it — its descendants' footprints are subsets of its own. This is
+        // where the mask pays: not in the cells it leaves unfinished, but in the subtrees
+        // it never descends into. `sector_range` rounds outward, so a node that touches a
+        // live sector at all is kept.
+        if let Some((lo, hi)) = self.sector_range(gamma, gr, self.bearing(center)) {
+            let mut touches = false;
+            for k in lo..=hi {
+                if self.is_live(k.rem_euclid(AZIMUTH_SECTORS as isize) as usize) {
+                    touches = true;
+                    break;
+                }
+            }
+            if !touches {
+                return OccluderStep::Skip;
+            }
         }
         // Radial extent of the ring the node's near edge falls in.
         let j = self.ring_of(near);
@@ -628,14 +802,36 @@ impl TerrainHorizon {
     }
 
     /// Index of the ring whose far edge is the first at or beyond `gamma`.
+    ///
+    /// # Closed form, then corrected — §7f
+    ///
+    /// This was a linear scan of up to 48 comparisons, and it is called three times per
+    /// stamped sub-cell (twice here, once from [`Self::classify`]) on 58–96 nodes a
+    /// frame, i.e. some five thousand times. The rings are geometric, so the index is
+    /// `ceil(ln(γ/near) / ln(step))` — but a `ln` and a rounding are not bit-identical to
+    /// the scan at a ring boundary, and which side of a boundary a stamp lands on decides
+    /// whether it may claim that ring's far edge at all (see [`Self::stamp`]'s note on the
+    /// 122 false negatives). So the closed form is used as a **seed** and then walked to
+    /// the exact answer against `ring_far` itself, which is at most a step or two and
+    /// leaves the predicate — `the first i with γ ≤ ring_far[i]` — identical by
+    /// construction rather than by argument.
     #[inline]
     fn ring_of(&self, gamma: f64) -> usize {
-        for (i, far) in self.ring_far.iter().enumerate() {
-            if gamma <= *far {
-                return i;
-            }
+        if gamma <= self.ring_far[0] {
+            return 0;
         }
-        RANGE_RINGS - 1
+        let mut i = ((gamma / self.ring_far[0]).ln() * self.inv_ln_step).ceil();
+        if !(i >= 0.0) {
+            i = 0.0;
+        }
+        let mut i = (i as usize).min(RANGE_RINGS - 1);
+        while i > 0 && gamma <= self.ring_far[i - 1] {
+            i -= 1;
+        }
+        while i + 1 < RANGE_RINGS && gamma > self.ring_far[i] {
+            i += 1;
+        }
+        i
     }
 
     /// Records one occluder: terrain over this node's ground is guaranteed to be at or
@@ -673,9 +869,16 @@ impl TerrainHorizon {
             r1 += 1;
         }
 
+        // Dead sectors are never written and never read (§7f, [`Self::live`]). Skipping
+        // them here is not an approximation of the coverage argument above: the argument
+        // is about the cells a candidate can be tested against, and a candidate that
+        // reaches a dead sector is not culled at all.
         match self.sector_range(gamma, gr, self.bearing(center)) {
             None => {
                 for a in 0..AZIMUTH_SECTORS {
+                    if !self.is_live(a) {
+                        continue;
+                    }
                     for r in r0..=r1 {
                         let cell = &mut self.floor[a][r];
                         if floor < *cell {
@@ -687,6 +890,9 @@ impl TerrainHorizon {
             Some((lo, hi)) => {
                 for s in lo..=hi {
                     let a = s.rem_euclid(AZIMUTH_SECTORS as isize) as usize;
+                    if !self.is_live(a) {
+                        continue;
+                    }
                     for r in r0..=r1 {
                         let cell = &mut self.floor[a][r];
                         if floor < *cell {
@@ -716,6 +922,9 @@ impl TerrainHorizon {
 
         let mut enclosed = true;
         for a in 0..AZIMUTH_SECTORS {
+            if !self.is_live(a) {
+                continue;
+            }
             let f = self.floor[a][0];
             if !f.is_finite() || f <= self.cam_alt {
                 enclosed = false;
@@ -816,6 +1025,9 @@ impl TerrainHorizon {
             let drop = gamma * gamma * EARTH_RADIUS_A_F64;
             let safety_base = RIDGE_SAFETY_FLOOR_M * 1.0e-6 + RIDGE_SAFETY_RATE * drop;
             for a in 0..AZIMUTH_SECTORS {
+                if !self.is_live(a) {
+                    continue;
+                }
                 let f = self.floor[a][r];
                 if f.is_finite() {
                     let n = up_term + bearing_dir[a] * sin_g;
@@ -829,6 +1041,9 @@ impl TerrainHorizon {
             }
         }
         for a in 0..AZIMUTH_SECTORS {
+            if !self.is_live(a) {
+                continue;
+            }
             let top = self.ridge[a][RANGE_RINGS - 1];
             if top > self.ridge_ceiling {
                 self.ridge_ceiling = top;
@@ -1005,6 +1220,80 @@ impl TerrainHorizon {
 
         theta_max < ridge_min
     }
+}
+
+/// The sectors of the polar grid the frustum's azimuth band can reach — **§7f**.
+///
+/// The four rays of [`Frustum::rays`] are the *edges* of the pyramid the side planes
+/// model, so every direction in the view volume is a non-negative combination of them.
+/// Project them onto the local horizontal plane: a non-negative combination of vectors
+/// whose bearings all lie inside an arc shorter than half a turn lies in that same arc,
+/// so the minimal arc enclosing the four bearings bounds every azimuth in view.
+///
+/// Three things break that argument, and each falls back to **every sector**, which is
+/// the pre-§7f behaviour and cannot lose a cull:
+///
+/// * `rays` is `None` — a frustum built by `Frustum::planes_only`, which the renderer
+///   never uses but `Frustum::intersects_sphere` callers do.
+/// * a ray is (near-)vertical, so its bearing does not exist.
+/// * the enclosing arc is half a turn or more, so the horizontal cone is not salient and
+///   no arc bounds it. A camera pointed at the nadir is the ordinary case of this: its
+///   four rays fan out around the whole compass.
+fn live_sectors(
+    up: DVec3,
+    east: DVec3,
+    north: DVec3,
+    frustum: &Frustum,
+) -> [bool; AZIMUTH_SECTORS] {
+    const ALL: [bool; AZIMUTH_SECTORS] = [true; AZIMUTH_SECTORS];
+    let Some(rays) = frustum.rays else {
+        return ALL;
+    };
+
+    let mut beta = [0.0f64; 4];
+    for (i, r) in rays.iter().enumerate() {
+        let h = *r - up * r.dot(up);
+        // A ray within ~0.06° of vertical: its bearing is numerical noise, and a camera
+        // that has one is a camera looking very nearly straight up or down.
+        if h.length_squared() < 1.0e-6 {
+            return ALL;
+        }
+        beta[i] = h.dot(east).atan2(h.dot(north));
+    }
+    beta.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    // The enclosing arc is the complement of the widest gap between consecutive bearings.
+    let mut gap_at = 0usize;
+    let mut widest = f64::NEG_INFINITY;
+    for i in 0..4 {
+        let g = if i == 3 {
+            beta[0] + std::f64::consts::TAU - beta[3]
+        } else {
+            beta[i + 1] - beta[i]
+        };
+        if g > widest {
+            widest = g;
+            gap_at = i;
+        }
+    }
+    let span = std::f64::consts::TAU - widest;
+    if !(span < std::f64::consts::PI) {
+        return ALL;
+    }
+    // The arc runs forward from the bearing just after the widest gap.
+    let start = beta[(gap_at + 1) % 4];
+
+    let scale = AZIMUTH_SECTORS as f64 / std::f64::consts::TAU;
+    let lo = (start * scale).floor() as isize - LIVE_SECTOR_MARGIN as isize;
+    let hi = ((start + span) * scale).ceil() as isize + LIVE_SECTOR_MARGIN as isize;
+    if hi - lo >= AZIMUTH_SECTORS as isize {
+        return ALL;
+    }
+    let mut mask = [false; AZIMUTH_SECTORS];
+    for k in lo..=hi {
+        mask[k.rem_euclid(AZIMUTH_SECTORS as isize) as usize] = true;
+    }
+    mask
 }
 
 /// `d` folded into `(-180, 180]`.

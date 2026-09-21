@@ -710,7 +710,10 @@ altitude with the gate held open, at two crest heights:
 | 40 000 m | 0.0 % | 0.0 % |
 
 Three regimes: a large benefit below ~2 km, a −4 % plateau to 8 km, and exactly zero from
-12 km up. **`max_camera_altitude_m = 12 000`** — the first altitude that measures zero, not
+12 km up. *(Superseded by §7f.4: the threshold is now **1 000 m above the ground**, because
+a 4 % reduction is not a benefit until it is worth more than the march, and because
+altitude above the ellipsoid is not the variable a ridge's shadow depends on.
+`max_camera_altitude_m` stays as the outer guard.)* **`max_camera_altitude_m = 12 000`** — the first altitude that measures zero, not
 the knee, because shutting the stage off at the knee would give up a real 4.3 % at 5 and
 8 km to save a march that costs tens of microseconds once a frame. The two crest columns
 agree, which is itself a finding: past ~3 km the reduction *saturates* — the shadow
@@ -1126,6 +1129,10 @@ mode.
 
 ### Where this leaves D3
 
+*(Superseded by §7f, which measures the frame rather than the tile count and re-decides
+the grid and the gate off it. "One to two tiles in an Alpine valley" was a fact about a
+24-sector grid, not about the stage.)*
+
 Sound, cheap, and honest about how little it does. It removes one to two tiles in an Alpine
 valley, occasionally two or three, nothing at altitude, and nothing at all above 12 km
 because the gate shuts it off. The march is 170–250 µs once a frame and the per-node test is
@@ -1274,7 +1281,11 @@ Three prices, in the order they are worth paying:
    > paragraph did not know about and the reason relaxing it was safe anyway. The tables
    > below still read `RIDGE_SAFETY_M = 0` because they are the measurement as it was
    > taken.
-2. **The grid, at 96 × 96.** Eight times the cells: `finish` goes from 48 × 24 = 1 152
+2. **The grid, at 96 × 96.** *(Done — §7f.3, and this section had the axis wrong: it is
+   the **azimuth** that buys the culls, not the rings. `96 × 48` removes 20 tiles at the
+   Inn valley against 24 × 48's 7, for 541 µs against 460; going to `96 × 96` buys one more
+   tile for 110 µs and is not taken. What this paragraph priced — eight times the cells —
+   is therefore twice what was needed.)* Eight times the cells: `finish` goes from 48 × 24 = 1 152
    elevation angles to 96 × 96 = 9 216, i.e. **35 µs → ~280 µs**, and each node's stamp
    writes into ~4× as many sectors, so the march goes from 170–250 µs to roughly
    **500–650 µs a frame**. The two grids grow 13.8 kB → 110 kB, which is nothing. With the
@@ -1547,10 +1558,318 @@ is a bound that is sound but useless rather than a bound that is wrong. It is th
 lever, and it is a cheaper one than 96 × 96: nothing in D3 changes, only what an inherited
 floor is allowed to claim.
 
+> **Done — §7f.1.** The corpus holds raw `h_min`, so the relation `floor` needs is a
+> direct measurement rather than a change of variable off `lo`, and the measurement says
+> `HEIGHT_INHERIT_MARGIN_M` covers it with 4.2× to spare. `inherit_allowance_mm` is off
+> the floor and the renderer's ring-0 minimum goes **−84 533 m → −533 m**. It did not move
+> a tile count by itself — it removed the constraint that was hiding the next one, which
+> turned out to be the grid's **azimuth** (§7f.3) and the gate's **variable** (§7f.4).
+
 *(Measured 2026-09-21. Culling gate 32 passed / 0 failed / 1 ignored with no re-pin;
 `cargo test -p cesium-engine --lib` 25/0; all 14 LOD-harness CSVs byte-identical,
 `aggregate_ratio = 1.663`, 204 poses; §7c's ten real-terrain poses unchanged to the tile in
 the `with D3` column.)*
+
+---
+
+## 7f. The balance — what a frame costs with D3 on against D3 off, and what that changes
+
+§7b through §7e report two numbers side by side and never add them up: *tiles removed*
+and *march microseconds*. Neither answers the only question a culling stage has to
+answer. A stage exists to make the frame cheaper; if the logic costs more than the
+geometry it deletes, nothing has been gained however many tiles the table shows. This
+section builds the instrument that puts both halves on one clock, and then re-decides
+every tuning question in §7 against it.
+
+**The answer, first.** D3 as it stood at `c4718e3` was a **net loss at five of six
+poses** — it removed nothing at all at four of them and charged 270–520 µs a frame for it.
+Three changes turn that around, and all three are measured rather than argued:
+
+1. the occluder's inherited floor stops paying a margin it never owed (§7f.1),
+2. the polar grid goes **24 × 48 → 96 × 48** — the *azimuth*, not the rings (§7f.3),
+3. the altitude gate becomes **1 000 m above the ground** instead of 12 000 m above the
+   ellipsoid (§7f.4).
+
+After them, at the pose D3 was built for, the renderer draws **114 tiles without D3 and
+94 with it**, the captured frame is **byte-identical**, and the frame is **1.6–2.3 ms
+faster**. Everywhere the stage does not pay, the gate now shuts it off.
+
+### The instrument
+
+`testing::rendering::terrain_balance`. Two `WgpuState`s per pose — one with
+`TerrainOcclusionConfig::enabled = false`, one with it `true` — both settled to
+quiescence on the real DEM and the real imagery, and then **frames taken alternately from
+the two**, A/B/A/B, for thirty rounds. Interleaving is the whole point: this machine
+carries a few hundred other users and its load drifts on a timescale of seconds, so two
+arms measured one after the other are two different machines. Reported: the **minimum**
+over rounds (the frame that got the least interference), the median beside it, and the
+frame broken into `update_logic`, the quadtree block, the march alone
+(`SubsystemTimings::terrain_horizon_us`, new here) and the draw pass.
+
+A frame is `WgpuState::render` **plus `device.poll(Maintain::Wait)`**. Without the poll
+the GPU half lands in whichever later frame happens to block and the arm that submits
+*more* work looks cheaper.
+
+**Two things this machine cannot do, stated before any number is read.**
+
+* **There is no GPU.** `vulkaninfo` reports `PHYSICAL_DEVICE_TYPE_CPU / llvmpipe`, so
+  vertex and fragment work runs on the same cores as everything else. A drawn tile is
+  therefore *more* expensive here than on the S23 §9 F3 targets, and the fragment half of
+  a hidden tile — which a real depth buffer discards early — counts for more than it
+  should.
+* **The frame time's noise floor is ±1.5 ms.** Calibrated, not assumed: at the cruise
+  pose D3 removes **zero** tiles and does nothing but run its march, and two runs of that
+  pose read −1 028 µs and +1 800 µs. Any frame-time delta smaller than that is not a
+  measurement.
+
+So the decisions below rest on a **cost model** — `tiles removed × cost per tile` against
+`march + stage` — with the raw frame time used only as a check, and only where it clears
+1.5 ms. The march and stage halves are reproducible to ±30 µs, because they are wall clock
+around a bounded piece of CPU rather than a whole frame.
+
+**What a drawn tile is worth**, measured by `terrain_balance_cost_per_tile`: sweep
+`target_texel_ratio` at a fixed camera, so the pose, the frustum and the fragment coverage
+are identical and only the tile count moves, and regress frame time on tile count.
+
+| pose | µs per drawn tile (OLS) |
+|---|--:|
+| `stuttgart_kessel` | 170 |
+| `alps_inn_valley` | **146** |
+| `alps_cruise_11km` | 113 |
+
+**146 µs is used below, and it is an upper bound**: the tiles this sweep *adds* are near
+ones with large screen coverage, while the tiles D3 *removes* are far ones. The three
+poses where the frame-time column clears the noise floor agree with it to within a factor
+of two from below (a saving of 1.5–2.3 ms for 11–22 tiles), which is the only
+cross-check available and is the reason the conclusions below are stated as inequalities
+rather than as a ledger.
+
+### 7f.1 The inherited floor, and the 84 km a level it never owed
+
+§7e closed by naming this the binding constraint, and it was right. `D3_DEBUG` in the
+renderer at `stuttgart_kessel`, **settled**:
+
+```
+D3 finish: cam_alt 395 m, ring0 floor min -84533 max 259 m, 0 unstamped, enclosed false
+```
+
+−84 533 m is exactly one level of `INHERIT_RANGE_M = 4 × (GLOBAL_H_MAX − GLOBAL_H_MIN)`.
+A cell floor is a **minimum** over everything stamped into it, so one node on an inherited
+interval anywhere within range takes its whole cell to the bottom of the world — and the
+renderer has such nodes where the counting harness's `Fill::Visible` policy does not,
+because the occluder walk covers the **whole tree**, including the ground under and behind
+a camera that is looking at the horizon and never asks for its heights.
+
+The term is `inherit_allowance_mm`, and `Heightfield::child_extra` subtracted it from
+`floor` for a reason that is sound and whose premise is false. The reason: the corpus
+measures `parent.lo − child.lo`, `lo` carries the skirt allowance, and converting that
+into the statement `floor` needs — `parent.h_min − child.h_min ≤ M` — costs the parent's
+whole-tile allowance back. The false premise: that the corpus only has `lo`.
+`assets/terrain_fixtures/pyramid_extrema.csv` holds **raw `h_min_m`/`h_max_m`**, one row
+per tile per level, so the relation `floor` needs is a *direct* measurement on the same
+corpus. `d1_floor_inherit_margin_covers_the_corpus`:
+
+| z | worst `parent.h_min − child.h_min` | `HEIGHT_INHERIT_MARGIN_M` | headroom |
+|--:|--:|--:|--:|
+| 2 | 1 350 m | 20 000 m | 14.8× |
+| 7 | 1 037 m | 8 000 m | 7.7× |
+| 8 | 1 517 m | 8 000 m | 5.3× |
+| **9** | **1 414 m** | **6 000 m** | **4.2×** |
+| 11 | 742 m | 6 000 m | 8.1× |
+| 12 | 16 m | 1 500 m | 94× |
+| 15 | 2 m | 200 m | 100× |
+
+**4.2× at the worst level, against the 4.4× the interval relation clears the same table
+by at z3 and z11.** The floor needs no more margin than the two ends the table was
+measured for, and the test asserts it with the ×4 exaggeration headroom
+`INHERIT_RANGE_M` already declares folded in. `floor` now inherits as
+`parent.floor − inherit_margin_mm(child.z)`, and the same settled frame reads
+
+```
+D3 finish: cam_alt 395 m, ring0 floor min -533 max 259 m, 0 unstamped, enclosed false
+```
+
+— **−84 533 m → −533 m**, and −533 is two ordinary levels (400 + 200) under a real
+z13 parent at 217 m.
+
+`D3_DEBUG` now also names the offenders: `stamp_node` prints every node within 5 km that
+claims a floor below sea level, which is what turned "some node is poisoning the near
+field" into a list of eight nodes with their levels and their chains.
+
+**It did not, by itself, change a single tile count.** 62 → 62 and 71 → 71 stayed. What
+it did was remove the constraint that was hiding the next one.
+
+### 7f.2 The march builds a grid that nobody can read, and now it does not
+
+`occludes` reads `ridge[a][j]` only for the sectors a **candidate** spans, and a
+candidate worth culling is one the renderer would otherwise draw — i.e. one inside the
+frustum. The march nonetheless stamped and finished all 24 sectors. At a 76° horizontal
+field of view that is roughly two thirds of the grid built for nobody.
+
+`TerrainHorizon::live` is a per-sector flag derived from the frustum's four edge rays.
+Those rays are the *edges* of the pyramid the side planes model, so every direction in
+view is a non-negative combination of them; project them onto the local horizontal plane
+and, provided the enclosing arc is shorter than half a turn, that arc bounds every azimuth
+in view. Widened by `LIVE_SECTOR_MARGIN` (30°, so a tile straddling the frame edge keeps
+its cull), it becomes the set of sectors `classify` will descend into, `stamp` will write
+and `finish` will evaluate. Three cases fall back to *all* sectors: no `rays` on the
+frustum, a near-vertical ray, an arc of half a turn or more (a nadir camera is the
+ordinary instance).
+
+**It needs no soundness argument of its own.** A dead sector keeps `f32::NEG_INFINITY`
+for every ring, `occludes` takes the **minimum** over the sectors a candidate spans, and a
+candidate reaching into a dead sector is therefore never culled. Nothing the mask does can
+make a wall stand higher, which is the only direction that loses geometry.
+
+Worth **10 %** of the march at 24 × 48 (509 → 460 µs) and considerably more at 96 sectors,
+where `finish` would otherwise evaluate four times the cells. Two other things were tried
+and are recorded because they did not work: `ring_of`'s 48-step linear scan became a
+closed form with an exact correction (**no measurable change** — it was not the
+bottleneck), and `max_range_m` was swept 120 km → 15 km, which takes the march 483 → 351 µs
+and costs one of the seven tiles, i.e. gives back what it saves. The march's cost is the
+**stamping**, and stamping is what the grid sweep below pays more of on purpose.
+
+### 7f.3 The grid: it is the azimuth, and 24 was half the stage
+
+§7d priced a finer grid as `96 × 96` and put it *second* on its list of three levers,
+behind the safety constant, on the strength of how far it moved the **ridge ceiling** —
+which that section itself calls necessary and not sufficient. Measured on the balance
+instead, at `alps_inn_valley` (900 m, 114 tiles drawn without D3):
+
+| sectors × rings | tiles removed | march | net at 146 µs a tile |
+|---|--:|--:|--:|
+| 24 × 48 (§7b–§7e) | 7 | 460 µs | +562 µs |
+| 48 × 48 | 15 | 499 µs | +1 691 µs |
+| 48 × 96 | 16 | 593 µs | +1 743 µs |
+| **96 × 48** | **20** | **541 µs** | **+2 379 µs** |
+| 96 × 96 | 21 | 651 µs | +2 415 µs |
+| 144 × 48 | 21 | 572 µs | +2 421 µs |
+| 192 × 48 | 21 | 610 µs | +2 356 µs |
+| 192 × 192 | 24 | 1 084 µs | +2 420 µs |
+
+**The azimuth buys the culls and the rings do not.** 24 → 48 sectors doubles the
+reduction; 48 → 96 takes it to 20; past 96 it saturates. The rings, already at 48, buy one
+tile at 96 and three at 192, for 110 µs and 540 µs respectively.
+
+That is the opposite of what §7b's `RANGE_RINGS` note found, and not a contradiction of
+it: that note fixed the *radial* resolution at a time when the lateral one was 15° and had
+never been measured against anything but a ridge ceiling. `occludes` takes the **minimum**
+of the ridge over every sector a candidate spans, and a 15° sector 10 km out is 2.6 km of
+ground — one side valley inside it takes the candidate's cull with it. At 3.75° it does
+not.
+
+**`AZIMUTH_SECTORS = 96`, `RANGE_RINGS = 48`.** 144 is within noise of 96 for 31 µs more,
+and 96 × 96's extra tile is not worth 110 µs. The two grids grow 13.8 kB → 55 kB, per
+manager and not per node.
+
+### 7f.4 The gate: above the ground, at 1 000 m
+
+`max_camera_altitude_m = 12 000` was put at the first altitude where §7b's synthetic
+ladder measured the stage removing **zero** tiles, explicitly rather than at the knee,
+"because shutting the stage off at the knee would give up a real 4.3 %". Under the balance
+rule that sentence does not survive: 4.3 % is not a benefit until it is worth more than the
+march. And it measures the wrong variable — over a 2 000 m valley floor a camera 1 000 m
+up reads 3 000 m of ellipsoid altitude, and it is the 1 000 m that decides what a ridge can
+hide.
+
+`terrain_balance_altitude_ladder`, the real DEM through the real renderer, one horizontal
+pose walked up, at the shipped `96 × 48`:
+
+| AGL | tiles without D3 | with | removed | march | frame delta |
+|--:|--:|--:|--:|--:|--:|
+| 67 m | 126 | 104 | **22** | 539 µs | **−1 877 µs** |
+| 317 m | 114 | 94 | **20** | 546 µs | **−1 734 µs** |
+| 717 m | 106 | 95 | **11** | 537 µs | **−2 290 µs** |
+| 1 217 m | 106 | 105 | 1 | 498 µs | +825 µs |
+| 1 917 m | 102 | 101 | 1 | 475 µs | −277 µs |
+| 2 917 m | 94 | 93 | 1 | 461 µs | +40 µs |
+| 4 418 m | 87 | 87 | **0** | 436 µs | +1 066 µs |
+
+A cliff between 717 m and 1 217 m: eleven tiles to one, while the march goes on costing
+half a millisecond. The three rungs under the cliff are also the only ones whose frame-time
+column clears the ±1.5 ms noise floor, and all three clear it *downward*. Above it the
+column is noise around zero — which is what one tile against half a millisecond should look
+like.
+
+**`max_camera_agl_m = 1 000`.** `max_camera_altitude_m` stays at 12 000 as the outer
+guard: `Camera::altitude_agl` degrades to `altitude` when no ground sample exists, so
+something has to shut the march off over an ocean at 400 km on a cold cache.
+
+### The balance table
+
+Thirty interleaved rounds per arm, 1280 × 720, `96 × 48`, gate open so that every pose
+reports what the march costs where it runs. "net" is `removed × 146 µs − (march + stage)`.
+
+| pose | AGL | tiles off | tiles on | removed | march + stage | **net** | frame delta |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| `reutlingen_albtrauf` | 2 m | 62 | 61 | 1 | 329 µs | **−183 µs** | +826 µs |
+| `stuttgart_kessel` | 2 m | 74 | 73 | 1 | 346 µs | **−200 µs** | +395 µs |
+| `alps_inn_valley` | 317 m | 114 | 94 | **20** | 550 µs | **+2 370 µs** | **−1 568 µs** |
+| `alps_approach` | 2.0 km | 88 | 87 | 1 | 444 µs | −298 µs | +1 163 µs |
+| `alps_cockpit` | 1.4 km | 114 | 113 | 1 | 511 µs | −365 µs | −428 µs |
+| `alps_cruise_11km` | 10.4 km | 59 | 59 | 0 | 288 µs | −288 µs | +408 µs |
+
+With the gate at 1 000 m AGL the last three rows become **zero on both sides** — the march
+is not built at all — and the family's total goes from `+1 036 µs` to **`+1 987 µs`**, i.e.
+the gate is worth about as much as everything the stage culls at the other five poses put
+together.
+
+For comparison, the same table at `c4718e3` — 24 × 48, the 12 km gate, the 84 km
+inheritance — read 7 removed at `alps_inn_valley` and **0, 0, 1, 0, 0** at the rest, for
+270–520 µs each: **a net loss at five of six poses and −1 400 µs over the family.**
+
+### What is still true, and what is still not
+
+**The terrain step still does not pay.** `reutlingen_albtrauf` and `stuttgart_kessel` go
+62 → 61 and 71 → 70 in the renderer, one tile each for a third of a millisecond. §7f.1
+removed the inheritance that §7e named as the blocker and the answer moved by one tile;
+§7f.3's finer azimuth moved it by one more. What §7d measured as the binding constraint —
+a polar cell on an escarpment holds the crest *and* the slope under it, and the minimum
+wins — is a **radial** property, and the rings are the axis the balance says not to spend
+on. The two facts are consistent and the conclusion is narrow: **D3 pays where a valley
+floor stands below a long ridge, not where a 235 m rim stands in front of a plateau**, and
+the second case would cost more to buy than it is worth.
+
+**The march is still half a millisecond of CPU**, and that is the number that would decide
+this on a phone rather than here. On this host the frame is tile-bound and 20 tiles out of
+114 is worth four times the march; on a device whose frame is CPU-bound the saving lands
+on the GPU and the cost does not. §9 F3's soak is the only thing that can settle that, and
+the gate is what keeps the question confined to the one regime where the trade is worth
+having at all.
+
+### FN = 0, and the pictures
+
+| test | what it sweeps | result |
+|---|---|--:|
+| `d3_never_hides_a_visible_vertex` | 22 ridge-world poses, every culled node scored | **FN 0** |
+| `terrain_sweep_has_no_false_negatives` | 96 poses, D1/D2 | **FN 0** |
+| `terrain_step_d3_never_hides_a_visible_vertex` | the two step poses against the real DEM at z14 — **16 culled nodes, 1 489 candidate vertices** (was 13 and 1 128) | **FN 0** |
+| `d3_ridge_safety_covers_its_placement_error` | 549 272 placement cases | **0 unsound** |
+| `d3_ridge_safety_never_falls_below_the_constant_it_replaced` | 2 444 904 cases with the bearing spread | **0 short in gate** |
+| `d1_floor_inherit_margin_covers_the_corpus` *(new)* | every parent/child pair in the corpus, both ocean policies, ×4 exaggeration | **0 short** |
+
+And the seven captures, `/var/tmp/d3-balance/shots`, 1280 × 720 on the real DEM:
+
+| pose | D1+D2 | +D3 | D1+D2 vs +D3 |
+|---|--:|--:|---|
+| `alps_inn_valley` | 114 | **94** | **byte-identical** |
+| `alps_low` | 76 | 76 | byte-identical |
+| `alps_zugspitze` | 52 | 52 | byte-identical |
+| `himalaya_everest` | 169 | 169 | byte-identical |
+| `himalaya_limb_400km` | 12 | 12 | byte-identical (gate shut) |
+| `step_reutlingen_albtrauf` | 62 | 61 | byte-identical |
+| `step_stuttgart_kessel` | 71 | 70 | byte-identical |
+
+`cmp`, not a sampled comparison. **Twenty tiles out of 114 removed at the Inn valley and
+not one pixel moved** is the statement this package is worth having, and it is a stronger
+one than any tile count: the Nordkette wall runs unbroken from the Innsbruck rooftops to
+the crest line, with no skirt and no gap.
+
+*(Measured 2026-09-21. Culling gate **32 passed, 0 failed, 1 ignored** with no re-pin of
+`size_of::<QuadtreeNode<Ellipsoid>>() == 192`, `TilePatch<Ellipsoid> == 64`,
+`HorizonCamera == 56` or `test_visible_set_digest_is_stable`; `cargo test -p cesium-engine
+--lib` 25/0; all 14 LOD-harness CSVs byte-identical, `aggregate_ratio = 1.663`, 204
+poses.)*
 
 ---
 

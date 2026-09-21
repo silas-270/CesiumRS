@@ -253,6 +253,11 @@ fn settled_tree(
         None => CullPipeline::DEFAULT,
     };
     let cam_alt = p.alt_m * 1.0e-6;
+    // §7f's gate is written in height above the **ground**, and the ridge world's ground
+    // under every pose in this file is the plateau. `wgpu_state` gets this from
+    // `Camera::altitude_agl`; here it is one subtraction, and getting it wrong would shut
+    // the march off at every pose the file measures.
+    let cam_agl = cam_alt - BASE_M * 1.0e-6;
 
     for _ in 0..UPDATE_ITERATIONS {
         for root in qt.roots.iter() {
@@ -260,7 +265,7 @@ fn settled_tree(
         }
         qt.refresh_extras(&bounds_source(&heights));
         match &occlusion {
-            Some(cfg) => qt.refresh_terrain_horizon(frustum.eye, cam_alt, cfg),
+            Some(cfg) => qt.refresh_terrain_horizon(frustum, cam_alt, cam_agl, cfg),
             None => qt.clear_terrain_horizon(),
         }
         qt.update(frustum);
@@ -1413,7 +1418,7 @@ fn bench_terrain_occlusion_cost() {
         const REPS: u32 = 200;
         let t0 = Instant::now();
         for _ in 0..REPS {
-            qt.refresh_terrain_horizon(frustum.eye, cam_alt, &cfg);
+            qt.refresh_terrain_horizon(&frustum, cam_alt, cam_alt - BASE_M * 1.0e-6, &cfg);
         }
         let march_us = t0.elapsed().as_secs_f64() * 1.0e6 / REPS as f64;
 
@@ -1681,7 +1686,12 @@ fn settled_real_tree(
         }
         qt.refresh_extras(&bounds_source(&heights));
         match &occlusion {
-            Some(cfg) => qt.refresh_terrain_horizon(frustum.eye, cam_alt, cfg),
+            // `cam_alt` stands in for the AGL §7f's gate reads. It is an over-estimate
+            // (the ground is at or above the ellipsoid at every pose here), so the gate
+            // can only shut *earlier* than the engine's would — never later, which is the
+            // direction that would make this harness report culls the renderer does not
+            // get. The poses it shuts off are the four that already read 0.0 %.
+            Some(cfg) => qt.refresh_terrain_horizon(frustum, cam_alt, cam_alt, cfg),
             None => qt.clear_terrain_horizon(),
         }
         qt.update(frustum);
@@ -1946,7 +1956,12 @@ fn d3_on_real_terrain() {
 
         let t = Instant::now();
         for _ in 0..REPS {
-            qt.refresh_terrain_horizon(frustum.eye, cam_alt, &cfg);
+            // `cam_alt` stands in for the AGL §7f's gate reads. It is an over-estimate
+            // (the ground is at or above the ellipsoid at every pose here), so the gate
+            // can only shut *earlier* than the engine's would — never later, which is the
+            // direction that would make this harness report culls the renderer does not
+            // get. The poses it shuts off are the four that already read 0.0 %.
+            qt.refresh_terrain_horizon(&frustum, cam_alt, cam_alt, &cfg);
         }
         let march = t.elapsed().as_secs_f64() * 1.0e6 / REPS as f64;
         let t = Instant::now();

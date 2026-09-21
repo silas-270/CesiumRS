@@ -161,12 +161,13 @@ impl AnyQuadtree {
     /// and the conversion happens once, inside `TerrainHorizon::begin`.
     pub fn refresh_terrain_horizon(
         &mut self,
-        eye: glam::DVec3,
+        frustum: &super::Frustum,
         cam_alt: f64,
+        cam_agl: f64,
         cfg: &TerrainOcclusionConfig,
     ) {
         if let Self::Terrain(q) = self {
-            q.refresh_terrain_horizon(eye, cam_alt, cfg);
+            q.refresh_terrain_horizon(frustum, cam_alt, cam_agl, cfg);
         }
     }
 
