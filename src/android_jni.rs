@@ -130,10 +130,14 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
     }
 }
 
-/// Turn terrain height fetching on or off.
+/// Turn terrain on or off at runtime — heights, relief, and the culling that goes with
+/// them.
 ///
-/// Phase B of `docs/terrain-plan.md`: this starts and stops the height cache. Nothing
-/// on screen changes — the relief that consumes the data is Phase C.
+/// **This is the switch the §9 F3 soak's terrain-on arm uses.** Android ships with
+/// terrain off (`TERRAIN_ENABLED_BY_DEFAULT`) because that soak has not been run, so on
+/// device this call is the only way to get the terrain-on measurement without rebuilding
+/// the `.so`. It rebuilds the height manager in place, and E2 then rebuilds the flat
+/// meshes already on the card, four per frame.
 #[no_mangle]
 pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetTerrainEnabled(
     mut _env: JNIEnv,
