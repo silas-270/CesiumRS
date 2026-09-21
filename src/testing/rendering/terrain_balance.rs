@@ -148,8 +148,16 @@ fn poses() -> Vec<Pose> {
             3_000.0,
             8.0,
             0.12,
-            "approach: the main ridge from 3 km, 35 km out",
+            "approach: 3 km over the main ridge — which is itself 2.4 km up, so 584 m AGL",
         ),
+        // **Measured, not assumed, and it is not what it was named for.** The DEM puts
+        // 1 998 m of Tuxer Alpen at 11.20 E / 47.05 N, so a camera at 2 000 m here is
+        // standing *on* the massif at 2 m AGL, not flying 2 km over the Zillertal — the
+        // same trap §7c lost three poses to. It is kept because a camera on a mountainside
+        // looking along a ridge is a real regime and a hard one for D3 (it removes
+        // nothing there), and the name is left alone so the numbers stay comparable; the
+        // cockpit altitude band is covered by `terrain_balance_altitude_ladder`'s
+        // 1 217 m rung instead.
         oblique(
             "alps_cockpit",
             11.20,
@@ -157,7 +165,8 @@ fn poses() -> Vec<Pose> {
             2_000.0,
             3.0,
             0.20,
-            "cockpit: 2 km over the Zillertal, shallow pitch along the valley axis",
+            "on the Tuxer Alpen at 2 m AGL, looking along the ridge — 2 km of \
+             ellipsoid altitude and none of it above the ground",
         ),
         oblique(
             "alps_cruise_11km",
@@ -301,6 +310,10 @@ fn terrain_balance_d3_on_vs_off() {
     {
         let mut off = pollster::block_on(settled(1280, 720, config(false, 1.0), &p));
         let mut on = pollster::block_on(settled(1280, 720, config(true, 1.0), &p));
+        // The gate reads this, so the table has to report it: at `alps_approach` the
+        // camera is 3 km over ground that is itself 2.1 km up, and calling that "3 km"
+        // is the mistake §7f.4 is about.
+        let agl = on.camera.altitude_agl() as f64 * 1.0e6;
         let (s_off, s_on) = interleave(&mut off, &mut on, n);
 
         let f_off = min_of(&s_off.frame_us);
@@ -330,7 +343,7 @@ fn terrain_balance_d3_on_vs_off() {
             min_of(&s_on.draw_us),
         );
         println!(
-            "    {:<20} march alone {:.0} us, stage inside update {:.0} us",
+            "    {:<20} agl {agl:.0} m, march alone {:.0} us, stage inside update {:.0} us",
             "",
             min_of(&s_on.march_us),
             (min_of(&s_on.quadtree_us) - min_of(&s_off.quadtree_us)) - min_of(&s_on.march_us),
