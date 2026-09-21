@@ -6,6 +6,18 @@ pub struct TileBuffers {
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
     pub center_f64: [f64; 3],
+    /// **Phase E2** (`docs/terrain-plan.md` §8): the height tile this mesh's relief was
+    /// sampled from, copied straight off
+    /// [`crate::globe::geometry::TileMesh::height_source`]. `None` on the flat path and
+    /// for a tile whose whole height chain failed.
+    ///
+    /// The cache is keyed by `TileId`, not by `(TileId, height_source)`, and the source
+    /// rides along in the entry instead. Two tiles with the same id never need to
+    /// coexist — the later build always replaces the earlier one — so a compound key
+    /// would only buy a second live entry per tile to evict, while what E2 actually
+    /// needs is to *ask an existing entry which data it was built from*. That is a
+    /// field, not a key.
+    pub height_source: Option<TileId>,
 }
 
 #[repr(C)]

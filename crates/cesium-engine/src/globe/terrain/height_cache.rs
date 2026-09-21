@@ -533,6 +533,19 @@ impl HeightTileManager {
     pub fn insert_ready(&mut self, id: TileId, tile: Arc<HeightTile>) {
         self.cache.mark_ready(id, tile);
     }
+
+    /// Marks a tile as having failed, bypassing the fetcher — [`Self::insert_ready`]'s
+    /// counterpart, and the seam **Phase E2** needs.
+    ///
+    /// A failed own-level fetch is the one state in which a mesh gets built from an
+    /// ancestor and then wants rebuilding later (see
+    /// [`crate::globe::tiles::system::fresher_height_source`]). It cannot be reached
+    /// through [`Self::insert_ready`], and reaching it through the network would make
+    /// the test depend on a 404 the source does not reliably serve, so it is reachable
+    /// here instead.
+    pub fn insert_failed(&mut self, id: TileId) {
+        self.cache.mark_failed(id);
+    }
 }
 
 /// `id`'s ancestor at `level`, or `id` when it is already at or above it.
