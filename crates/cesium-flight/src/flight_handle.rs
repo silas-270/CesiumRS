@@ -50,6 +50,8 @@ pub enum FlightCommand {
         total_duration_ms: u64,
         dep_heading_deg: Option<f64>,
         arr_heading_deg: Option<f64>,
+        dep_elevation_m: Option<f64>,
+        arr_elevation_m: Option<f64>,
         is_secondary: bool,
         runways: Vec<RunwayData>,
     },
@@ -89,14 +91,16 @@ impl FlightHandle {
         &self, 
         id: impl Into<String>, 
         departure_lon: f64, 
-        departure_lat: f64,
-        arrival_lon: f64,
-        arrival_lat: f64,
-        total_duration_ms: u64,
-        dep_heading_deg: Option<f64>,
-        arr_heading_deg: Option<f64>,
+        departure_lat: f64, 
+        arrival_lon: f64, 
+        arrival_lat: f64, 
+        total_duration_ms: u64, 
+        dep_heading_deg: Option<f64>, 
+        arr_heading_deg: Option<f64>, 
         runways: Vec<RunwayData>,
     ) {
+        let dep_elevation_m = crate::preset::lookup_airport_elevation(departure_lat, departure_lon);
+        let arr_elevation_m = crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon);
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
             id: id.into(),
             departure_lon,
@@ -106,6 +110,8 @@ impl FlightHandle {
             total_duration_ms,
             dep_heading_deg,
             arr_heading_deg,
+            dep_elevation_m,
+            arr_elevation_m,
             is_secondary: false,
             runways,
         });
@@ -113,17 +119,26 @@ impl FlightHandle {
 
     /// Load a flight path from a pre-defined or parsed route definition. Non-blocking.
     pub fn load_route_def(&self, route: &crate::preset::FlightRouteDef) {
-        self.load_flight(
-            &route.id,
-            route.departure_lon,
-            route.departure_lat,
-            route.arrival_lon,
-            route.arrival_lat,
-            route.total_duration_ms,
-            route.dep_heading_deg,
-            route.arr_heading_deg,
-            Vec::new(),
-        );
+        let dep_elevation_m = route
+            .dep_elevation_m
+            .or_else(|| crate::preset::lookup_airport_elevation(route.departure_lat, route.departure_lon));
+        let arr_elevation_m = route
+            .arr_elevation_m
+            .or_else(|| crate::preset::lookup_airport_elevation(route.arrival_lat, route.arrival_lon));
+        let _ = self.tx.try_send(FlightCommand::LoadFlight {
+            id: route.id.clone(),
+            departure_lon: route.departure_lon,
+            departure_lat: route.departure_lat,
+            arrival_lon: route.arrival_lon,
+            arrival_lat: route.arrival_lat,
+            total_duration_ms: route.total_duration_ms,
+            dep_heading_deg: route.dep_heading_deg,
+            arr_heading_deg: route.arr_heading_deg,
+            dep_elevation_m,
+            arr_elevation_m,
+            is_secondary: false,
+            runways: Vec::new(),
+        });
     }
 
     /// Load a secondary (reference) flight path. Non-blocking.
@@ -131,13 +146,15 @@ impl FlightHandle {
         &self, 
         id: impl Into<String>, 
         departure_lon: f64, 
-        departure_lat: f64,
-        arrival_lon: f64,
-        arrival_lat: f64,
-        total_duration_ms: u64,
-        dep_heading_deg: Option<f64>,
-        arr_heading_deg: Option<f64>,
+        departure_lat: f64, 
+        arrival_lon: f64, 
+        arrival_lat: f64, 
+        total_duration_ms: u64, 
+        dep_heading_deg: Option<f64>, 
+        arr_heading_deg: Option<f64>, 
     ) {
+        let dep_elevation_m = crate::preset::lookup_airport_elevation(departure_lat, departure_lon);
+        let arr_elevation_m = crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon);
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
             id: id.into(),
             departure_lon,
@@ -147,6 +164,8 @@ impl FlightHandle {
             total_duration_ms,
             dep_heading_deg,
             arr_heading_deg,
+            dep_elevation_m,
+            arr_elevation_m,
             is_secondary: true,
             runways: Vec::new(),
         });
