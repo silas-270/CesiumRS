@@ -110,6 +110,19 @@ impl RoutePresetInfo {
 
 pub const PRESETS: &[RoutePresetInfo] = &[
     RoutePresetInfo {
+        id: "STR-FRA",
+        label: "Stuttgart -> Frankfurt (156 km)",
+        dep_lon: 9.2219,
+        dep_lat: 48.6899,
+        arr_lon: 8.5706,
+        arr_lat: 50.0333,
+        duration_ms: 1_800_000,
+        dep_heading_deg: Some(73.0),
+        arr_heading_deg: Some(249.0),
+        dep_elevation_m: Some(389.0),
+        arr_elevation_m: Some(111.0),
+    },
+    RoutePresetInfo {
         id: "FRA-STR",
         label: "Frankfurt -> Stuttgart (156 km)",
         dep_lon: 8.5706,
@@ -256,7 +269,7 @@ pub fn parse_route(input: &str) -> Result<FlightRouteDef, String> {
     }
 
     // Try matching presets first
-    let normalized = clean.to_uppercase().replace('_', "-");
+    let normalized = clean.to_uppercase().replace('_', "-").replace("->", "-").replace('>', "-");
     for preset in PRESETS {
         if preset.id == normalized {
             return Ok(preset.to_route_def());
