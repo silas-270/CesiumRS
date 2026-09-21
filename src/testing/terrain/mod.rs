@@ -5,6 +5,8 @@ pub mod test_height_tiles;
 #[cfg(test)]
 pub mod test_heightfield;
 #[cfg(test)]
+pub mod test_mesh_density;
+#[cfg(test)]
 pub mod test_mesh_lifetime;
 #[cfg(test)]
 pub mod test_parametric_sweeps;
