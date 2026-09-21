@@ -2,6 +2,8 @@ pub mod api;
 #[cfg(not(target_os = "android"))]
 pub mod viewer;
 pub mod headless;
+#[cfg(not(target_os = "android"))]
+pub mod logging;
 
 #[cfg(all(not(target_os = "android"), feature = "testing"))]
 pub mod testing;
