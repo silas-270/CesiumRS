@@ -44,7 +44,7 @@ fn up_at(lon_deg: f64, lat_deg: f64) -> glam::DVec3 {
 /// `terrain_capture::oblique` looks due north and has no bearing argument; both poses
 /// here need one (135° at Reutlingen, 180° at Stuttgart), so this is that function with
 /// the heading put back in rather than a fifth pose bolted onto a pinned list.
-fn bearing_pose(
+pub(crate) fn bearing_pose(
     name: &'static str,
     lon: f64,
     lat: f64,
