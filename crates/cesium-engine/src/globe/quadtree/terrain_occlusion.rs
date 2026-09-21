@@ -140,18 +140,126 @@ pub const RANGE_RINGS: usize = 48;
 /// top of the ground and the elevation angle to it is meaningless.
 pub const MIN_RANGE_M: f64 = 500.0;
 
-/// Subtracted from every cell floor before its elevation angle is taken, metres.
+/// Metres of safety per metre of the two lengths the march's placement error acts on —
+/// the slope of [`ridge_safety_m`].
 ///
-/// Not a fudge factor: the march places its ridge points with the *normal*-space
-/// rotation `n = up·cos γ + b·sin γ` and reads the ellipsoid radius exactly at that
-/// normal, but the bearing plane it rotates in is spanned by the ellipsoid normal at the
-/// eye rather than by the eye's own position vector, and those differ by up to 0.19° of
-/// geodetic-vs-geocentric latitude. Over the longest ring that is tens of metres of
-/// along-track placement error, whose effect on the ridge's altitude is bounded by the
-/// curvature drop rate `s/R` — under 10 m at 250 km. 100 m is an order of headroom on
-/// that, costs nothing where ridges are hundreds of metres tall, and means the soundness
-/// argument does not rest on a small-angle approximation being exact.
-pub const RIDGE_SAFETY_M: f64 = 100.0;
+/// # What the safety distance covers, and why a flat 100 m was the wrong shape
+///
+/// [`TerrainHorizon::finish`] places a cell's wall with the *normal*-space rotation
+/// `n = up·cos γ + b̂·sin γ`, which moves the **geodetic** latitude by `γ`. The `γ` it is
+/// handed is the one `TerrainHorizon::extent_of` bins nodes and candidates with, and that
+/// one is an equirectangular distance in the engine's **parametric** latitude (the `φ` of
+/// `geometry::lon_lat_to_ecef_f64`, which names a tile row). The two latitudes differ by
+/// up to 0.19°, and — what actually matters — their *metrics* differ: one parametric
+/// radian is not one geodetic radian of ground. The meridian arc per parametric radian is
+/// `√(a²sin²β + b²cos²β)` against the geodetic `M(φ)`, whose ratio runs from `1 + e²/2` at
+/// the equator to `1 − e²/2` at the pole, so the relative discrepancy is
+/// **`κ = e²/2 = 3.35·10⁻³`** — half the squared eccentricity, one power of the flattening,
+/// and the sweep below measures exactly that number falling out of the two constructions.
+///
+/// So the wall stands an **along-track** distance of order `κ·s` from the ground its cell
+/// actually bounds. (Across track the two constructions agree to first order — a purely
+/// lateral offset `δ` changes the range by `δ²/2s`, which is second order and is not what
+/// this constant is paying for.) That along-track offset turns into an *altitude* error
+/// through two channels, and the second one is easy to miss:
+///
+/// * **Through the curvature drop.** An offset `κ·s` under the drop rate `s/R` is
+///   `κ·s²/R` of altitude — the term that grows with range, and the one
+///   `docs/terrain-plan.md` §7d predicted.
+/// * **Through the tilt of a sightline that stands off the floor.** With the eye `Δalt`
+///   above (or below) the cell floor, an along-track offset `δ` at horizontal distance `s`
+///   moves the elevation angle by `δ·Δalt/(s²+Δalt²)`, and the metres of wall that buys
+///   that tilt back is `δ·Δalt/s` — so with `δ = κ·s`, exactly `κ·|Δalt|`,
+///   **independent of range**. This term is not in §7d's sketch and it is not negligible:
+///   at the altitude gate it is 40 m. Shipping a range-only law would have relaxed the
+///   occluder bound, silently, at precisely the poses a range-only sweep does not visit.
+///
+/// Together: **`Δh ≲ κ·(|Δalt| + s²/R)`**, which is what [`ridge_safety_m`] is. (The
+/// curvature term's first-order coefficient is really `κ/2`; carrying the full `s²/R` is
+/// the cheap conservative choice and is where a slice of the reserve below comes from.)
+///
+/// # The measurement, and the reserve
+///
+/// `test_terrain_occlusion::d3_ridge_safety_covers_its_placement_error` sweeps the two
+/// constructions against each other over latitude × bearing × range × eye altitude × cell
+/// floor — ±85° of latitude, every 5° of bearing, `MIN_RANGE_M` … `max_range_m` of range,
+/// an eye from 2 m to 40 km (3.3× the altitude gate), floors from −60 km to +20 km (what a
+/// node deep on an inherited interval can carry) — plus 200 000 off-grid draws from the
+/// same box, and solves for the exact metres of lowering each case needs. The ratio it
+/// reports is flat:
+///
+/// | where | `Δh` needed | `|Δalt| + s²/R` | ratio |
+/// |---|--:|--:|--:|
+/// | 2 km, the worst of the box | 67.26 m | 19 999 m | **0.003363** |
+/// | 32 km | 207.37 m | 60 163 m | **0.003447** |
+/// | 120 km (the worst corner of the box) | 562.02 m | 102 258 m | **0.005496** |
+///
+/// `0.003363` is `e²/2` to three digits, which is the check that the derivation above is
+/// the right one rather than a curve that happens to fit; `0.005496` at the far corner is
+/// the second-order term the first-order derivation leaves out.
+///
+/// **`2·10⁻²` is 3.6× the worst measured need over that whole box** (3.9× on the off-grid
+/// pass), and 6× the first-order `κ`. That is the reserve, and it is **empirical, not
+/// proved**: a dense grid plus a pseudo-random pass over a smooth five-parameter box is
+/// evidence, not a bound. What *is* derived is the law's shape — a constant times
+/// `|Δalt| + s²/R` — and the sweep's flat ratio is the evidence that the shape is right,
+/// which is worth more than the factor on the front of it.
+///
+/// # The error this does **not** cover, and why relaxing was still safe
+///
+/// A wall is built on its sector's *centre* bearing and has to hold against a ray up to
+/// half a sector — 7.5° — away. Over that spread the ellipsoid's Euler radius moves by a
+/// quarter of `κ`, which the reserve absorbs; but `TerrainHorizon::begin` takes `up` from
+/// `ellipsoid_normal_at`, the **confocal** normal rather than the geodetic one, so the
+/// eye's own up-axis misses the ground point `cam_lon`/`cam_lat` names by 7 mm at eye
+/// height and **40 m at the 12 km gate**. Swing a ground point half a sector round and it
+/// is that much further from the eye's axis — worth `|Δalt|/s` metres of wall each.
+///
+/// That error has the wrong *shape* for this constant: it grows as the range falls, where
+/// both of `ridge_safety_m`'s terms shrink, and no affordable distance covers it (at 40 km
+/// of altitude the worst case asks for 6 km of wall). It is also **pre-existing** — it is a
+/// property of the 24-sector grid and of `ellipsoid_normal_at`, not of this constant.
+/// `test_terrain_occlusion::d3_ridge_safety_never_falls_below_the_constant_it_replaced`
+/// measures it and pins the two things that make relaxing the constant safe anyway:
+///
+/// * **under the shipped altitude gate the law covers it too**, over the whole box with
+///   the bearing spread included — 0 cases short against the flat 100 m's 124 169; and
+/// * **there is no case anywhere in the box where this law is short and the flat 100 m was
+///   not.** The relaxation strictly shrinks the set of geometries where the grid's wall can
+///   stand over its ground; it does not trade one hole for another. (Over that box the
+///   flat constant's own worst reserve is **0.017×**.)
+///
+/// # What it buys
+///
+/// The old constant was a flat 100 m at every range and every stand-off. §7d measured what
+/// that cost where D3 was specified to pay: **0.55° of occluder at Reutlingen and 2.23° at
+/// Stuttgart**, thrown away before a single candidate was tested. At those two poses this
+/// law reads **8 m and 6 m**.
+pub const RIDGE_SAFETY_RATE: f64 = 2.0e-2;
+
+/// Range- and stand-off-independent part of [`ridge_safety_m`], metres.
+///
+/// Covers what neither term of [`RIDGE_SAFETY_RATE`]'s law scales with:
+/// `TerrainHorizon::elevation_along` measuring the altitude radially rather than along the
+/// normal (sub-centimetre at 3 km of relief), and the `f32` the finished
+/// `TerrainHorizon::ridge` grid is stored in (a relative 6·10⁻⁸ of a radian, i.e. tens of
+/// microns of wall at the nearest ring). 1 m is two orders on the sum of those, and it
+/// keeps the safety distance from collapsing to nothing for a camera standing on its own
+/// cell floor.
+pub const RIDGE_SAFETY_FLOOR_M: f64 = 1.0;
+
+/// Metres subtracted from a cell floor before its elevation angle is taken: ground range
+/// `range_m` to the cell, `alt_diff_m` the eye's height above or below that floor.
+///
+/// See [`RIDGE_SAFETY_RATE`] for the derivation and the measured reserve. In
+/// [`TerrainHorizon::finish`] the `s²/R` half is hoisted per ring and only an `abs`, an
+/// add and a multiply are left per cell — 1 152 of them a frame, which is why
+/// `bench_terrain_occlusion_cost` cannot see it.
+#[inline]
+pub fn ridge_safety_m(range_m: f64, alt_diff_m: f64) -> f64 {
+    const R_M: f64 = EARTH_RADIUS_A_F64 * 1.0e6;
+    RIDGE_SAFETY_FLOOR_M + RIDGE_SAFETY_RATE * (alt_diff_m.abs() + range_m * range_m / R_M)
+}
 
 /// Fractional slack applied to every angular extent — see
 /// [`TerrainHorizon::extent_of`].
@@ -660,7 +768,6 @@ impl TerrainHorizon {
                 eprintln!("sector {a}: {}", row.join(" "));
             }
         }
-        let safety = RIDGE_SAFETY_M * 1.0e-6;
         let scale = std::f64::consts::TAU / AZIMUTH_SECTORS as f64;
 
         // Sector centre bearings, once. The elevation angle to a ridge depends on the
@@ -694,10 +801,25 @@ impl TerrainHorizon {
             let gamma = self.ring_far[r];
             let (sin_g, cos_g) = gamma.sin_cos();
             let up_term = self.up * cos_g;
+            // **The safety distance is the cell's, not the grid's.** It covers a
+            // placement error proportional to the range (see [`RIDGE_SAFETY_RATE`]),
+            // reaching the wall's altitude through the curvature drop `s²/R` and through
+            // the tilt of a sightline that stands `Δalt` off the floor. A flat 100 m
+            // charged the first term's 250 km value at the 2 km ring, which is where §7d
+            // measured it throwing away 2.23° of Stuttgart's escarpment for a quantity
+            // that is a centimetre there.
+            //
+            // Megametres, like every altitude in this struct: `gamma * gamma * R` **is**
+            // `s²/R` once `s = gamma·R`, so the radius carries the unit and no metre ever
+            // appears. Hoisted here because it is the ring's; only the `Δalt` term below
+            // is the cell's.
+            let drop = gamma * gamma * EARTH_RADIUS_A_F64;
+            let safety_base = RIDGE_SAFETY_FLOOR_M * 1.0e-6 + RIDGE_SAFETY_RATE * drop;
             for a in 0..AZIMUTH_SECTORS {
                 let f = self.floor[a][r];
                 if f.is_finite() {
                     let n = up_term + bearing_dir[a] * sin_g;
+                    let safety = safety_base + RIDGE_SAFETY_RATE * (self.cam_alt - f).abs();
                     let e = self.elevation_along(n, f - safety);
                     if e > run[a] {
                         run[a] = e;
@@ -719,7 +841,8 @@ impl TerrainHorizon {
     ///
     /// Exact on the ellipsoid up to the altitude being measured radially rather than
     /// along the normal (a sub-centimetre difference at 3 km of relief), which is what
-    /// [`RIDGE_SAFETY_M`] covers along with the rest of the small-angle slop.
+    /// [`RIDGE_SAFETY_FLOOR_M`] covers along with the rest of the range-independent
+    /// small-angle slop.
     ///
     /// # Why it takes the normal and not `(bearing, gamma)`
     ///

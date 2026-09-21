@@ -61,6 +61,7 @@ use std::sync::Arc;
 
 use cesium_engine::camera::camera::CameraMode;
 use cesium_engine::globe::geometry::{TileMesh, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
+use cesium_engine::globe::quadtree::terrain_occlusion::{ridge_safety_m, MIN_RANGE_M};
 use cesium_engine::globe::quadtree::{
     lod_factor_for, tile_bounds, transform_to_scaled_space, web_mercator_y_to_lat_f64,
     CullPipeline, Frustum, HorizonCamera, QuadtreeManager, QuadtreeNode, TerrainHorizon,
@@ -73,7 +74,7 @@ use cesium_engine::globe::terrain::{
 use cesium_engine::globe::tiles::config::{OceanPolicy, TerrainConfig, TileEngineConfig};
 use glam::DVec3;
 
-use crate::testing::culling::cameras::{build_camera, ViewParams};
+use crate::testing::culling::cameras::{build_camera, Lcg, ViewParams};
 use crate::testing::culling::oracle::{VisibilityOracle, NDC_MARGIN};
 
 /// Mesh density, the shipped default — the geometry checked is the geometry that ships.
@@ -525,6 +526,574 @@ fn reduction_poses() -> Vec<(&'static str, ViewParams)> {
             pose("d3", LAT_RIDGE - 0.60, 11.0, 11_000.0, 80.0),
         ),
     ]
+}
+
+// ── the safety distance, and the error it is there to cover ──────────────────────
+
+/// Furthest a candidate's own bearing can sit from the centre bearing of a sector whose
+/// ridge value is allowed to cull it — half a sector, in degrees, times a margin.
+///
+/// `TerrainHorizon::finish` builds every wall on the sector's **centre** bearing, and
+/// `TerrainHorizon::occludes` takes the minimum over the sectors a candidate's disc
+/// touches. The soundness paragraph only needs *one* of those sectors to hold against the
+/// ray, and the one whose band contains the ray's own bearing is at most half a sector
+/// from it — so half a sector is the exact spread a wall has to survive. The 1.5× is
+/// because `sector_range`'s outward rounding is an inequality this constant should not
+/// have to be exactly right about.
+const SECTOR_BEARING_SPREAD_DEG: f64 = 1.5 * 180.0 / AZIMUTH_SECTORS as f64;
+
+/// The factor [`ridge_safety_m`] is required to keep over the worst *measured* placement
+/// need, across the whole swept box.
+///
+/// Asserted rather than merely printed, so that lowering `RIDGE_SAFETY_RATE` past what it
+/// covers goes red here, in a test that names the quantity, rather than three commits
+/// later in a capture that shows a hole in a mountain.
+const REQUIRED_RESERVE: f64 = 3.0;
+
+/// The flat constant `ridge_safety_m` replaced, metres — `RIDGE_SAFETY_M` as it stood at
+/// `dfd6891`.
+///
+/// Kept as a number here because the useful claim about a **relaxation** is not "the new
+/// law is sound" on its own but "it is short nowhere the old one held", and that is a
+/// comparison, which needs both sides.
+const REPLACED_CONSTANT_M: f64 = 100.0;
+
+/// What one swept placement case reports.
+struct PlacementNeed {
+    /// Exact metres of lowering that put the march's wall level with the ground its cell
+    /// stands for. Zero when the wall is already under it.
+    need_m: f64,
+    /// `|Δalt| + s²/R`, the shape [`ridge_safety_m`]'s law claims, metres.
+    denom_m: f64,
+    /// What [`ridge_safety_m`] actually charges here, metres.
+    safety_m: f64,
+}
+
+/// **One case of the two constructions, solved exactly.**
+///
+/// `TerrainHorizon::finish` places a cell's wall by rotating the eye's ellipsoid normal by
+/// the cell's angular distance `γ`, which moves the **geodetic** latitude by `γ`. But `γ`
+/// is the equirectangular distance `extent_of` bins that cell with, and *that* one is
+/// measured in the engine's **parametric** latitude — the `φ` of `lon_lat_to_ecef_f64`,
+/// which is what names a tile row. One parametric radian of ground is not one geodetic
+/// radian of ground, so the wall stands a little away from the ground its cell bounds.
+///
+/// # What the reference point is, and why that one
+///
+/// The module's soundness paragraph turns on one inequality. A candidate `p` is culled
+/// only when `θ_p < ridge[β][i]` for some ring `i` nearer than `p`, and the conclusion
+/// "the ray is inside solid ground" needs the ray to pass **under the real terrain where
+/// ring `i`'s far edge actually is**. That place is named in `extent_of`'s metric, because
+/// that is the metric the cell was binned in and the metric `occludes` compares `near`
+/// against; and it is on **the ray's own bearing**, because that is where the ray is. So
+/// what `ridge[β][i]` must not exceed is
+///
+/// > the elevation angle of the ground point at `extent_of`-distance `ring_far[i]`, on the
+/// > ray's bearing, at altitude `floor[β][i]`.
+///
+/// Both sides are built here from scratch — neither of them by calling the engine, which
+/// is the point — and the solve is a bisection on a function monotone in the lowering by
+/// construction, with no small-angle step anywhere in it.
+///
+/// `off_deg` is how far the ray's bearing sits from the sector centre the wall was built
+/// on; zero is the pure **placement** error, which is what `ridge_safety_m` is for.
+fn placement_need(
+    lat: f64,
+    eye_m: f64,
+    floor_m: f64,
+    s_m: f64,
+    b_deg: f64,
+    off_deg: f64,
+) -> PlacementNeed {
+    const R_M: f64 = EARTH_RADIUS_A_F64 * 1.0e6;
+
+    let surface = |lon: f64, lat: f64| -> DVec3 {
+        let (phi, theta) = (lat.to_radians(), lon.to_radians());
+        DVec3::new(
+            EARTH_RADIUS_A_F64 * phi.cos() * theta.cos(),
+            EARTH_RADIUS_B_F64 * phi.sin(),
+            -EARTH_RADIUS_A_F64 * phi.cos() * theta.sin(),
+        )
+    };
+    let normal = |p: DVec3| -> DVec3 {
+        DVec3::new(
+            p.x / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64),
+            p.y / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64),
+            p.z / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64),
+        )
+        .normalize()
+    };
+    // A geodetic point, the way the *reference* side names one: parametric latitude,
+    // altitude along the normal.
+    let at = |lon: f64, lat: f64, alt_m: f64| -> DVec3 {
+        let s = surface(lon, lat);
+        s + normal(s) * (alt_m * 1.0e-6)
+    };
+    // The ellipsoid point whose outward normal is `n` — `finish`'s own placement, from the
+    // implicit form.
+    let foot = |n: DVec3| -> DVec3 {
+        let lam = 1.0
+            / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64 * (n.x * n.x + n.z * n.z)
+                + EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64 * n.y * n.y)
+                .sqrt();
+        DVec3::new(
+            EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64 * n.x,
+            EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64 * n.y,
+            EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64 * n.z,
+        ) * lam
+    };
+    let elev = |eye: DVec3, up: DVec3, p: DVec3| -> f64 {
+        let v = p - eye;
+        let vert = v.dot(up);
+        vert.atan2((v - up * vert).length())
+    };
+
+    let eye = at(11.0, lat, eye_m);
+    let up = normal(eye);
+    let m = (up.x * up.x + up.z * up.z).sqrt();
+    let east = DVec3::new(up.z / m, 0.0, -up.x / m);
+    let north = up.cross(east).normalize();
+    // The camera ground position **the engine derives from `up`**, not the one the eye was
+    // built from: `begin` inverts the normal, and the two are not the same point once the
+    // camera has altitude (see `d3_ridge_safety_never_falls_below_the_constant_it_replaced`,
+    // which measures exactly that gap).
+    let cam_lon = (-up.z).atan2(up.x).to_degrees();
+    let cam_lat = ((EARTH_RADIUS_B_F64 / EARTH_RADIUS_A_F64) * up.y)
+        .atan2(m)
+        .to_degrees();
+
+    let gamma = s_m / R_M;
+    let (sin_g, cos_g) = gamma.sin_cos();
+    let b = b_deg.to_radians();
+    let dir = east * b.sin() + north * b.cos();
+    // `finish`'s wall: the eye's normal rotated by `γ` toward the sector centre.
+    let n = (up * cos_g + dir * sin_g).normalize();
+    let base = foot(n);
+
+    // The reference: the same `γ` read back through `extent_of`'s equirectangular metric,
+    // on the bearing the **ray** may actually have.
+    let br = (b_deg + off_deg).to_radians();
+    let lat1 = cam_lat + (gamma * br.cos()).to_degrees();
+    let cos_m = (0.5 * (lat1 + cam_lat)).to_radians().cos().max(1.0e-9);
+    let lon1 = cam_lon + (gamma * br.sin()).to_degrees() / cos_m;
+    let e_ref = elev(eye, up, at(lon1, lat1, floor_m));
+
+    let denom_m = (eye_m - floor_m).abs() + s_m * s_m / R_M;
+    let safety_m = ridge_safety_m(s_m, eye_m - floor_m);
+    let drop_to = |d: f64| elev(eye, up, base + n * ((floor_m - d) * 1.0e-6));
+
+    if drop_to(0.0) <= e_ref {
+        return PlacementNeed {
+            need_m: 0.0,
+            denom_m,
+            safety_m,
+        };
+    }
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    while drop_to(hi) > e_ref && hi < 1.0e9 {
+        lo = hi;
+        hi *= 4.0;
+    }
+    for _ in 0..50 {
+        let mid = 0.5 * (lo + hi);
+        if drop_to(mid) > e_ref {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    PlacementNeed {
+        need_m: hi,
+        denom_m,
+        safety_m,
+    }
+}
+
+/// The box both safety sweeps walk: latitudes, eye altitudes **at or under the shipped
+/// altitude gate**, eye altitudes above it, cell floors, and ranges in kilometres.
+///
+/// 85° is the Web-Mercator limit, so it is the whole of the latitude range that has tiles
+/// at all. The floor list spans far more than the DEM's own range on purpose: a node on an
+/// **inherited** interval carries D1's level margin — 20 km at z0–z4, compounding down a
+/// cold chain — so a cell floor tens of kilometres under the ellipsoid is something
+/// `finish` really is handed. The ranges span `MIN_RANGE_M` to the config's
+/// `max_range_m`, which is the whole of what `ring_far` can hold.
+#[allow(clippy::type_complexity)]
+fn safety_box() -> (
+    &'static [f64],
+    &'static [f64],
+    &'static [f64],
+    &'static [f64],
+    &'static [f64],
+) {
+    const LATS: [f64; 11] = [
+        -85.0, -70.0, -47.4, -30.0, -10.0, 0.0, 15.0, 45.0, 60.0, 75.0, 85.0,
+    ];
+    // The top of this list is `TerrainOcclusionConfig::default().max_camera_altitude_m`.
+    const EYES_IN_GATE: [f64; 5] = [2.0, 200.0, 1_500.0, 6_000.0, 12_000.0];
+    // What `d3_reduces_tiles_where_it_matters` and `d3_altitude_gate_is_where_the_benefit_stops`
+    // open the gate to when they measure what the gate gives up.
+    const EYES_ABOVE_GATE: [f64; 2] = [20_000.0, 40_000.0];
+    const FLOORS: [f64; 7] = [-60_000.0, -6_000.0, -400.0, 0.0, 900.0, 8_000.0, 20_000.0];
+    const RANGES_KM: [f64; 9] = [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 120.0];
+    (&LATS, &EYES_IN_GATE, &EYES_ABOVE_GATE, &FLOORS, &RANGES_KM)
+}
+
+/// **Where [`ridge_safety_m`]'s law comes from, measured rather than asserted.**
+///
+/// [`placement_need`] states the inequality and builds both sides. This walks it over
+/// latitude × eye altitude × cell floor × range × bearing **on the sector centre**, which
+/// is the pure placement error and exactly what the safety distance is for; the bearing
+/// spread is a different error of a different shape and
+/// [`d3_ridge_safety_never_falls_below_the_constant_it_replaced`] is where it is measured.
+///
+/// # Why it prints a ratio
+///
+/// `RIDGE_SAFETY_RATE`'s doc comment derives `Δh ≲ κ·(|Δalt| + s²/R)` and claims
+/// `κ ≈ e²/2`. A ratio that stays flat across the parameter box is the evidence for that
+/// **shape**; a single worst-case number would not distinguish it from any other curve
+/// through the same point. The factor on the front is then a reserve on a measured
+/// constant rather than a guess at an unmeasured one — and it is a factor on a
+/// measurement, not a proof, which is the standing `RIDGE_SAFETY_RATE`'s own doc comment
+/// claims for it.
+#[test]
+fn d3_ridge_safety_covers_its_placement_error() {
+    // Half the squared eccentricity of the engine's ellipsoid — the first-order relative
+    // discrepancy between the parametric and the geodetic latitude metric, and what the
+    // ratio below should land on if the derivation is the right one.
+    let e2_over_2 = 0.5
+        * (1.0
+            - (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64)
+                / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64));
+
+    let (lats, eyes_in, eyes_above, floors, ranges_km) = safety_box();
+    let eyes: Vec<f64> = eyes_in.iter().chain(eyes_above.iter()).copied().collect();
+
+    let mut worst_ratio = 0.0_f64;
+    let mut worst_reserve = f64::INFINITY;
+    let mut worst_at = String::new();
+    let mut rows: Vec<String> = Vec::new();
+    let mut unsound = 0usize;
+    let mut cases = 0usize;
+
+    for &km in ranges_km {
+        let s_m = km * 1_000.0;
+        let (mut row_ratio, mut row_need, mut row_denom) = (0.0_f64, 0.0_f64, 0.0_f64);
+        let mut row_reserve = f64::INFINITY;
+        for &lat in lats {
+            for &eye_m in &eyes {
+                for &floor_m in floors {
+                    let mut b_deg = 0.0_f64;
+                    while b_deg < 360.0 {
+                        let n = placement_need(lat, eye_m, floor_m, s_m, b_deg, 0.0);
+                        b_deg += 5.0;
+                        cases += 1;
+                        // **The claim**, directly: the wall, lowered by the shipped law, is
+                        // not above the ground its cell actually stands for.
+                        if n.need_m > n.safety_m {
+                            unsound += 1;
+                        }
+                        if n.need_m <= 0.0 {
+                            continue;
+                        }
+                        let ratio = n.need_m / n.denom_m;
+                        worst_ratio = worst_ratio.max(ratio);
+                        if ratio > row_ratio {
+                            row_ratio = ratio;
+                            row_need = n.need_m;
+                            row_denom = n.denom_m;
+                        }
+                        let reserve = n.safety_m / n.need_m;
+                        row_reserve = row_reserve.min(reserve);
+                        if reserve < worst_reserve {
+                            worst_reserve = reserve;
+                            worst_at = format!(
+                                "{km} km, lat {lat}, eye {eye_m} m, floor {floor_m} m, \
+                                 bearing {:.0}",
+                                b_deg - 5.0
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        rows.push(format!(
+            "    {km:>7} {row_need:>10.3} {row_denom:>11.0} {row_ratio:>10.6} \
+             {:>10.2} {row_reserve:>9.1}",
+            ridge_safety_m(s_m, 0.0)
+        ));
+    }
+
+    // **And the same box again, off the grid.** A grid over a smooth five-parameter box
+    // can sit in the troughs of whatever it is measuring; a pseudo-random pass cannot sit
+    // anywhere in particular. Same seed every run, so a failure is reproducible.
+    let mut rng = Lcg::new(0x5EED_1234);
+    let mut rand_reserve = f64::INFINITY;
+    let mut rand_ratio = 0.0_f64;
+    let mut rand_at = String::new();
+    let max_range_m = TerrainOcclusionConfig::default().max_range_m as f64;
+    for _ in 0..200_000 {
+        let lat = rng.range(-85.0, 85.0);
+        let eye_m = rng.range(2.0, 40_000.0);
+        let floor_m = rng.range(-60_000.0, 20_000.0);
+        let s_m = MIN_RANGE_M * (max_range_m / MIN_RANGE_M).powf(rng.next_f64());
+        let b_deg = rng.range(0.0, 360.0);
+        let n = placement_need(lat, eye_m, floor_m, s_m, b_deg, 0.0);
+        cases += 1;
+        if n.need_m > n.safety_m {
+            unsound += 1;
+        }
+        if n.need_m <= 0.0 {
+            continue;
+        }
+        rand_ratio = rand_ratio.max(n.need_m / n.denom_m);
+        let reserve = n.safety_m / n.need_m;
+        if reserve < rand_reserve {
+            rand_reserve = reserve;
+            rand_at = format!(
+                "{:.1} km, lat {lat:.1}, eye {eye_m:.0} m, floor {floor_m:.0} m, \
+                 bearing {b_deg:.1}",
+                s_m / 1_000.0
+            );
+        }
+    }
+
+    println!("  [D3 safety] the placement error the safety distance covers — {cases} cases");
+    println!("    e²/2 = {e2_over_2:.6}  —  the first-order prediction for the ratio");
+    println!(
+        "    {:>7} {:>10} {:>11} {:>10} {:>10} {:>9}",
+        "km", "need (m)", "|dalt|+s²/R", "ratio", "safety@0", "reserve"
+    );
+    for r in &rows {
+        println!("{r}");
+    }
+    println!(
+        "    worst ratio {worst_ratio:.6} = {:.2}× e²/2;  worst reserve {worst_reserve:.2}× at \
+         {worst_at}",
+        worst_ratio / e2_over_2
+    );
+    println!(
+        "    off-grid pass: worst ratio {rand_ratio:.6} = {:.2}× e²/2, worst reserve \
+         {rand_reserve:.2}× at {rand_at}",
+        rand_ratio / e2_over_2
+    );
+
+    assert_eq!(
+        unsound, 0,
+        "the shipped safety distance leaves the march's wall above the ground its cell \
+         stands for in {unsound} of the swept cases"
+    );
+    let reserve = worst_reserve.min(rand_reserve);
+    assert!(
+        reserve >= REQUIRED_RESERVE,
+        "the safety distance's reserve has fallen to {reserve:.2}× (at {worst_at} / \
+         {rand_at}); RIDGE_SAFETY_RATE is no longer clear of what it covers"
+    );
+    // And the shape: if this stops being e²/2 the derivation in `RIDGE_SAFETY_RATE`'s doc
+    // comment has stopped describing the code.
+    let ratio = worst_ratio.max(rand_ratio);
+    assert!(
+        ratio < 2.0 * e2_over_2,
+        "the measured ratio {ratio:.6} is no longer within a factor of two of e²/2 \
+         = {e2_over_2:.6}; the law's shape, not just its constant, needs re-deriving"
+    );
+}
+
+/// **The acceptance test for a *relaxation*: the new law is short nowhere the old constant
+/// held.**
+///
+/// [`d3_ridge_safety_covers_its_placement_error`] proves the law covers the error it was
+/// derived for. That is not the same as proving the *change* is safe, because
+/// `RIDGE_SAFETY_M`'s flat 100 m was also, accidentally, paying for a second error nobody
+/// had written down — and a range-proportional law that is under 100 m at short range
+/// stops paying for it there.
+///
+/// # The second error, named and measured
+///
+/// `finish` builds every wall on the sector's **centre** bearing, and the ray it has to
+/// hold against may be [`SECTOR_BEARING_SPREAD_DEG`] away. Over that spread the wall and
+/// the ground move apart for two reasons, and only the first is small:
+///
+/// * the ellipsoid's Euler radius varies with azimuth by a fraction of `e²`, which is a
+///   quarter of `κ` over half a sector — inside the law's own reserve;
+/// * and `TerrainHorizon::begin` takes `up` from `ellipsoid_normal_at`, which is the
+///   **confocal** normal, not the geodetic one, so the eye's own up-axis misses the ground
+///   point `cam_lon`/`cam_lat` names. The table this test prints measures that miss: it is
+///   7 mm at eye height and **40 m at the 12 km altitude gate**. A ground point one
+///   half-sector round from a wall is that much further from, or nearer to, the eye's axis
+///   — and under a high camera every metre of that is `|Δalt|/s` metres of wall.
+///
+/// This is **pre-existing, and not what the safety distance is for**: its shape is
+/// `|Δalt|/s`, which grows as the range *falls*, where `ridge_safety_m`'s two terms both
+/// shrink. No affordable constant covers it — at 40 km the worst case asks for 6 km of
+/// wall. What this test therefore asserts is the pair of things that are actually true and
+/// actually load-bearing:
+///
+/// 1. **inside the shipped altitude gate the shipped law covers it anyway**, over the whole
+///    box, bearing spread included; and
+/// 2. **there is no case, anywhere in the box, where `ridge_safety_m` is short and the flat
+///    100 m was not** — so the relaxation strictly shrinks the set of geometries where the
+///    grid's wall can stand over the ground, rather than trading one hole for another.
+///
+/// The above-gate numbers are printed rather than asserted, because they are a property of
+/// the 24-sector grid and of `ellipsoid_normal_at`, not of this constant, and because the
+/// only configuration that reaches them is a harness that has deliberately opened the gate.
+#[test]
+fn d3_ridge_safety_never_falls_below_the_constant_it_replaced() {
+    let (lats, eyes_in, eyes_above, floors, ranges_km) = safety_box();
+    let offsets_deg = {
+        let s = SECTOR_BEARING_SPREAD_DEG;
+        [0.0, 0.25 * s, 0.5 * s, 0.75 * s, s, -0.5 * s, -s]
+    };
+
+    // The mechanism, as a measurement: how far the eye's own up-axis misses the ground
+    // point `begin` derives from it. `ellipsoid_normal_at` is the confocal normal, so the
+    // eye is *not* on the ellipsoid normal through `foot(up)`, and the gap grows with the
+    // square of the altitude.
+    println!("  [D3 safety] the eye's up-axis against the ground point `begin` derives");
+    println!("    {:>10} {:>16}", "eye (m)", "off-axis (m)");
+    for &h in [2.0_f64, 200.0, 1_500.0, 6_000.0, 12_000.0, 40_000.0].iter() {
+        // Both built the way the engine builds them, in this file's own arithmetic.
+        let phi = 45f64.to_radians();
+        let s = DVec3::new(
+            EARTH_RADIUS_A_F64 * phi.cos(),
+            EARTH_RADIUS_B_F64 * phi.sin(),
+            0.0,
+        );
+        let n0 = DVec3::new(
+            s.x / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64),
+            s.y / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64),
+            0.0,
+        )
+        .normalize();
+        let eye = s + n0 * (h * 1.0e-6);
+        let up = DVec3::new(
+            eye.x / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64),
+            eye.y / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64),
+            0.0,
+        )
+        .normalize();
+        let lam = 1.0
+            / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64 * up.x * up.x
+                + EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64 * up.y * up.y)
+                .sqrt();
+        let f = DVec3::new(
+            EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64 * up.x,
+            EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64 * up.y,
+            0.0,
+        ) * lam;
+        let d = eye - f;
+        let off = (d - up * d.dot(up)).length() * 1.0e6;
+        println!("    {h:>10.0} {off:>16.3}");
+    }
+
+    let mut regressions = 0usize;
+    let mut worst_regression = String::new();
+    let (mut short_in_gate, mut short_above) = (0usize, 0usize);
+    let (mut short_old_in_gate, mut short_old_above) = (0usize, 0usize);
+    let mut worst_in_gate = f64::INFINITY;
+    let mut worst_in_gate_at = String::new();
+    let mut worst_above = f64::INFINITY;
+    let mut worst_above_at = String::new();
+    let mut worst_old = f64::INFINITY;
+    let mut cases = 0usize;
+
+    for &km in ranges_km {
+        let s_m = km * 1_000.0;
+        for &lat in lats {
+            for (in_gate, eye_list) in [(true, eyes_in), (false, eyes_above)] {
+                for &eye_m in eye_list {
+                    for &floor_m in floors {
+                        let mut b_deg = 0.0_f64;
+                        while b_deg < 360.0 {
+                            for &off in offsets_deg.iter() {
+                                let n = placement_need(lat, eye_m, floor_m, s_m, b_deg, off);
+                                cases += 1;
+                                if n.need_m <= 0.0 {
+                                    continue;
+                                }
+                                let what = || {
+                                    format!(
+                                        "{km} km, lat {lat}, eye {eye_m} m, floor {floor_m} m, \
+                                         bearing {b_deg:.0} + {off:.2}, need {:.1} m against \
+                                         {:.1} m",
+                                        n.need_m, n.safety_m
+                                    )
+                                };
+                                // The one thing a relaxation must not do.
+                                if n.need_m > n.safety_m && n.need_m <= REPLACED_CONSTANT_M {
+                                    regressions += 1;
+                                    if worst_regression.is_empty() {
+                                        worst_regression = what();
+                                    }
+                                }
+                                if n.need_m > n.safety_m {
+                                    if in_gate {
+                                        short_in_gate += 1;
+                                    } else {
+                                        short_above += 1;
+                                    }
+                                }
+                                if n.need_m > REPLACED_CONSTANT_M {
+                                    if in_gate {
+                                        short_old_in_gate += 1;
+                                    } else {
+                                        short_old_above += 1;
+                                    }
+                                }
+                                worst_old = worst_old.min(REPLACED_CONSTANT_M / n.need_m);
+                                let reserve = n.safety_m / n.need_m;
+                                if in_gate {
+                                    if reserve < worst_in_gate {
+                                        worst_in_gate = reserve;
+                                        worst_in_gate_at = what();
+                                    }
+                                } else if reserve < worst_above {
+                                    worst_above = reserve;
+                                    worst_above_at = what();
+                                }
+                            }
+                            b_deg += 5.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "    {cases} cases, sector centre +/- {SECTOR_BEARING_SPREAD_DEG:.2} deg \
+         (half a sector is {:.2})",
+        180.0 / AZIMUTH_SECTORS as f64
+    );
+    println!(
+        "    under the {} m altitude gate: ridge_safety_m short in {short_in_gate}, the flat \
+         {REPLACED_CONSTANT_M:.0} m short in {short_old_in_gate}; worst reserve \
+         {worst_in_gate:.2}× at {worst_in_gate_at}",
+        TerrainOcclusionConfig::default().max_camera_altitude_m
+    );
+    println!(
+        "    above it (harness-only): ridge_safety_m short in {short_above}, the flat \
+         {REPLACED_CONSTANT_M:.0} m short in {short_old_above}; worst reserve \
+         {worst_above:.2}× at {worst_above_at}"
+    );
+    println!(
+        "    the flat {REPLACED_CONSTANT_M:.0} m's own worst reserve over the same box: \
+         {worst_old:.3}×"
+    );
+
+    assert_eq!(
+        regressions, 0,
+        "in {regressions} cases `ridge_safety_m` is short where the flat \
+         {REPLACED_CONSTANT_M:.0} m it replaced was not — the relaxation has opened a hole \
+         rather than narrowed one. First: {worst_regression}"
+    );
+    assert_eq!(
+        short_in_gate, 0,
+        "under the shipped altitude gate the wall stands over the ground its cell stands \
+         for in {short_in_gate} cases once the ray is allowed its half-sector of bearing. \
+         Worst: {worst_in_gate_at}"
+    );
 }
 
 // ── D3's acceptance: FN = 0 ──────────────────────────────────────────────────────
