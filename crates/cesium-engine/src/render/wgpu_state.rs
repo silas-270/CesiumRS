@@ -449,6 +449,43 @@ impl<'a> WgpuState<'a> {
         self.tile_cache.resize(size);
     }
 
+    pub fn set_terrain_enabled(&mut self, enabled: bool) {
+        if self.tile_system.config.terrain.enabled == enabled {
+            return;
+        }
+        self.tile_system.config.terrain.enabled = enabled;
+        self.tile_system.height_manager =
+            crate::globe::tiles::system::TileSystem::build_height_manager(
+                &self.tile_system.config,
+            );
+        let mut qt = AnyQuadtree::for_terrain(enabled);
+        qt.set_pipeline(if enabled && self.tile_system.config.terrain.occlusion.enabled {
+            CullPipeline::TERRAIN_DEFAULT
+        } else {
+            CullPipeline::DEFAULT
+        });
+        qt.set_frame_params(2.0, self.tile_system.config.max_zoom, 0.0);
+        self.quadtree_manager = qt;
+        self.tile_cache.clear();
+        self.display_state.clear();
+        self.last_visible_set.clear();
+    }
+
+    pub fn set_base_imagery_url(&mut self, url: String) {
+        if self.tile_system.config.base_imagery_url == url {
+            return;
+        }
+        self.tile_system.config.base_imagery_url = url;
+        self.tile_system.texture_manager =
+            crate::globe::tiles::texture_manager::TileTextureManager::new(
+                &self.device,
+                &self.queue,
+                &self.tile_system.config,
+            );
+        self.display_state.clear();
+        self.last_visible_set.clear();
+    }
+
     pub fn update_tile_cache(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
         // Promote all actively used tiles so they aren't evicted
         for (id, _, _) in visible_tiles {

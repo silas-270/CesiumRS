@@ -3,8 +3,8 @@ use glam::Vec3;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static RENDERING_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -164,29 +164,16 @@ impl<'a> App<'a> {
                         && state.tile_system.config.terrain.enabled;
                     let mut selected_sat = is_sat_terrain;
                     if ui.radio_value(&mut selected_sat, false, "Standard (Carto Dark)").changed() {
-                        state.tile_system.config.base_imagery_url =
-                            crate::globe::tiles::config::STANDARD_IMAGERY_URL.to_string();
-                        state.tile_system.texture_manager =
-                            crate::globe::tiles::texture_manager::TileTextureManager::new(
-                                &state.device,
-                                &state.queue,
-                                &state.tile_system.config,
-                            );
+                        state.set_base_imagery_url(
+                            crate::globe::tiles::config::STANDARD_IMAGERY_URL.to_string(),
+                        );
+                        state.set_terrain_enabled(false);
                     }
                     if ui.radio_value(&mut selected_sat, true, "Satellite + Terrain (Esri)").changed() {
-                        state.tile_system.config.base_imagery_url =
-                            crate::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string();
-                        state.tile_system.texture_manager =
-                            crate::globe::tiles::texture_manager::TileTextureManager::new(
-                                &state.device,
-                                &state.queue,
-                                &state.tile_system.config,
-                            );
-                        state.tile_system.config.terrain.enabled = true;
-                        state.tile_system.height_manager =
-                            crate::globe::tiles::system::TileSystem::build_height_manager(
-                                &state.tile_system.config,
-                            );
+                        state.set_base_imagery_url(
+                            crate::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string(),
+                        );
+                        state.set_terrain_enabled(true);
                     }
                 });
 
@@ -200,11 +187,7 @@ impl<'a> App<'a> {
                         .checkbox(&mut on, "Draw the globe with relief")
                         .changed()
                     {
-                        state.tile_system.config.terrain.enabled = on;
-                        state.tile_system.height_manager =
-                            crate::globe::tiles::system::TileSystem::build_height_manager(
-                                &state.tile_system.config,
-                            );
+                        state.set_terrain_enabled(on);
                     }
 
                     let terrain = &state.tile_system.config.terrain;
@@ -428,14 +411,14 @@ pub type AppUserEvent = EngineEvent;
 pub type AppUserEvent = ();
 
 impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: AppUserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: AppUserEvent) {
         #[cfg(target_os = "android")]
         match _event {
             EngineEvent::Suspend => {
-                event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+                _event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
             }
             EngineEvent::Resume => {
-                event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                _event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
             }
             EngineEvent::Destroy => {
                 // Exits the winit run_app() loop. WgpuState is dropped when App is dropped
@@ -771,20 +754,10 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                             )));
                         }
                         ViewerCommand::MapSetImageryUrl(url) => {
-                            state.tile_system.config.base_imagery_url = url;
-                            state.tile_system.texture_manager =
-                                crate::globe::tiles::texture_manager::TileTextureManager::new(
-                                    &state.device,
-                                    &state.queue,
-                                    &state.tile_system.config,
-                                );
+                            state.set_base_imagery_url(url);
                         }
                         ViewerCommand::TerrainSetEnabled(on) => {
-                            state.tile_system.config.terrain.enabled = on;
-                            state.tile_system.height_manager =
-                                crate::globe::tiles::system::TileSystem::build_height_manager(
-                                    &state.tile_system.config,
-                                );
+                            state.set_terrain_enabled(on);
                         }
                     }
                 }

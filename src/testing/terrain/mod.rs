@@ -1,6 +1,8 @@
 #[cfg(test)]
 pub mod test_detail_below_ceiling;
 #[cfg(test)]
+pub mod test_flight_tracking_terrain;
+#[cfg(test)]
 pub mod test_ground_mesh;
 #[cfg(test)]
 pub mod test_ground_reference;

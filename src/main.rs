@@ -297,16 +297,18 @@ mod inner {
 
             flight_handle.load_route_def(&route_def);
 
-            let viewer = cesium_rs::CesiumViewer::builder()
+            let mut builder = cesium_rs::CesiumViewer::builder()
                 .tile_cache_size(2048)
                 .enable_prefetch(true)
                 .target_texel_ratio(1.0)
                 .map_style(cli.map_style)
-                .terrain(cli.terrain)
                 .terrain_exaggeration(cli.terrain_exaggeration)
                 .terrain_ocean(cli.terrain_ocean)
-                .with_extension(Box::new(flight_app))
-                .build();
+                .with_extension(Box::new(flight_app));
+            if cli.terrain {
+                builder = builder.terrain(true);
+            }
+            let viewer = builder.build();
 
             // Obtain a handle before run() takes ownership
             let _cam = viewer.handle();
@@ -373,16 +375,18 @@ fn main() {
         });
     flight_handle.load_route_def(&route_def);
 
-    let viewer = cesium_rs::CesiumViewer::builder()
+    let mut builder = cesium_rs::CesiumViewer::builder()
         .tile_cache_size(2048)
         .enable_prefetch(true)
         .target_texel_ratio(1.0)
         .map_style(cli.map_style)
-        .terrain(cli.terrain)
         .terrain_exaggeration(cli.terrain_exaggeration)
         .terrain_ocean(cli.terrain_ocean)
-        .with_extension(Box::new(flight_app))
-        .build();
+        .with_extension(Box::new(flight_app));
+    if cli.terrain {
+        builder = builder.terrain(true);
+    }
+    let viewer = builder.build();
 
     // Obtain a handle before run() takes ownership
     let _cam = viewer.handle();
