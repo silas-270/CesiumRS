@@ -559,11 +559,19 @@ fn the_error_term_costs_two_bytes_a_tile() {
         "E1 adds one i16 per tile; if this moved, the cache entry count in \
          `docs/terrain-plan.md` §5 B4 needs re-deriving"
     );
+    // The derived entry count must follow from the one constant that states the budget and
+    // nothing else. It is 381 on desktop since §9 F2b resized the slice to 48 MiB; Android
+    // keeps 254 until the soak of §9 F3 is run.
     let config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
     assert_eq!(
         config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
-        254,
+        cesium_engine::globe::tiles::config::HEIGHT_CACHE_BUDGET_BYTES / HEIGHT_TILE_BYTES,
         "and the derived entry count must not have moved with it"
+    );
+    #[cfg(not(target_os = "android"))]
+    assert_eq!(
+        config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
+        381
     );
     // Not a size_of pin: `HeightTile` boxes its grids, so the i16 lands in a struct whose
     // own size is dominated by three pointers. The accounting constant above is what the
