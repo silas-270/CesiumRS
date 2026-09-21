@@ -1746,7 +1746,7 @@ fn stamp_occluders<S: SurfaceModel>(
     use super::terrain_occlusion::OccluderStep;
 
     let bounds = tile_bounds(&node.id);
-    match horizon.classify(&bounds) {
+    match horizon.classify(&bounds, node.obb.center) {
         OccluderStep::Skip => {}
         OccluderStep::Descend => match &node.children {
             Some(children) => {
@@ -1787,6 +1787,31 @@ fn stamp_node<S: SurfaceModel>(
     use crate::globe::terrain::heightfield::OCCLUDER_GRID;
 
     let floors = S::occluder_floor(&node.extra);
+    // **`D3_DEBUG`: who is holding the near field down.** A march cell's floor is a
+    // minimum over everything stamped into it, so a single node whose bounds are still
+    // inherited takes its whole cell to wherever its inheritance chain has reached — and
+    // in the renderer, unlike in the counting harness, there are such nodes inside the
+    // first few rings. Naming them is the difference between guessing at a fetch policy
+    // and reading one. The `OnceLock` is because this runs on every stamped node of every
+    // frame and `var_os` is a lock and an allocation.
+    {
+        static DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *DBG.get_or_init(|| std::env::var_os("D3_DEBUG").is_some()) {
+            let lo = floors.iter().copied().fold(f32::INFINITY, f32::min);
+            let (_, _, near) = horizon.extent_of_pub(bounds);
+            // Within 5 km and claiming to be below sea level: nothing real does that.
+            if near * 6.378137e6 < 5_000.0 && lo < -0.000_1 {
+                eprintln!(
+                    "D3 poison: z{} {}/{} at {:.0} m claims floor {:.0} m",
+                    node.id.z,
+                    node.id.x,
+                    node.id.y,
+                    near * 6.378137e6,
+                    lo * 1.0e6
+                );
+            }
+        }
+    }
     let h = &node.obb.half_axes;
     let east = DVec3::new(h[0].x as f64, h[0].y as f64, h[0].z as f64);
     let north = DVec3::new(h[1].x as f64, h[1].y as f64, h[1].z as f64);
@@ -2235,11 +2260,13 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
     /// frame — and a coarser node has a *lower* floor, so staleness occludes less.
     pub fn refresh_terrain_horizon(
         &mut self,
-        eye: DVec3,
+        frustum: &Frustum,
         cam_alt: f64,
+        cam_agl: f64,
         cfg: &super::terrain_occlusion::TerrainOcclusionConfig,
     ) {
-        let mut horizon = super::terrain_occlusion::TerrainHorizon::begin(eye, cam_alt, cfg);
+        let mut horizon =
+            super::terrain_occlusion::TerrainHorizon::begin(frustum, cam_alt, cam_agl, cfg);
         if horizon.is_active() {
             for root in self.roots.iter() {
                 stamp_occluders(root, &mut horizon);
