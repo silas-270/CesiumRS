@@ -431,41 +431,30 @@ impl TileSystem {
     /// Mutable version used at draw time — promotes accessed textures in the LRU
     /// so that currently-rendered tiles are never evicted mid-frame.
     pub fn get_render_data(&mut self, id: TileId) -> Option<RenderData<'_>> {
-        if let Some(TileState::Ready(_)) = self.texture_manager.cache.get_state(&id) {
-            let bg = match self.texture_manager.cache.get_state(&id).unwrap() {
-                TileState::Ready((_, bg)) => bg,
-                _ => unreachable!(),
-            };
-            return Some(RenderData {
-                mesh_id: id,
-                texture_id: id,
-                bind_group: bg,
-                uv_scale_offset: [1.0, 1.0, 0.0, 0.0],
-            });
-        }
-
-        let mut current_id = id;
-        let mut found_parent = None;
-
-        while let Some(parent_id) = current_id.parent() {
-            if let Some(TileState::Ready(_)) = self.texture_manager.cache.get_state(&parent_id) {
-                found_parent = Some((parent_id, Self::compute_fallback_uv(id, parent_id)));
-                break;
+        let target = if let Some(TileState::Ready(_)) = self.texture_manager.cache.get_state(&id) {
+            Some((id, [1.0, 1.0, 0.0, 0.0]))
+        } else {
+            let mut current_id = id;
+            let mut found = None;
+            while let Some(parent_id) = current_id.parent() {
+                if let Some(TileState::Ready(_)) = self.texture_manager.cache.get_state(&parent_id) {
+                    found = Some((parent_id, Self::compute_fallback_uv(id, parent_id)));
+                    break;
+                }
+                current_id = parent_id;
             }
-            current_id = parent_id;
-        }
+            found
+        };
 
-        if let Some((parent_id, uv_scale_offset)) = found_parent {
-            let bg = match self.texture_manager.cache.get_state(&parent_id).unwrap() {
-                TileState::Ready((_, bg)) => bg,
-                _ => unreachable!(),
-            };
-            return Some(RenderData {
-                mesh_id: id,
-                texture_id: parent_id,
-                bind_group: bg,
-                uv_scale_offset,
-            });
+        if let Some((tex_id, uv_scale_offset)) = target {
+            if let Some(TileState::Ready((_, bg))) = self.texture_manager.cache.get_state(&tex_id) {
+                return Some(RenderData {
+                    mesh_id: id,
+                    texture_id: tex_id,
+                    bind_group: bg,
+                    uv_scale_offset,
+                });
+            }
         }
 
         // Return the static fallback color bind group as a last-resort fallback

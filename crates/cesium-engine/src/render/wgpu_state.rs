@@ -195,6 +195,20 @@ impl<'a> WgpuState<'a> {
             .await
             .unwrap();
 
+        let adapter_info = adapter.get_info();
+        log::info!(
+            "WGPU Adapter: '{}' ({:?}, backend {:?}, driver '{}')",
+            adapter_info.name,
+            adapter_info.device_type,
+            adapter_info.backend,
+            adapter_info.driver
+        );
+
+        device.on_uncaptured_error(Box::new(|err| {
+            let bt = std::backtrace::Backtrace::capture();
+            log::error!("CRITICAL WGPU ERROR: {:?}\nBacktrace:\n{}", err, bt);
+        }));
+
         let surface_format = surface.as_ref().map(|s| {
             let caps = s.get_capabilities(&adapter);
             caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0])

@@ -36,6 +36,7 @@ z_sweep_results*.csv
 stress_results*.csv
 sweep.log
 cargo_build.log
+cesium.log
 routes_test.png
 light_audit/
 haze_capture/

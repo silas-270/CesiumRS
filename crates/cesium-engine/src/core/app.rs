@@ -529,9 +529,21 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
 
                 match render_result {
                     Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                    Err(e) => log::error!("{:?}", e),
+                    Err(wgpu::SurfaceError::Lost) => {
+                        log::warn!("GPU Surface lost! Resizing to: {:?}", state.size);
+                        state.resize(state.size);
+                    }
+                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                        log::error!("FATAL: GPU Surface out of memory! Exiting event loop.");
+                        event_loop.exit();
+                    }
+                    Err(wgpu::SurfaceError::Timeout) => {
+                        log::warn!("GPU Surface texture acquisition timeout. Skipping frame.");
+                    }
+                    Err(wgpu::SurfaceError::Outdated) => {
+                        log::warn!("GPU Surface outdated! Reconfiguring surface.");
+                        state.resize(state.size);
+                    }
                 }
             }
             WindowEvent::MouseInput {

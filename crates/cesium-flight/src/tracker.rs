@@ -69,7 +69,7 @@ impl FlightEntity {
             return 0.0;
         }
         let p = (progress as f32).clamp(0.0, 1.0);
-        match table.binary_search_by(|(q, _)| q.partial_cmp(&p).unwrap()) {
+        match table.binary_search_by(|(q, _)| q.partial_cmp(&p).unwrap_or(std::cmp::Ordering::Equal)) {
             Ok(i) => table[i].1,
             Err(0) => table[0].1,
             Err(i) if i >= table.len() => table[table.len() - 1].1,
