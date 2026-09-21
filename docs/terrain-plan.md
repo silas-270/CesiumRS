@@ -1591,8 +1591,11 @@ Three changes turn that around, and all three are measured rather than argued:
    ellipsoid (§7f.4).
 
 After them, at the pose D3 was built for, the renderer draws **114 tiles without D3 and
-94 with it**, the captured frame is **byte-identical**, and the frame is **1.6–2.3 ms
-faster**. Everywhere the stage does not pay, the gate now shuts it off.
+94 with it**, the captured frame is **byte-identical**, and the frame is **1.2–2.3 ms
+faster**. Over the six-pose family the stage goes from about **−1 400 µs a frame to
++981 µs**. That is a real gain and a narrow one: all of it comes from one pose, and §7f's
+closing section says plainly which poses still pay for nothing and why no altitude
+threshold can reach them.
 
 ### The instrument
 
@@ -1797,31 +1800,52 @@ something has to shut the march off over an ocean at 400 km on a cold cache.
 
 ### The balance table
 
-Thirty interleaved rounds per arm, 1280 × 720, `96 × 48`, gate open so that every pose
-reports what the march costs where it runs. "net" is `removed × 146 µs − (march + stage)`.
+Thirty interleaved rounds per arm, 1280 × 720, at the **shipped** configuration —
+`96 × 48`, gate at 1 000 m AGL. "net" is `removed × 146 µs − (march + stage)`. The AGL
+column is measured off the built camera, not off the pose's altitude argument, and two of
+the six poses are not where their names say.
 
 | pose | AGL | tiles off | tiles on | removed | march + stage | **net** | frame delta |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| `reutlingen_albtrauf` | 2 m | 62 | 61 | 1 | 329 µs | **−183 µs** | +826 µs |
-| `stuttgart_kessel` | 2 m | 74 | 73 | 1 | 346 µs | **−200 µs** | +395 µs |
-| `alps_inn_valley` | 317 m | 114 | 94 | **20** | 550 µs | **+2 370 µs** | **−1 568 µs** |
-| `alps_approach` | 2.0 km | 88 | 87 | 1 | 444 µs | −298 µs | +1 163 µs |
-| `alps_cockpit` | 1.4 km | 114 | 113 | 1 | 511 µs | −365 µs | −428 µs |
-| `alps_cruise_11km` | 10.4 km | 59 | 59 | 0 | 288 µs | −288 µs | +408 µs |
+| `reutlingen_albtrauf` | 21 m | 62 | 61 | 1 | 311 µs | −165 µs | −64 µs |
+| `stuttgart_kessel` | 145 m | 71 | 73 | **0** | 337 µs | −337 µs | +454 µs |
+| `alps_inn_valley` | 317 m | 114 | **94** | **20** | 513 µs | **+2 407 µs** | **−1 162 µs** |
+| `alps_approach` | 584 m | 88 | 88 | 0 | 463 µs | −463 µs | +921 µs |
+| `alps_cockpit` | **2 m** | 114 | 114 | 0 | 461 µs | −461 µs | +985 µs |
+| `alps_cruise_11km` | 9.1 km | 59 | 59 | 0 | **−4 µs** | 0 | +17 µs |
+| | | | | | | **+981 µs** | |
 
-With the gate at 1 000 m AGL the last three rows become **zero on both sides** — the march
-is not built at all — and the family's total goes from `+1 036 µs` to **`+1 987 µs`**, i.e.
-the gate is worth about as much as everything the stage culls at the other five poses put
-together.
+The same six poses at `c4718e3` — 24 × 48, the 12 km gate, the 84 km inheritance — read
+7 removed at `alps_inn_valley` and **0, 0, 1, 0, 0** at the rest, for 270–520 µs of march
+each: **a net loss at five of six and about −1 400 µs over the family.** So the package
+moves the family from −1 400 µs to +981 µs, and every microsecond of that comes from one
+pose.
 
-For comparison, the same table at `c4718e3` — 24 × 48, the 12 km gate, the 84 km
-inheritance — read 7 removed at `alps_inn_valley` and **0, 0, 1, 0, 0** at the rest, for
-270–520 µs each: **a net loss at five of six poses and −1 400 µs over the family.**
+**Four things this table says that the draft of it did not, and they are the useful part.**
+
+* **`alps_cruise_11km` is what the gate does**, and it is the whole of what the gate does
+  here: the march goes from 288 µs to **nothing**. The other five poses are all under
+  1 000 m AGL and keep it.
+* **`alps_cockpit` is at 2 m AGL, not 1.4 km.** The DEM puts 1 998 m of Tuxer Alpen at
+  11.20 E / 47.05 N, so a camera at 2 000 m there is standing on the massif — §7c's pose
+  trap, caught here by measuring the AGL instead of reading the pose. `alps_approach` is
+  the same story more mildly: 3 km of altitude over 2.4 km of ridge is **584 m** AGL. The
+  cockpit altitude band is covered by the ladder's 1 217 m rung instead, and the two poses
+  are kept as what they actually are — hard cases, where D3 removes nothing at short range.
+* **`stuttgart_kessel` reads 71 → 73 here and 74 → 73 on the run before it.** The settle
+  is worth ±3 tiles at this pose, so "D3 removes one tile at Stuttgart" is **not
+  established**; zero is the honest entry. The mechanism is F2b's own: a culled node
+  requests nothing, so the two arms fetch different height tiles and refine differently
+  elsewhere.
+* **The only reproducible reduction in the renderer is the Inn-valley family**, and it is
+  reproducible: 114 → 94 across four separate runs, 126 → 104 and 106 → 95 at the rungs
+  around it, and a frame-time column that clears the noise floor downward every time.
 
 ### What is still true, and what is still not
 
-**The terrain step still does not pay.** `reutlingen_albtrauf` and `stuttgart_kessel` go
-62 → 61 and 71 → 70 in the renderer, one tile each for a third of a millisecond. §7f.1
+**The terrain step still does not pay.** `reutlingen_albtrauf` goes 62 → 61 in the
+renderer and `stuttgart_kessel` does not move outside its own settle noise — one tile
+between them for two thirds of a millisecond. §7f.1
 removed the inheritance that §7e named as the blocker and the answer moved by one tile;
 §7f.3's finer azimuth moved it by one more. What §7d measured as the binding constraint —
 a polar cell on an escarpment holds the crest *and* the slope under it, and the minimum
@@ -1829,6 +1853,17 @@ wins — is a **radial** property, and the rings are the axis the balance says n
 on. The two facts are consistent and the conclusion is narrow: **D3 pays where a valley
 floor stands below a long ridge, not where a 235 m rim stands in front of a plateau**, and
 the second case would cost more to buy than it is worth.
+
+**The gate only reaches the poses that are high, and three of the five it lets through pay
+nothing.** `alps_approach` at 584 m AGL and `alps_cockpit` at 2 m each spend ~460 µs to
+remove nothing, and no altitude threshold can separate them from `alps_inn_valley` at
+317 m, which removes twenty. The discriminator is not height, it is **relief in view**:
+where a valley floor stands under a kilometre-scale ridge, D3 pays; where the camera is
+already on the ridge, or where the step is 235 m of basin rim, it does not. A relief gate
+would have to know the answer the march computes, which is the shape of the problem and
+why it is recorded here rather than built. What the AGL gate does buy is the altitude
+band, cleanly and for free: the ladder's four rungs above 1 000 m removed one tile between
+them and now cost nothing at all.
 
 **The march is still half a millisecond of CPU**, and that is the number that would decide
 this on a phone rather than here. On this host the frame is tile-bound and 20 tiles out of
@@ -1859,6 +1894,10 @@ And the seven captures, `/var/tmp/d3-balance/shots`, 1280 × 720 on the real DEM
 | `himalaya_limb_400km` | 12 | 12 | byte-identical (gate shut) |
 | `step_reutlingen_albtrauf` | 62 | 61 | byte-identical |
 | `step_stuttgart_kessel` | 71 | 70 | byte-identical |
+
+(The two step captures' `+D3` tile counts sit inside the ±3-tile settle spread the balance
+table records at that pose; what the captures pin is the **pixels**, which is the claim
+they are here to make.)
 
 `cmp`, not a sampled comparison. **Twenty tiles out of 114 removed at the Inn valley and
 not one pixel moved** is the statement this package is worth having, and it is a stronger
