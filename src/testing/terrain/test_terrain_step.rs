@@ -79,7 +79,7 @@ use crate::testing::terrain::test_terrain_occlusion::{
 /// Level the ground-truth DEM march reads at — the deepest the source serves at full
 /// resolution over Europe, so the ridge the oracle sees is the sharpest one available.
 /// A z14 tile at 48° N is 1.62 km across over 256 texels, i.e. 6.3 m a texel.
-const DEM_Z: u8 = 14;
+pub(crate) const DEM_Z: u8 = 14;
 
 /// Steps in the oracle's ray march from the eye to a sample point.
 ///
@@ -198,7 +198,7 @@ impl StepPose {
 // ── the DEM, read directly ───────────────────────────────────────────────────────
 
 /// Web-Mercator column and row of a point at level `z`, as fractions.
-fn mercator_xy(lon: f64, lat: f64, z: u8) -> (f64, f64) {
+pub(crate) fn mercator_xy(lon: f64, lat: f64, z: u8) -> (f64, f64) {
     let n = (1_u64 << z) as f64;
     let x = (lon + 180.0) / 360.0 * n;
     let lat = lat.clamp(-85.051_128, 85.051_128);
@@ -209,7 +209,7 @@ fn mercator_xy(lon: f64, lat: f64, z: u8) -> (f64, f64) {
 /// Longitude, latitude and radial altitude (megametres) of an ECEF point — the inverse
 /// of `geometry::lon_lat_to_ecef_f64`, copied from `test_terrain_occlusion` so the two
 /// oracles do not share a line with each other or with the engine.
-fn geodetic_of(q: DVec3) -> (f64, f64, f64) {
+pub(crate) fn geodetic_of(q: DVec3) -> (f64, f64, f64) {
     let r = q.length();
     let d = q / r;
     let lambda = 1.0
@@ -225,7 +225,7 @@ fn geodetic_of(q: DVec3) -> (f64, f64, f64) {
 }
 
 /// Bilinear DEM height at `(lon, lat)`, metres, read off the real terrarium tiles.
-fn dem_height_m(world: &mut RealWorld, lon: f64, lat: f64) -> f64 {
+pub(crate) fn dem_height_m(world: &mut RealWorld, lon: f64, lat: f64) -> f64 {
     let (fx, fy) = mercator_xy(lon, lat, DEM_Z);
     let id = TileId {
         z: DEM_Z,
@@ -237,14 +237,14 @@ fn dem_height_m(world: &mut RealWorld, lon: f64, lat: f64) -> f64 {
 }
 
 /// ECEF megametres of a geodetic point.
-fn ecef(lon: f64, lat: f64, alt_m: f64) -> DVec3 {
+pub(crate) fn ecef(lon: f64, lat: f64, alt_m: f64) -> DVec3 {
     let p = lon_lat_alt_to_ecef_f64(lon, lat, alt_m);
     DVec3::new(p[0], p[1], p[2])
 }
 
 /// Great-circle destination from `(lon, lat)` on `bearing`, `dist_m` away — spherical,
 /// which is centimetres off at these ranges and is only used to *place* probe points.
-fn dest(lon: f64, lat: f64, bearing_deg: f64, dist_m: f64) -> (f64, f64) {
+pub(crate) fn dest(lon: f64, lat: f64, bearing_deg: f64, dist_m: f64) -> (f64, f64) {
     const R: f64 = EARTH_RADIUS_A_F64 * 1.0e6;
     let (br, d) = (bearing_deg.to_radians(), dist_m / R);
     let (la, lo) = (lat.to_radians(), lon.to_radians());
@@ -254,7 +254,7 @@ fn dest(lon: f64, lat: f64, bearing_deg: f64, dist_m: f64) -> (f64, f64) {
 }
 
 /// Elevation angle of `p` seen from `eye` with local up `up`, degrees.
-fn elevation_deg(eye: DVec3, up: DVec3, p: DVec3) -> f64 {
+pub(crate) fn elevation_deg(eye: DVec3, up: DVec3, p: DVec3) -> f64 {
     let v = p - eye;
     let vert = v.dot(up);
     let horiz = (v - up * vert).length();
@@ -262,7 +262,7 @@ fn elevation_deg(eye: DVec3, up: DVec3, p: DVec3) -> f64 {
 }
 
 /// Outward ellipsoid normal at `p`.
-fn normal_at(p: DVec3) -> DVec3 {
+pub(crate) fn normal_at(p: DVec3) -> DVec3 {
     const INV_A2: f64 = 1.0 / (EARTH_RADIUS_A_F64 * EARTH_RADIUS_A_F64);
     const INV_B2: f64 = 1.0 / (EARTH_RADIUS_B_F64 * EARTH_RADIUS_B_F64);
     DVec3::new(p.x * INV_A2, p.y * INV_B2, p.z * INV_A2).normalize()
@@ -331,7 +331,7 @@ pub(crate) enum Fill {
     Visible,
 }
 
-fn frustum_for(p: &ViewParams) -> Frustum {
+pub(crate) fn frustum_for(p: &ViewParams) -> Frustum {
     let cam = build_camera(p);
     let aspect = p.aspect();
     let (eye, _) = cam.global_transform_f64();
@@ -356,15 +356,15 @@ fn fill_chain(id: TileId, heights: &mut HeightTileManager, world: &mut RealWorld
 }
 
 /// One settled tree, with the whole frame-by-frame trace of how it got there.
-struct Settled {
-    qt: QuadtreeManager<Heightfield>,
-    heights: HeightTileManager,
+pub(crate) struct Settled {
+    pub(crate) qt: QuadtreeManager<Heightfield>,
+    pub(crate) heights: HeightTileManager,
     /// `(visible leaves, height tiles resident, visible leaves on an inherited interval)`
     /// per frame.
-    trace: Vec<(usize, usize, usize)>,
+    pub(crate) trace: Vec<(usize, usize, usize)>,
 }
 
-fn settle(
+pub(crate) fn settle(
     p: &ViewParams,
     frustum: &Frustum,
     occlusion: Option<TerrainOcclusionConfig>,
@@ -494,7 +494,7 @@ struct Candidate {
 
 /// Upper bound on the elevation angle of every point of `obb`, degrees — the same two
 /// linear extremes `TerrainHorizon::occludes` takes, and the quantity it tests.
-fn box_elevation_deg(obb: &cesium_engine::globe::quadtree::OrientedBoundingBox, eye: DVec3, up: DVec3) -> f64 {
+pub(crate) fn box_elevation_deg(obb: &cesium_engine::globe::quadtree::OrientedBoundingBox, eye: DVec3, up: DVec3) -> f64 {
     let half: [DVec3; 3] = [
         DVec3::new(obb.half_axes[0].x as f64, obb.half_axes[0].y as f64, obb.half_axes[0].z as f64),
         DVec3::new(obb.half_axes[1].x as f64, obb.half_axes[1].y as f64, obb.half_axes[1].z as f64),
@@ -773,7 +773,7 @@ fn mercator_lat(b: &cesium_engine::globe::quadtree::TileBounds, f: f64) -> f64 {
     yy.sinh().atan().to_degrees()
 }
 
-fn ground_range_m(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> f64 {
+pub(crate) fn ground_range_m(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> f64 {
     const R: f64 = EARTH_RADIUS_A_F64 * 1.0e6;
     let dla = (lat1 - lat0).to_radians();
     let dlo = wrap_deg(lon1 - lon0).to_radians() * (0.5 * (lat0 + lat1)).to_radians().cos();
@@ -786,7 +786,7 @@ fn initial_bearing_deg(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> f64 {
     dlo.atan2(dla).to_degrees()
 }
 
-fn wrap_deg(d: f64) -> f64 {
+pub(crate) fn wrap_deg(d: f64) -> f64 {
     let mut d = d % 360.0;
     if d > 180.0 {
         d -= 360.0;
