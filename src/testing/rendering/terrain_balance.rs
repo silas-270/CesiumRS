@@ -96,6 +96,13 @@ fn config(occlusion: bool, texel_ratio: f32) -> TileEngineConfig {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(120_000.0),
+                // §7g's pre-check. Overridable so the same instrument can measure the
+                // engine **without** it — set it to anything at or below −90 and the
+                // march runs wherever the altitude gates let it, which is §7f's arm.
+                min_relief_deg: std::env::var("CESIUM_BALANCE_RELIEF")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(8.0),
                 ..Default::default()
             },
             ..TerrainConfig::default()
