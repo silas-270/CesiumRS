@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use cesium_engine::camera::camera::CameraMode;
-use cesium_engine::globe::tiles::config::TileEngineConfig;
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig};
 use cesium_engine::render::wgpu_state::WgpuState;
 use crate::testing::VerifyConfig;
 
@@ -18,6 +18,21 @@ pub struct RouteShot {
     pub arr_lat: f64,
     pub duration_ms: u64,
     pub out_filename: &'static str,
+}
+
+/// The flat globe this capture was recorded against.
+///
+/// **Section 9 F4 flipped `TerrainConfig::enabled` on by default.** This instrument is
+/// about route framing and the route mesh, and the ground under it moving would make every comparison with the committed shots two changes wide. So the config is stated here rather than
+/// inherited — the same rule the LOD harness and the culling gate already follow.
+fn flat_config() -> TileEngineConfig {
+    TileEngineConfig {
+        terrain: TerrainConfig {
+            enabled: false,
+            ..TerrainConfig::default()
+        },
+        ..TileEngineConfig::default()
+    }
 }
 
 async fn render_route(shot: &RouteShot, out_dir: &PathBuf) {
@@ -46,7 +61,7 @@ async fn render_route(shot: &RouteShot, out_dir: &PathBuf) {
     let mut state = WgpuState::new(
         None,
         Some(winit::dpi::PhysicalSize::new(1920, 1080)),
-        TileEngineConfig::default(),
+        flat_config(),
         Some(flight_app),
     )
     .await;

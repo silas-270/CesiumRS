@@ -13,16 +13,36 @@
 //! Run with `cargo test --release --lib haze_capture -- --nocapture --ignored`.
 
 use cesium_engine::camera::camera::CameraMode;
-use cesium_engine::globe::tiles::config::TileEngineConfig;
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig};
 use cesium_engine::render::wgpu_state::WgpuState;
 
 use crate::testing::culling::cameras::{build_camera, ViewParams};
+
+/// The flat globe these captures were recorded against.
+///
+/// **Section 9 F4 flipped `TerrainConfig::enabled` on by default**, and this is an
+/// instrument whose committed baseline predates it: it measures atmospheric haze against a known globe, not relief, and a
+/// surface that moved under it would make every future comparison two changes wide. The
+/// config is therefore stated rather than inherited — the same rule the LOD harness and
+/// the culling gate already follow by constructing their trees explicitly.
+///
+/// The captures that *are* about relief (`terrain_capture`, `terrain_e1_capture`,
+/// `terrain_e2_capture`, `terrain_e3_capture`) set the flag themselves, both ways.
+fn flat_config() -> TileEngineConfig {
+    TileEngineConfig {
+        terrain: TerrainConfig {
+            enabled: false,
+            ..TerrainConfig::default()
+        },
+        ..TileEngineConfig::default()
+    }
+}
 
 async fn shoot(params: &ViewParams, out: &str) {
     let mut state = WgpuState::new(
         None,
         Some(winit::dpi::PhysicalSize::new(params.width, params.height)),
-        TileEngineConfig::default(),
+        flat_config(),
         None,
     )
     .await;
