@@ -369,6 +369,13 @@ impl FlightTrackerApp {
         is_secondary: bool,
         runways: Vec<crate::flight_handle::RunwayData>,
     ) {
+        let mut config = self.plan_config;
+        if let Some(elev) = crate::preset::lookup_airport_elevation(departure_lat, departure_lon) {
+            config.dep_elevation_m = elev;
+        }
+        if let Some(elev) = crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon) {
+            config.arr_elevation_m = elev;
+        }
         self.pending_flights.push(PendingFlight {
             id: id.to_string(),
             departure_lon,
@@ -380,12 +387,25 @@ impl FlightTrackerApp {
             arr_heading_deg: None,
             is_secondary,
             runways,
-            config: self.plan_config,
+            config,
         });
     }
 
     /// Load a route from a pre-defined or parsed `FlightRouteDef`.
     pub fn load_route(&mut self, route: crate::preset::FlightRouteDef) {
+        let mut config = self.plan_config;
+        if let Some(elev) = route
+            .dep_elevation_m
+            .or_else(|| crate::preset::lookup_airport_elevation(route.departure_lat, route.departure_lon))
+        {
+            config.dep_elevation_m = elev;
+        }
+        if let Some(elev) = route
+            .arr_elevation_m
+            .or_else(|| crate::preset::lookup_airport_elevation(route.arrival_lat, route.arrival_lon))
+        {
+            config.arr_elevation_m = elev;
+        }
         self.pending_flights.push(PendingFlight {
             id: route.id,
             departure_lon: route.departure_lon,
@@ -397,7 +417,7 @@ impl FlightTrackerApp {
             arr_heading_deg: route.arr_heading_deg,
             is_secondary: false,
             runways: Vec::new(),
-            config: self.plan_config,
+            config,
         });
     }
 
@@ -516,10 +536,23 @@ impl GlobeExtension for FlightTrackerApp {
                         arrival_lat,
                         dep_heading_deg,
                         arr_heading_deg,
+                        dep_elevation_m,
+                        arr_elevation_m,
                         is_secondary,
                         runways,
                         total_duration_ms,
                     } => {
+                        let mut config = self.plan_config;
+                        if let Some(elev) = dep_elevation_m
+                            .or_else(|| crate::preset::lookup_airport_elevation(departure_lat, departure_lon))
+                        {
+                            config.dep_elevation_m = elev;
+                        }
+                        if let Some(elev) = arr_elevation_m
+                            .or_else(|| crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon))
+                        {
+                            config.arr_elevation_m = elev;
+                        }
                         if !is_secondary {
                             self.pending_flights.retain(|f| f.is_secondary);
                         }
@@ -534,7 +567,7 @@ impl GlobeExtension for FlightTrackerApp {
                             arr_heading_deg,
                             is_secondary,
                             runways,
-                            config: self.plan_config,
+                            config,
                         });
                     }
                     FlightCommand::SetRouteLineMode(m) => {
@@ -639,6 +672,8 @@ impl GlobeExtension for FlightTrackerApp {
                         arrival_lat,
                         dep_heading_deg,
                         arr_heading_deg,
+                        dep_elevation_m,
+                        arr_elevation_m,
                         is_secondary,
                         runways,
                         total_duration_ms,
@@ -649,6 +684,17 @@ impl GlobeExtension for FlightTrackerApp {
                                 r.airport_id, r.length_ft, r.width_ft, 
                                 r.le_heading, r.le_lat, r.le_lon, 
                                 r.he_heading, r.he_lat, r.he_lon);
+                        }
+                        let mut config = self.plan_config;
+                        if let Some(elev) = dep_elevation_m
+                            .or_else(|| crate::preset::lookup_airport_elevation(departure_lat, departure_lon))
+                        {
+                            config.dep_elevation_m = elev;
+                        }
+                        if let Some(elev) = arr_elevation_m
+                            .or_else(|| crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon))
+                        {
+                            config.arr_elevation_m = elev;
                         }
                         if !is_secondary {
                             self.pending_flights.retain(|f| f.is_secondary);
@@ -664,7 +710,7 @@ impl GlobeExtension for FlightTrackerApp {
                             arr_heading_deg,
                             is_secondary,
                             runways,
-                            config: self.plan_config,
+                            config,
                         });
                     }
                     FlightCommand::SetRouteLineMode(m) => {
