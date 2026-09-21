@@ -160,6 +160,69 @@ pub struct TileSystem {
     pub height_manager: Option<HeightTileManager>,
     pub mesh_worker: MeshWorkerPool,
     last_camera_pos: Option<Vec3>,
+    /// The levels the globe is being **drawn** at, per tile — the feed
+    /// [`Self::ground_height_at`] needs and the only thing in this file that knows
+    /// anything about the renderer's cut of the quadtree.
+    ///
+    /// Empty, and never written, while terrain is off. See [`Self::set_drawn_meshes`].
+    drawn: DrawnMeshes,
+}
+
+/// Which tile's mesh covers a point, as of the last frame that drew one.
+///
+/// # Why this exists at all
+///
+/// [`HeightTileManager::peek_mesh_height_at_lon_lat`] is exact only if it is asked at
+/// the level the mesh under the point was built at, and the height cache cannot know
+/// that: it is a property of the quadtree's cut, which lives two layers up in
+/// `wgpu_state`. This is the whole of the coupling — a set of ids in, a level out — and
+/// it is deliberately the *renderable* set rather than the visible one, because a tile
+/// whose own mesh has not arrived is drawn with its parent's and the parent's grid is
+/// what the camera is standing on.
+///
+/// # One frame behind, and that is the correct phase
+///
+/// `TileSystem::ground_height_at` is called at the top of `update_logic`, before this
+/// frame's quadtree runs. The meshes on the card at that moment are the previous
+/// frame's, which is exactly what this holds.
+#[derive(Default)]
+pub struct DrawnMeshes {
+    ids: std::collections::HashSet<TileId>,
+    /// `(min z, max z)` over `ids`, so a query walks only the levels that exist.
+    /// `None` when nothing is drawn.
+    z_range: Option<(u8, u8)>,
+}
+
+impl DrawnMeshes {
+    pub fn replace(&mut self, ids: impl Iterator<Item = TileId>) {
+        self.ids.clear();
+        let mut range: Option<(u8, u8)> = None;
+        for id in ids {
+            range = Some(match range {
+                Some((lo, hi)) => (lo.min(id.z), hi.max(id.z)),
+                None => (id.z, id.z),
+            });
+            self.ids.insert(id);
+        }
+        self.z_range = range;
+    }
+
+    /// The level of the deepest drawn tile containing `(lon, lat)`.
+    ///
+    /// Deepest-first, because the renderable set is a quadtree *cut* only up to the
+    /// fallback rule: a parent drawn in place of a missing child sits in the set
+    /// alongside its other children, and the child is the one being drawn where it
+    /// exists.
+    pub fn level_at(&self, lon_deg: f64, lat_deg: f64) -> Option<u8> {
+        let (min_z, max_z) = self.z_range?;
+        for z in (min_z..=max_z).rev() {
+            let (id, _, _) = HeightTileManager::tile_uv_at_lon_lat(lon_deg, lat_deg, z);
+            if self.ids.contains(&id) {
+                return Some(z);
+            }
+        }
+        None
+    }
 }
 
 impl TileSystem {
@@ -170,6 +233,7 @@ impl TileSystem {
             mesh_worker: MeshWorkerPool::new(),
             config,
             last_camera_pos: None,
+            drawn: DrawnMeshes::default(),
         }
     }
 
@@ -443,7 +507,34 @@ impl TileSystem {
     pub fn ground_height_at(&self, pos: glam::DVec3) -> Option<f64> {
         let h = self.height_manager.as_ref()?;
         let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
-        Some(h.peek_height_at_lon_lat(lon, lat)? * self.config.terrain.exaggeration as f64)
+        let raw = match self.drawn.level_at(lon, lat) {
+            // The drawn surface: the triangle net, at the level it is drawn at.
+            Some(z) => h.peek_mesh_height_at_lon_lat(lon, lat, z, self.config.mesh_segments)?,
+            // Nothing is drawn there — behind the globe, outside the frustum, or the
+            // very first frame. There is no drawn surface to agree with, so the
+            // bilinear field is the best statement available and this is exactly the
+            // pre-existing query.
+            None => h.peek_height_at_lon_lat(lon, lat)?,
+        };
+        Some(raw * self.config.terrain.exaggeration as f64)
+    }
+
+    /// The tiles whose meshes the renderer is drawing, for [`Self::ground_height_at`].
+    ///
+    /// Called once per frame from `wgpu_state` with the **renderable** set — the one
+    /// that already has the parent-mesh fallback applied — and a no-op on the flat path,
+    /// where `ground_height_at` returns `None` before it looks at anything.
+    pub fn set_drawn_meshes<'a>(&mut self, drawn: impl Iterator<Item = &'a TileId>) {
+        if self.height_manager.is_none() {
+            // Terrain has been switched off. Drop whatever the terrain arm left behind so
+            // that switching it back on cannot answer one frame from a set that is a
+            // session old, and then do nothing at all on every frame after this one.
+            if self.drawn.z_range.is_some() {
+                self.drawn.replace(std::iter::empty());
+            }
+            return;
+        }
+        self.drawn.replace(drawn.copied());
     }
 
     /// **Phase E2** — the meshes among `drawn` that a better height tile has outdated,

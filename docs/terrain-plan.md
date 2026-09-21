@@ -1732,6 +1732,70 @@ things argue for leaving it rather than squeezing it in:
 The rest of E3 does not depend on it: the drag ray's error is in *where the gesture anchors*,
 and nothing in 1-4 reads that anchor.
 
+### E3's correction — the ground query was measuring a surface nobody draws
+
+Found in the Cesium comparison after F4, and it is a bug, not a polish item. All three of
+E3.2, E3.3 and E3.4 ask `TileSystem::ground_height_at`, which asked
+`HeightTileManager::peek_height_at_lon_lat`, which samples the **256×256 DEM bilinearly**.
+The renderer does not draw that field. `TileMesh::generate_on` draws a triangle net through a
+`(segments+1)² = 17×17` sub-grid of it, bisecting each quad SW–NE, and between two grid nodes
+the drawn surface is a **plane**.
+
+The two agree at the net's own vertices and nowhere else, and the disagreement has a sign:
+
+* over a **summit** the net chords *under* the peak, the field reads higher than what is
+  drawn, and the camera's floor is merely conservative;
+* over a **dip** — a valley floor, a cirque, a stream cut, anything concave inside one mesh
+  cell — the net chords *over* it, the field reads **lower**, `ground_height_at` under-reports
+  the ground and `enforce_bounds` parks the camera **below the visible surface**.
+
+**Measured** (`testing::terrain::test_ground_mesh`, the committed z12 Zugspitze fixture,
+`mesh_segments = 16`, 25 921 samples on a lattice 10× finer than the mesh's own):
+
+| | |
+|---|---|
+| the tile's own `HeightTile::detail` | 261 m |
+| worst **net above field** (the dangerous sign) | **+178.5 m** |
+| worst **net below field** (conservative) | −284.2 m |
+| mean \|disagreement\| | 22.1 m |
+
+And end to end, at the pose where the dip is worst (10.968 E, 47.415 N — field 2 282.2 m,
+drawn net 2 460.7 m): a camera driven onto its collision floor came to rest **176.9 m below
+the triangle the renderer draws**, measured by intersecting the camera's own ray with that
+triangle in ECEF. So the effect is exactly the size the reasoning predicted — the `detail` of
+the tile at its drawn level, three digits of metres at z12 — and not smaller.
+
+**The fix is exact, because the triangulation is ours.**
+`HeightTileManager::peek_mesh_height_at_lon_lat` reads the four grid nodes of the cell through
+the same `resolve_source` + `sample_bilinear` pair `HeightPatch::sample` built the vertices
+from, and interpolates barycentrically across the SW–NE bisection — which is Cesium's
+`triangleInterpolateHeight` (`Core/HeightmapTerrainData.js`, "The HeightmapTessellator bisects
+the quad from southwest to northeast"), same diagonal, same expressions. It reproduces the
+built `TileMesh` to **18.7 mm** over the whole tile; the residual is the curvature sagitta over
+one grid step plus the f32 vertex quantisation, and it is stated rather than corrected.
+
+**The feed was the actual work.** `peek_mesh_height_at_lon_lat` is only exact at the level the
+mesh under the point was *drawn* at, and neither the height cache nor `TileSystem` knew that —
+`peek_height_at_lon_lat` started at `max_level` and walked up. The coupling added is one type,
+`tiles::system::DrawnMeshes`: `wgpu_state` hands it the **renderable** set once per frame (the
+one with the parent-mesh fallback already applied, because a tile whose own mesh has not
+arrived is drawn with its parent's grid), and it answers one question — the level of the
+deepest drawn tile over a point. It is written where `renderable_tiles` exists and read at the
+top of the *next* `update_logic`, which is the frame those meshes are on the card for. With
+terrain off it is never written and `ground_height_at` returns `None` before reaching it.
+
+Where nothing is drawn — behind the globe, outside the frustum, the first frame — the query
+falls back to `peek_height_at_lon_lat` unchanged. There is no drawn surface there to agree
+with.
+
+*What it cost the captures.* 38 of the 40 terrain shots are **bit-identical**. The two that
+moved are the two the fix is for: `skbo_bogota_sea_level`, where the camera rises 1.9 m onto
+the drawn tarmac instead of standing 0.1 m above it (the shot is visually indistinguishable —
+a 1.9 m lift at 2 m AGL is a parallax shift in the grazing far field, and the horizon,
+skyline and tile set all read the same), and `e2_burst_0_coarse_ancestors`, 0.8 % of pixels,
+whose staged rebuild shifts by one frame. `alps_zugspitze`'s height-tile count swaps 137/138
+between the two arms; the images are identical.
+
 ### E3 — captures
 
 `rendering::terrain_e3_capture` (`#[ignore]`d, needs the network) renders the two mountain

@@ -261,6 +261,102 @@ impl HeightTileManager {
         self.peek_height_at(id, u, v)
     }
 
+    /// Height in **megametres** of the **drawn triangle mesh** under a geodetic
+    /// position, for a tile of level `z` meshed at `segments` — `None` when no height
+    /// data covering it has arrived.
+    ///
+    /// # Why this is not [`Self::peek_height_at_lon_lat`]
+    ///
+    /// That one samples the 256×256 field bilinearly. The renderer does not draw that
+    /// field: `TileMesh::generate_on` draws a triangle net through a `(segments+1)²`
+    /// sub-grid of it (`geometry.rs`, the index loop), and between two grid nodes the
+    /// drawn surface is a **plane**, not the bilinear interpolant. The two disagree by
+    /// the tile's `detail` — three digits of metres at z12 — and the disagreement has a
+    /// sign that is wrong in exactly the place it matters: over a valley floor the net
+    /// chords *above* the dip, so the bilinear field reads **lower** than what is drawn,
+    /// and a collision floor built on it lets the camera under the visible ground.
+    ///
+    /// So this is the query every consumer of the *drawn* surface wants — the camera's
+    /// clearance and collision floor, and label placement. It is exact rather than
+    /// approximate, because the triangulation is ours: the same SW–NE bisection the
+    /// index loop emits, which is also Cesium's (`HeightmapTerrainData.js`'s
+    /// `triangleInterpolateHeight`, "The HeightmapTessellator bisects the quad from
+    /// southwest to northeast").
+    ///
+    /// # What `z` must be
+    ///
+    /// The level the tile under `(lon, lat)` is **currently being drawn at**, not this
+    /// cache's `max_level`: a mesh's grid step is `1 / (segments · 2^z)` of the globe, so
+    /// asking at the wrong level reproduces the error it is here to remove.
+    /// [`TileSystem::ground_height_at`] gets it from the renderable set of the previous
+    /// frame — the meshes actually on the card when the query is made.
+    ///
+    /// # Two residuals, both sub-centimetre and both stated rather than corrected
+    ///
+    /// The grid corners are read through the same `resolve_source` + `sample_bilinear`
+    /// pair `HeightPatch::sample` builds the vertices from, so the corner heights are
+    /// bit-for-bit the drawn ones. What is interpolated between them is the *altitude*,
+    /// while the drawn triangle is a chord in ECEF; and the barycentric weights are taken
+    /// in `(u, v)` where the triangle is planar in space. Both errors are of the
+    /// curvature-sagitta order over one grid step — 3 mm at z12, `segments = 16` — and
+    /// the quantity being fixed is 10⁵ times that.
+    ///
+    /// A mesh that E2 has not yet rebuilt is the one case where the corners can come
+    /// from a *deeper* source than the drawn vertices did. That window is a few frames
+    /// wide and its residual is the difference between two DEM levels, not the
+    /// grid-versus-field difference this removes.
+    ///
+    /// [`TileSystem::ground_height_at`]: crate::globe::tiles::system::TileSystem::ground_height_at
+    pub fn peek_mesh_height_at_lon_lat(
+        &self,
+        lon_deg: f64,
+        lat_deg: f64,
+        z: u8,
+        segments: u32,
+    ) -> Option<f64> {
+        let (id, u, v) = Self::tile_uv_at_lon_lat(lon_deg, lat_deg, z);
+
+        // The one source resolution, hoisted out of the four corner reads: this is
+        // `peek_height_at`'s body with the walk done once, and it must be the *same*
+        // walk, because `HeightPatch::sample` built the vertices from `source_for(id)`,
+        // which is `resolve_source(id)` with the LRU promotion added.
+        let src = self.resolve_source(id)?;
+        let tile = match self.cache.peek_state(&src)? {
+            TileState::Ready(tile) => tile,
+            _ => return None,
+        };
+
+        let n = segments.max(1);
+        let nf = n as f64;
+        // The grid cell, and the position inside it. `u`,`v` come back in `[0,1)` from
+        // `tile_uv_at_lon_lat`, but the floor is clamped anyway so that a `u` that
+        // rounds to exactly 1.0 reads the last cell rather than one past it.
+        let gu = (u * nf).clamp(0.0, nf);
+        let gv = (v * nf).clamp(0.0, nf);
+        let i0 = (gu.floor() as u32).min(n - 1);
+        let j0 = (gv.floor() as u32).min(n - 1);
+        let fu = gu - i0 as f64;
+        let fv = gv - j0 as f64;
+
+        let corner = |di: u32, dj: u32| {
+            let (su, sv) = Self::ancestor_uv(id, src, (i0 + di) as f64 / nf, (j0 + dj) as f64 / nf);
+            tile.sample_bilinear(su, sv) * METRES_TO_MEGAMETRES
+        };
+        // `v` runs south, so `dj = 0` is the north row.
+        let (nw, ne, sw, se) = (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1));
+
+        // Cesium's `triangleInterpolateHeight`, in this engine's `v`-down coordinates:
+        // its `dY` (north-positive) is `1 - fv`, and its `dY < dX` test for the lower
+        // right triangle is `fu + fv > 1` here. The diagonal runs SW–NE either way,
+        // because the index loop's shared edge is `(row+1, col)`–`(row, col+1)`.
+        let dy = 1.0 - fv;
+        Some(if dy < fu {
+            sw + fu * (se - sw) + dy * (ne - se)
+        } else {
+            sw + fu * (ne - nw) + dy * (nw - sw)
+        })
+    }
+
     /// The tile of level `z` containing `(lon, lat)`, and the position inside it.
     ///
     /// The inverse of the map `HeightPatch::grid_metrics` and `TileMesh::generate`

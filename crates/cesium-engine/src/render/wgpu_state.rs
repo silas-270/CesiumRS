@@ -700,6 +700,14 @@ impl<'a> WgpuState<'a> {
             .quadtree_manager
             .get_renderable_tiles(|id| self.tile_cache.peek(id).is_some());
 
+        // The ground query's feed. `renderable_tiles` is the set whose meshes are about
+        // to be drawn, so it is what `TileSystem::ground_height_at` must interpolate on —
+        // at the level each of them is drawn at, not at the height source's ceiling. Read
+        // at the *top* of the next `update_logic`, one frame later, which is the frame
+        // those meshes are on the card for. A no-op with terrain off.
+        self.tile_system
+            .set_drawn_meshes(renderable_tiles.iter().map(|(id, _, _)| id));
+
         let missing_count = visible_tiles
             .iter()
             .filter(|(id, _, _)| self.tile_cache.peek(id).is_none())
