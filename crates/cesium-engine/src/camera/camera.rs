@@ -443,13 +443,15 @@ impl Camera {
             let is_above_ground = |pos: Vec3| -> bool {
                 let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
                 let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
+                let dist = global_pos.length();
                 let dir = global_pos.normalize_or_zero();
                 let t = 1.0
                     / (dir.x * dir.x * INV_A2_F64
                         + dir.y * dir.y * INV_B2_F64
                         + dir.z * dir.z * INV_A2_F64)
                         .sqrt();
-                global_pos.length() >= t + 0.000002
+                let floor = self.terrain_collision_floor(t, dist).unwrap_or(t + 0.000002);
+                dist >= floor
             };
 
             let dot_y_both = new_pos_both.normalize_or_zero().dot(Vec3::Y);
