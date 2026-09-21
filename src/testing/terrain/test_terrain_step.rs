@@ -55,21 +55,25 @@
 
 use cesium_engine::camera::camera::CameraMode;
 use cesium_engine::globe::geometry::{
-    lon_lat_alt_to_ecef_f64, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64,
+    lon_lat_alt_to_ecef_f64, TileMesh, EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64,
 };
 use cesium_engine::globe::quadtree::{
-    lod_factor_for, terrain_lod_factor_for, tile_bounds, CullPipeline, Frustum, QuadtreeManager,
-    QuadtreeNode, TerrainFogPolicy, TerrainHorizon, TerrainOcclusionConfig, TileId,
-    AZIMUTH_SECTORS,
+    lod_factor_for, terrain_lod_factor_for, tile_bounds, transform_to_scaled_space, CullPipeline,
+    Frustum, HorizonCamera, QuadtreeManager, QuadtreeNode, TerrainFogPolicy, TerrainHorizon,
+    TerrainOcclusionConfig, TileId, AZIMUTH_SECTORS,
 };
-use cesium_engine::globe::quadtree::terrain_occlusion::{MIN_RANGE_M, RIDGE_SAFETY_M};
+use cesium_engine::globe::quadtree::terrain_occlusion::{ridge_safety_m, MIN_RANGE_M};
 use cesium_engine::globe::terrain::heightfield::inherit_margin_mm;
-use cesium_engine::globe::terrain::{HeightBounds, HeightTileManager, Heightfield, PatchStatus};
+use cesium_engine::globe::terrain::{
+    HeightBounds, HeightPatch, HeightTileManager, Heightfield, PatchStatus,
+};
 use glam::DVec3;
 
 use crate::testing::culling::cameras::{build_camera, ViewParams};
+use crate::testing::culling::oracle::{VisibilityOracle, NDC_MARGIN};
 use crate::testing::terrain::test_terrain_occlusion::{
     bounds_source, collect_sources, fetch_missing, fill_cache_real, real_config, RealWorld,
+    SEGMENTS,
 };
 
 /// Level the ground-truth DEM march reads at — the deepest the source serves at full
@@ -911,6 +915,204 @@ fn terrain_step_pose_is_where_it_says_it_is() {
     }
 }
 
+/// **FN = 0 at the two step poses, against the DEM itself.**
+///
+/// `test_terrain_occlusion::d3_never_hides_a_visible_vertex` is D3's acceptance and it
+/// runs on the synthetic ridge world: one Gaussian crest with a col in it. That world has
+/// no escarpment in it, and an escarpment is the shape §7d found D3 does nothing about —
+/// so when `ridge_safety_m` stopped charging a 250 km headroom at 2 km and the stage
+/// started culling here, the sweep that proves it sound was the one sweep that does not
+/// visit this shape.
+///
+/// This is that proof, at these two poses, with the same criterion and none of the same
+/// machinery:
+///
+/// > A node D3 culled is a false negative if any vertex of its own mesh is inside the
+/// > frustum (exact `f64`), off the ellipsoid limb (Theorem 3.1, exact), **and** not
+/// > blocked by the real DEM on the straight segment from the eye — [`dem_blocks`],
+/// > which marches the terrarium tiles at z14 and shaves [`ORACLE_SLACK_M`] off the
+/// > terrain first, so every approximation in it pushes toward calling a vertex *visible*.
+///
+/// **Only nodes the stage itself removed are scored.** A node the frustum or the limb
+/// culled is not D3's answer and counting it would bury the signal; `TerrainHorizon::occludes`
+/// is asked directly, which is the same attribution [`terrain_step_plateau_tiles`] makes.
+///
+/// The fetch policy is `Fill::Visible` — the production one — because that is the arm
+/// where the culls happen. A culled node requests nothing, so its own heights are filled
+/// in **after** the tree has settled, purely to build the mesh whose vertices are scored;
+/// the tree under test is untouched by that.
+#[test]
+#[ignore = "measurement, needs the network for real height tiles"]
+fn terrain_step_d3_never_hides_a_visible_vertex() {
+    let cfg = TerrainOcclusionConfig::default();
+    let mut world = RealWorld::new();
+    const FRAMES: usize = 8;
+
+    let mut false_negatives = 0usize;
+    let mut scored_nodes = 0usize;
+    let mut scored_vertices = 0usize;
+    let mut examples: Vec<String> = Vec::new();
+
+    for pose in step_poses() {
+        warm_dem(&mut world, &pose);
+        let ground = dem_height_m(&mut world, pose.lon, pose.lat);
+        let p = pose.view(ground);
+        let frustum = frustum_for(&p);
+        let cam = build_camera(&p);
+        let oracle = VisibilityOracle::new(&cam, p.aspect());
+        let limb = HorizonCamera::new(frustum.eye);
+        let eye = frustum.eye;
+
+        let mut d3 = settle(&p, &frustum, Some(cfg), Fill::Visible, FRAMES, &mut world);
+        let Some(horizon) = d3.qt.terrain_horizon().cloned() else {
+            panic!(
+                "{}: the march is inactive, so this pose proves nothing",
+                pose.name
+            );
+        };
+
+        // Every node the traversal touched and removed, with its own box.
+        let mut culled: Vec<(TileId, cesium_engine::globe::quadtree::OrientedBoundingBox)> =
+            Vec::new();
+        fn walk(
+            node: &QuadtreeNode<Heightfield>,
+            out: &mut Vec<(TileId, cesium_engine::globe::quadtree::OrientedBoundingBox)>,
+        ) {
+            if !node.visible {
+                out.push((node.id, node.obb));
+                return;
+            }
+            if let Some(children) = &node.children {
+                for c in children.iter() {
+                    walk(c, out);
+                }
+            }
+        }
+        for root in d3.qt.roots.iter() {
+            walk(root, &mut culled);
+        }
+
+        // Only the ones **this stage** removed.
+        let d3_culled: Vec<TileId> = culled
+            .into_iter()
+            .filter(|(id, obb)| horizon.occludes(obb, &tile_bounds(id)))
+            .map(|(id, _)| id)
+            .collect();
+
+        // Heights for the meshes, after the fact — a culled node asks for nothing, so
+        // without this its mesh would be built off an ancestor's texels and the vertices
+        // scored would not be the ones the engine would have drawn.
+        let mut wanted = Vec::new();
+        for id in &d3_culled {
+            let mut curr = d3.heights.source_tile_for(*id);
+            loop {
+                wanted.push(curr);
+                match curr.parent() {
+                    Some(q) => curr = q,
+                    None => break,
+                }
+            }
+        }
+        wanted.sort_unstable_by_key(|i| (i.z, i.x, i.y));
+        wanted.dedup();
+        fetch_missing(&world.dir, &wanted);
+        for id in &d3_culled {
+            fill_chain(*id, &mut d3.heights, &mut world);
+        }
+
+        let mut pose_fn = 0usize;
+        let mut pose_vertices = 0usize;
+        for id in &d3_culled {
+            let Ok(patch) = HeightPatch::sample(&mut d3.heights, *id, SEGMENTS, 1.0) else {
+                continue;
+            };
+            let mesh = TileMesh::generate_on::<Heightfield>(id, SEGMENTS, &patch);
+            let centre = DVec3::from_array(mesh.center_f64);
+            scored_nodes += 1;
+            for v in mesh.vertices.iter() {
+                let q = centre
+                    + DVec3::new(
+                        v.position[0] as f64,
+                        v.position[1] as f64,
+                        v.position[2] as f64,
+                    );
+                // 1. On screen?
+                let c = oracle.clip(q);
+                if c.w <= 0.0 {
+                    continue;
+                }
+                let ndc = c.truncate() / c.w;
+                let out = (ndc.x.abs() - 1.0)
+                    .max(ndc.y.abs() - 1.0)
+                    .max(-ndc.z)
+                    .max(ndc.z - 1.0);
+                if out > -NDC_MARGIN {
+                    continue;
+                }
+                // 2. Off the limb?
+                let s = transform_to_scaled_space(q);
+                if limb.active {
+                    let h2 = limb.c2 - 1.0;
+                    let d = s - limb.c;
+                    let t = limb.c2 - s.dot(limb.c);
+                    if t > h2 && t * t > h2 * d.dot(d) {
+                        continue;
+                    }
+                }
+                pose_vertices += 1;
+                // 3. And the DEM does not block the way to it.
+                if !dem_blocks(&mut world, eye, q) {
+                    pose_fn += 1;
+                    if examples.len() < 20 {
+                        let (lon, lat, alt) = geodetic_of(q);
+                        examples.push(format!(
+                            "{}: z{} {}/{} culled, vertex at {lon:.4} {lat:.4} {:.0} m is on \
+                             screen, off the limb and in front of the DEM",
+                            pose.name,
+                            id.z,
+                            id.x,
+                            id.y,
+                            alt * 1.0e6
+                        ));
+                    }
+                }
+            }
+        }
+        println!(
+            "  [{}] D3 removed {} nodes; {pose_vertices} of their vertices are on screen and \
+             off the limb; false negatives {pose_fn}",
+            pose.name,
+            d3_culled.len()
+        );
+        false_negatives += pose_fn;
+        scored_vertices += pose_vertices;
+    }
+
+    println!(
+        "  [step FN] {scored_nodes} D3-culled nodes meshed, {scored_vertices} candidate \
+         vertices, false negatives {false_negatives}"
+    );
+    assert!(
+        scored_nodes > 0,
+        "D3 removed nothing at either pose, so this test asserted nothing"
+    );
+    // **And it has to have had something to score.** A pose can remove nodes whose every
+    // vertex is off-screen or behind the limb — Reutlingen does exactly that — and a
+    // `false_negatives == 0` built only out of those is a green light for nothing. This is
+    // the line that says the two poses together actually put the DEM oracle to work.
+    assert!(
+        scored_vertices > 0,
+        "{scored_nodes} nodes were meshed but not one of their vertices is on screen and \
+         off the limb, so the DEM oracle was never asked anything"
+    );
+    assert_eq!(
+        false_negatives,
+        0,
+        "D3 hid geometry the DEM says is visible:\n  {}",
+        examples.join("\n  ")
+    );
+}
+
 /// **What closing it would take, priced in march resolution rather than in code.**
 ///
 /// [`terrain_step_plateau_tiles`] shows the occludee side is already tight — a node's box
@@ -923,7 +1125,7 @@ fn terrain_step_pose_is_where_it_says_it_is() {
 /// This prices the lever without building it. For a grid of `s` azimuth sectors and a
 /// ring ratio `r` it recomputes exactly what `TerrainHorizon::finish` computes — the
 /// running maximum over rings of the elevation angle of a wall at the cell's far edge,
-/// standing at the cell's minimum DEM height less [`RIDGE_SAFETY_M`] — but reads the cell
+/// standing at the cell's minimum DEM height less [`ridge_safety_m`] — but reads the cell
 /// minimum from the **DEM directly**, which is the tightest floor any occluder could ever
 /// have. So the peak it reports is the *ceiling* of the whole approach at that resolution,
 /// not the ceiling of one implementation of it, and the engine needs no change to run it.
@@ -956,7 +1158,7 @@ fn terrain_step_occluder_resolution_probe() {
             "cell @2km",
             "cell @8km",
             "peak ridge",
-            "peak, no 100m",
+            "peak, no safety",
             "peak, near edge",
             "vs the real one"
         );
@@ -983,11 +1185,14 @@ fn terrain_step_occluder_resolution_probe() {
 
             let mut run = f64::NEG_INFINITY;
             let mut peak = f64::NEG_INFINITY;
-            // Same grid with [`RIDGE_SAFETY_M`] set to zero, and again with the wall at
+            // Same grid with the safety distance set to zero, and again with the wall at
             // the cell's **near** edge. Both are diagnostics, not proposals: the second is
             // unsound for the reason `TerrainHorizon::stamp` records in full. Together
-            // they split the shortfall into the part the safety constant costs, the part
+            // they split the shortfall into the part the safety distance costs, the part
             // the far-edge placement costs, and the part that is the cell minimum itself.
+            // Since the distance became range- and stand-off-proportional the first two
+            // columns have nearly converged, which is the whole of what that change
+            // bought.
             let mut run_ns = f64::NEG_INFINITY;
             let mut peak_ns = f64::NEG_INFINITY;
             let mut run_ne = f64::NEG_INFINITY;
@@ -1009,7 +1214,8 @@ fn terrain_step_occluder_resolution_probe() {
                 }
                 // The wall stands at the cell's far edge, as `finish` places it.
                 let (lo, la) = dest(pose.lon, pose.lat, pose.bearing_deg, r1);
-                let e = elevation_deg(eye, up, ecef(lo, la, floor - RIDGE_SAFETY_M));
+                let safety = ridge_safety_m(r1, eye_m - floor);
+                let e = elevation_deg(eye, up, ecef(lo, la, floor - safety));
                 run = run.max(e);
                 peak = peak.max(run);
                 let e_ns = elevation_deg(eye, up, ecef(lo, la, floor));

@@ -1266,6 +1266,14 @@ Three prices, in the order they are worth paying:
    multiply — it is re-running `d3_never_hides_a_visible_vertex` and
    `terrain_sweep_has_no_false_negatives`, and `EXTENT_SLACK`'s history (131 false
    negatives without it) is the reason that is not a formality.
+
+   > **Done — §7e.** `RIDGE_SAFETY_M` is now `ridge_safety_m(range, stand-off)`, derived
+   > rather than guessed. At 24 × 48 it costs 0.044° at Reutlingen and 0.118° at Stuttgart
+   > instead of 0.553° and 2.233°; Stuttgart goes 79 → 70 visible tiles and removes 8 of the
+   > 19. The re-run §7d asks for is in §7e, together with the second error channel this
+   > paragraph did not know about and the reason relaxing it was safe anyway. The tables
+   > below still read `RIDGE_SAFETY_M = 0` because they are the measurement as it was
+   > taken.
 2. **The grid, at 96 × 96.** Eight times the cells: `finish` goes from 48 × 24 = 1 152
    elevation angles to 96 × 96 = 9 216, i.e. **35 µs → ~280 µs**, and each node's stamp
    writes into ~4× as many sectors, so the march goes from 170–250 µs to roughly
@@ -1322,6 +1330,227 @@ Two more of the same family turned up here, and neither is about coordinates:
    harness sets all three and lands on the capture **to the tile** (62 and 62). §7c's claim
    that the counting harness "agrees with the capture to a tile" was true when written and
    has not been true since §8 E1.
+
+---
+
+## 7e. The safety distance, derived — §7d's first lever, taken
+
+§7d priced three ways to give D3 back the escarpment it cannot see, and put one of them
+first: `RIDGE_SAFETY_M` was a flat **100 m** subtracted from every cell floor at every
+range and every stand-off, while its own doc comment bounded the error it covers by the
+curvature drop rate `s/R` — "under 10 m at 250 km", i.e. under a *millimetre* at the 2 km
+ring where it was throwing away 2.23° of Stuttgart's rim. This section replaces the
+constant with the law, and — because this is a **relaxation of the occluder bound**, the
+error class that opens holes in the globe — most of it is the proof rather than the
+formula.
+
+### The derivation
+
+`TerrainHorizon::finish` places a cell's wall by rotating the eye's ellipsoid normal by the
+cell's angular distance `γ`, which moves the **geodetic** latitude by `γ`. The `γ` it is
+handed comes from `extent_of`, which measures an equirectangular distance in the engine's
+**parametric** latitude — the `φ` of `lon_lat_to_ecef_f64`, the one that names a tile row.
+The two metrics differ: the meridian arc per parametric radian is `√(a²sin²β + b²cos²β)`
+against the geodetic `M(φ)`, a ratio running from `1 + e²/2` at the equator to `1 − e²/2` at
+the pole. So the wall stands an **along-track** distance of order
+
+> `κ·s`, with `κ = e²/2 = 3.35·10⁻³`
+
+from the ground its cell actually bounds. That offset reaches the wall's *altitude* through
+two channels:
+
+| channel | mechanism | size |
+|---|---|---|
+| curvature | offset `κ·s` under the drop rate `s/R` | `κ·s²/R` — grows with range |
+| stand-off | offset `κ·s` tilting a sightline that stands `Δalt` off the floor, worth `δ·Δalt/s` of wall | `κ·|Δalt|` — **independent of range** |
+
+giving **`Δh ≲ κ·(|Δalt| + s²/R)`**, which is `ridge_safety_m`. The second channel is the
+one §7d's sketch did not have, and it is not small: at the 12 km altitude gate it is 40 m.
+A range-only law would have relaxed the bound silently at every pose with altitude in it.
+
+Two corrections to how that second channel was first written down, both recorded because
+the wrong version is the plausible one:
+
+* It is **not** an across-track effect. A purely lateral offset `δ` changes the range by
+  `δ²/2s` — second order, and not what this constant pays for. Both channels come from the
+  *along-track* component of the same offset; the second one just reaches altitude through
+  the sightline's tilt rather than through the ground's curvature.
+* The curvature term's first-order coefficient is `κ/2`, not `κ`. Carrying the full `s²/R`
+  is the cheap conservative choice and is where part of the reserve below comes from.
+
+### The reserve, measured — and what it is not
+
+`test_terrain_occlusion::d3_ridge_safety_covers_its_placement_error` builds both
+constructions from scratch, neither of them by calling the engine, and for every case
+**solves for the exact metres of lowering** that put the march's wall level with the ground
+its cell stands for. Over ±85° of latitude, bearings every 5°, `MIN_RANGE_M` … `max_range_m`
+of range, an eye from 2 m to 40 km (3.3× the gate), and floors from −60 km to +20 km — what
+a node deep on an inherited interval really can carry — plus 200 000 off-grid draws from the
+same box:
+
+| range | `Δh` needed | `|Δalt| + s²/R` | ratio |
+|---|--:|--:|--:|
+| 2 km | 67.26 m | 19 999 m | **0.003363** |
+| 32 km | 207.37 m | 60 163 m | **0.003447** |
+| 120 km (the worst corner) | 562.02 m | 102 258 m | **0.005496** |
+
+`0.003363` is `e²/2` to three digits. That flatness is the point: it says the *shape* is
+right, which a single worst-case number could not. `RIDGE_SAFETY_RATE = 2·10⁻²` is then
+**3.64×** the worst measured need over that box (3.92× on the off-grid pass) and 6× the
+first-order `κ`.
+
+> **The shape is derived; the factor on the front is empirical.** A dense grid plus a
+> pseudo-random pass over a smooth five-parameter box is evidence, not a bound. Nothing
+> here proves there is no worse corner; what is proved is that a law of this form is the
+> right form, and the sweep is what says the constant clears it.
+
+### The channel the safety distance does **not** cover, and why relaxing was still safe
+
+Sweeping only the sector-centre bearing measures the law against exactly the geometry that
+cannot fail it. `finish` builds every wall on its sector's *centre* bearing and has to hold
+against a ray up to **half a sector — 7.5°** — away, because `occludes` takes the minimum
+over the sectors a candidate touches and the soundness paragraph only needs the one whose
+band contains the ray. Over that spread two things move the wall and the ground apart:
+
+* the ellipsoid's Euler radius varies with azimuth by a fraction of `e²` — about a quarter
+  of `κ` over half a sector, inside the law's own reserve; and
+* `TerrainHorizon::begin` takes `up` from `ellipsoid_normal_at`, which is the **confocal**
+  normal rather than the geodetic one, so the eye's own up-axis misses the ground point
+  `cam_lon`/`cam_lat` names. Measured:
+
+| eye altitude | the eye's up-axis misses `foot(up)` by |
+|--:|--:|
+| 2 m | 0.007 m |
+| 1 500 m | 5.0 m |
+| **12 000 m (the gate)** | **40.3 m** |
+| 40 000 m | 134.3 m |
+
+Swing a ground point half a sector round the eye and it is that much nearer to, or further
+from, the eye's axis — and under a high camera every metre of that is `|Δalt|/s` metres of
+wall. This has the **wrong shape** for a safety distance: it grows as the range *falls*,
+where both of `ridge_safety_m`'s terms shrink, and nothing affordable covers it — at 40 km
+of altitude the worst case asks for 6 km of wall. It is also **pre-existing**: it is a
+property of the 24-sector grid and of `ellipsoid_normal_at`, not of this constant.
+
+`test_terrain_occlusion::d3_ridge_safety_never_falls_below_the_constant_it_replaced` sweeps
+the same box with the bearing offset in it — 2 444 904 cases — and pins the two claims that
+are actually load-bearing for a relaxation:
+
+| | `ridge_safety_m` | the flat 100 m |
+|---|--:|--:|
+| cases short, **under the 12 km gate** | **0** | 124 169 |
+| cases short, above the gate (harness-only) | 6 099 | 162 505 |
+| worst reserve over the whole box | 0.33× | **0.017×** |
+| cases short **where the other held** | **0** | — |
+
+So: inside the shipped gate the new law covers the bearing spread too, and **there is no
+case anywhere in the box where `ridge_safety_m` is short and the flat 100 m was not.** The
+relaxation strictly shrinks the set of geometries where the grid's wall can stand over its
+ground. It does not trade one hole for another, which is the only claim about a relaxation
+that is worth making.
+
+### What it buys, in tile counts
+
+Same harness, same poses, same fetch policy (`Fill::Visible`, the production one) as §7d:
+
+| pose | D1+D2 | **+D3 before** | **+D3 after** | hidden by the DEM | of those, D3 removes |
+|---|--:|--:|--:|--:|--:|
+| `reutlingen_albtrauf` | 62 | 62 | **60** | 9 | 0 → **0** |
+| `stuttgart_kessel` | 80 | 79 | **70** | 19 | 0 → **8** |
+
+and the ridge ceiling the stage's first test compares against:
+
+| pose | before | after | the real ridge |
+|---|--:|--:|--:|
+| `reutlingen_albtrauf` | 1.059° | **1.570°** | 3.934° |
+| `stuttgart_kessel` | 1.779° | **3.970°** | 6.137° |
+
+`terrain_step_occluder_resolution_probe`'s two columns have all but converged, which is the
+whole of what this change was for — at 24 × 48 the safety distance now costs **0.044°** at
+Reutlingen and **0.118°** at Stuttgart, against §7d's 0.553° and 2.233°:
+
+| pose | peak ridge | …with the safety distance at zero | gap |
+|---|--:|--:|--:|
+| `reutlingen_albtrauf` | 1.730° (was 1.221°) | 1.774° | **0.044°** (was 0.553°) |
+| `stuttgart_kessel` | 4.662° (was 2.547°) | 4.780° | **0.118°** (was 2.233°) |
+
+§7d's own caveat survives: the ceiling is `theta_max >= ridge_ceiling`, which is *necessary
+and not sufficient*, so 18-of-19 past the ceiling became 8-of-19 actually culled. The rest
+still need the ridge to hold across the candidate's own sector span, and it does not.
+
+### FN = 0, at the poses where the culls are new
+
+A relaxation is only worth what its false-negative evidence is worth, and §7b's four
+swapped bounds — three of which "went on culling happily" — are why that evidence is
+listed rather than summarised:
+
+| test | what it sweeps | result |
+|---|---|--:|
+| `d3_ridge_safety_covers_its_placement_error` | 549 272 placement cases, exact solve | **0 unsound** |
+| `d3_ridge_safety_never_falls_below_the_constant_it_replaced` | 2 444 904 cases with the bearing spread | **0 regressions, 0 short in gate** |
+| `d3_never_hides_a_visible_vertex` | 22 ridge-world poses, 1 411 culled nodes scored (was 1 409) | **FN 0** |
+| `terrain_sweep_has_no_false_negatives` | 96 poses, D1/D2 | **FN 0** |
+| `terrain_step_d3_never_hides_a_visible_vertex` *(new)* | the two step poses against the real DEM, 13 culled nodes, 1 128 candidate vertices | **FN 0** |
+
+The last one is the one that matters most here, because the ridge world has no escarpment
+in it: the sweep that proves D3 sound is the one sweep that never visits the shape D3 has
+only just started culling on. It scores **only nodes `TerrainHorizon::occludes` itself
+removed**, meshes them after the tree has settled (a culled node requests nothing, so
+without that its vertices would be an ancestor's), and calls a vertex a false negative when
+it is on screen, off the limb, and not blocked by a dense march against the terrarium tiles
+at z14 with 25 m shaved off the terrain first. Every approximation in it pushes toward
+calling a vertex *visible*.
+
+### Cost, and the captures
+
+`bench_terrain_occlusion_cost`, minimum of three runs of each build in one session (the
+machine was intermittently loaded; one `cockpit` sample of the *old* build read 297 µs,
+which is what the minimum is there to ignore):
+
+| pose | flat 100 m | `ridge_safety_m` |
+|---|--:|--:|
+| `valley` | 168.8 µs | 170.4 µs |
+| `approach` | 172.0 µs | 176.0 µs |
+| `cockpit` | 192.4 µs | 189.1 µs |
+| `cruise_11km` | 140.3 µs | 136.0 µs |
+
+Two of four move down, the spread within one build is ±5 µs, and the added work is an
+`abs`, an add and a multiply over 1 152 cells with the `s²/R` half hoisted per ring. **No
+measurable frame time**, as §7d predicted.
+
+Captures at all five §7b/§7c poses and both step poses: every `terrain_on_d3` and `d3` shot
+is **byte-identical** across the change. (`alps_inn_valley` draws 107 tiles instead of 110
+and produces the same pixels, which is what a correct cull looks like. Three `terrain_off`
+shots and one `d1d2` shot differ, all of them arms where D3 is not running at all — that is
+the capture harness settling against the network, not this change.)
+
+### Where the renderer still reads 62 → 62, and why
+
+The counting harness moves; `rendering::terrain_step_capture` does not — it still reads
+62 → 62 and 71 → 71, exactly as §7d recorded before this change. `D3_DEBUG` says why, and it
+is not the safety distance:
+
+```
+D3 finish: cam_alt 397 m, ring0 floor min -83851 max 379 m, 0 unstamped, enclosed false
+```
+
+A node still on an **inherited** interval carries `HeightBounds::floor` lowered by
+`inherit_margin_mm` plus `inherit_allowance_mm`, and the latter is built on
+`INHERIT_RANGE_M = 4 × (GLOBAL_H_MAX − GLOBAL_H_MIN)` — **84 km a level**, compounding down
+a cold chain (the first frames of that same capture show −1 949 367 m). A cell's floor is a
+minimum over everything stamped into it, so one such node poisons its whole cell, and the
+renderer's settling path has some near the camera where the counting harness's
+`Fill::Visible` policy does not.
+
+**That is now the binding constraint on this pose, ahead of §7d's grid resolution**, and it
+is a bound that is sound but useless rather than a bound that is wrong. It is the next
+lever, and it is a cheaper one than 96 × 96: nothing in D3 changes, only what an inherited
+floor is allowed to claim.
+
+*(Measured 2026-09-21. Culling gate 32 passed / 0 failed / 1 ignored with no re-pin;
+`cargo test -p cesium-engine --lib` 25/0; all 14 LOD-harness CSVs byte-identical,
+`aggregate_ratio = 1.663`, 204 poses; §7c's ten real-terrain poses unchanged to the tile in
+the `with D3` column.)*
 
 ---
 
