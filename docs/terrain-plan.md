@@ -1967,6 +1967,55 @@ open. It is written for someone who has not read the rest of this document.
 (F4); Android is off, pinned by `TERRAIN_ENABLED_BY_DEFAULT` in
 `crates/cesium-engine/src/globe/tiles/config.rs`, and this run is what unpins it.
 
+#### Before the runs — `max_geometric_error_px` is in device pixels, and the phone is not the desktop
+
+**Read this before the runs, because it decides what they measure.** The threshold is
+`terrain_lod_factor = H / (E · 2·tan(fovy/2))`, and `wgpu_state` passes `self.size.height` —
+the **physical** surface height out of the swapchain — with nothing dividing it. Cesium
+divides its own screen-space error by `frameState.pixelRatio`
+(`Scene/QuadtreePrimitive.js`), so Cesium's `maximumScreenSpaceError` is in CSS pixels and
+`TerrainConfig::max_geometric_error_px` is in **device** pixels. On a pixel-ratio-1 display
+the two coincide, which is why it has never come up.
+
+The shipped `12` was picked at the E1a cost table's own rung — **1280×720, `Free`** (fovy
+46.40°, `2·tan(fovy/2) = 0.857`), giving `720 / (12 · 0.857) = 70.0 Mm⁻¹`. Everything else,
+computed rather than asserted:
+
+| viewport | mode | H | 2·tan(fovy/2) | factor vs the rung | `E` for the same threshold |
+|---|---|--:|--:|--:|--:|
+| 1280×720 (E1a's table) | Free | 720 | 0.857 | 1.000× | 12 px |
+| 1920×1080 desktop | Free | 1080 | 0.857 | **1.500×** | 18 px |
+| S23 **landscape** 2340×1080 | Free | 1080 | 0.857 | 1.500× | 18 px |
+| S23 landscape 2340×1080 | Cockpit | 1080 | 1.155 | 1.113× | 13.4 px |
+| S23 **portrait** 1080×2340 | Free | 2340 | 0.857 | **3.250×** | 39 px |
+| S23 portrait 1080×2340 | Cockpit | 2340 | 1.155 | **2.413×** | 29 px |
+
+Against the 1080p desktop rather than E1a's rung: the S23 in **portrait** asks for a
+threshold distance **2.167×** the desktop's in Free (`2340 / 1080`) and **1.608×** it in
+Cockpit — the 60° cockpit fovy returns a factor 0.742 of the height term. **Landscape is the
+flat case**: the S23's landscape height *is* 1080, so in Free it is bit-identical to the
+desktop and in Cockpit it is 0.742× it.
+
+Two consequences for the runs below, and they are the reason this sits above them:
+
+1. **The phone is not running the desktop's configuration.** The soak is a cockpit run. Held
+   in portrait it asks for 1.61× the desktop's threshold distance and correspondingly more
+   tiles — on exactly the device whose memory pressure F2 found binding. Held in landscape it
+   asks for 0.74× it. So "terrain on, S23" is two different measurements and the orientation
+   has to be recorded with every number.
+2. **The value is deliberately not changed here.** 12 is calibrated against the desktop
+   measurement in `TerrainConfig::max_geometric_error_px`'s table, and dividing by a pixel
+   ratio — or by `H / 720` — would require a new calibration that nobody without the device
+   can perform. Picking it on the phone is part of F3's job: run the soak at 12, and if the
+   tile count or the memory is what fails, re-run at the parity value from the table above
+   (29 px portrait cockpit, 13.4 px landscape cockpit) before concluding anything about
+   terrain itself.
+
+`lod_factor_for` has the identical units question and **must not be touched**: its
+`target_texel_ratio` default is calibrated against the hard-coded `2.0` that shipped before
+WP3, on the same physical height, and the LOD harness's 204-pose CSVs are pinned to it byte
+for byte.
+
 #### 0. Prerequisites
 
 ```sh

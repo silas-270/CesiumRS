@@ -166,6 +166,53 @@ pub struct TerrainConfig {
     /// Only consulted while [`Self::enabled`] is set: with no relief there is no error
     /// (I-1), and `Ellipsoid::HAS_GEOMETRIC_ERROR` is a compile-time `false`.
     ///
+    /// # The unit is a **device** pixel, and Cesium's is not
+    ///
+    /// `wgpu_state` feeds [`terrain_lod_factor_for`] `self.size.height` — the surface's
+    /// **physical** height, straight from the swapchain — with nothing dividing it. Cesium
+    /// divides its screen-space error by `frameState.pixelRatio`
+    /// (`Scene/QuadtreePrimitive.js`, `maxGeometricError … / frameState.pixelRatio`), so
+    /// Cesium's `maximumScreenSpaceError` is in **CSS** pixels and this one is in device
+    /// pixels. On a display whose pixel ratio is 1 the two units coincide, which is why
+    /// nothing has noticed.
+    ///
+    /// **The number below is therefore tied to a viewport height, and here is the
+    /// arithmetic.** `terrain_lod_factor = H / (E · 2·tan(fovy/2))`, so at a fixed `E` the
+    /// threshold distance is proportional to `H` and inversely proportional to
+    /// `2·tan(fovy/2)`. The 12 was picked at the cost table's own rung — **1280×720,
+    /// `CameraMode::Free`** (fovy 46.40°, `2·tan(fovy/2) = 0.857`) — where it gives
+    /// `720 / (12 · 0.857) = 70.0 Mm⁻¹`. Against that:
+    ///
+    /// | viewport | mode | H | 2·tan(fovy/2) | factor | `E` for the same threshold |
+    /// |---|---|--:|--:|--:|--:|
+    /// | 1280×720 (the table below) | Free | 720 | 0.857 | 1.000× | 12 px |
+    /// | 1920×1080 desktop | Free | 1080 | 0.857 | **1.500×** | 18 px |
+    /// | S23 **landscape** 2340×1080 | Free | 1080 | 0.857 | 1.500× | 18 px |
+    /// | S23 landscape 2340×1080 | Cockpit | 1080 | 1.155 | 1.113× | 13.4 px |
+    /// | S23 **portrait** 1080×2340 | Free | 2340 | 0.857 | **3.250×** | 39 px |
+    /// | S23 portrait 1080×2340 | Cockpit | 2340 | 1.155 | **2.413×** | 29 px |
+    ///
+    /// Read against the 1080p desktop instead of the table's rung, the S23 in portrait asks
+    /// for a threshold distance **2.167×** the desktop's in Free (`2340/1080`) and
+    /// **1.608×** it in Cockpit — the fovy term gives back a factor 0.742 of the height
+    /// term. Landscape is the flat case: the S23's landscape height *is* 1080, so in Free
+    /// it is bit-identical to the desktop and in Cockpit it is 0.742× it.
+    ///
+    /// **So the shipped 12 is not the same configuration on a phone**, and §9 F3's soak —
+    /// which runs cockpit view — would not be measuring the desktop's calibration unless
+    /// the value is re-chosen there. It is left at 12 deliberately: it is calibrated
+    /// against the desktop measurement below, and dividing by a pixel ratio (or by
+    /// `H / 720`) would demand a new calibration that cannot be done without the device.
+    /// §9 F3 carries the same table and the instruction to pick it on the phone.
+    ///
+    /// **[`lod_factor_for`] has the identical units question and must not be touched**: its
+    /// `target_texel_ratio` default is calibrated against the hard-coded `2.0` that shipped
+    /// before WP3, on the same physical height, and the LOD harness's 204-pose CSVs are
+    /// pinned to it byte for byte.
+    ///
+    /// [`terrain_lod_factor_for`]: crate::globe::quadtree::terrain_lod_factor_for
+    /// [`lod_factor_for`]: crate::globe::quadtree::lod_factor_for
+    ///
     /// # The measured cost, and why the default is what it is
     ///
     /// Visible tiles summed over the ten real-DEM poses of
