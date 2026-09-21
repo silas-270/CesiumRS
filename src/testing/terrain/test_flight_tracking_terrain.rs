@@ -163,9 +163,14 @@ mod tests {
                 }
 
                 let mut prev_pos = state.camera.local_pos;
+                let initial_radius = prev_pos.length();
+                println!("Initial Tracking orbit radius: {:.1}m", initial_radius * 1_000_000.0);
+
+                let mut orbit_frame_times = Vec::with_capacity(36);
 
                 // 1. Circle around plane horizontally 360 degrees
                 for step in 0..36 {
+                    let frame_start = Instant::now();
                     state.camera.orbit_mouse(20.0, 0.0);
 
                     #[cfg(feature = "debug_panel")]
@@ -174,15 +179,31 @@ mod tests {
                     let res = state.render(None, false);
                     assert!(res.is_ok(), "Render failed during horizontal orbit: {:?}", res);
 
+                    let frame_duration_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+                    orbit_frame_times.push(frame_duration_ms);
+
                     let cur_pos = state.camera.local_pos;
+                    let cur_radius = cur_pos.length();
                     assert!(
                         (cur_pos - prev_pos).length() > 1e-6,
                         "Camera locked! Step {}: pos remained {:?}",
                         step, cur_pos
                     );
+                    assert!(
+                        (cur_radius - initial_radius).abs() < 1e-5,
+                        "Camera orbit radius collapsed or expanded! Step {}: radius={:.1}m, expected={:.1}m",
+                        step, cur_radius * 1_000_000.0, initial_radius * 1_000_000.0
+                    );
                     assert!(!cur_pos.x.is_nan() && !cur_pos.y.is_nan() && !cur_pos.z.is_nan());
                     prev_pos = cur_pos;
                 }
+
+                let peak_orbit_ms = orbit_frame_times.iter().cloned().fold(0.0, f64::max);
+                let avg_orbit_ms = orbit_frame_times.iter().sum::<f64>() / orbit_frame_times.len() as f64;
+                println!(
+                    "Mouse Orbit Performance (36 frames): avg={:.2}ms, peak={:.2}ms",
+                    avg_orbit_ms, peak_orbit_ms
+                );
 
                 // 2. Pitch up (looking down at plane)
                 for _ in 0..10 {
@@ -219,7 +240,6 @@ mod tests {
                 let cap_res = state.render(Some(capture_file), false);
                 assert!(cap_res.is_ok(), "Capture render failed: {:?}", cap_res);
                 assert!(std::path::Path::new(capture_file).exists(), "Capture file not found!");
-                let _ = std::fs::remove_file(capture_file);
             });
         });
         handle.join().unwrap();

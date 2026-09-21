@@ -12,7 +12,9 @@ pub fn update_tracking_mode(
     let no_bank_quat =
         cesium_engine::math::transform::velocity_to_orientation(state.position, forward);
 
-    camera.set_anchor(state.position, no_bank_quat);
+    let up_dir = state.position.normalize_or_zero();
+    let elevated_anchor = state.position + up_dir * 0.0000075;
+    camera.set_anchor(elevated_anchor, no_bank_quat);
 
     if mode_switched_or_reset {
         let dist = 250.0 / 1_000_000.0;

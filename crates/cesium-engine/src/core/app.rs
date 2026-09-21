@@ -438,16 +438,19 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
             if let Some(state) = &mut self.wgpu_state {
+                log::info!("[WINDOW LIFECYCLE] Recreating surface for window...");
                 state.recreate_surface(window.clone());
                 self.window = Some(window);
             } else {
                 self.window = Some(window.clone());
+                log::info!("[WINDOW LIFECYCLE] Initializing WgpuState asynchronously...");
                 let state = pollster::block_on(WgpuState::new(
                     Some(window.clone()),
                     None,
                     self.config.clone(),
                     self.extension.take(),
                 ));
+                log::info!("[WINDOW LIFECYCLE] WgpuState successfully created!");
                 self.wgpu_state = Some(state);
             }
         }
@@ -455,6 +458,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        log::info!("[WINDOW LIFECYCLE] suspended called. Dropping window and surface.");
         // On Android, this is called when the Activity is destroyed or sent to background.
         // We drop only the surface and window so we don't try to render to a dead surface,
         // but keep the WgpuState (device, pipelines, buffers) alive for fast resume.
@@ -499,6 +503,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
 
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                log::info!("[WINDOW LIFECYCLE] Event {:?} received from compositor/OS. Exiting event loop.", event);
                 event_loop.exit();
             }
             WindowEvent::Resized(physical_size) => {
