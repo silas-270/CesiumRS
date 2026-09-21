@@ -1912,6 +1912,368 @@ poses.)*
 
 ---
 
+## 7g. The pre-check — deciding whether to march before marching
+
+§7f's closing section names the thing it could not build:
+
+> The discriminator is not height, it is **relief in view**: where a valley floor stands
+> under a kilometre-scale ridge, D3 pays; where the camera is already on the ridge, or
+> where the step is 235 m of basin rim, it does not. A relief gate would have to know the
+> answer the march computes, which is the shape of the problem and why it is recorded here
+> rather than built.
+
+Half of that is right and the half that is wrong is the useful half. The march's *answer*
+needs 96 × 48 cells of terrain; the *question* — "could there be a wall in front of the
+camera at all" — needs one number, and every node has carried it since D1. This section
+derives that number, fits it on a pose family four times the size of §7f's, and puts it
+in front of the march.
+
+**The answer, first.** `min_relief_deg = 8.0` — the largest elevation angle, taken at each
+**visible leaf's nearest point**, of the highest altitude D1 *guarantees* over it. It costs
+**10–47 µs** against a march of **204–524 µs**, and over a 34-pose family in six families
+it takes the number of poses that pay for a march and get nothing back from **17 to 4**.
+The balance goes from **+14 562 µs to +16 521 µs** over the family; §7f's own six poses,
+re-measured through the renderer, go from **+981 µs to +2 007 µs**. Three of §7f's four
+freeloaders stop paying; the fourth is `alps_cockpit`, which this statistic does not
+separate. The poses where D3 still runs are **bit-identical** to §7f's — the
+seven captures, the Inn valley's 114 → 94, and the FN suites all read what they read
+before.
+
+It is not a clean cut and the table below says where it is not.
+
+### The quantity, derived rather than assumed
+
+Three candidates were computed side by side at every pose
+(`testing::terrain::test_terrain_relief::terrain_relief_statistic_separates_the_family`),
+which is the only reason it is possible to say which one is right.
+
+**Not relief as a height.** `max(node.hi) − eye` is the obvious statistic and §7f's prose
+suggests it. It reads **3 539 m** at the Inn valley, where D3 removes twenty tiles, and
+**4 025 m** at the Albtrauf, where it removes one. It is not close to separating anything,
+because a height says nothing without the distance it stands at: a 400 m wall at 800 m
+casts a longer shadow than a 4 km wall at 80 km.
+
+**Relief as an angle** carries both — height with the distance divided back out — and the
+statistic becomes the elevation angle of the highest ground in view. Two further choices
+make it the right angle rather than an angle:
+
+* **At the node's nearest point, not its centre.** `extent_of_at` is the march's own
+  rectangle geometry, lifted out of `TerrainHorizon::extent_of` **verbatim** and shared,
+  so the pre-check and the march measure the same tile the same way and there is no second
+  `EXTENT_SLACK` to keep in step.
+* **Off `floor_grid`, not off the box.** `HeightBounds::hi` is a bounding volume: on an
+  inherited interval it is kilometres of margin rather than terrain. Measured on the box
+  top, the **Jungfraujoch reads +36.7°** of relief with nothing at all standing above the
+  eye. The sixteen sub-cell floors are what D1 can *prove* is there — exactly what the
+  march would stamp — and the same pose reads **−1.8°** off them. The *highest* sub-cell,
+  because one sub-cell of guaranteed crest is a wall; the scalar `floor` is a minimum over
+  the whole tile and averages that crest away, which is `HeightBounds::floor_grid`'s own
+  finding in the other direction.
+
+Nodes nearer than `MIN_RANGE_M` are skipped. Not a knob: the march's first ring starts
+there, so nothing nearer can be an occluder — and without the cut the tile the camera is
+*standing on* reports +90° at every pose with any relief under it.
+
+A fourth candidate was built and **rejected on the data**: a "one-number march" that
+counts the drawn tiles standing beyond that wall and below its elevation angle, per 30°
+azimuth sector. The idea is sound and it does not separate: it reads 76 at the Inn valley
+(twenty tiles removed) and 97 on the Tuxer ridge (one). The gap between "a wall could
+shadow this" and "the march's per-sector, per-ring cell floor actually clears it" is the
+march's resolution, and nothing cheaper than the march closes it. That is the part of
+§7f's sentence that was right.
+
+### The pose family, extended before the threshold was picked
+
+A threshold fitted to six poses is fitted to six poses. `relief_poses()` is **34 poses in
+six families** — valley-under-a-wall, on a ridge, terrain step, plain, coast, and the
+altitude band above the gate — and §7f's six are all inside it at the same places and the
+same AGLs. Every one is placed over the **DEM's** ground rather than over an altitude
+argument, and `terrain_relief_poses_are_where_they_say` runs first: it reads the ground
+height, the horizon `√(2Rh)`, the sightline profile's maximum along the declared bearing,
+and the heading **measured off the built camera** — §7c lost three poses to coordinates
+that were a mountainside and §7f found two more that were not at the altitude their names
+said, so the check is not optional.
+
+The instrument is `test_terrain_step::settle`: the production `Fill::Visible` height
+policy, the renderer's own LOD and fog factors, the real DEM, no GPU. It reproduces the
+renderer to the tile where the two overlap — 114 → 94 at the Inn valley, 62 → 61 at the
+Albtrauf.
+
+### The separation table
+
+Both altitude gates opened, so the `removed` column is D3's raw answer rather than what
+the shipped gate lets it try. `relief` is the statistic; `march` and `probe` are minima
+over 40 repetitions of `refresh_terrain_horizon` on the settled tree. Sorted by the
+statistic, which is the only way to read it.
+
+| pose | family | AGL | tiles off | removed | **relief** | march | probe |
+|---|---|--:|--:|--:|--:|--:|--:|
+| `chamonix_montblanc` | valley | 200 m | 75 | **16** | 40.31° | 300 µs | 10 µs |
+| `lauterbrunnen` | valley | 150 m | 83 | **21** | 38.12° | 298 µs | 11 µs |
+| `zillertal_mayrhofen` | valley | 200 m | 146 | **13** | 22.70° | 436 µs | 21 µs |
+| `oetztal_soelden` | valley | 200 m | 84 | **9** | 22.10° | 322 µs | 13 µs |
+| `wipptal_steinach` | valley | 200 m | 102 | **0** | 20.75° | 359 µs | 16 µs |
+| `yosemite_valley` | valley | 100 m | 154 | 5 | 19.56° | 402 µs | 22 µs |
+| `grand_canyon_floor` | valley | 100 m | 238 | **15** | 18.91° | 524 µs | 31 µs |
+| `valais_sion` | valley | 200 m | 74 | 3 | 18.84° | 291 µs | 12 µs |
+| `khumbu_namche` | valley | 300 m | 154 | 5 | 18.43° | 363 µs | 22 µs |
+| `adige_bolzano` | valley | 200 m | 89 | 5 | 17.56° | 314 µs | 14 µs |
+| `alps_ridge_tuxer` | ridge | 2 m | 111 | **1** | 16.55° | 364 µs | 18 µs |
+| `inn_valley_60` | valley | 60 m | 126 | **22** | 15.59° | 389 µs | 17 µs |
+| `inn_valley_300` | valley | 300 m | 114 | **20** | 12.93° | 382 µs | 15 µs |
+| `owens_valley_sierra` | valley | 60 m | 78 | **12** | 11.21° | 275 µs | 11 µs |
+| `pokhara_annapurna` | valley | 200 m | 341 | **0** | 9.72° | 385 µs | 47 µs |
+| `boulder_front_range` | step | 30 m | 59 | **0** | 9.37° | 267 µs | 10 µs |
+| `inn_valley_700` | valley | 700 m | 106 | **11** | **8.79°** | 386 µs | 16 µs |
+| — **threshold, 8.0°** — | | | | | | | |
+| `death_valley_floor` | valley | 50 m | 71 | 0 | 4.93° | 203 µs | 11 µs |
+| `alps_above_1200` | above | 1 200 m | 107 | 1 | 4.00° | 377 µs | 17 µs |
+| `nice_coast` | coast | 100 m | 81 | **3** | 3.83° | 247 µs | 12 µs |
+| `reutlingen_albtrauf` | step | 21 m | 62 | 1 | 3.81° | 243 µs | 11 µs |
+| `stuttgart_kessel` | step | 145 m | 74 | 1 | 2.98° | 240 µs | 12 µs |
+| `rhine_gorge` | valley | 30 m | 68 | 0 | 1.46° | 244 µs | 12 µs |
+| `hegau_step` | step | 30 m | 72 | 0 | 1.03° | 248 µs | 12 µs |
+| `ligurian_sea` | coast | 100 m | 65 | 1 | 0.51° | 204 µs | 11 µs |
+| `po_plain_mantova` | plain | 100 m | 70 | 1 | 0.33° | 230 µs | 12 µs |
+| `munich_foreland` | plain | 200 m | 69 | 0 | 0.19° | 264 µs | 12 µs |
+| `kansas_plain` | plain | 100 m | 61 | 0 | −0.10° | 233 µs | 10 µs |
+| `alb_plateau_top` | ridge | 20 m | 58 | 0 | −0.19° | 258 µs | 11 µs |
+| `north_german_plain` | plain | 100 m | 120 | 0 | −0.41° | 257 µs | 21 µs |
+| `zugspitze_summit` | ridge | 20 m | 99 | 1 | −1.62° | 317 µs | 16 µs |
+| `alps_above_600` | above | 600 m | 88 | 1 | −1.64° | 328 µs | 14 µs |
+| `jungfraujoch` | ridge | 20 m | 60 | 0 | −1.77° | 250 µs | 11 µs |
+| `alps_cruise_9km` | above | 9 km | 57 | 0 | −3.61° | 210 µs | 10 µs |
+
+**Above the line: 158 of the family's 168 removed tiles, in 17 poses. Below it: 10 tiles,
+in the other 17.** The statistic is not a proxy for altitude — `alps_ridge_tuxer` at 2 m AGL
+reads 16.55° and `alps_above_600` at 600 m reads −1.64°, which is precisely the pair no
+altitude threshold can separate and §7f said so.
+
+**The threshold is a keep-side choice inside a band nobody can split.** The lowest-reading
+pose where D3 still removes a paying number of tiles is `inn_valley_700` — §7f's own
+altitude-ladder rung, **11 tiles** — at **8.79°**, and the two non-paying poses directly
+above it read **9.37°** and **9.72°**. There is no cut that keeps the first and drops the
+other two. Anything from 8° to 10° is worth the same to within about a hundred
+microseconds over the family (8° keeps +1 204 µs and pays −709; 10° keeps and pays
+neither), and **8° is the end that keeps the paying pose** rather than the end that trades
+it for two break-evens.
+
+### The cost, measured against what it is deciding about
+
+`terrain_relief_probe_is_cheap_against_the_march` times both halves on one clock at all 34
+poses: `refresh_terrain_horizon` with the probe forced to pass, against the same call with
+it forced to fail.
+
+| | probe | march | ratio |
+|---|--:|--:|--:|
+| median | 12 µs | 291 µs | **23×** |
+| worst probe (`pokhara_annapurna`, 341 tiles) | 47 µs | 385 µs | 8× |
+| best | 10 µs | 204 µs | 29× |
+
+Not the microsecond the premise guessed at — the walk pays a `tile_bounds` and a
+`sin_cos` per visible leaf — but between one eighth and one twenty-ninth of what it
+decides about, and it **stops at the first leaf that clears the threshold**, so the arm
+that goes on to march barely pays it at all.
+
+Two things keep it off the tree. It descends only into **visible** subtrees, so it costs
+the set the renderer is about to draw (59–341 leaves) and not the quadtree; and it runs
+**before** `TerrainHorizon::begin`, so a pose that fails never allocates or zeroes the
+55 kB of polar grid either.
+
+### It cannot cost a tile, and that is measured rather than argued
+
+Not marching is not culling: a pre-check that says "no" leaves the frame on D1+D2, the arm
+the culling gate proves sound on its own. The only mistake this file can make is to leave
+a cull on the table, which is a balance error and not a correctness one.
+
+§7's rule is that a bound is measured anyway, so
+`terrain_relief_pre_check_only_ever_removes_culls` measures it, and with a stronger claim
+than "FN = 0 at these poses": one settled tree per pose, **two marches on that same tree**
+— one with `min_relief_deg = −∞`, which is §7f's engine exactly, one at the shipped
+threshold — and then every node in the tree offered to both horizons.
+
+> **8 036 nodes over 34 poses: 234 culled without the pre-check, 184 with it, and 0 culled
+> only with it.**
+
+Set inclusion, node by node, rather than pose by pose, and it does not depend on an oracle
+being dense enough. The 50 culls the pre-check gives up are 10 drawn tiles across the 17
+poses it skips — against 17 marches not run.
+
+The three existing false-negative suites are unchanged and still scoring:
+
+| test | what it sweeps | result |
+|---|---|--:|
+| `d3_never_hides_a_visible_vertex` | 22 ridge-world poses, **1 304 culled nodes scored** | **FN 0** |
+| `terrain_sweep_has_no_false_negatives` | 96 poses, D1/D2 | **FN 0** |
+| `terrain_step_d3_never_hides_a_visible_vertex` | the two step poses at z14 — **15 culled nodes, 1 489 candidate vertices** (was 16 and 1 489) | **FN 0** |
+
+The one number that moved is the last: at `reutlingen_albtrauf` the pre-check now skips the
+march, so that pose contributes no culled nodes and the count is Stuttgart's alone. The
+test is still non-vacuous by an order of magnitude, and it now asserts the same thing about
+a slightly smaller set.
+
+**The control arm caught a real bug, which is the reason to have one.** `tan` is only
+monotone on `(−90°, 90°)`, and `(−∞).to_radians().tan()` is `NaN`, against which every
+comparison is false — so `min_relief_deg = −∞`, the documented way to switch the pre-check
+*off*, switched the **march** off instead. Every test that never tries the off switch
+passes with that in place.
+
+### The balance, before and after
+
+`removed × 146 µs − (march + probe)`, on the march and probe costs the table above
+measured, with §7f's per-tile figure and §7f's AGL gate in front of both arms. "before" is
+§7f's engine — the same poses, the same gate, no pre-check.
+
+| family | poses | marches after | **before** | **after** |
+|---|--:|--:|--:|--:|
+| valley | 17 | 15 | +17 050 µs | **+17 197 µs** |
+| ridge | 4 | 1 | −896 µs | **−272 µs** |
+| step | 4 | 1 | −705 µs | **−312 µs** |
+| plain | 4 | 0 | −839 µs | **−54 µs** |
+| coast | 2 | 0 | +133 µs | **−23 µs** |
+| above | 3 | 0 | −182 µs | **−14 µs** |
+| **total** | **34** | **17** | **+14 562 µs** | **+16 521 µs** |
+
+Five families improve and one does not. The honest reading, family by family:
+
+* **Valley is where the feature lives** and the pre-check leaves it alone: it skips two
+  poses there (`rhine_gorge`, `death_valley_floor`) that removed nothing between them.
+* **Plain, coast and above are now the probe's cost and nothing else** — −54, −23 and
+  −14 µs across nine poses, which is below anything this machine can measure. `coast` is
+  the one family that got *worse*: `nice_coast` removed three tiles for 247 µs of march, a
+  +191 µs that the pre-check gives up. Three tiles is inside the settle noise §7f measured
+  at Stuttgart, so it is a loss of about that much confidence, not of 191 µs of certainty.
+* **Ridge and step stay negative**, at −272 µs and −312 µs, and each is **one pose**:
+  `alps_ridge_tuxer` (16.55°, removes 1) and `boulder_front_range` (9.37°, removes 0).
+  Two more sit inside `valley` — `wipptal_steinach` (20.75°, removes 0) and
+  `pokhara_annapurna` (9.72°, removes 0).
+
+**Four poses out of 34 still pay a march for nothing, and they total −1 319 µs against a
+family gain of +16 521.** That is the residual, stated rather than rounded off, and it is
+the part of §7f's sentence that no statistic cheaper than the march is going to reach.
+
+### The same table through the renderer, at §7f's six poses
+
+`rendering::terrain_balance::terrain_balance_d3_on_vs_off`, thirty interleaved rounds per
+arm, 1280 × 720, at the shipped 8°. The "before" column is **§7f's own table**, not a
+second run: the instrument is the same, the machine is the same and the day is the same,
+and a fresh control arm was started and abandoned after four poses because this host's
+`ulimit -u` will not carry two six-pose runs. `CESIUM_BALANCE_RELIEF` is in the harness
+for anyone who wants that control arm on a machine that can hold it; the offline 34-pose
+table above is where both arms *were* measured back to back.
+
+| pose | AGL | tiles off | tiles on | removed | march + stage | **net** | frame delta |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| `reutlingen_albtrauf` | 22 m | 62 | 62 | 0 | **21 µs** | **−21 µs** | +511 µs |
+| `stuttgart_kessel` | 145 m | 71 | 74 | 0 | **26 µs** | **−26 µs** | +237 µs |
+| `alps_inn_valley` | 317 m | 114 | **94** | **20** | 530 µs | **+2 390 µs** | **−1 320 µs** |
+| `alps_approach` | 584 m | 88 | 88 | 0 | **17 µs** | **−17 µs** | +289 µs |
+| `alps_cockpit` | 2 m | 114 | 113 | 1 | 465 µs | **−319 µs** | +1 622 µs |
+| `alps_cruise_11km` | 9.1 km | 59 | 59 | 0 | **0** | **0** | — |
+
+Against §7f's own table, same instrument, same machine, the poses that changed:
+
+| pose | §7f, march + stage | §7f, net | §7g, march + stage | §7g, net |
+|---|--:|--:|--:|--:|
+| `reutlingen_albtrauf` | 311 µs | −165 µs | **21 µs** | **−21 µs** |
+| `stuttgart_kessel` | 337 µs | −337 µs | **26 µs** | **−26 µs** |
+| `alps_inn_valley` | 513 µs | +2 407 µs | 530 µs | +2 390 µs |
+| `alps_approach` | 463 µs | −463 µs | **17 µs** | **−17 µs** |
+| `alps_cockpit` | 461 µs | −461 µs | 465 µs | −319 µs |
+| `alps_cruise_11km` | −4 µs | 0 | unchanged | 0 |
+
+`alps_cruise_11km` is the AGL gate and nothing else: at 9 133 m above the ground
+`gate_shut` answers before the probe is built, so the row is §7f's row unchanged. (What is
+left on its clock — 24 µs of `terrain_horizon_us` — is `TerrainHorizon::inactive()`
+allocating its two boxed grids, which §7f paid too and which the pre-check does not add
+to.)
+
+Three of §7f's four freeloaders stop paying and the fourth is the Tuxer ridge, which the
+statistic does not separate and the offline table says the same about. The Inn valley is
+unchanged inside the ±30 µs the march half reproduces to: it still removes twenty tiles,
+the frame is still 1.3 ms faster, and the pre-check adds about 15 µs to a march that was
+already going to run. Over the six poses the family goes from **+981 µs to +2 007 µs**.
+`alps_cockpit` reads 114 → **113** here where §7f read 114 → 114, which is the ±1–3 tiles
+of settle spread §7f measured at Stuttgart showing up at a second pose; it is still a loss
+either way, −319 µs against −461 µs.
+
+Where the pre-check skips, what is left on the clock is the probe itself: **17–26 µs**
+measured at the quadtree block, 35–50 µs measured as `terrain_horizon_us`. The renderer's
+visible sets are larger than the offline harness's, so that is the honest upper end of the
+figure in the cost table above — and it is still an order of magnitude under the march it
+is deciding about.
+
+
+### Two things that relativise every number above, and they point the same way
+
+**There is no GPU on this machine.** `vulkaninfo` reports
+`PHYSICAL_DEVICE_TYPE_CPU / llvmpipe`, so vertex and fragment work runs on the same cores
+as everything else and a *drawn* tile costs more here than on the S23 targets of §9 F3 —
+the fragment half of a hidden tile, which a real depth buffer discards early, counts for
+much more than it should. **The 146 µs per tile is an upper bound and the saving side of
+every table above is overstated.**
+
+**The march is CPU time and the saving lands on the GPU.** They are two budgets, and
+adding them up the way a single `frame_us` column does is a convenience of this host, not
+a property of the device. On a phone whose frame is CPU-bound, D3 *spends* from the
+binding budget and *saves* in the one with slack.
+
+Both of those weaken §7f's +2 407 µs at the Inn valley, and both of them are arguments for
+the pre-check rather than against it — the cost side is the side that is real on every
+device. Put as one number: with §7f's engine, D3 breaks even over this family at about
+**57 µs per drawn tile**; with the pre-check it breaks even at about **35 µs**. The
+pre-check roughly halves the tile cost at which the stage is worth having at all, which is
+the margin §9 F3's soak is going to be measured against.
+
+### The verdict
+
+**The pre-check separates, and D3 stays on.** Not perfectly: 30 of 34 poses land on the
+side the balance wants, four do not, and the two families those four sit in are still a
+few hundred microseconds under water. But the shape has changed. §7f's complaint was that
+*four of the five poses the gate let through paid half a millisecond for nothing*; after
+the pre-check it is **four of seventeen**, the family total is up 13 %, and the
+break-even tile cost is halved. Turning the stage off to avoid −1 319 µs would forfeit
++16 521 µs measured on the same clock, and that trade does not need a second opinion.
+
+Against the strict reading — **every** family at or above zero — it does not pass, and
+saying otherwise would be rounding: `ridge` is −272 µs and `step` is −312 µs, one pose
+each, and `plain`, `coast` and `above` are −54, −23 and −14 µs, which is the probe and
+nothing else. What it does pass is the comparison that actually decides the question:
+**every family is better than it was**, five of the six by a wide margin, the one where
+the feature lives is up, and the four that are still under water are under it by a
+twentieth of what they were carrying before.
+
+`min_relief_deg` is on `TerrainOcclusionConfig` like every other gate, and
+`f32::NEG_INFINITY` restores §7f's engine exactly — including its cost.
+
+### The captures
+
+All seven, `/var/tmp/d3-relief/shots`, 1280 × 720 on the real DEM, `cmp` and not a sampled
+comparison:
+
+| pose | D1+D2 | +D3 | D1+D2 vs +D3 | pre-check |
+|---|--:|--:|---|---|
+| `alps_inn_valley` | 114 | **94** | **byte-identical** | marches |
+| `alps_low` | 76 | 76 | byte-identical | marches |
+| `alps_zugspitze` | 52 | 52 | byte-identical | marches |
+| `himalaya_everest` | 169 | 169 | byte-identical | marches |
+| `himalaya_limb_400km` | 12 | 12 | byte-identical | AGL gate shut |
+| `step_reutlingen_albtrauf` | 62 | 62 | byte-identical | **skipped** |
+| `step_stuttgart_kessel` | 74 | 71 | byte-identical | marches |
+
+The Inn valley is unchanged from §7f to the tile — twenty out of 114 removed, not one pixel
+moved, the Nordkette wall unbroken from the Innsbruck rooftops to the crest line. The
+Albtrauf is the pre-check doing its job: §7f's engine removed one tile there for 311 µs and
+this one removes none for 11 µs, and the picture is the same picture either way.
+
+*(Measured 2026-09-21. Culling gate **32 passed, 0 failed, 1 ignored** with no re-pin of
+`size_of::<QuadtreeNode<Ellipsoid>>() == 192`, `TilePatch<Ellipsoid> == 64`,
+`HorizonCamera == 56` or `test_visible_set_digest_is_stable`; `cargo test -p cesium-engine
+--lib` 25/0; `cargo test --release --lib terrain::` 99/0; all 14 LOD-harness CSVs
+byte-identical, `aggregate_ratio = 1.663`, 204 poses.)*
+
+---
+
 ## 8. Phase E — LOD and integration
 
 - **E1. A real geometric error.** `apply_lod` keeps its shape and its 20 % hysteresis; the
@@ -3173,7 +3535,10 @@ A ── B ──┬── C ──┬── D1 ── D2 ── D3 ──┬─
 - **D3 is the constraint-2 deliverable.** Do not let it slide to the end.
   *(Landed 2026-09-20. FN = 0, and see §7b for what it removes and — more usefully —
   where it does not. Followed up 2026-09-21 in §7c: the per-sub-patch refinement §7b
-  proposed was built, measured and removed; the march is 27–43 % cheaper.)*
+  proposed was built, measured and removed; the march is 27–43 % cheaper. Closed
+  2026-09-21 by §7f's balance and §7g's pre-check: the stage now decides whether to march
+  from the relief in view, and it stays on. What is left is §9 F3's soak, which is where
+  the CPU-versus-GPU half of the trade gets settled.)*
 
 ---
 
