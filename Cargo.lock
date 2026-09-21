@@ -569,6 +569,7 @@ dependencies = [
  "glam",
  "image",
  "jni 0.21.1",
+ "libc",
  "log",
  "pollster 1.0.1",
  "rayon",

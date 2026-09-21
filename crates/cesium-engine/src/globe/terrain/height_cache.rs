@@ -101,6 +101,7 @@ impl HeightTileManager {
                 // +32768 m — a globe-wide wall, not a flat field. Offline is handled in
                 // `request_tile` instead, where the zero field can be stated directly.
                 false,
+                "Height",
             ),
             ocean: config.terrain.ocean,
             max_level: config.terrain.max_level,
@@ -156,10 +157,16 @@ impl HeightTileManager {
             }
 
             match result.and_then(|(w, h, rgba)| decode_terrarium(w, h, &rgba, self.ocean)) {
-                Ok(tile) => self.cache.mark_ready(id, Arc::new(tile)),
+                Ok(tile) => {
+                    log::info!(
+                        "[HEIGHT DECODED] id=z{}/x{}/y{} min_alt={}m max_alt={}m",
+                        id.z, id.x, id.y, tile.h_min, tile.h_max
+                    );
+                    self.cache.mark_ready(id, Arc::new(tile));
+                }
                 Err(e) => {
                     log::warn!(
-                        "Failed to load height tile z:{} x:{} y:{}: {}",
+                        "[HEIGHT FAILED] z{}/x{}/y{}: {}",
                         id.z,
                         id.x,
                         id.y,

@@ -552,6 +552,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                 ..
             } => {
                 let pressed = element_state == ElementState::Pressed;
+                log::info!("[INPUT MOUSE CLICK] button={:?} state={:?} pos={:?}", button, element_state, self.last_mouse_pos);
                 if button == MouseButton::Left {
                     self.mouse_pressed = pressed;
                     if !is_debug {
@@ -596,6 +597,14 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                     }
                 } else {
                     if self.mouse_pressed {
+                        log::info!(
+                            "[INPUT MOUSE DRAG] mode={:?} pos=({:.1}, {:.1}) delta=({:.1}, {:.1})",
+                            state.camera.mode,
+                            position.x,
+                            position.y,
+                            dx,
+                            dy
+                        );
                         match state.camera.mode {
                             crate::camera::camera::CameraMode::Free => {
                                 state.camera.drag(
@@ -623,6 +632,12 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(pos) => (pos.y / 50.0) as f32,
                     };
+                    log::info!(
+                        "[INPUT MOUSE WHEEL] delta={:?} zoom_delta={:.2} mode={:?}",
+                        delta,
+                        zoom_delta,
+                        state.camera.mode
+                    );
                     state.camera.zoom(zoom_delta);
                     window.request_redraw();
                 }
@@ -651,6 +666,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                     },
                 ..
             } => {
+                log::info!("[INPUT KEY] key={:?} state={:?}", keycode, element_state);
                 if element_state == ElementState::Pressed {
                     self.pressed_keys.insert(keycode);
                 } else {
@@ -707,6 +723,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
             // Drain any commands submitted via ViewerHandle
             if let Some(rx) = &self.command_rx {
                 while let Ok(cmd) = rx.try_recv() {
+                    log::info!("[COMMAND RECV] {:?}", cmd);
                     match cmd {
                         ViewerCommand::CameraSetPosition { lon, lat, alt } => {
                             let ecef =

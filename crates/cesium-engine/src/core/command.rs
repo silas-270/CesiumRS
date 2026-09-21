@@ -1,5 +1,6 @@
 /// Commands that can be sent from any thread into the engine's main loop.
 /// Drained every frame in `App::about_to_wait`.
+#[derive(Debug)]
 pub enum ViewerCommand {
     // Camera
     CameraSetPosition {
