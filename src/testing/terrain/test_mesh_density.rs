@@ -305,12 +305,18 @@ fn the_vertex_cost_of_a_density_is_what_c4_quoted() {
 /// node's box has to swallow depends on it) and the config it is derived from. Everything
 /// else — the capture's `lod_factor`, `fog_density_for`, `TERRAIN_DEFAULT` — is that
 /// function's, so the tile counts printed here sit next to §8's rather than beside them.
+///
+/// `frames`, when given, collects the visible set after **every** `update` — the sequence
+/// of request sets a camera arriving at this pose really produces, which is what
+/// [`super::test_height_residency`] replays. It is `None` for the tables here, which only
+/// ever look at the settled tree.
 fn settled_at_density(
     p: &ViewParams,
     frustum: &Frustum,
     config: &TileEngineConfig,
     texture_size_px: f32,
     world: &mut RealWorld,
+    mut frames: Option<&mut Vec<Vec<TileId>>>,
 ) -> (QuadtreeManager<Heightfield>, HeightTileManager, usize) {
     let segments = config.mesh_segments;
     let mut heights = HeightTileManager::new(config);
@@ -370,6 +376,14 @@ fn settled_at_density(
         qt.refresh_extras(&source(&heights, segments, exaggeration));
         qt.refresh_terrain_horizon(frustum.eye, cam_alt, &config.terrain.occlusion);
         qt.update(frustum);
+        if let Some(f) = frames.as_deref_mut() {
+            f.push(
+                qt.get_visible_tiles()
+                    .into_iter()
+                    .map(|(id, _, _)| id)
+                    .collect(),
+            );
+        }
     }
     // One more fill **after** the last `update`, which is the one that creates the final
     // generation of children. Without it a few percent of the settled tree has no height
@@ -391,6 +405,43 @@ fn settled_at_density(
     }
     qt.refresh_extras(&source(&heights, segments, exaggeration));
     (qt, heights, asked.len())
+}
+
+/// The settled visible set at one real pose, at the **shipped** config — the tile ids
+/// `TileSystem::update_logic` would walk when it asks for height chains.
+///
+/// Exposed for [`super::test_height_residency`], which needs the request sequence and not
+/// the tree, and which must not grow a second settle of its own: two settles that drift
+/// apart would make its churn numbers incomparable with F2's residency numbers.
+pub(crate) fn settled_shipped(
+    p: &ViewParams,
+    texture_size_px: f32,
+    world: &mut RealWorld,
+) -> (Vec<Vec<TileId>>, usize) {
+    let shipped = TileEngineConfig {
+        terrain: TerrainConfig {
+            enabled: true,
+            ..TerrainConfig::default()
+        },
+        ..TileEngineConfig::default()
+    };
+    let frustum = frustum_of(p);
+    let mut frames = Vec::new();
+    let (qt, _, asked) = settled_at_density(
+        p,
+        &frustum,
+        &shipped,
+        texture_size_px,
+        world,
+        Some(&mut frames),
+    );
+    frames.push(
+        qt.get_visible_tiles()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect(),
+    );
+    (frames, asked)
 }
 
 /// The frustum of one real pose.
@@ -477,7 +528,8 @@ fn f1_mesh_density_at_the_real_poses() {
         for (i, d) in DENSITIES.iter().enumerate() {
             let mut config = real_config();
             config.mesh_segments = *d;
-            let (qt, mut heights, _) = settled_at_density(p, frustum, &config, 256.0, &mut world);
+            let (qt, mut heights, _) =
+                settled_at_density(p, frustum, &config, 256.0, &mut world, None);
             let cam = build_camera(p);
             let fovy = cam.fovy() as f64;
             let visible = qt.get_visible_tiles();
@@ -680,7 +732,7 @@ fn f2_where_the_bytes_go_at_the_real_poses() {
         for (name, p) in real_poses() {
             let frustum = frustum_of(&p);
             let (qt, heights, asked) =
-                settled_at_density(&p, &frustum, &shipped, texture_px, &mut world);
+                settled_at_density(&p, &frustum, &shipped, texture_px, &mut world, None);
             let tiles = qt.get_visible_tiles().len();
             let (resident, capacity) = heights.residency();
             let img_mib = (tiles * bytes_per_tile) as f64 / (1024.0 * 1024.0);

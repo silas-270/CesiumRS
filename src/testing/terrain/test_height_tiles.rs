@@ -509,7 +509,15 @@ fn the_height_cache_reports_its_share_of_the_budget() {
 
     let (resident, capacity) = heights.residency();
     assert_eq!(resident, 0);
-    assert_eq!(capacity, 254, "32 MiB / 129 kB per tile");
+    // The declared slice divided by the tile size, whatever the platform split makes that:
+    // 48 MiB / 129 kB = 381 on desktop since §9 F2b, 32 MiB / 129 kB = 254 on Android.
+    assert_eq!(
+        capacity,
+        config.terrain.height_cache_budget_bytes / 132_098,
+        "the capacity is the declared slice divided by the entry size, and nothing else"
+    );
+    #[cfg(not(target_os = "android"))]
+    assert_eq!(capacity, 381, "48 MiB / 129 kB per tile — §9 F2b");
 
     heights.insert_ready(ANCESTOR_Z15, x_ramp());
     assert_eq!(heights.residency().0, 1);

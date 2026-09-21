@@ -1958,6 +1958,88 @@ Three things this says, none of which were visible from the config:
    (§B4's note: a count-only cap let textures climb past 1.9 GB on device), and it is a second,
    independent reason F1 does not raise the density on an unmeasured platform.
 
+### F2b — the churn F2 predicted is not there, and the slice moves anyway
+
+F2's second finding was that the height slice binds at three of the ten poses —
+`alps_inn_valley` wants 312 distinct sources and the cache holds 254 — and that the
+consequence is eviction and re-fetch "while the camera has not moved". It also named a
+remedy (48 MiB) and declined to apply it. Before applying it, F2b went to measure the churn,
+and found the premise wrong.
+
+**F2's 312 is not a number production ever asks for.** It comes from
+`test_terrain_occlusion::collect_sources`, which recurses the **whole quadtree** — interior
+nodes, culled nodes, everything the tree holds. Production asks for height tiles in exactly
+one place, `TileSystem::request_height_chain`, and it is called for the **visible set** and
+for `missing_meshes`, each with its ancestor chain. Nodes that are in the tree but not drawn
+never get a request: their `HeightBounds` come from D1's inheritance margin, which is what
+that margin is for.
+
+`testing::terrain::test_height_residency::double_fetches_at_the_binding_poses` replays that
+real request sequence — the arriving tree frame by frame, then the settled set, 24 frames at
+16 ms — against the **real** `HeightTileManager`, the real `TileCacheManager`, the real
+`TileFetcher` with its real tokio worker, and a local HTTP source that counts every GET and
+answers after 60 ms (the optimistic end of a real Terrarium round trip, so every number below
+is a lower bound on the shipped source).
+
+| pose | style | F2's whole-tree count | production asks | resident | evicted in flight | GETs | distinct | repeats |
+|---|---|--:|--:|--:|--:|--:|--:|--:|
+| `alps_inn_valley` | carto @2x | 312 | **220** | 220 / 254 | 0 | 220 | 220 | **0** |
+| `alps_low` | carto @2x | 276 | 177 | 177 / 254 | 0 | 177 | 177 | 0 |
+| `salzach_to_alps` | carto @2x | 268 | 179 | 179 / 254 | 0 | 179 | 179 | 0 |
+| `rhone_valley` | carto @2x | 240 | 156 | 156 / 254 | 0 | 156 | 156 | 0 |
+| `alps_inn_valley` | esri 256² | 316 | **220** | 220 / 254 | 0 | 220 | 220 | 0 |
+| `alps_low` | esri 256² | 276 | 177 | 177 / 254 | 0 | 177 | 177 | 0 |
+| `salzach_to_alps` | esri 256² | 280 | 188 | 188 / 254 | 0 | 188 | 188 | 0 |
+| `rhone_valley` | esri 256² | 248 | 161 | 161 / 254 | 0 | 161 | 161 | 0 |
+
+**Nothing is evicted, nothing is fetched twice, at either shipped imagery style.** The worst
+working set is 220 against a 254-entry cache. The same table at 48 MiB is identical in every
+column but the capacity. So F2's "the height slice is the one that binds" was an artefact of
+the harness it was measured with, and the churn it described does not happen.
+
+**The double-fetch window is real, and it is not reached.** Two dedup layers stand between
+the request and the wire, and *neither* covers the in-flight window:
+
+1. `HeightTileManager::request_tile` returns early on `cache.get_state(&src).is_some()`, and
+   the `Fetching` placeholder that makes that work is an ordinary `LruCache` entry.
+   `LruCache::put` evicts the least-recently-used entry without asking what state it is in.
+   `test_height_residency::the_cache_will_evict_a_tile_whose_fetch_is_still_in_flight` is
+   that, in four lines.
+2. `TileFetcher::request_tile` keeps a `HashSet` of queued ids — but removes an id when the
+   worker **pops** the request, i.e. when the download *starts*, not when it finishes
+   (`tile_fetcher.rs`, `q.1.remove(&r.id)` inside the pop). So it dedups the queued window
+   and not the downloading one.
+   `the_fetcher_dedups_the_queued_window_and_not_the_downloading_one` drops the placeholder
+   mid-download and watches a second GET go out for a tile still on the wire.
+
+Cesium's counterpart is `GlobeSurfaceTile.eligibleForUnloading`
+(`Scene/GlobeSurfaceTile.js:112-131`), which refuses to free a tile whose imagery is
+`RECEIVING` or `TRANSFORMING`. **That guard is not built here**, because the measurement says
+there is nothing yet to guard against: reaching the window needs the working set to exceed
+the capacity, and at 220 of 254 it does not. The two tests above stay in the gate so that if
+it ever does, the mechanism is already written down and the fix is a state check rather than
+an investigation.
+
+**The slice is raised to 48 MiB anyway, for the reason F2 did not give.** 220 of 254 is 87 %
+of the slice at 103 visible tiles, and F5 below refines the tree — which raises the visible
+count and therefore the height working set. The raise is headroom for measured growth, not a
+repair:
+
+| | before | after (desktop) | after (Android) |
+|---|--:|--:|--:|
+| `height_cache_budget_bytes` | 32 MiB | **48 MiB** | 32 MiB (unchanged) |
+| entries at 132 098 B | 254 | **381** | 254 |
+| imagery share of the 512 MiB budget | 480 MiB | **464 MiB** | 480 MiB |
+| imagery peak measured (F2) | 103 MiB | 103 MiB | — |
+
+Imagery keeps 4.5× its measured peak, so B4's "a slice, not an addition" still holds and the
+imagery side still never binds. **Android is deliberately left at 32 MiB**
+(`HEIGHT_CACHE_BUDGET_BYTES` is a `cfg!(target_os)` split, like `TERRAIN_ENABLED_BY_DEFAULT`):
+every Android memory decision in this file is held to the soak of F3, which has not been run,
+and Android has terrain off by default, so on that platform this constant currently describes
+memory nobody allocates. The split exists so that flipping the *other* constant does not
+silently flip this one too.
+
 ### F3 — the S23 soak, ready to run
 
 Everything below is executable on the machine with the phone, in order, with no decisions left

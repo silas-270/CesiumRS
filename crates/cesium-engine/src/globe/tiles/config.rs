@@ -34,12 +34,14 @@ pub const TERRARIUM_MAX_LEVEL: u8 = 15;
 /// measured geometric error ([`crate::globe::terrain::HeightTile::detail`]).
 ///
 /// `docs/terrain-plan.md` §5 B4 rounds this to "128 kB per height tile; 256 resident
-/// = 32 MB". The real figure is 129 kB, because the mips are not free, so the 32 MiB
-/// default below derives **254** entries rather than 256. The budget is the promise;
-/// the entry count is derived from it, exactly as it is for imagery.
+/// = 32 MB". The real figure is 129 kB, because the mips are not free, so a 32 MiB
+/// slice derives **254** entries rather than 256 and §9 F2b's 48 MiB derives **381**.
+/// The budget is the promise; the entry count is derived from it, exactly as it is for
+/// imagery — see [`HEIGHT_CACHE_BUDGET_BYTES`].
 ///
-/// E1's error term costs **two bytes per tile** — 512 B across the whole resident set —
-/// and the derived entry count does not move: 33 554 432 / 132 098 is still 254.
+/// E1's error term costs **two bytes per tile** — about a kilobyte across the whole
+/// resident set — and the derived entry count does not move with it: 50 331 648 / 132 098
+/// is 381 either way.
 pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2 + 2 * (16 * 16 * 2) + 2;
 
 /// What to do with the sub-sea-level samples the Terrarium source carries.
@@ -70,8 +72,8 @@ pub enum OceanPolicy {
 /// costs 702 tiles against 483 flat, the drawn geometric error sits inside the shipped
 /// 12 px budget at every pose but the Himalayan cliffs, and the memory split is measured
 /// (`testing::terrain::test_mesh_density::f2_where_the_bytes_go_at_the_real_poses`):
-/// 103 MiB of imagery against a 480 MiB share, 32 MiB of heights, 1.6 MB of vertex
-/// buffers at the heaviest pose.
+/// 103 MiB of imagery against its share, 32 MiB of heights (48 MiB since §9 F2b), 1.6 MB
+/// of vertex buffers at the heaviest pose.
 ///
 /// **Android: `false`, and this is a deliberate hole, not an oversight.** §9 binds the
 /// flip to an S23 soak with terrain on against terrain off, and that soak **has not been
@@ -90,6 +92,39 @@ pub enum OceanPolicy {
 /// live viewer already exposes `nativeSetTerrainEnabled`, which goes through
 /// `ViewerCommand::TerrainSetEnabled` and rebuilds the height manager in place.
 pub const TERRAIN_ENABLED_BY_DEFAULT: bool = !cfg!(target_os = "android");
+
+/// The height cache's declared slice of [`TileEngineConfig::tile_cache_budget_bytes`],
+/// **48 MiB on desktop and 32 MiB on Android** — `docs/terrain-plan.md` §9 F2b.
+///
+/// # Why the number moved, and why not for the reason §9 F2 gave
+///
+/// F2 reported that three of the ten real poses want more distinct height sources than the
+/// 32 MiB slice holds — `alps_inn_valley` 312 against 254 — and called the consequence
+/// churn. `terrain::test_height_residency` went to measure that churn against the real
+/// manager, a real `TileFetcher` and a real socket, and **did not find it**: F2's 312 is
+/// `collect_sources` over the *whole quadtree*, and production
+/// (`TileSystem::request_height_chain`) only ever asks for the visible set and its ancestor
+/// chains. That set is **220** tiles at the worst pose, at either shipped imagery style,
+/// and it fits in 254 with nothing evicted and nothing fetched twice.
+///
+/// What the same measurement did show is how little margin 220 of 254 leaves — 87 % of the
+/// slice at 103 visible tiles — and the terrain LOD refinement of §9 F5 raises exactly that
+/// tile count. So the slice is raised to give F5 somewhere to land, on a measured working
+/// set rather than on F2's over-count, and the header above the number is the honest one:
+/// it is headroom, not a fix.
+///
+/// # Android keeps 32 MiB
+///
+/// Not because 32 is right there — nobody knows — but because every Android memory decision
+/// in this file is held to the soak of §9 F3, which has not been run. Android also has
+/// terrain off by default ([`TERRAIN_ENABLED_BY_DEFAULT`]), so while that stands this
+/// constant does not describe any memory the device actually allocates; the split exists so
+/// that flipping the one constant does not silently flip this one too.
+pub const HEIGHT_CACHE_BUDGET_BYTES: usize = if cfg!(target_os = "android") {
+    32 * 1024 * 1024
+} else {
+    48 * 1024 * 1024
+};
 
 /// Terrain height data — `docs/terrain-plan.md` §4 A3, §5, §6 and §7.
 ///
@@ -249,10 +284,10 @@ impl Default for TerrainConfig {
             max_level: TERRARIUM_MAX_LEVEL,
             exaggeration: 1.0,
             ocean: OceanPolicy::ClampToZero,
-            // 32 MiB — `docs/terrain-plan.md` §5 B4. At HEIGHT_TILE_BYTES that is 254
-            // resident height tiles, enough for the visible set plus its ancestor
-            // chains at any camera this engine flies.
-            height_cache_budget_bytes: 32 * 1024 * 1024,
+            // §5 B4's slice, resized by §9 F2b's measurement of the working set it has to
+            // hold: 48 MiB on desktop (381 entries against a measured worst case of 220),
+            // 32 MiB on Android. See `HEIGHT_CACHE_BUDGET_BYTES`.
+            height_cache_budget_bytes: HEIGHT_CACHE_BUDGET_BYTES,
             occlusion: crate::globe::quadtree::TerrainOcclusionConfig::default(),
             // E1. Cesium's own `maximumScreenSpaceError` default, kept until the cost
             // table in `docs/terrain-plan.md` §8 gives a reason to move it.
@@ -555,17 +590,27 @@ mod tests {
         );
     }
 
-    /// The "256 resident = 32 MB" line of §5 B4, with the mips counted: 254.
+    /// §5 B4's "resident = budget / tile size" line, at the budget §9 F2b resized it to.
     ///
-    /// The literal below was `132_096` — the figure from **before** E1 added its two-byte
-    /// error term — and had been failing since, which nothing noticed because this crate's
-    /// own unit tests are not in the `culling::` gate. `HEIGHT_TILE_BYTES`'s doc comment
-    /// already quotes the right number (and the right derived count, which does not move),
-    /// and so does `terrain::test_terrain_lod::the_error_term_costs_two_bytes_a_tile`.
+    /// The tile-size literal was `132_096` — the figure from **before** E1 added its
+    /// two-byte error term — and had been failing since, which nothing noticed because this
+    /// crate's own unit tests are not in the `culling::` gate. `HEIGHT_TILE_BYTES`'s doc
+    /// comment already quotes the right number, and so does
+    /// `terrain::test_terrain_lod::the_error_term_costs_two_bytes_a_tile`.
+    ///
+    /// The entry count is platform-split now, because the budget is: F2b measured the
+    /// desktop working set and Android's is still held to the unrun soak of §9 F3.
     #[test]
-    fn the_default_height_budget_lands_on_254_tiles() {
+    fn the_default_height_budget_lands_on_the_measured_entry_count() {
         let terrain = TerrainConfig::default();
         assert_eq!(HEIGHT_TILE_BYTES, 132_098);
+        assert_eq!(
+            terrain.height_cache_budget_bytes, HEIGHT_CACHE_BUDGET_BYTES,
+            "the default must come from the one constant that states the platform split"
+        );
+        #[cfg(not(target_os = "android"))]
+        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 381);
+        #[cfg(target_os = "android")]
         assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 254);
     }
 
