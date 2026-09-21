@@ -7,6 +7,7 @@ pub mod quadtree;
 pub mod slab;
 pub mod surface;
 pub mod terrain_occlusion;
+pub mod terrain_relief;
 pub mod tile_id;
 
 pub use any::AnyQuadtree;
@@ -23,8 +24,9 @@ pub use quadtree::{
 };
 pub use surface::{Ellipsoid, SurfaceModel, VertexSample};
 pub use terrain_occlusion::{
-    OccluderStep, TerrainHorizon, TerrainOcclusionConfig, AZIMUTH_SECTORS, RANGE_RINGS,
+    GroundFrame, OccluderStep, TerrainHorizon, TerrainOcclusionConfig, AZIMUTH_SECTORS, RANGE_RINGS,
 };
+pub use terrain_relief::ReliefProbe;
 pub use tile_id::{
     tile_bounds, tile_bounds_unstretched, web_mercator_y_to_lat_f64, TileBounds, TileId, MAX_ZOOM,
 };
