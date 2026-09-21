@@ -115,14 +115,20 @@ pub fn init_logging() -> PathBuf {
         default_hook(info);
     }));
 
-    // 2. Configure env_logger to write to DualWriter (stderr + cesium.log)
+    // 2. Install Fatal Native Signal Handlers (SIGSEGV, SIGABRT, etc.)
+    #[cfg(unix)]
+    unsafe {
+        install_signal_handlers();
+    }
+
+    // 3. Configure env_logger to write to DualWriter (stderr + cesium.log)
     let dual_writer = DualWriter {
         file: Mutex::new(file),
     };
 
     let mut builder = env_logger::Builder::from_default_env();
     builder
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
         .filter_module("wgpu", log::LevelFilter::Warn)
         .filter_module("wgpu_core", log::LevelFilter::Warn)
         .filter_module("wgpu_hal", log::LevelFilter::Warn)
@@ -140,6 +146,67 @@ pub fn init_logging() -> PathBuf {
 
     log::info!("Logger initialized. Logging to stderr and {}", log_path.display());
     log_path
+}
+
+#[cfg(unix)]
+unsafe fn install_signal_handlers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+    if HANDLER_INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    extern "C" fn handle_signal(sig: libc::c_int) {
+        let sig_name = match sig {
+            libc::SIGSEGV => "SIGSEGV (Segmentation Fault)",
+            libc::SIGABRT => "SIGABRT (Abort / Driver Assertion)",
+            libc::SIGBUS => "SIGBUS (Bus Error)",
+            libc::SIGILL => "SIGILL (Illegal Instruction)",
+            libc::SIGFPE => "SIGFPE (Floating Point Exception)",
+            libc::SIGTERM => "SIGTERM (Termination Signal)",
+            _ => "Unknown Signal",
+        };
+
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let crash_report = format!(
+            "\n\
+             !!!!!!!!!!!!!!!!!!!!!!!! FATAL NATIVE SIGNAL CRASH !!!!!!!!!!!!!!!!!!!!!!!!\n\
+             Signal:    {} ({})\n\
+             Time:      {}\n\
+             -------------------------------- BACKTRACE --------------------------------\n\
+             {}\n\
+             !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",
+            sig_name,
+            sig,
+            humantime_now(),
+            backtrace
+        );
+
+        eprintln!("{}", crash_report);
+
+        if let Ok(mut f) = OpenOptions::new().append(true).open(LOG_FILE_NAME) {
+            let _ = f.write_all(crash_report.as_bytes());
+            let _ = f.flush();
+        }
+
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+
+    let signals = [
+        libc::SIGSEGV,
+        libc::SIGABRT,
+        libc::SIGBUS,
+        libc::SIGILL,
+        libc::SIGFPE,
+        libc::SIGTERM,
+    ];
+
+    for &sig in &signals {
+        libc::signal(sig, handle_signal as *const () as libc::sighandler_t);
+    }
 }
 
 fn humantime_now() -> String {

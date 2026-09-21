@@ -104,6 +104,7 @@ pub struct WgpuState<'a> {
     pub label_manager: crate::label::LabelManager,
     pub last_timings: FrameTimings,
     pub last_subsystem_timings: SubsystemTimings,
+    pub frame_count: u64,
 }
 
 fn create_depth_texture(
@@ -409,6 +410,7 @@ impl<'a> WgpuState<'a> {
             label_manager: crate::label::LabelManager::new(),
             last_timings: FrameTimings::default(),
             last_subsystem_timings: SubsystemTimings::default(),
+            frame_count: 0,
         }
     }
 
@@ -1306,6 +1308,10 @@ impl<'a> WgpuState<'a> {
         capture_memory: bool,
         ui_closure: F,
     ) -> Result<Option<Vec<u8>>, wgpu::SurfaceError> {
+        let frame_start = Instant::now();
+        let frame_idx = self.frame_count;
+        self.frame_count += 1;
+
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let main_view_proj =
             self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
@@ -1381,6 +1387,8 @@ impl<'a> WgpuState<'a> {
             submit_present_start.elapsed().as_secs_f64() * 1_000_000.0;
         drop(_submit_present_span);
 
+        self.log_frame(frame_idx, frame_start.elapsed(), visible_tiles.len());
+
         Ok(captured_pixels)
     }
 
@@ -1390,6 +1398,10 @@ impl<'a> WgpuState<'a> {
         screenshot_out: Option<&str>,
         capture_memory: bool,
     ) -> Result<Option<Vec<u8>>, wgpu::SurfaceError> {
+        let frame_start = Instant::now();
+        let frame_idx = self.frame_count;
+        self.frame_count += 1;
+
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let main_view_proj =
             self.camera.get_projection_matrix(aspect_ratio) * self.camera.get_view_matrix();
@@ -1450,6 +1462,53 @@ impl<'a> WgpuState<'a> {
             submit_present_start.elapsed().as_secs_f64() * 1_000_000.0;
         drop(_submit_present_span);
 
+        self.log_frame(frame_idx, frame_start.elapsed(), visible_tiles.len());
+
         Ok(captured_pixels)
+    }
+
+    fn log_frame(&self, frame_idx: u64, frame_total_time: std::time::Duration, visible_tiles_len: usize) {
+        let fps = if frame_total_time.as_secs_f64() > 0.0 {
+            1.0 / frame_total_time.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        let (cam_dvec, _) = self.camera.global_transform_f64();
+        let (cam_lon, cam_lat) = crate::globe::geometry::ecef_to_lon_lat_f64(cam_dvec);
+        let cam_alt_m = self.camera.altitude() * 1_000_000.0;
+
+        log::info!(
+            "[FRAME {:06}] dt={:.2}ms ({:.1} FPS) | update={:.2}ms (quad={:.2}ms, horiz={:.2}ms, stream={:.2}ms, disp={:.2}ms), draw={:.2}ms (terrain={:.2}ms, sky={:.2}ms, ext={:.2}ms), egui={:.2}ms, present={:.2}ms | cam: mode={:?} lat={:.4}° lon={:.4}° alt={:.1}m agl={:.1}m | tiles: vis={} rend={} miss={} reb={} | cache: mesh={}/{} tex={}/{} hgt={}/{}",
+            frame_idx,
+            frame_total_time.as_secs_f64() * 1000.0,
+            fps,
+            self.last_timings.update_logic_us / 1000.0,
+            self.last_subsystem_timings.quadtree_us / 1000.0,
+            self.last_subsystem_timings.terrain_horizon_us / 1000.0,
+            self.last_subsystem_timings.tile_streaming_us / 1000.0,
+            self.last_subsystem_timings.display_state_us / 1000.0,
+            self.last_timings.render_scene_us / 1000.0,
+            self.last_subsystem_timings.terrain_draw_us / 1000.0,
+            self.last_subsystem_timings.sky_us / 1000.0,
+            self.last_subsystem_timings.extension_render_us / 1000.0,
+            self.last_subsystem_timings.egui_us / 1000.0,
+            self.last_subsystem_timings.submit_present_us / 1000.0,
+            self.camera.mode,
+            cam_lat,
+            cam_lon,
+            cam_alt_m,
+            self.camera.altitude_agl() * 1_000_000.0,
+            self.last_requested_tiles_count,
+            visible_tiles_len,
+            self.last_missing_tiles_count,
+            self.last_mesh_rebuilds,
+            self.tile_cache.len(),
+            self.tile_cache.cap().get(),
+            self.tile_system.texture_manager.cache.len(),
+            self.tile_system.config.max_cache_size,
+            self.tile_system.height_manager.as_ref().map(|h| h.residency().0).unwrap_or(0),
+            self.tile_system.height_manager.as_ref().map(|h| h.residency().1).unwrap_or(0),
+        );
     }
 }

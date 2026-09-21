@@ -63,6 +63,7 @@ pub struct TileFetcher {
     runtime: Option<Runtime>,
     queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
     notify: Arc<Notify>,
+    pub label: &'static str,
 }
 
 impl Drop for TileFetcher {
@@ -78,6 +79,7 @@ impl TileFetcher {
         tx: tokio::sync::mpsc::UnboundedSender<(TileId, Result<TileImage, String>)>,
         base_url: String,
         offline_mode: bool,
+        label: &'static str,
     ) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -105,6 +107,7 @@ impl TileFetcher {
                 worker_tx,
                 base_url,
                 offline_mode,
+                label,
             )
             .await;
         });
@@ -113,12 +116,14 @@ impl TileFetcher {
             runtime: Some(runtime),
             queue,
             notify,
+            label,
         }
     }
 
     pub fn request_tile(&self, id: TileId, priority: TilePriority) {
         let mut q = self.queue.lock().unwrap();
         if !q.1.contains(&id) {
+            log::info!("[FETCH REQ] kind={} id=z{}/x{}/y{} prio={:?}", self.label, id.z, id.x, id.y, priority);
             q.1.insert(id);
             q.0.push(PrioritizedRequest { priority, id });
             self.notify.notify_one();
@@ -136,6 +141,7 @@ impl TileFetcher {
         tx: mpsc::UnboundedSender<(TileId, Result<TileImage, String>)>,
         base_url: String,
         offline_mode: bool,
+        label: &'static str,
     ) {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
 
@@ -153,12 +159,14 @@ impl TileFetcher {
                 let queue_clone = queue.clone();
                 let id = req.id;
 
+                log::debug!("[FETCH POP] kind={} id=z{}/x{}/y{} prio={:?}", label, id.z, id.x, id.y, req.priority);
+
                 let url_clone = base_url.clone();
                 tokio::spawn(async move {
                     let res = if offline_mode {
                         Ok((256, 256, vec![255; 256 * 256 * 4]))
                     } else {
-                        Self::fetch_and_decode(client_clone, id, url_clone).await
+                        Self::fetch_and_decode(client_clone, id, url_clone, label).await
                     };
                     let _ = tx_clone.send((id, res));
                     {
@@ -177,26 +185,46 @@ impl TileFetcher {
         client: reqwest::Client,
         id: TileId,
         base_url: String,
+        label: &'static str,
     ) -> Result<TileImage, String> {
+        let start_time = std::time::Instant::now();
         let url = base_url
             .replace("{z}", &id.z.to_string())
             .replace("{x}", &id.x.to_string())
             .replace("{y}", &id.y.to_string());
 
+        log::debug!("[FETCH HTTP_START] kind={} id=z{}/x{}/y{} url={}", label, id.z, id.x, id.y, url);
+
         let response = client
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| {
+                let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                log::warn!("[FETCH ERR_NET] kind={} id=z{}/x{}/y{} elapsed={:.1}ms err={}", label, id.z, id.x, id.y, elapsed, e);
+                format!("Request failed: {}", e)
+            })?;
 
-        if !response.status().is_success() {
-            return Err(format!("HTTP error: {}", response.status()));
+        let status = response.status();
+        let http_time = start_time.elapsed().as_secs_f64() * 1000.0;
+
+        if !status.is_success() {
+            let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+            log::warn!("[FETCH ERR_HTTP] kind={} id=z{}/x{}/y{} status={} elapsed={:.1}ms", label, id.z, id.x, id.y, status, elapsed);
+            return Err(format!("HTTP error: {}", status));
         }
 
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| format!("Failed to read bytes: {}", e))?;
+            .map_err(|e| {
+                let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                log::warn!("[FETCH ERR_READ] kind={} id=z{}/x{}/y{} elapsed={:.1}ms err={}", label, id.z, id.x, id.y, elapsed, e);
+                format!("Failed to read bytes: {}", e)
+            })?;
+
+        let bytes_len = bytes.len();
+        let decode_start = std::time::Instant::now();
 
         let result = tokio::task::spawn_blocking(move || {
             image::load_from_memory(&bytes)
@@ -207,7 +235,29 @@ impl TileFetcher {
                 .map_err(|e| format!("Image decode error: {}", e))
         })
         .await
-        .map_err(|e| format!("Task panic: {}", e))?;
+        .map_err(|e| {
+            let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+            log::error!("[FETCH ERR_PANIC] kind={} id=z{}/x{}/y{} elapsed={:.1}ms err={}", label, id.z, id.x, id.y, elapsed, e);
+            format!("Task panic: {}", e)
+        })?;
+
+        let decode_time = decode_start.elapsed().as_secs_f64() * 1000.0;
+        let total_time = start_time.elapsed().as_secs_f64() * 1000.0;
+
+        match &result {
+            Ok((w, h, _)) => {
+                log::info!(
+                    "[FETCH OK] kind={} id=z{}/x{}/y{} bytes={} net={:.1}ms decode={:.1}ms total={:.1}ms dims={}x{}",
+                    label, id.z, id.x, id.y, bytes_len, http_time, decode_time, total_time, w, h
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "[FETCH ERR_DECODE] kind={} id=z{}/x{}/y{} elapsed={:.1}ms err={}",
+                    label, id.z, id.x, id.y, total_time, e
+                );
+            }
+        }
 
         result
     }

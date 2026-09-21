@@ -57,15 +57,25 @@ impl MeshWorkerPool {
 
         self.requested.insert(id);
         let sender = self.sender.clone();
+        let mode_str = match &build {
+            MeshBuild::Flat => "Flat",
+            MeshBuild::Terrain(_) => "Terrain",
+        };
+        log::debug!("[MESH REQ] id=z{}/x{}/y{} mode={}", id.z, id.x, id.y, mode_str);
 
         // Use rayon for CPU-bound work — no async runtime needed.
         rayon::spawn(move || {
+            let start = std::time::Instant::now();
             let mesh = match build {
                 MeshBuild::Flat => TileMesh::generate_on::<Ellipsoid>(&id, segments, &()),
                 MeshBuild::Terrain(patch) => {
                     TileMesh::generate_on::<Heightfield>(&id, segments, &patch)
                 }
             };
+            log::debug!(
+                "[MESH BUILT] id=z{}/x{}/y{} verts={} indices={} elapsed={:.2}ms",
+                id.z, id.x, id.y, mesh.vertices.len(), mesh.indices.len(), start.elapsed().as_secs_f64() * 1000.0
+            );
             let _ = sender.send((id, mesh));
         });
     }

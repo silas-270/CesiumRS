@@ -308,6 +308,10 @@ impl Camera {
             };
 
             if dist < dynamic_min_distance {
+                log::info!(
+                    "[CAMERA CLAMP TRACKING] dist={:.7} < floor={:.7} -> clamped to surface",
+                    dist, dynamic_min_distance
+                );
                 let new_global_pos_dvec = dir * dynamic_min_distance;
                 let local_pos_dvec =
                     self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
@@ -336,6 +340,10 @@ impl Camera {
         };
 
         if dist < dynamic_min_distance {
+            log::info!(
+                "[CAMERA CLAMP FREE] dist={:.7} < floor={:.7} -> clamped to surface",
+                dist, dynamic_min_distance
+            );
             let new_global_pos_dvec = dir * dynamic_min_distance;
             let local_pos_dvec =
                 self.anchor_ori.inverse() * (new_global_pos_dvec - self.anchor_pos);
@@ -463,6 +471,7 @@ impl Camera {
             };
             self.enforce_bounds();
             self.look_at_plane();
+            log::info!("[CAMERA ZOOM TRACKING] delta={:.2} -> new_dist={:.1}m", delta, self.local_pos.length() * 1_000_000.0);
             return;
         }
 
@@ -474,6 +483,7 @@ impl Camera {
 
         let forward = -Vec3::Z; // Translate local expects local offset.
         self.translate_local(forward * move_distance);
+        log::info!("[CAMERA ZOOM FREE] delta={:.2} -> new_alt={:.1}m", delta, self.altitude() * 1_000_000.0);
     }
     
     pub fn cancel_all_inertia(&mut self) {
@@ -547,9 +557,18 @@ impl Camera {
 
         self.enforce_bounds();
         self.look_at_plane();
+
+        log::info!(
+            "[CAMERA ORBIT] dx={:.1} dy={:.1} | cur(pitch={:.1}°, yaw={:.1}°) -> new(pitch={:.1}°, yaw={:.1}°) | local_pos={:?}",
+            dx, dy,
+            cur_pitch.to_degrees(), cur_yaw.to_degrees(),
+            target_pitch.to_degrees(), new_yaw.to_degrees(),
+            self.local_pos
+        );
     }
 
     pub fn look_around(&mut self, dx: f32, dy: f32) {
+        log::info!("[CAMERA LOOK_AROUND] dx={:.1} dy={:.1}", dx, dy);
         let yaw = dx * self.pitch_sensitivity * 0.1;
         let pitch = dy * self.pitch_sensitivity * 0.1;
 

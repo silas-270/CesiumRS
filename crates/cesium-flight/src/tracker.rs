@@ -875,6 +875,14 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         if let Some(state) = self.get_plane_state_at(current_progress) {
+            let (lon, lat) = cesium_engine::globe::geometry::ecef_to_lon_lat_f64(state.position);
+            log::info!(
+                "[FLIGHT MOVE] prog={:.3}% lat={:.4}° lon={:.4}° mode={:?}",
+                current_progress * 100.0,
+                lat,
+                lon,
+                self.view_mode
+            );
             match self.view_mode {
                 CameraMode::Tracking => {
                     let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.update.camera_mode.tracking");

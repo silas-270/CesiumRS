@@ -22,6 +22,7 @@ mod tests {
             tx,
             STANDARD_IMAGERY_URL.to_string(),
             false,
+            "Test",
         );
 
         let valid_tile = TileId { z: 0, x: 0, y: 0 };
@@ -42,6 +43,7 @@ mod tests {
             tx,
             STANDARD_IMAGERY_URL.to_string(),
             false,
+            "Test",
         );
 
         // Invalid tile (Z=20 out of bounds or x/y out of bounds for OSM, which causes 404/400)

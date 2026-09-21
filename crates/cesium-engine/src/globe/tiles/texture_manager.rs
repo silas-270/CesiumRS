@@ -146,7 +146,7 @@ impl TileTextureManager {
             label: Some("Fallback Tile Bind Group"),
         });
 
-        let fetcher = TileFetcher::new(tx, config.base_imagery_url.clone(), config.offline_mode);
+        let fetcher = TileFetcher::new(tx, config.base_imagery_url.clone(), config.offline_mode, "Imagery");
         let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
 
         Self {
@@ -254,12 +254,17 @@ impl TileTextureManager {
                     label: Some(&format!("Tile Bind Group {:?}", id)),
                 });
 
+                log::info!(
+                    "[TEXTURE UPLOAD] id=z{}/x{}/y{} dims={}x{} size={}B",
+                    id.z, id.x, id.y, width, height, width * height * 4
+                );
+
                 self.cache.mark_ready(id, (texture, bind_group));
                 self.apply_budget(width as usize * height as usize * 4);
             }
             Err(e) => {
-                log::error!(
-                    "Failed to fetch tile z:{} x:{} y:{}: {}",
+                log::warn!(
+                    "[TEXTURE FAILED] z{}/x{}/y{}: {}",
                     id.z,
                     id.x,
                     id.y,
@@ -353,7 +358,7 @@ impl TileTextureManager {
         self.texture_size = ObservedTextureSize::default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.rx = rx;
-        self.fetcher = TileFetcher::new(tx, url, offline_mode);
+        self.fetcher = TileFetcher::new(tx, url, offline_mode, "Imagery");
     }
 
     /// Updates the imagery cache byte budget (e.g. when terrain is toggled) and
