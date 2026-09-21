@@ -118,7 +118,7 @@ impl TileFetcher {
     }
 
     pub fn is_loading_complete(&self) -> bool {
-        self.queue.lock().unwrap().0.is_empty()
+        self.queue.lock().unwrap().1.is_empty()
     }
 
     async fn worker_loop(
@@ -129,23 +129,20 @@ impl TileFetcher {
         base_url: String,
         offline_mode: bool,
     ) {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
 
         loop {
             // Get the next request or wait
             let request = {
                 let mut q = queue.lock().unwrap();
-                let req = q.0.pop();
-                if let Some(r) = &req {
-                    q.1.remove(&r.id);
-                }
-                req
+                q.0.pop()
             };
 
             if let Some(req) = request {
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let client_clone = client.clone();
                 let tx_clone = tx.clone();
+                let queue_clone = queue.clone();
                 let id = req.id;
 
                 let url_clone = base_url.clone();
@@ -156,6 +153,10 @@ impl TileFetcher {
                         Self::fetch_and_decode(client_clone, id, url_clone).await
                     };
                     let _ = tx_clone.send((id, res));
+                    {
+                        let mut q = queue_clone.lock().unwrap();
+                        q.1.remove(&id);
+                    }
                     drop(permit);
                 });
             } else {
