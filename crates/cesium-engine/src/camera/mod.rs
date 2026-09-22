@@ -1,5 +1,7 @@
 #![allow(clippy::module_inception)]
 pub mod camera;
+#[cfg(not(target_os = "android"))]
+pub mod trace;
 #[cfg(feature = "debug_panel")]
 pub mod god_camera;
 

@@ -105,6 +105,8 @@ pub struct WgpuState<'a> {
     pub last_timings: FrameTimings,
     pub last_subsystem_timings: SubsystemTimings,
     pub frame_count: u64,
+    #[cfg(not(target_os = "android"))]
+    pub camera_trace: Option<crate::camera::trace::CameraTrace>,
 }
 
 /// Finished tile meshes turned into GPU buffers per frame, at most. See
@@ -415,6 +417,8 @@ impl<'a> WgpuState<'a> {
             last_timings: FrameTimings::default(),
             last_subsystem_timings: SubsystemTimings::default(),
             frame_count: 0,
+            #[cfg(not(target_os = "android"))]
+            camera_trace: None,
         }
     }
 
@@ -597,10 +601,19 @@ impl<'a> WgpuState<'a> {
 
         // The one place ground collision is decided: after the extension has put the
         // camera where it wants it, against the ground under each position tested.
+        #[cfg(not(target_os = "android"))]
+        if let Some(trace) = self.camera_trace.as_mut() {
+            trace.before_collision(&self.camera);
+        }
         if self.tile_system.has_terrain() {
             let tiles = &self.tile_system;
             self.camera
                 .enforce_bounds_with(&|p| tiles.ground_height_at(p));
+        }
+        #[cfg(not(target_os = "android"))]
+        if let Some(trace) = self.camera_trace.as_mut() {
+            let tiles = &self.tile_system;
+            trace.record(&self.camera, &|p| tiles.ground_height_at(p));
         }
         let (moved_pos, _) = self.camera.global_transform_f64();
         let ground_height = self
