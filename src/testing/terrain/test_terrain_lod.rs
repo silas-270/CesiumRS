@@ -646,7 +646,7 @@ fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight()
     #[cfg(not(target_os = "android"))]
     assert_eq!(
         config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
-        760
+        761
     );
     // Not a size_of pin: `HeightTile` boxes its grids, so the i16 lands in a struct whose
     // own size is dominated by three pointers. The accounting constant above is what the

@@ -130,6 +130,19 @@ impl<'a> ApplicationHandler for BenchmarkApp<'a> {
         self.inner.window_event(event_loop, window_id, event);
     }
 
+    // The GPU state has to go while the event loop (and with it the Wayland
+
+    // connection its EGL surface references) still exists; dropped afterwards it
+
+    // corrupted the heap ("corrupted size vs. prev_size") and hung on exit.
+
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+
+        self.inner.exiting(event_loop);
+
+    }
+
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Exit after 3600 frames
         if self.frame_count >= 3600 {

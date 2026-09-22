@@ -295,6 +295,7 @@ mod inner {
 
         if let Some(cfg) = config {
             run(Some(cfg));
+            log::info!("[SHUTDOWN] main returning");
         } else {
             let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
 

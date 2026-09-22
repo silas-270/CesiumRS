@@ -183,6 +183,12 @@ unsafe fn install_signal_handlers() {
     }
 
     extern "C" fn handle_signal(sig: libc::c_int) {
+        // The report below allocates and takes locks, which a crash inside malloc (heap
+        // corruption aborts from there) can leave held: the handler then deadlocks and the
+        // process hangs forever instead of dying. The alarm guarantees it dies.
+        unsafe {
+            libc::alarm(5);
+        }
         let sig_name = match sig {
             libc::SIGSEGV => "SIGSEGV (Segmentation Fault)",
             libc::SIGABRT => "SIGABRT (Abort / Driver Assertion)",

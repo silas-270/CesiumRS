@@ -50,6 +50,9 @@ pub fn run(config: Option<testing::VerifyConfig>) {
         } else if cfg.collide {
             let mut app = testing::rendering::collide::CollideApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
+            log::info!("[SHUTDOWN] event loop returned");
+            drop(app);
+            log::info!("[SHUTDOWN] app dropped");
         } else if cfg.revisit {
             let mut app = testing::rendering::revisit::RevisitApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
