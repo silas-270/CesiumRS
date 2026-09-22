@@ -1,5 +1,6 @@
 use crate::globe::quadtree::TileId;
 use lru::LruCache;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
@@ -9,25 +10,35 @@ pub enum TileState<T> {
     Failed(Instant),
 }
 
+/// Tile data plus the bookkeeping of what is still coming.
+///
+/// Two stores, on purpose:
+///
+/// - **`ready`**, an LRU of loaded data with a *soft* capacity. Eviction only takes
+///   entries not used in this or the previous frame ([`Self::begin_frame`]); when every
+///   entry is in use the cache grows past its capacity instead of evicting something the
+///   current view needs, and shrinks back once the view moves on.
+/// - **`placeholders`**, `Fetching` / `Failed` markers, outside the LRU. They used to be
+///   LRU entries themselves, so a view wanting more tiles than the capacity evicted its
+///   own placeholders, re-requested them the next frame and evicted others — 78 837
+///   placeholder evictions in a 1 620-frame manual run near the ground.
 pub struct TileCacheManager<T> {
-    cache: LruCache<TileId, TileState<T>>,
+    ready: LruCache<TileId, (TileState<T>, u64)>,
+    placeholders: HashMap<TileId, TileState<T>>,
+    capacity: usize,
+    frame: u64,
     negative_cache_duration: Duration,
     /// Tile-trace kind (`tex`, `hgt`); see [`crate::globe::tiles::trace`].
     label: &'static str,
 }
 
-fn state_name<T>(s: &TileState<T>) -> &'static str {
-    match s {
-        TileState::Fetching => "fetching",
-        TileState::Ready(_) => "ready",
-        TileState::Failed(_) => "failed",
-    }
-}
-
 impl<T> TileCacheManager<T> {
     pub fn new(capacity: NonZeroUsize, negative_cache_duration: Duration) -> Self {
         Self {
-            cache: LruCache::new(capacity),
+            ready: LruCache::unbounded(),
+            placeholders: HashMap::new(),
+            capacity: capacity.get(),
+            frame: 0,
             negative_cache_duration,
             label: "cache",
         }
@@ -38,98 +49,120 @@ impl<T> TileCacheManager<T> {
         self
     }
 
-    fn insert(&mut self, id: TileId, state: TileState<T>, event: &str) {
-        crate::tile_event!(self.label, event, Some(id));
-        if let Some((old, old_state)) = self.cache.push(id, state) {
-            if old != id {
-                crate::tile_event!(self.label, "EVICT", Some(old), "{}", state_name(&old_state));
+    /// Starts a new frame: entries used from now on, or in the frame that just ended,
+    /// are protected from eviction.
+    pub fn begin_frame(&mut self) {
+        self.frame += 1;
+        self.trim();
+    }
+
+    /// Evicts least-recently-used entries until back at capacity, stopping at the first
+    /// one that is still in use.
+    fn trim(&mut self) {
+        while self.ready.len() > self.capacity {
+            match self.ready.peek_lru() {
+                Some((_, (_, used))) if self.frame > 0 && *used + 1 >= self.frame => break,
+                Some(_) => {
+                    if let Some((old, _)) = self.ready.pop_lru() {
+                        crate::tile_event!(self.label, "EVICT", Some(old), "ready");
+                    }
+                }
+                None => break,
             }
         }
     }
 
-    pub fn get_state(&mut self, id: &TileId) -> Option<&TileState<T>> {
-        let is_expired_failure = if let Some(state) = self.cache.peek(id) {
-            if let TileState::Failed(timestamp) = state {
-                timestamp.elapsed() >= self.negative_cache_duration
-            } else {
-                false
-            }
-        } else {
-            return None;
-        };
+    fn is_expired(&self, state: &TileState<T>) -> bool {
+        matches!(state, TileState::Failed(t) if t.elapsed() >= self.negative_cache_duration)
+    }
 
-        if is_expired_failure {
-            self.cache.pop(id);
+    /// The state of `id`, marking it as used this frame (and most recently used).
+    pub fn get_state(&mut self, id: &TileId) -> Option<&TileState<T>> {
+        let frame = self.frame;
+        if self.ready.contains(id) {
+            return self.ready.get_mut(id).map(|entry| {
+                entry.1 = frame;
+                &entry.0
+            });
+        }
+        if self.placeholders.get(id).is_some_and(|s| self.is_expired(s)) {
+            self.placeholders.remove(id);
             crate::tile_event!(self.label, "EXPIRE", Some(*id));
             return None;
         }
-
-        // Now we know it's not an expired failure and it exists. Update LRU and return.
-        self.cache.get(id)
+        self.placeholders.get(id)
     }
 
-    /// Like `get_state` but does NOT promote the entry in the LRU order.
+    /// Like `get_state` but does NOT promote the entry or mark it used.
     /// Use this for readiness checks / traversal so that the act of checking
-    /// does not silently evict other entries.
+    /// does not keep anything alive.
     pub fn peek_state(&self, id: &TileId) -> Option<&TileState<T>> {
-        let state = self.cache.peek(id)?;
-        if let TileState::Failed(timestamp) = state {
-            if timestamp.elapsed() >= self.negative_cache_duration {
-                return None; // expired — treat as absent (will be cleaned next get_state call)
-            }
+        if let Some((state, _)) = self.ready.peek(id) {
+            return Some(state);
+        }
+        let state = self.placeholders.get(id)?;
+        if self.is_expired(state) {
+            return None; // expired — treat as absent (cleaned by the next get_state)
         }
         Some(state)
     }
 
     pub fn mark_fetching(&mut self, id: TileId) {
-        self.insert(id, TileState::Fetching, "REQ");
+        crate::tile_event!(self.label, "REQ", Some(id));
+        self.placeholders.insert(id, TileState::Fetching);
     }
 
     pub fn mark_ready(&mut self, id: TileId, data: T) {
-        self.insert(id, TileState::Ready(data), "READY");
+        crate::tile_event!(self.label, "READY", Some(id));
+        self.placeholders.remove(&id);
+        self.ready.put(id, (TileState::Ready(data), self.frame));
+        self.trim();
     }
 
     pub fn mark_failed(&mut self, id: TileId) {
-        self.insert(id, TileState::Failed(Instant::now()), "FAIL");
+        crate::tile_event!(self.label, "FAIL", Some(id));
+        if self.ready.pop(&id).is_some() {
+            crate::tile_event!(self.label, "EVICT", Some(id), "ready");
+        }
+        let now = Instant::now();
+        let ttl = self.negative_cache_duration;
+        self.placeholders
+            .retain(|_, s| !matches!(s, TileState::Failed(t) if now.duration_since(*t) >= ttl));
+        self.placeholders.insert(id, TileState::Failed(now));
     }
 
     /// Drops `id`'s placeholder if it is still `Fetching`, so a later request goes out
     /// again. The counterpart of a cancelled fetch; a `Ready` or `Failed` entry is kept.
     pub fn forget_fetching(&mut self, id: &TileId) {
-        if matches!(self.cache.peek(id), Some(TileState::Fetching)) {
-            self.cache.pop(id);
+        if matches!(self.placeholders.get(id), Some(TileState::Fetching)) {
+            self.placeholders.remove(id);
             crate::tile_event!(self.label, "CANCEL", Some(*id));
         }
     }
 
     pub fn resize(&mut self, new_capacity: NonZeroUsize) {
         crate::tile_event!(self.label, "RESIZE", None, "{}", new_capacity);
-        while self.cache.len() > new_capacity.get() {
-            if let Some((old, old_state)) = self.cache.pop_lru() {
-                crate::tile_event!(self.label, "EVICT", Some(old), "{}", state_name(&old_state));
-            }
-        }
-        self.cache.resize(new_capacity);
+        self.capacity = new_capacity.get();
+        self.trim();
     }
 
-    /// Entries currently held, `Fetching` and `Failed` placeholders included.
-    /// Read-only and non-promoting; exists so the debug panel can report imagery and
-    /// height residency separately (`docs/terrain-plan.md` §5 B4).
+    /// Tiles with data. Placeholders are not counted.
     pub fn len(&self) -> usize {
-        self.cache.len()
+        self.ready.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.cache.is_empty()
+        self.ready.is_empty()
     }
 
     pub fn has_fetching(&self) -> bool {
-        self.cache
-            .iter()
-            .any(|(_, state)| matches!(state, TileState::Fetching))
+        self.placeholders
+            .values()
+            .any(|state| matches!(state, TileState::Fetching))
     }
 
     pub fn clear(&mut self) {
-        self.cache.clear();
+        self.ready.clear();
+        self.placeholders.clear();
     }
 }

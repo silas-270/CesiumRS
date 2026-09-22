@@ -122,6 +122,10 @@ impl HeightTileManager {
     /// Not an error path. The source stops at z15 and imagery refines to z19/z20, so
     /// for a quarter of the level range this redirect is the *only* thing that happens
     /// (`docs/terrain-plan.md` §2).
+    pub fn max_level(&self) -> u8 {
+        self.max_level
+    }
+
     pub fn source_tile_for(&self, id: TileId) -> TileId {
         clamp_to_level(id, self.max_level)
     }

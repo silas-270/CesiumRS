@@ -56,7 +56,7 @@ pub struct WgpuState<'a> {
     #[allow(dead_code)]
     wireframe_pipeline: wgpu::RenderPipeline,
     depth_texture_view: wgpu::TextureView,
-    tile_cache: LruCache<TileId, TileBuffers>,
+    tile_cache: crate::render::mesh_cache::MeshCache<TileBuffers>,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -326,7 +326,7 @@ impl<'a> WgpuState<'a> {
             mapped_at_creation: false,
         });
 
-        let tile_cache = LruCache::new(tile_system.config.mesh_cache_size);
+        let tile_cache = crate::render::mesh_cache::MeshCache::new(tile_system.config.mesh_cache_size);
 
         #[cfg(feature = "debug_panel")]
         let egui_ctx = egui::Context::default();
@@ -545,7 +545,7 @@ impl<'a> WgpuState<'a> {
                 });
 
             crate::tile_event!("mesh", "READY", Some(id));
-            let evicted = self.tile_cache.push(
+            self.tile_cache.put(
                 id,
                 TileBuffers {
                     vertex_buffer,
@@ -560,11 +560,7 @@ impl<'a> WgpuState<'a> {
                     height_source: mesh.height_source,
                 },
             );
-            if let Some((old, _)) = evicted {
-                if old != id {
-                    crate::tile_event!("mesh", "EVICT", Some(old));
-                }
-            }
+
         }
     }
 
@@ -573,6 +569,7 @@ impl<'a> WgpuState<'a> {
         aspect_ratio: f32,
         _main_view_proj: Mat4,
     ) -> Vec<(TileId, Vec3, f32)> {
+        self.tile_cache.begin_frame();
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
 
         // Phase E3.2 (`docs/terrain-plan.md` §8): one height sample under the camera per
@@ -625,6 +622,10 @@ impl<'a> WgpuState<'a> {
             trace.record(&self.camera, &|p| tiles.ground_height_at(p));
         }
         let (moved_pos, _) = self.camera.global_transform_f64();
+        self.tile_system.want_ground_at(moved_pos);
+        if self.camera.anchor_pos.length_squared() > 1.0 {
+            self.tile_system.want_ground_at(self.camera.anchor_pos);
+        }
         let ground_height = self
             .tile_system
             .ground_height_at(moved_pos)
@@ -1596,7 +1597,7 @@ impl<'a> WgpuState<'a> {
             self.last_missing_tiles_count,
             self.last_mesh_rebuilds,
             self.tile_cache.len(),
-            self.tile_cache.cap().get(),
+            self.tile_cache.cap(),
             self.tile_system.texture_manager.cache.len(),
             self.tile_system.config.max_cache_size,
             self.tile_system.height_manager.as_ref().map(|h| h.residency().0).unwrap_or(0),
