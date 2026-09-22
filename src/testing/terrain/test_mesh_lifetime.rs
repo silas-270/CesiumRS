@@ -437,8 +437,8 @@ fn a_five_level_descent_cannot_rebuild_more_than_the_budget_in_one_frame() {
         .collect();
     let total = drawn.len();
     assert!(
-        total > 4 * MESH_REBUILD_BUDGET_PER_FRAME,
-        "{total} tiles staged"
+        total > MESH_REBUILD_BUDGET_PER_FRAME,
+        "{total} tiles staged: the burst has to need more than one frame's budget"
     );
 
     // The eye: 1 200 m over the deepest tile in the stack, i.e. over the city itself,

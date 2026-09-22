@@ -52,18 +52,18 @@ fn silent_source() -> (std::net::TcpListener, String) {
     (listener, url)
 }
 
-/// The fast-pan case: forty height tiles requested, the camera moves on, and only the
-/// even ones are still wanted. Every queued odd one must be dropped from the fetcher
-/// *and* forgotten by the cache — otherwise it is `Fetching` forever and can never be
-/// requested again — while the ones already on the wire are left to finish.
+/// The fast-pan case: forty height tiles wanted, then the camera moves on and only the
+/// even ones stay on the frame's wish list. Once the grace period has passed, every
+/// queued odd one must be dropped from the fetcher *and* forgotten by the cache —
+/// otherwise it is `Fetching` forever and can never be requested again — while the ones
+/// already on the wire are left to finish, and the most important request goes first.
 #[test]
-fn a_camera_that_moves_on_cancels_its_queued_height_fetches() {
+fn a_camera_that_moves_on_drops_its_queued_height_fetches() {
     use cesium_engine::globe::quadtree::TileId;
     use cesium_engine::globe::terrain::HeightTileManager;
     use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig};
     use cesium_engine::globe::tiles::tile_cache::TileState;
     use cesium_engine::globe::tiles::tile_fetcher::TilePriority;
-    use std::collections::HashSet;
     use std::time::Duration;
 
     let (_listener, url) = silent_source();
@@ -77,40 +77,37 @@ fn a_camera_that_moves_on_cancels_its_queued_height_fetches() {
     };
     let mut heights = HeightTileManager::new(&config);
 
+    // Importance rising with x: the 16 most important (x = 24..40) take the slots.
     let ids: Vec<TileId> = (0..40).map(|x| TileId { z: 10, x, y: 300 }).collect();
-    for id in &ids {
-        heights.request_tile(*id, TilePriority::High);
-    }
+    let all: Vec<(TileId, TilePriority, f32)> =
+        ids.iter().map(|id| (*id, TilePriority::High, id.x as f32)).collect();
+    heights.sync_requests(&all);
 
-    // Let the worker fill its 16 slots.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while heights.fetcher_queued_len() > 24 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(heights.fetcher_queued_len(), 24, "16 in flight, 24 queued");
 
-    let wanted: HashSet<TileId> = ids.iter().copied().filter(|id| id.x % 2 == 0).collect();
-    let cancelled = heights.cancel_unwanted(&wanted);
-    println!("cancelled {cancelled} of 24 queued");
-    assert!(cancelled > 0 && cancelled <= 20);
-    assert_eq!(heights.fetcher_queued_len(), 24 - cancelled);
-
-    let mut forgotten = 0;
+    // Only the even tiles are still wanted. Dropping waits out the grace period.
+    let even: Vec<(TileId, TilePriority, f32)> =
+        all.iter().copied().filter(|(id, _, _)| id.x % 2 == 0).collect();
+    heights.sync_requests(&even);
+    std::thread::sleep(Duration::from_millis(600));
+    heights.sync_requests(&even);
+    // Queued were x = 0..24 (the least important); the 12 odd ones among them go.
+    assert_eq!(heights.fetcher_queued_len(), 12);
     for id in &ids {
-        match heights.cache.peek_state(id) {
-            None => {
-                assert!(id.x % 2 == 1, "a wanted tile was forgotten: {id:?}");
-                forgotten += 1;
-            }
-            Some(TileState::Fetching) => {}
-            _ => panic!("nothing can have arrived from a silent source"),
+        let state = heights.cache.peek_state(id);
+        if id.x < 24 && id.x % 2 == 1 {
+            assert!(state.is_none(), "{id:?} was dropped and must be forgotten");
+        } else {
+            assert!(matches!(state, Some(TileState::Fetching)), "{id:?} must still be coming");
         }
     }
-    assert_eq!(forgotten, cancelled, "every cancelled fetch leaves the cache");
 
-    // A cancelled tile the camera comes back to goes out again.
-    let back = ids.iter().copied().find(|id| heights.cache.peek_state(id).is_none()).unwrap();
-    heights.request_tile(back, TilePriority::High);
+    // A dropped tile the camera comes back to is queued again.
+    let back = TileId { z: 10, x: 1, y: 300 };
+    heights.sync_requests(&[(back, TilePriority::High, 1.0)]);
     assert!(matches!(heights.cache.peek_state(&back), Some(TileState::Fetching)));
-    assert_eq!(heights.fetcher_queued_len(), 24 - cancelled + 1);
 }

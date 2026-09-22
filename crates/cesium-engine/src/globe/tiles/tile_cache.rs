@@ -30,6 +30,8 @@ pub struct TileCacheManager<T> {
     negative_cache_duration: Duration,
     /// Tile-trace kind (`tex`, `hgt`); see [`crate::globe::tiles::trace`].
     label: &'static str,
+    /// Entries at or above this level (`z <=`) are never evicted.
+    pinned_max_z: Option<u8>,
 }
 
 impl<T> TileCacheManager<T> {
@@ -41,7 +43,13 @@ impl<T> TileCacheManager<T> {
             frame: 0,
             negative_cache_duration,
             label: "cache",
+            pinned_max_z: None,
         }
+    }
+
+    /// Never evict tiles with `z <= max_z`.
+    pub fn pin_levels(&mut self, max_z: u8) {
+        self.pinned_max_z = Some(max_z);
     }
 
     pub fn labeled(mut self, label: &'static str) -> Self {
@@ -59,9 +67,15 @@ impl<T> TileCacheManager<T> {
     /// Evicts least-recently-used entries until back at capacity, stopping at the first
     /// one that is still in use.
     fn trim(&mut self) {
-        while self.ready.len() > self.capacity {
+        let mut pinned_seen = 0;
+        while self.ready.len() > self.capacity && pinned_seen < self.ready.len() {
             match self.ready.peek_lru() {
                 Some((_, (_, used))) if self.frame > 0 && *used + 1 >= self.frame => break,
+                Some((id, _)) if self.pinned_max_z.is_some_and(|z| id.z <= z) => {
+                    let id = *id;
+                    self.ready.promote(&id);
+                    pinned_seen += 1;
+                }
                 Some(_) => {
                     if let Some((old, _)) = self.ready.pop_lru() {
                         crate::tile_event!(self.label, "EVICT", Some(old), "ready");

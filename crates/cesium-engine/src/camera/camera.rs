@@ -158,6 +158,19 @@ pub const MIN_COLLISION_TERRAIN_HEIGHT: f32 = 0.015;
 /// get to the surface — only *which* surface.
 const SURFACE_CLEARANCE: f64 = 0.000002;
 
+/// Largest spacing between the points tested along the line of sight from the tracking
+/// camera to the aircraft, megametres (25 m), and the bounds on their number. A failing
+/// pitch usually fails at the first few points, so the cost is mostly the one pitch
+/// that passes.
+const LOS_SPACING: f32 = 0.000025;
+const LOS_MIN_SAMPLES: u32 = 12;
+const LOS_MAX_SAMPLES: u32 = 96;
+/// How far towards the aircraft the line of sight is tested, as a fraction of the
+/// distance: the last stretch is the ground the aircraft itself stands on.
+const LOS_MAX_T: f32 = 0.9;
+/// Coarse step of the upward pitch scan in the tracking collision, radians (3°).
+const PITCH_SCAN_STEP: f32 = 0.05236;
+
 impl Camera {
     pub fn new(position: Vec3, target: Vec3) -> Self {
         let mut cam = Self {
@@ -343,35 +356,62 @@ impl Camera {
                 )
             };
 
-            let is_above_ground = |pos: Vec3| -> bool {
-                let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
-                let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
-                global_pos.length() >= Self::floor_at(global_pos, ground)
+            let global = |local: Vec3| -> glam::DVec3 {
+                self.anchor_pos
+                    + self.anchor_ori * glam::DVec3::new(local.x as f64, local.y as f64, local.z as f64)
+            };
+            // Valid: the camera is clear of the ground under it, and the terrain does not
+            // block its line of sight to the aircraft. The second half is what keeps the
+            // aircraft on screen when the orbit swings behind a hill — without it the
+            // camera sat in the valley behind the ridge, looking at grass.
+            let los_samples = ((dist / LOS_SPACING).ceil() as u32).clamp(LOS_MIN_SAMPLES, LOS_MAX_SAMPLES);
+            let valid = |local: Vec3| -> bool {
+                let g = global(local);
+                if g.length() < Self::floor_at(g, ground) {
+                    return false;
+                }
+                (1..los_samples).all(|i| {
+                    let t = i as f32 / los_samples as f32;
+                    if t > LOS_MAX_T {
+                        return true;
+                    }
+                    let q = global(local * (1.0 - t));
+                    q.length() >= Self::floor_at(q, ground) - SURFACE_CLEARANCE
+                })
             };
 
-            if cur_pitch < min_pitch || !is_above_ground(self.local_pos) {
+            if cur_pitch < min_pitch || !valid(self.local_pos) {
                 let target_pitch = cur_pitch.max(min_pitch);
                 let max_pitch = 85.0_f32.to_radians();
-                let new_pitch = if is_above_ground(test_pos(target_pitch)) {
-                    target_pitch
-                } else if is_above_ground(test_pos(max_pitch)) {
-                    let mut low = target_pitch;
-                    let mut high = max_pitch;
-                    for _ in 0..12 {
-                        let mid = (low + high) * 0.5;
-                        if is_above_ground(test_pos(mid)) {
-                            high = mid;
+                // The lowest valid pitch at or above the one asked for: scan up in coarse
+                // steps (a hill can make validity non-monotone in pitch, which a plain
+                // bisection from the top would step over), then bisect the last step.
+                let mut new_pitch = max_pitch;
+                let mut below = target_pitch;
+                let mut p = target_pitch;
+                while p < max_pitch {
+                    if valid(test_pos(p)) {
+                        new_pitch = p;
+                        break;
+                    }
+                    below = p;
+                    p = (p + PITCH_SCAN_STEP).min(max_pitch);
+                }
+                if new_pitch > target_pitch {
+                    let (mut lo, mut hi) = (below, new_pitch);
+                    for _ in 0..10 {
+                        let mid = (lo + hi) * 0.5;
+                        if valid(test_pos(mid)) {
+                            hi = mid;
                         } else {
-                            low = mid;
+                            lo = mid;
                         }
                     }
-                    high
-                } else {
-                    target_pitch
-                };
+                    new_pitch = hi;
+                }
 
                 self.local_pos = test_pos(new_pitch);
-                log::info!(
+                log::debug!(
                     "[CAMERA CLAMP TRACKING] lifted pitch from {:.1}° to {:.1}° (dist={:.1}m, h_plane={:.1}m)",
                     cur_pitch.to_degrees(),
                     new_pitch.to_degrees(),

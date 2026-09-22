@@ -3,8 +3,8 @@
 //!
 //! # Units
 //!
-//! Everything in **this** module is **metres**, the unit the source encodes and the
-//! only unit `i16` is a sensible container for. The conversion to the engine's
+//! Everything in **this** module is **metres**, the unit the source encodes. The
+//! conversion to the engine's
 //! megametres happens exactly once, at the [`super::height_cache`] boundary — see
 //! `quadtree/surface.rs`'s module doc for why that seam is where it is.
 
@@ -60,15 +60,28 @@ pub const HEIGHT_DETAIL_PYRAMID_CELLS: usize = 4 + 16 + 64;
 /// A decoded height tile: 256x256 samples in metres, plus the extrema and the
 /// min/max pyramid Phase D will cull with.
 ///
-/// `i16` metres, not `f32`: half the bytes, and finer than the underlying DEM, which
-/// is SRTM-class (~30 m posting) almost everywhere. It also spans −32768 … 32767 m,
-/// comfortably outside the −11 km … +9 km the real Earth occupies.
+/// # Precision
+///
+/// Samples are stored as `u16` steps across **this tile's own** height range —
+/// `h = base + q · scale` — which is 2 bytes a texel like the whole-metre `i16` this
+/// replaced, but sub-metre: a z15 tile spanning 1 500 m of Alps resolves 2.3 cm, a flat
+/// one far less. Whole metres were not enough: the source carries 1/256 m and its z15
+/// texels step 10-20 cm apart over a runway, so rounding turned gently sloping flat
+/// ground into 1 m terraces a texel (~3 m) wide — an 18° ramp every few metres, and the
+/// "uneven ground in even regions" seen from low altitude.
+///
+/// The extrema, mips and error terms stay in whole metres, rounded **outward** (min
+/// down, max and errors up), so every bound still contains the samples it describes.
 pub struct HeightTile {
-    /// Row-major, `data[y * 256 + x]`, metres, ocean policy already applied.
-    pub data: Box<[i16; HEIGHT_TILE_TEXELS]>,
-    /// Minimum over **all 65 536** texels.
+    /// Row-major, `data[y * 256 + x]`, quantised; see [`Self::sample`].
+    data: Box<[u16; HEIGHT_TILE_TEXELS]>,
+    /// Metres at `q = 0`.
+    base: f32,
+    /// Metres per quantisation step.
+    scale: f32,
+    /// Minimum over **all 65 536** texels, rounded down to whole metres.
     pub h_min: i16,
-    /// Maximum over **all 65 536** texels.
+    /// Maximum over **all 65 536** texels, rounded up to whole metres.
     pub h_max: i16,
     /// Per-16x16-block minima, row-major over the 16x16 mip grid.
     min_mip: Box<[i16; HEIGHT_MIP_CELLS]>,
@@ -118,28 +131,27 @@ pub fn decode_terrarium(
         ));
     }
 
-    let mut data = Box::new([0i16; HEIGHT_TILE_TEXELS]);
-    for (i, slot) in data.iter_mut().enumerate() {
+    let mut metres = vec![0f32; HEIGHT_TILE_TEXELS];
+    for (i, slot) in metres.iter_mut().enumerate() {
         let px = &rgba[i * 4..i * 4 + 3];
         *slot = decode_texel(px[0], px[1], px[2], ocean);
     }
-    Ok(HeightTile::from_samples(data))
+    Ok(HeightTile::from_metres(&metres))
 }
 
-/// One texel, in 1/256-metre integer units rounded to the nearest metre.
+/// One texel in metres, at the source's full 1/256 m precision.
 ///
-/// Rounding is half-up (`+128` before the floor division), deterministic and the same
-/// on every input; `div_euclid` rather than `/` so negatives round the same direction
-/// as positives instead of truncating toward zero. The clamp to `i16` can only fire on
-/// bytes the real source never emits (`h > 32767 m`), and exists so a corrupt tile
-/// cannot wrap a summit into a trench.
+/// The value is formed in exact `i32` 1/256-metre units and divided once; every result
+/// is exactly representable in `f32` (at most 2^23 units), so the decode is
+/// bit-reproducible on every platform. The clamp to ±32 km can only fire on bytes the
+/// real source never emits, and exists so a corrupt tile cannot produce an absurd height.
 #[inline]
-fn decode_texel(r: u8, g: u8, b: u8, ocean: OceanPolicy) -> i16 {
+fn decode_texel(r: u8, g: u8, b: u8, ocean: OceanPolicy) -> f32 {
     // (R·256 + G)·256 + B, in 1/256 m, with the 32768 m bias removed.
-    let sixteenths = ((r as i32) * 256 + g as i32) * 256 + b as i32 - 32768 * 256;
-    let metres = (sixteenths + 128).div_euclid(256).clamp(-32768, 32767) as i16;
+    let units = ((r as i32) * 256 + g as i32) * 256 + b as i32 - 32768 * 256;
+    let metres = (units.clamp(-32768 * 256, 32767 * 256) as f32) / 256.0;
     match ocean {
-        OceanPolicy::ClampToZero => metres.max(0),
+        OceanPolicy::ClampToZero => metres.max(0.0),
         OceanPolicy::Raw => metres,
     }
 }
@@ -181,7 +193,7 @@ fn detail_lattice(step: usize) -> [(usize, usize, f64); HEIGHT_TILE_DIM] {
 ///
 /// `ceil` rather than round: the number is used as an upper bound on the drawn surface's
 /// error, and rounding a 0.4 m deviation to zero would report a field as flat that is not.
-fn measure_detail(data: &[i16; HEIGHT_TILE_TEXELS]) -> i16 {
+fn measure_detail(data: &[f32]) -> i16 {
     measure_detail_over(
         data,
         &detail_lattice(HEIGHT_DETAIL_STEP),
@@ -193,7 +205,7 @@ fn measure_detail(data: &[i16; HEIGHT_TILE_TEXELS]) -> i16 {
 /// `[x0, x1) × [y0, y1)` — the shape F5's pyramid needs, and the shape
 /// [`measure_detail`] is now one call of.
 fn measure_detail_over(
-    data: &[i16; HEIGHT_TILE_TEXELS],
+    data: &[f32],
     lattice: &[(usize, usize, f64); HEIGHT_TILE_DIM],
     [x0, x1, y0, y1]: [usize; 4],
 ) -> i16 {
@@ -227,7 +239,7 @@ fn measure_detail_over(
 /// guess and not its ancestor's whole-tile maximum. F5's table scores both of those
 /// against this one.
 fn measure_detail_pyramid(
-    data: &[i16; HEIGHT_TILE_TEXELS],
+    data: &[f32],
 ) -> Box<[i16; HEIGHT_DETAIL_PYRAMID_CELLS]> {
     let mut out = Box::new([0i16; HEIGHT_DETAIL_PYRAMID_CELLS]);
     for k in 1..=HEIGHT_DETAIL_LEVELS {
@@ -259,35 +271,71 @@ const fn pyramid_base(k: u32) -> usize {
 }
 
 impl HeightTile {
-    /// Builds the extrema and the min/max mip over a finished sample grid.
+    /// Builds a tile from whole-metre samples — the fixtures' and tests' constructor.
     pub fn from_samples(data: Box<[i16; HEIGHT_TILE_TEXELS]>) -> Self {
-        let mut min_mip = Box::new([i16::MAX; HEIGHT_MIP_CELLS]);
-        let mut max_mip = Box::new([i16::MIN; HEIGHT_MIP_CELLS]);
+        let metres: Vec<f32> = data.iter().map(|&h| h as f32).collect();
+        Self::from_metres(&metres)
+    }
 
+    /// Quantises `metres` (row-major, 65 536 samples) into this tile's own range and
+    /// builds the extrema, the min/max mip and the error terms over the **stored**
+    /// (dequantised) values, so every bound describes exactly what is sampled later.
+    pub fn from_metres(metres: &[f32]) -> Self {
+        assert_eq!(metres.len(), HEIGHT_TILE_TEXELS, "a height tile is 256x256");
+        let (lo, hi) = metres
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+        // The step is a power-of-two multiple of the source's 1/256 m, so values on that
+        // grid — every Terrarium sample, every whole metre — are stored exactly whenever
+        // the range allows: a tile spanning under 256 m (most of z15) keeps the source's
+        // full precision, one spanning 1 500 m of Alps is held to 1/32 m.
+        let base = lo;
+        let needed = (hi - lo) * 256.0 / u16::MAX as f32;
+        let mut k = 1.0f32;
+        while k < needed {
+            k *= 2.0;
+        }
+        let scale = k / 256.0;
+
+        let mut data = Box::new([0u16; HEIGHT_TILE_TEXELS]);
+        let mut stored = vec![0f32; HEIGHT_TILE_TEXELS];
+        for (i, &h) in metres.iter().enumerate() {
+            let q = ((h - base) / scale).round().clamp(0.0, u16::MAX as f32) as u16;
+            data[i] = q;
+            stored[i] = base + q as f32 * scale;
+        }
+
+        let mut min_f = [f32::INFINITY; HEIGHT_MIP_CELLS];
+        let mut max_f = [f32::NEG_INFINITY; HEIGHT_MIP_CELLS];
         for y in 0..HEIGHT_TILE_DIM {
             let cy = y / HEIGHT_MIP_BLOCK;
             for x in 0..HEIGHT_TILE_DIM {
-                let h = data[y * HEIGHT_TILE_DIM + x];
+                let h = stored[y * HEIGHT_TILE_DIM + x];
                 let cell = cy * HEIGHT_MIP_DIM + x / HEIGHT_MIP_BLOCK;
-                if h < min_mip[cell] {
-                    min_mip[cell] = h;
-                }
-                if h > max_mip[cell] {
-                    max_mip[cell] = h;
-                }
+                min_f[cell] = min_f[cell].min(h);
+                max_f[cell] = max_f[cell].max(h);
             }
         }
+        let down = |h: f32| h.floor().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        let up = |h: f32| h.ceil().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        let min_mip = Box::new(min_f.map(down));
+        let max_mip = Box::new(max_f.map(up));
 
         // The tile extrema are the extrema of the mip, which is exactly the extrema of
         // all 65 536 texels: every texel belongs to exactly one block.
         let h_min = *min_mip.iter().min().expect("mip is non-empty");
         let h_max = *max_mip.iter().max().expect("mip is non-empty");
 
-        let detail = measure_detail(&data);
-        let detail_below = measure_detail_pyramid(&data);
+        // The error terms describe the terrain's shape, so they are measured on the
+        // decoded heights rather than the stored ones: quantisation noise is not shape,
+        // and `ceil` would turn a centimetre of it into a metre of error.
+        let detail = measure_detail(metres);
+        let detail_below = measure_detail_pyramid(metres);
 
         Self {
             data,
+            base,
+            scale,
             h_min,
             h_max,
             min_mip,
@@ -295,6 +343,11 @@ impl HeightTile {
             detail,
             detail_below,
         }
+    }
+
+    /// Every sample in metres, row-major.
+    pub fn samples(&self) -> impl Iterator<Item = f32> + '_ {
+        self.data.iter().map(|&q| self.base + q as f32 * self.scale)
     }
 
     /// The tile's **measured geometric error** in metres: how far its own height field
@@ -377,10 +430,10 @@ impl HeightTile {
 
     /// One sample, in metres. `x`/`y` are clamped, so edge lookups are legal.
     #[inline]
-    pub fn sample(&self, x: usize, y: usize) -> i16 {
+    pub fn sample(&self, x: usize, y: usize) -> f32 {
         let x = x.min(HEIGHT_TILE_DIM - 1);
         let y = y.min(HEIGHT_TILE_DIM - 1);
-        self.data[y * HEIGHT_TILE_DIM + x]
+        self.base + self.data[y * HEIGHT_TILE_DIM + x] as f32 * self.scale
     }
 
     /// Bilinear height in **metres** at tile-local `(u, v)` ∈ `[0,1]²`, `v` running

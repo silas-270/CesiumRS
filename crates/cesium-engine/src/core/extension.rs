@@ -23,6 +23,11 @@ pub trait GlobeExtension {
         aspect_ratio: f32,
     );
 
+    /// Called every frame right before [`Self::update`] with the engine's ground query:
+    /// terrain height above the ellipsoid in megametres under an ECEF position, or `None`
+    /// with terrain off or no data there yet. Default: ignored.
+    fn sample_ground(&mut self, _ground: &dyn Fn(DVec3) -> Option<f64>) {}
+
     /// Called every frame after the globe and engine debug models are drawn
     fn render<'a>(
         &'a self,

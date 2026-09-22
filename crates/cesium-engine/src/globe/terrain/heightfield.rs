@@ -139,9 +139,21 @@ impl HeightPatch {
         segments: u32,
         exaggeration: f32,
     ) -> Result<Self, PatchStatus> {
-        let (source, tile) = match heights.status_of(id) {
-            PatchStatus::Ready => heights.source_for(id).ok_or(PatchStatus::Pending)?,
-            other => return Err(other),
+        // The best data resident now, even if `id`'s own tile is still in flight — the
+        // way Cesium upsamples a parent's terrain for a child that has not loaded. The
+        // mesh records `source`, and E2 rebuilds it once the tile's own data lands
+        // (`tiles::system::fresher_height_source`). Waiting instead left the tile without
+        // a mesh, and the renderer's fallback then climbed to whatever ancestor *had* one
+        // — a single new tile at the edge of the view could swap the whole screen for a
+        // z4 mesh whose 16x16 grid sits hundreds of metres off the real ground.
+        let (source, tile) = match heights.source_for(id) {
+            Some(found) => found,
+            None => {
+                return Err(match heights.status_of(id) {
+                    PatchStatus::Unavailable => PatchStatus::Unavailable,
+                    _ => PatchStatus::Pending,
+                })
+            }
         };
 
         let grid_size = (segments + 3) as usize;

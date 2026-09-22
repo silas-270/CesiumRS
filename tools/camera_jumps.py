@@ -12,18 +12,25 @@ import statistics
 import sys
 
 # column -> (absolute floor for a jump, is an angle in degrees)
-COLUMNS = {
+# Tracking mode is judged relative to the aircraft (orbit angles and the aircraft
+# frame's heading): world position and angles there also move with the aircraft.
+TRACKING = {
+    "orbit_yaw": (0.5, True),
+    "orbit_pitch": (0.5, True),
+    "orbit_dist_m": (0.5, False),
+    "anchor_heading": (0.5, True),
+    "ground_cam_m": (1.0, False),
+    "ground_anchor_m": (1.0, False),
+}
+FREE = {
     "pos_m": (0.5, False),
     "heading": (0.5, True),
     "pitch": (0.5, True),
     "roll": (0.5, True),
-    "orbit_yaw": (0.5, True),
-    "orbit_pitch": (0.5, True),
-    "orbit_dist_m": (0.5, False),
     "agl_m": (1.0, False),
     "ground_cam_m": (1.0, False),
-    "ground_anchor_m": (1.0, False),
 }
+COLUMNS = {**TRACKING, **FREE}
 RATIO = 5.0
 WINDOW = 15
 
@@ -72,6 +79,8 @@ def main():
         for i in range(1, n):
             if rows[i]["mode"] != rows[i - 1]["mode"] or d[i] < floor:
                 continue
+            if c not in (TRACKING if rows[i]["mode"] == "Tracking" else FREE):
+                continue
             # agl/ground switch from "no data" to data when the first height tile lands.
             if c in ("agl_m", "ground_cam_m") and math.isnan(rows[i - 1]["ground_cam_m"]) != math.isnan(rows[i]["ground_cam_m"]):
                 continue
@@ -85,6 +94,15 @@ def main():
     dur = (rows[-1]["t_ms"] - rows[0]["t_ms"]) / 1000.0
     clamped = sum(1 for r in rows if r["collision_move_m"] > 0.01)
     print(f"{path}: {n} frames, {dur:.1f} s, collision pass moved the camera in {clamped} frames")
+    def worst(col, label):
+        vals = [(r[col], i) for i, r in enumerate(rows) if col in r and not math.isnan(r[col])]
+        bad = [(v, i) for v, i in vals if v < 0]
+        low = min(vals) if vals else (float("nan"), -1)
+        print(f"  {label:<44} {len(bad):5} frames (lowest {low[0]:.2f} m at frame {low[1]})")
+    print("checks:")
+    worst("agl_m", "camera below the ground (collision data)")
+    worst("drawn_agl_m", "camera below the ground as drawn")
+    worst("los_min_m", "terrain between camera and aircraft")
     print("\njumps per column:")
     for c, k in per_col.items():
         print(f"  {c:<16} {k}")

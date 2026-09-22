@@ -33,19 +33,21 @@ impl PartialOrd for TilePriority {
     }
 }
 
-/// A queued request. `seq` grows with every request, so within a priority the heap
-/// pops the **newest** first: after a fast pan the tiles just requested are the ones
-/// on screen, and the ones requested a second ago are usually behind the camera.
+/// A queued request, ordered by class and then **importance** — the tile's size over
+/// its distance, i.e. roughly how much of the screen it covers (Cesium orders its load
+/// queue the same way). `gen` identifies the entry that is current for its tile: a
+/// re-ranked tile gets a new entry and the old one is skipped when popped.
 #[derive(Debug)]
 struct PrioritizedRequest {
     priority: TilePriority,
-    seq: u64,
+    importance: f32,
+    gen: u64,
     id: TileId,
 }
 
 impl PartialEq for PrioritizedRequest {
     fn eq(&self, other: &Self) -> bool {
-        self.priority == other.priority && self.seq == other.seq
+        self.gen == other.gen
     }
 }
 
@@ -61,17 +63,69 @@ impl Ord for PrioritizedRequest {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority
             .cmp(&other.priority)
-            .then_with(|| self.seq.cmp(&other.seq))
+            .then_with(|| self.importance.total_cmp(&other.importance))
+            .then_with(|| other.gen.cmp(&self.gen))
     }
 }
 
-/// Requests waiting for a connection slot, plus every id queued **or** in flight — the
-/// set `request_tile` deduplicates against.
+/// A tile waiting for a connection slot.
+struct Queued {
+    gen: u64,
+    priority: TilePriority,
+    importance: f32,
+    /// When a [`TileFetcher::sync`] last asked for it.
+    wanted_at: std::time::Instant,
+}
+
+/// How long a queued tile may go unrequested before [`TileFetcher::sync`] drops it. A
+/// short grace, so a tile flickering across a LOD boundary keeps its place. Wall time,
+/// not frames: at a few hundred frames a second a frame count is gone in a blink.
+const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 #[derive(Default)]
 struct RequestQueue {
     heap: BinaryHeap<PrioritizedRequest>,
-    known: HashSet<TileId>,
-    next_seq: u64,
+    queued: std::collections::HashMap<TileId, Queued>,
+    in_flight: HashSet<TileId>,
+    next_gen: u64,
+}
+
+impl RequestQueue {
+    fn push(&mut self, id: TileId, priority: TilePriority, importance: f32) {
+        let gen = self.next_gen;
+        self.next_gen += 1;
+        self.heap.push(PrioritizedRequest { priority, importance, gen, id });
+        let wanted_at = std::time::Instant::now();
+        self.queued.insert(id, Queued { gen, priority, importance, wanted_at });
+    }
+
+    /// The most important current request, stale entries skipped.
+    fn pop(&mut self) -> Option<PrioritizedRequest> {
+        while let Some(req) = self.heap.pop() {
+            if self.queued.get(&req.id).is_some_and(|q| q.gen == req.gen) {
+                self.queued.remove(&req.id);
+                self.in_flight.insert(req.id);
+                return Some(req);
+            }
+        }
+        None
+    }
+
+    /// Drops superseded heap entries once they outnumber the live ones.
+    fn compact(&mut self) {
+        if self.heap.len() > 4 * self.queued.len() + 256 {
+            self.heap = self
+                .queued
+                .iter()
+                .map(|(id, q)| PrioritizedRequest {
+                    priority: q.priority,
+                    importance: q.importance,
+                    gen: q.gen,
+                    id: *id,
+                })
+                .collect();
+        }
+    }
 }
 
 pub struct TileFetcher {
@@ -135,51 +189,78 @@ impl TileFetcher {
         }
     }
 
+    /// Queues one tile at the lowest importance of its class. For callers outside the
+    /// per-frame [`Self::sync`] (tests, one-off loads); the engine uses `sync`.
     pub fn request_tile(&self, id: TileId, priority: TilePriority) {
         let mut q = self.queue.lock().unwrap();
-        if q.known.insert(id) {
-            log::debug!("[FETCH REQ] kind={} id=z{}/x{}/y{} prio={:?}", self.label, id.z, id.x, id.y, priority);
-            let seq = q.next_seq;
-            q.next_seq += 1;
-            q.heap.push(PrioritizedRequest { priority, seq, id });
-            self.notify.notify_one();
+        if q.in_flight.contains(&id) || q.queued.contains_key(&id) {
+            return;
         }
+        log::debug!("[FETCH REQ] kind={} id=z{}/x{}/y{} prio={:?}", self.label, id.z, id.x, id.y, priority);
+        q.push(id, priority, 0.0);
+        drop(q);
+        self.notify.notify_one();
     }
 
-    /// Drops every **queued** request whose id `keep` rejects and returns those ids.
-    /// Requests already on the wire are left alone — their bytes are half-paid for.
+    /// One frame's complete wish list: `(tile, class, importance)`.
     ///
-    /// This is what stops a fast camera sweep from leaving hundreds of requests for
-    /// tiles it has already flown past at the head of the line, each costing a
-    /// connection slot, a decode and an upload before the tiles now on screen get one.
-    /// The caller owns the matching `Fetching` cache entries and must forget them, or
-    /// they would never be requested again.
-    pub fn cancel_queued(&self, mut keep: impl FnMut(&TileId) -> bool) -> Vec<TileId> {
+    /// New tiles are queued, queued ones re-ranked, and queued tiles missing from the
+    /// list for [`CANCEL_GRACE`] are dropped (requests already on the wire
+    /// are left to finish). Returns `(queued now, dropped)` so the caller can mark and
+    /// forget the matching cache placeholders.
+    ///
+    /// Replaces the newest-first queue, which starved: a moving camera requests new near
+    /// tiles every frame, so anything requested earlier — the coarse ancestors every
+    /// fallback depends on included — never reached the front. In one 7 s collision
+    /// run the z0 height tile was requested at 0.02 s and had not arrived at the end.
+    pub fn sync(&self, wanted: &[(TileId, TilePriority, f32)]) -> (Vec<TileId>, Vec<TileId>) {
         let mut q = self.queue.lock().unwrap();
-        if q.heap.is_empty() {
-            return Vec::new();
-        }
-        let mut cancelled = Vec::new();
-        q.heap.retain(|r| {
-            let k = keep(&r.id);
-            if !k {
-                cancelled.push(r.id);
+        let now = std::time::Instant::now();
+        let mut added = Vec::new();
+        for &(id, priority, importance) in wanted {
+            if q.in_flight.contains(&id) {
+                continue;
             }
-            k
-        });
-        for id in &cancelled {
-            q.known.remove(id);
+            match q.queued.get_mut(&id) {
+                Some(entry) => {
+                    entry.wanted_at = now;
+                    let changed = entry.priority != priority
+                        || (entry.importance - importance).abs() > 0.1 * entry.importance.abs().max(1e-6);
+                    if changed {
+                        q.push(id, priority, importance);
+                    }
+                }
+                None => {
+                    q.push(id, priority, importance);
+                    added.push(id);
+                }
+            }
         }
-        cancelled
+        let dropped: Vec<TileId> = q
+            .queued
+            .iter()
+            .filter(|(_, e)| now.duration_since(e.wanted_at) > CANCEL_GRACE)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &dropped {
+            q.queued.remove(id);
+        }
+        q.compact();
+        drop(q);
+        if !added.is_empty() {
+            self.notify.notify_one();
+        }
+        (added, dropped)
     }
 
     /// Requests waiting for a connection slot (not counting those in flight).
     pub fn queued_len(&self) -> usize {
-        self.queue.lock().unwrap().heap.len()
+        self.queue.lock().unwrap().queued.len()
     }
 
     pub fn is_loading_complete(&self) -> bool {
-        self.queue.lock().unwrap().known.is_empty()
+        let q = self.queue.lock().unwrap();
+        q.queued.is_empty() && q.in_flight.is_empty()
     }
 
     async fn worker_loop(
@@ -197,11 +278,11 @@ impl TileFetcher {
             // Slot first, then pop. The other order picks the next request while all
             // slots are busy and then holds it through the wait, so the tile that goes
             // out is whatever was newest *then* — possibly seconds stale by the time
-            // a slot frees, and immune to `cancel_queued` the whole time.
+            // a slot frees, and immune to `sync` dropping it the whole time.
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let request = {
                 let mut q = queue.lock().unwrap();
-                q.heap.pop()
+                q.pop()
             };
 
             if let Some(req) = request {
@@ -222,7 +303,7 @@ impl TileFetcher {
                     let _ = tx_clone.send((id, res));
                     {
                         let mut q = queue_clone.lock().unwrap();
-                        q.known.remove(&id);
+                        q.in_flight.remove(&id);
                     }
                     drop(permit);
                 });

@@ -111,6 +111,10 @@ pub struct WgpuState<'a> {
     traced_drawn: HashSet<TileId>,
 }
 
+/// Time per frame the update thread may spend building meshes the view needs right
+/// now; see [`WgpuState::build_missing_meshes_now`]. One mesh is ~25 µs.
+const SYNC_MESH_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
+
 /// Finished tile meshes turned into GPU buffers per frame, at most. See
 /// [`WgpuState::update_tile_cache`].
 const MESH_UPLOAD_BUDGET_PER_FRAME: usize = 48;
@@ -528,39 +532,93 @@ impl<'a> WgpuState<'a> {
             .mesh_worker
             .process_results_up_to(MESH_UPLOAD_BUDGET_PER_FRAME)
         {
-            let vertex_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("Tile Vertex Buffer {:?}", id)),
-                    contents: bytemuck::cast_slice(&mesh.vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+            // A worker result can be older than a mesh built on this thread since; never
+            // let it replace one built from deeper data.
+            let deeper_resident = self.tile_cache.peek(&id).is_some_and(|b| {
+                b.height_source.map(|s| s.z) > mesh.height_source.map(|s| s.z)
+            });
+            if !deeper_resident {
+                self.insert_mesh(id, mesh);
+            }
+        }
+    }
 
-            let index_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("Tile Index Buffer {:?}", id)),
-                    contents: bytemuck::cast_slice(&mesh.indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+    /// Uploads a finished tile mesh and puts it in the mesh cache.
+    fn insert_mesh(&mut self, id: TileId, mesh: crate::globe::geometry::TileMesh) {
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Tile Vertex Buffer"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Tile Index Buffer"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        crate::tile_event!("mesh", "READY", Some(id));
+        self.tile_cache.put(
+            id,
+            TileBuffers {
+                vertex_buffer,
+                index_buffer,
+                num_indices: mesh.indices.len() as u32,
+                center_f64: mesh.center_f64,
+                // E2: the entry remembers which height tile it was built from, so
+                // the next frame can ask whether better data has landed since. A
+                // rebuild arrives here exactly like a first build and `put`
+                // replaces the old entry — the previous mesh is drawn until the
+                // moment the new one is on the card, so a rebuild is never a hole.
+                height_source: mesh.height_source,
+            },
+        );
+    }
 
-            crate::tile_event!("mesh", "READY", Some(id));
-            self.tile_cache.put(
-                id,
-                TileBuffers {
-                    vertex_buffer,
-                    index_buffer,
-                    num_indices: mesh.indices.len() as u32,
-                    center_f64: mesh.center_f64,
-                    // E2: the entry remembers which height tile it was built from, so
-                    // the next frame can ask whether better data has landed since. A
-                    // rebuild arrives here exactly like a first build and `put`
-                    // replaces the old entry — the previous mesh is drawn until the
-                    // moment the new one is on the card, so a rebuild is never a hole.
-                    height_source: mesh.height_source,
-                },
-            );
-
+    /// Builds, on this thread and within [`SYNC_MESH_BUDGET`], the meshes this frame's
+    /// view is missing: first the ancestors of visible tiles, coarse to fine, so every
+    /// fallback exists, then the visible tiles nearest first.
+    ///
+    /// Without it a tile entering the view had no mesh until a worker delivered one a
+    /// frame or two later, and the renderable set fell back to the nearest ancestor
+    /// that had one — for a direction never looked at before, a z3-z4 tile covering the
+    /// whole screen, the camera's surroundings included. In the Innsbruck collision run
+    /// that drew a "ground" up to 1.5 km above the camera in 567 frames.
+    fn build_missing_meshes_now(&mut self, visible_tiles: &[(TileId, Vec3, f32)], camera_pos: Vec3) {
+        let start = Instant::now();
+        let mut ancestors: Vec<TileId> = Vec::new();
+        let mut seen: HashSet<TileId> = HashSet::new();
+        for (id, _, _) in visible_tiles {
+            let mut a = id.parent();
+            while let Some(p) = a {
+                if !seen.insert(p) {
+                    break;
+                }
+                if self.tile_cache.peek(&p).is_none() {
+                    ancestors.push(p);
+                }
+                a = p.parent();
+            }
+        }
+        ancestors.sort_by_key(|id| id.z);
+        let mut visible: Vec<&(TileId, Vec3, f32)> = visible_tiles
+            .iter()
+            .filter(|(id, _, _)| self.tile_cache.peek(id).is_none())
+            .collect();
+        visible.sort_by(|a, b| {
+            (a.1 - camera_pos)
+                .length_squared()
+                .total_cmp(&(b.1 - camera_pos).length_squared())
+        });
+        for id in ancestors.into_iter().chain(visible.into_iter().map(|t| t.0)) {
+            if start.elapsed() >= SYNC_MESH_BUDGET {
+                break;
+            }
+            if let Some(mesh) = self.tile_system.build_mesh_now(id) {
+                self.insert_mesh(id, mesh);
+            }
         }
     }
 
@@ -593,6 +651,8 @@ impl<'a> WgpuState<'a> {
         if let Some(ext) = &mut self.extension {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.extension");
             let extension_start = Instant::now();
+            let tiles = &self.tile_system;
+            ext.sample_ground(&|p| tiles.ground_height_at(p));
             ext.update(
                 &self.device,
                 &self.queue,
@@ -619,12 +679,36 @@ impl<'a> WgpuState<'a> {
         #[cfg(not(target_os = "android"))]
         if let Some(trace) = self.camera_trace.as_mut() {
             let tiles = &self.tile_system;
-            trace.record(&self.camera, &|p| tiles.ground_height_at(p));
+            let look = self.camera.global_transform_f64().1 * glam::DVec3::NEG_Z;
+            trace.record(
+                &self.camera,
+                &|p| tiles.ground_height_at(p),
+                &|p| tiles.drawn_ground_height_near(p, look),
+            );
         }
         let (moved_pos, _) = self.camera.global_transform_f64();
         self.tile_system.want_ground_at(moved_pos);
         if self.camera.anchor_pos.length_squared() > 1.0 {
-            self.tile_system.want_ground_at(self.camera.anchor_pos);
+            let anchor = self.camera.anchor_pos;
+            self.tile_system.want_ground_at(anchor);
+            if self.camera.mode == crate::camera::camera::CameraMode::Tracking {
+                // Everything the orbit collision can test next: the circle the camera can
+                // swing onto and the line to the aircraft (half radius). Detailed heights
+                // there stay loaded, so the ground collision uses is the ground drawn.
+                let r = self.camera.local_pos.length() as f64;
+                let up = anchor.normalize();
+                let east = glam::DVec3::Y.cross(up).normalize_or_zero();
+                let north = up.cross(east);
+                let n = ((std::f64::consts::TAU * r / 0.0004).ceil() as usize).clamp(8, 48);
+                for i in 0..n {
+                    let a = std::f64::consts::TAU * i as f64 / n as f64;
+                    let dir = east * a.cos() + north * a.sin();
+                    self.tile_system.want_ground_at(anchor + dir * r);
+                    if i % 2 == 0 {
+                        self.tile_system.want_ground_at(anchor + dir * (r * 0.5));
+                    }
+                }
+            }
         }
         let ground_height = self
             .tile_system
@@ -801,6 +885,7 @@ impl<'a> WgpuState<'a> {
 
         // Get the geometrically-desired visible tile set from the quadtree.
         let visible_tiles = self.quadtree_manager.get_visible_tiles();
+        self.build_missing_meshes_now(&visible_tiles, camera_pos_f32);
 
         // Get the actually renderable set of tiles (falling back to parent meshes if children aren't ready).
         let renderable_tiles = self
@@ -896,6 +981,7 @@ impl<'a> WgpuState<'a> {
                         .map(|buffers| (*id, *center, buffers.height_source))
                 })
                 .collect();
+            self.tile_system.want_better_heights(&drawn);
             let rebuilds = self
                 .tile_system
                 .select_mesh_rebuilds(camera_pos_f32, &drawn);

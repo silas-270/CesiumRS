@@ -5,6 +5,7 @@ pub mod cockpit_s23;
 pub mod free_routes;
 pub mod tracking_orbit;
 pub mod revisit;
+pub mod collide;
 #[cfg(test)]
 pub mod test_20_tiles;
 #[cfg(test)]

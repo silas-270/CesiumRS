@@ -202,14 +202,23 @@ impl HeightTileManager {
         self.cache.mark_failed(id);
     }
 
-    /// Cancels queued height requests for source tiles not in `wanted` — see
-    /// [`TileFetcher::cancel_queued`]. Returns how many were dropped.
-    pub fn cancel_unwanted(&mut self, wanted: &std::collections::HashSet<TileId>) -> usize {
-        let cancelled = self.fetcher.cancel_queued(|id| wanted.contains(id));
-        for id in &cancelled {
+    /// This frame's height wish list — see [`TileFetcher::sync`]. Offline, every
+    /// wanted tile resolves at once to the flat zero field, as [`Self::request_tile`]
+    /// does.
+    pub fn sync_requests(&mut self, wanted: &[(TileId, TilePriority, f32)]) {
+        if self.offline_mode {
+            for &(id, priority, _) in wanted {
+                self.request_tile(id, priority);
+            }
+            return;
+        }
+        let (added, dropped) = self.fetcher.sync(wanted);
+        for id in added {
+            self.cache.mark_fetching(id);
+        }
+        for id in &dropped {
             self.cache.forget_fetching(id);
         }
-        cancelled.len()
     }
 
     /// Height requests waiting for a connection slot.

@@ -50,10 +50,15 @@ pub struct RenderData<'a> {
 /// levels, `a_five_level_descent_cannot_rebuild_more_than_the_budget_in_one_frame` —
 /// drains in 14 frames, under a quarter of a second.
 ///
+/// **Raised from 4 to 32** once meshes started being built from ancestor data while their
+/// own tile is in flight (`HeightPatch::sample`): every newly visible tile is now a
+/// rebuild a moment later, and at 4 a turn of the camera left the near field on coarse
+/// data for seconds. 32 rebuilds cost ~0.25 ms of sampling a frame by the table above.
+///
 /// It is a ceiling, not a rate: the ordinary frame has nothing stale in it at all
 /// (see [`fresher_height_source`] for why staleness is rare), and the budget is only
 /// reached in the burst case a failed-then-retried fetch produces.
-pub const MESH_REBUILD_BUDGET_PER_FRAME: usize = 4;
+pub const MESH_REBUILD_BUDGET_PER_FRAME: usize = 32;
 
 /// The height source `id`'s mesh *should* have been built from, if that is strictly
 /// better than the one it *was* built from — otherwise `None`.
@@ -166,16 +171,36 @@ pub struct TileSystem {
     ///
     /// Empty, and never written, while terrain is off. See [`Self::set_drawn_meshes`].
     drawn: DrawnMeshes,
-    /// Every imagery / height tile this frame asked for, whether or not the request
-    /// was new. Anything still queued in a fetcher and **not** in here is a tile the
-    /// camera has moved away from; see [`Self::cancel_unwanted_fetches`]. Kept across
-    /// frames only to reuse the allocation.
-    wanted_textures: std::collections::HashSet<TileId>,
-    wanted_heights: std::collections::HashSet<TileId>,
     /// Positions whose ground height collision needs this frame; see
     /// [`Self::want_ground_at`].
     ground_points: Vec<glam::DVec3>,
+    /// Drawn tiles whose mesh was built from an ancestor's heights; their own height
+    /// tile is fetched so E2 can refine them. See [`Self::want_better_heights`].
+    better_heights: Vec<TileId>,
 }
+
+/// Levels whose imagery and height tiles are never evicted: 1 + 4 + 16 tiles. They
+/// guarantee that every point on the globe has *some* data to fall back to, so a mesh or
+/// texture is never missing for lack of an ancestor.
+const PINNED_MAX_Z: u8 = 2;
+
+/// How much a tile matters to the current view: its width over its distance from the
+/// camera, roughly the angle it spans. Coarse tiles are wide, so the ancestors every
+/// fallback depends on rank high even when far away; near detail ranks high by being
+/// close. Cesium orders its tile loads the same way.
+fn importance(id: TileId, camera_pos: Vec3) -> f32 {
+    let b = crate::globe::quadtree::tile_bounds_unstretched(&id);
+    let p = crate::globe::geometry::lon_lat_to_ecef_f64(b.center_lon(), b.center_lat());
+    let center = Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32);
+    let width = (std::f64::consts::TAU * 6.378137 / (1u64 << id.z) as f64
+        * b.center_lat().to_radians().cos().max(0.01)) as f32;
+    let d = ((center - camera_pos).length() - 0.7 * width).max(0.05 * width).max(1e-6);
+    width / d
+}
+
+/// Importance of the height tiles under the points camera collision tests: above any
+/// tile of the view, because a wrong ground there moves the camera.
+const GROUND_POINT_IMPORTANCE: f32 = 1.0e6;
 
 /// Which tile's mesh covers a point, as of the last frame that drew one.
 ///
@@ -236,16 +261,17 @@ impl DrawnMeshes {
 
 impl TileSystem {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: TileEngineConfig) -> Self {
+        let mut texture_manager = TileTextureManager::new(device, queue, &config);
+        texture_manager.cache.pin_levels(PINNED_MAX_Z);
         Self {
-            texture_manager: TileTextureManager::new(device, queue, &config),
+            texture_manager,
             height_manager: Self::build_height_manager(&config),
             mesh_worker: MeshWorkerPool::new(),
             config,
             last_camera_pos: None,
             drawn: DrawnMeshes::default(),
-            wanted_textures: Default::default(),
-            wanted_heights: Default::default(),
             ground_points: Vec::new(),
+            better_heights: Vec::new(),
         }
     }
 
@@ -256,10 +282,11 @@ impl TileSystem {
     /// the whole switch, and turning terrain back off drops the cache and the fetcher's
     /// runtime with it.
     pub fn build_height_manager(config: &TileEngineConfig) -> Option<HeightTileManager> {
-        config
-            .terrain
-            .enabled
-            .then(|| HeightTileManager::new(config))
+        config.terrain.enabled.then(|| {
+            let mut h = HeightTileManager::new(config);
+            h.cache.pin_levels(PINNED_MAX_Z);
+            h
+        })
     }
 
     pub fn update(
@@ -270,84 +297,14 @@ impl TileSystem {
         visible_tiles: &[(TileId, Vec3, f32)],
         missing_meshes: &[TileId],
     ) {
-        self.wanted_textures.clear();
-        self.wanted_heights.clear();
         self.texture_manager.cache.begin_frame();
         if let Some(h) = self.height_manager.as_mut() {
             h.cache.begin_frame();
         }
 
-        // Handle prefetching based on camera velocity
-        if self.config.enable_prefetch {
-            if let Some(last_pos) = self.last_camera_pos {
-                let velocity = camera_pos - last_pos;
-                if velocity.length_squared() > 1e-6 {
-                    let norm_vel = velocity.normalize();
-
-                    for (id, center, _) in visible_tiles {
-                        if id.z < 4 {
-                            continue;
-                        } // Prevent root-level prefetch flooding
-
-                        let to_tile = (*center - camera_pos).normalize_or_zero();
-                        if to_tile.dot(norm_vel) > 0.5 {
-                            let neighbors = vec![
-                                TileId {
-                                    z: id.z,
-                                    x: id.x.saturating_add(1),
-                                    y: id.y,
-                                },
-                                TileId {
-                                    z: id.z,
-                                    x: id.x.saturating_sub(1),
-                                    y: id.y,
-                                },
-                                TileId {
-                                    z: id.z,
-                                    x: id.x,
-                                    y: id.y.saturating_add(1),
-                                },
-                                TileId {
-                                    z: id.z,
-                                    x: id.x,
-                                    y: id.y.saturating_sub(1),
-                                },
-                            ];
-
-                            let max_x_y = (1 << id.z) - 1;
-                            for n in neighbors {
-                                if n.x <= max_x_y && n.y <= max_x_y {
-                                    self.wanted_textures.insert(n);
-                                    if self.texture_manager.cache.peek_state(&n).is_none() {
-                                        self.texture_manager.request_tile(n, TilePriority::Low);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        self.last_camera_pos = Some(camera_pos);
-
-        // Height tiles first, so a mesh that needs them can find them: the mesh loop
-        // below *defers* a tile whose heights have not arrived rather than baking sea
-        // level into it (`docs/terrain-plan.md` §5 B2), and a deferred tile is only
-        // ever un-deferred by a request having gone out.
-        // Heights are needed to *build* a mesh, so only tiles without one ask for them
-        // (`missing_meshes` already holds visible, fallback, ancestor and rebuild
-        // candidates). Asking for every visible tile, built or not, made the working set
-        // near the ground several times the cache's capacity. The ground under the camera
-        // and the aircraft is asked for too, so collision keeps its detailed data.
+        self.sync_imagery_requests(camera_pos, visible_tiles);
+        self.sync_height_requests(camera_pos, missing_meshes);
         if let Some(heights) = self.height_manager.as_mut() {
-            for id in missing_meshes {
-                Self::request_height_chain(heights, &mut self.wanted_heights, *id);
-            }
-            for pos in self.ground_points.drain(..) {
-                let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
-                let (id, _, _) = HeightTileManager::tile_uv_at_lon_lat(lon, lat, heights.max_level());
-                Self::request_height_chain(heights, &mut self.wanted_heights, id);
-            }
             heights.update();
         }
 
@@ -371,7 +328,7 @@ impl TileSystem {
                         self.config.terrain.exaggeration,
                     ) {
                         Ok(patch) => MeshBuild::Terrain(Box::new(patch)),
-                        // Not yet: skip this tile entirely and retry next frame. The
+                        // Nothing resident at all yet: retry next frame. The
                         // alternative — a flat mesh now — is the failure §5 B2 exists
                         // to prevent, because nothing would later mark it stale.
                         Err(PatchStatus::Pending) => continue,
@@ -385,75 +342,136 @@ impl TileSystem {
             self.mesh_worker.request_mesh(*id, segments, build);
         }
 
+        self.texture_manager.update(device, queue);
+    }
+
+    /// Builds `id`'s mesh on this thread, from the best height data resident now —
+    /// `None` when there is none yet. The renderer calls this for the tiles a frame
+    /// needs before it decides what it can draw; everything else goes to the workers.
+    pub fn build_mesh_now(&mut self, id: TileId) -> Option<crate::globe::geometry::TileMesh> {
+        use crate::globe::geometry::TileMesh;
+        use crate::globe::quadtree::surface::Ellipsoid;
+        use crate::globe::terrain::heightfield::Heightfield;
+        let segments = self.config.mesh_segments;
+        match self.height_manager.as_mut() {
+            None => Some(TileMesh::generate_on::<Ellipsoid>(&id, segments, &())),
+            Some(heights) => {
+                match HeightPatch::sample(heights, id, segments, self.config.terrain.exaggeration) {
+                    Ok(patch) => Some(TileMesh::generate_on::<Heightfield>(&id, segments, &patch)),
+                    Err(PatchStatus::Pending) => None,
+                    Err(_) => Some(TileMesh::generate_on::<Ellipsoid>(&id, segments, &())),
+                }
+            }
+        }
+    }
+
+    /// This frame's imagery wish list: every visible tile, every ancestor of one (the
+    /// textures a missing one falls back to), and the prefetch ring, ranked by
+    /// [`importance`]. Resident ancestors are marked used so the LRU keeps them.
+    fn sync_imagery_requests(&mut self, camera_pos: Vec3, visible_tiles: &[(TileId, Vec3, f32)]) {
+        let mut wanted: std::collections::HashMap<TileId, (TilePriority, f32)> =
+            std::collections::HashMap::new();
+        let cache = &mut self.texture_manager.cache;
+        let mut want = |id: TileId, priority: TilePriority| {
+            let absent_or_coming = match cache.get_state(&id) {
+                None | Some(TileState::Fetching) => true,
+                Some(_) => false,
+            };
+            if absent_or_coming {
+                let i = importance(id, camera_pos);
+                let e = wanted.entry(id).or_insert((priority, i));
+                if priority == TilePriority::High {
+                    e.0 = TilePriority::High;
+                }
+                e.1 = e.1.max(i);
+            }
+        };
+
         let mut ancestors_seen = std::collections::HashSet::new();
         for (id, _, _) in visible_tiles {
-            self.wanted_textures.insert(*id);
-            if self.texture_manager.cache.peek_state(id).is_none() {
-                self.texture_manager.request_tile(*id, TilePriority::High);
-            }
-
-            // Every ancestor, not just the parent: whatever this tile falls back to while
-            // its own texture is missing — and whatever the renderer falls back to when a
-            // subtree is incomplete — has to be resident, or the fallback is grey. Present
-            // ones are promoted so the LRU never evicts the chain a visible tile stands on.
+            want(*id, TilePriority::High);
             let mut a = id.parent();
             while let Some(p) = a {
                 if !ancestors_seen.insert(p) {
                     break;
                 }
-                self.wanted_textures.insert(p);
-                if self.texture_manager.cache.get_state(&p).is_none() {
-                    self.texture_manager.request_tile(p, TilePriority::Low);
-                }
+                want(p, TilePriority::High);
                 a = p.parent();
             }
         }
 
-        self.cancel_unwanted_fetches();
-        self.texture_manager.update(device, queue);
-    }
-
-    /// Drops queued fetches for tiles this frame no longer asked for.
-    ///
-    /// Without it a fast pan or zoom leaves every tile it swept past in the fetch
-    /// queues. They still cost a connection slot, a PNG decode, a height decode and a
-    /// GPU upload each, they sit ahead of what is now on screen, and while they are
-    /// `Fetching` they hold cache slots. The ground under the camera then waits
-    /// seconds for data the camera no longer needs — the "terrain catches up slowly
-    /// after a fast move" symptom. Requests already on the wire are kept.
-    ///
-    /// Cheap: one lock per fetcher, and an early return when the queue is empty, which
-    /// is every frame of a camera at rest once its tiles have arrived.
-    fn cancel_unwanted_fetches(&mut self) {
-        let tex = self.texture_manager.cancel_unwanted(&self.wanted_textures);
-        let hgt = match self.height_manager.as_mut() {
-            Some(h) => h.cancel_unwanted(&self.wanted_heights),
-            None => 0,
-        };
-        if tex + hgt > 0 {
-            log::debug!("[FETCH CANCEL] imagery={tex} height={hgt}");
-        }
-    }
-
-    /// Queues `id`'s height tile and its immediate parent fallback, if they are not
-    /// known, and records both as wanted this frame.
-    fn request_height_chain(
-        heights: &mut HeightTileManager,
-        wanted: &mut std::collections::HashSet<TileId>,
-        id: TileId,
-    ) {
-        let src = heights.source_tile_for(id);
-        wanted.insert(src);
-        if heights.cache.get_state(&src).is_none() {
-            heights.request_tile(src, TilePriority::High);
-        }
-
-        if let Some(p) = src.parent() {
-            wanted.insert(p);
-            if heights.cache.get_state(&p).is_none() {
-                heights.request_tile(p, TilePriority::Low);
+        // Prefetch: the neighbours ahead of the camera's motion, below everything the
+        // current view needs.
+        if self.config.enable_prefetch {
+            if let Some(last_pos) = self.last_camera_pos {
+                let velocity = camera_pos - last_pos;
+                if velocity.length_squared() > 1e-6 {
+                    let norm_vel = velocity.normalize();
+                    for (id, center, _) in visible_tiles {
+                        if id.z < 4 || (*center - camera_pos).normalize_or_zero().dot(norm_vel) <= 0.5 {
+                            continue;
+                        }
+                        let max_x_y = (1u32 << id.z) - 1;
+                        for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                            let (x, y) = (id.x as i64 + dx, id.y as i64 + dy);
+                            if x >= 0 && y >= 0 && x <= max_x_y as i64 && y <= max_x_y as i64 {
+                                want(TileId { z: id.z, x: x as u32, y: y as u32 }, TilePriority::Low);
+                            }
+                        }
+                    }
+                }
             }
         }
+        self.last_camera_pos = Some(camera_pos);
+
+        let list: Vec<(TileId, TilePriority, f32)> =
+            wanted.into_iter().map(|(id, (p, i))| (id, p, i)).collect();
+        self.texture_manager.sync_requests(&list);
+    }
+
+    /// This frame's height wish list: the source tile of every mesh that is missing or
+    /// was built from an ancestor's data (E2 rebuilds it once its own source lands), and
+    /// the detailed tiles under the ground points collision will test.
+    ///
+    /// The set is stable while the view is: a tile stays on it until its mesh has been
+    /// built from its own data. Wanting heights only while a mesh was *missing* made it
+    /// flip — a mesh built from an ancestor dropped its tile's request, which the next
+    /// frame asked for again — and the queue churned (9 898 height requests for 196
+    /// arrivals in one run).
+    fn sync_height_requests(&mut self, camera_pos: Vec3, missing_meshes: &[TileId]) {
+        let Some(heights) = self.height_manager.as_mut() else {
+            self.ground_points.clear();
+            self.better_heights.clear();
+            return;
+        };
+        let mut wanted: std::collections::HashMap<TileId, f32> = std::collections::HashMap::new();
+        let mut want = |heights: &mut HeightTileManager, src: TileId, i: f32| {
+            let absent_or_coming = match heights.cache.get_state(&src) {
+                None | Some(TileState::Fetching) => true,
+                Some(_) => false,
+            };
+            if absent_or_coming {
+                let e = wanted.entry(src).or_insert(i);
+                *e = e.max(i);
+            }
+        };
+
+        for id in missing_meshes.iter().chain(self.better_heights.iter()) {
+            let src = heights.source_tile_for(*id);
+            want(heights, src, importance(*id, camera_pos));
+        }
+        for pos in self.ground_points.drain(..) {
+            let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
+            let (id, _, _) = HeightTileManager::tile_uv_at_lon_lat(lon, lat, heights.max_level());
+            want(heights, id, GROUND_POINT_IMPORTANCE);
+        }
+        self.better_heights.clear();
+
+        let list: Vec<(TileId, TilePriority, f32)> = wanted
+            .into_iter()
+            .map(|(id, i)| (id, TilePriority::High, i))
+            .collect();
+        heights.sync_requests(&list);
     }
 
     pub fn compute_fallback_uv(child: TileId, parent: TileId) -> [f32; 4] {
@@ -573,6 +591,39 @@ impl TileSystem {
         let h = self.height_manager.as_ref()?;
         let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
         let raw = h.peek_height_at_lon_lat(lon, lat)?;
+        Some(raw * self.config.terrain.exaggeration as f64)
+    }
+
+    /// Drawn tiles whose mesh came from an ancestor's heights (`built_from` shallower
+    /// than the tile's own source): their own height tile is requested next `update`,
+    /// so E2 can rebuild them from it.
+    pub fn want_better_heights(&mut self, drawn: &[(TileId, Vec3, Option<TileId>)]) {
+        let Some(h) = self.height_manager.as_ref() else {
+            return;
+        };
+        for (id, _, built_from) in drawn {
+            let own = h.source_tile_for(*id);
+            if built_from.is_none_or(|b| b.z < own.z) {
+                self.better_heights.push(*id);
+            }
+        }
+    }
+
+    /// [`Self::drawn_ground_height_at`] for a point that is not itself on screen — the
+    /// spot under the camera usually is not: evaluated at the level of the nearest drawn
+    /// tile along `look` (the camera's horizontal view direction), which is the mesh
+    /// the camera is looking across. For measuring, not for collision.
+    pub fn drawn_ground_height_near(&self, pos: glam::DVec3, look: glam::DVec3) -> Option<f64> {
+        let h = self.height_manager.as_ref()?;
+        let up = pos.normalize();
+        let flat = (look - up * look.dot(up)).normalize_or_zero();
+        let level = [0.0, 5.0, 15.0, 40.0, 100.0, 250.0].iter().find_map(|m| {
+            let p = pos + flat * (m * 1.0e-6);
+            let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(p);
+            self.drawn.level_at(lon, lat)
+        })?;
+        let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
+        let raw = h.peek_mesh_height_at_lon_lat(lon, lat, level, self.config.mesh_segments)?;
         Some(raw * self.config.terrain.exaggeration as f64)
     }
 

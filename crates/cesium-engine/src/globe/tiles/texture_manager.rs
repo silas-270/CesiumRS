@@ -2,7 +2,6 @@ use crate::globe::quadtree::TileId;
 use crate::globe::tiles::config::{TileEngineConfig, DEFAULT_IMAGERY_TEXTURE_SIZE_PX};
 use crate::globe::tiles::tile_cache::TileCacheManager;
 use crate::globe::tiles::tile_fetcher::{TileFetcher, TileImage, TilePriority};
-use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 /// Maximum number of imagery textures uploaded to the GPU in a single frame.
@@ -206,14 +205,16 @@ impl TileTextureManager {
         self.fetcher.request_tile(id, priority);
     }
 
-    /// Cancels queued imagery requests for tiles not in `wanted` — see
-    /// [`TileFetcher::cancel_queued`]. Returns how many were dropped.
-    pub fn cancel_unwanted(&mut self, wanted: &HashSet<TileId>) -> usize {
-        let cancelled = self.fetcher.cancel_queued(|id| wanted.contains(id));
-        for id in &cancelled {
+    /// This frame's imagery wish list — see [`TileFetcher::sync`]. Newly queued tiles
+    /// are marked `Fetching`; dropped ones are forgotten so they can be asked for again.
+    pub fn sync_requests(&mut self, wanted: &[(TileId, TilePriority, f32)]) {
+        let (added, dropped) = self.fetcher.sync(wanted);
+        for id in added {
+            self.cache.mark_fetching(id);
+        }
+        for id in &dropped {
             self.cache.forget_fetching(id);
         }
-        cancelled.len()
     }
 
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
