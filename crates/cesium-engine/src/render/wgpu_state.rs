@@ -107,6 +107,8 @@ pub struct WgpuState<'a> {
     pub frame_count: u64,
     #[cfg(not(target_os = "android"))]
     pub camera_trace: Option<crate::camera::trace::CameraTrace>,
+    /// Drawn meshes as of the last frame, for the tile trace's ADD/DEL events.
+    traced_drawn: HashSet<TileId>,
 }
 
 /// Finished tile meshes turned into GPU buffers per frame, at most. See
@@ -419,6 +421,7 @@ impl<'a> WgpuState<'a> {
             frame_count: 0,
             #[cfg(not(target_os = "android"))]
             camera_trace: None,
+            traced_drawn: HashSet::new(),
         }
     }
 
@@ -541,7 +544,8 @@ impl<'a> WgpuState<'a> {
                     usage: wgpu::BufferUsages::INDEX,
                 });
 
-            self.tile_cache.put(
+            crate::tile_event!("mesh", "READY", Some(id));
+            let evicted = self.tile_cache.push(
                 id,
                 TileBuffers {
                     vertex_buffer,
@@ -556,6 +560,11 @@ impl<'a> WgpuState<'a> {
                     height_source: mesh.height_source,
                 },
             );
+            if let Some((old, _)) = evicted {
+                if old != id {
+                    crate::tile_event!("mesh", "EVICT", Some(old));
+                }
+            }
         }
     }
 
@@ -805,6 +814,21 @@ impl<'a> WgpuState<'a> {
         self.tile_system
             .set_drawn_meshes(renderable_tiles.iter().map(|(id, _, _)| id));
 
+        if crate::globe::tiles::trace::enabled() {
+            let now: HashSet<TileId> = renderable_tiles
+                .iter()
+                .filter(|(id, _, _)| self.tile_cache.peek(id).is_some())
+                .map(|(id, _, _)| *id)
+                .collect();
+            for id in now.difference(&self.traced_drawn) {
+                crate::tile_event!("draw", "ADD", Some(*id));
+            }
+            for id in self.traced_drawn.difference(&now) {
+                crate::tile_event!("draw", "DEL", Some(*id));
+            }
+            self.traced_drawn = now;
+        }
+
         let missing_count = visible_tiles
             .iter()
             .filter(|(id, _, _)| self.tile_cache.peek(id).is_none())
@@ -913,6 +937,18 @@ impl<'a> WgpuState<'a> {
             self.last_subsystem_timings.display_state_us =
                 display_state_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
+
+        crate::tile_event!(
+            "frame",
+            "FRAME",
+            None,
+            "vis={} rend={} miss={} stream_ms={:.2}",
+            visible_tiles.len(),
+            renderable_tiles.len(),
+            self.last_missing_tiles_count,
+            self.last_subsystem_timings.tile_streaming_us / 1000.0
+        );
+        crate::globe::tiles::trace::next_frame();
 
         renderable_tiles
     }

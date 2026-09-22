@@ -95,7 +95,7 @@ impl HeightTileManager {
         );
 
         Self {
-            cache: TileCacheManager::new(capacity, config.negative_cache_duration),
+            cache: TileCacheManager::new(capacity, config.negative_cache_duration).labeled("hgt"),
             rx,
             decoded_tx,
             decoded_rx,

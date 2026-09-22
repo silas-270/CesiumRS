@@ -169,7 +169,7 @@ impl TileTextureManager {
         });
 
         let fetcher = TileFetcher::new(tx, config.base_imagery_url.clone(), config.offline_mode, "Imagery");
-        let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration);
+        let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration).labeled("tex");
 
         Self {
             cache,
