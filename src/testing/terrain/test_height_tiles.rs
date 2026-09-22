@@ -571,3 +571,26 @@ fn live_terrarium_fetch_decodes_the_zugspitze_tile() {
     let sampled = heights.height_at(zugspitze, 0.5, 0.5).unwrap();
     assert!(sampled > 0.0 && sampled < 0.004, "{sampled} Mm");
 }
+
+#[test]
+#[ignore = "hits the network"]
+fn ground_query_at_frankfurt_runway() {
+    use cesium_engine::globe::tiles::tile_fetcher::TilePriority;
+    let (lat, lon) = (50.03275175, 8.57254303);
+    let mut heights = HeightTileManager::new(&terrain_config(true, false));
+    for z in 0..=15u8 {
+        let (id, _, _) = HeightTileManager::tile_uv_at_lon_lat(lon, lat, z);
+        heights.request_tile(id, TilePriority::High);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !heights.is_loading_complete() && std::time::Instant::now() < deadline {
+        heights.update();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    println!("bilinear (max level): {:.1} m", heights.peek_height_at_lon_lat(lon, lat).unwrap() * 1e6);
+    for z in 0..=20u8 {
+        let (id, u, v) = HeightTileManager::tile_uv_at_lon_lat(lon, lat, z);
+        let mesh = heights.peek_mesh_height_at_lon_lat(lon, lat, z, 16).map(|h| h * 1e6);
+        println!("z{z:2} tile {}/{}/{} uv ({u:.4},{v:.4}) src {:?} mesh {:?}", id.z, id.x, id.y, heights.resolve_source(id), mesh);
+    }
+}
