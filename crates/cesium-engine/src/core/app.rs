@@ -451,6 +451,12 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                     self.extension.take(),
                 ));
                 log::info!("[WINDOW LIFECYCLE] WgpuState successfully created!");
+                #[cfg(not(target_os = "android"))]
+                let state = {
+                    let mut state = state;
+                    state.camera_trace = crate::camera::trace::CameraTrace::create();
+                    state
+                };
                 self.wgpu_state = Some(state);
             }
         }
