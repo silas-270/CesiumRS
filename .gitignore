@@ -44,3 +44,5 @@ haze_capture/
 
 # Written by testing::terrain::test_parametric_sweeps when run; regenerable.
 parametric_results.csv
+camera_trace.csv
+tile_trace.csv
