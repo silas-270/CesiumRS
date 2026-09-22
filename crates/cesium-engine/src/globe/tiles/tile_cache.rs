@@ -67,6 +67,14 @@ impl<T> TileCacheManager<T> {
         self.cache.put(id, TileState::Failed(Instant::now()));
     }
 
+    /// Drops `id`'s placeholder if it is still `Fetching`, so a later request goes out
+    /// again. The counterpart of a cancelled fetch; a `Ready` or `Failed` entry is kept.
+    pub fn forget_fetching(&mut self, id: &TileId) {
+        if matches!(self.cache.peek(id), Some(TileState::Fetching)) {
+            self.cache.pop(id);
+        }
+    }
+
     pub fn resize(&mut self, new_capacity: NonZeroUsize) {
         self.cache.resize(new_capacity);
     }

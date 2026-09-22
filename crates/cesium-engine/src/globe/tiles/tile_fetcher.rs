@@ -33,15 +33,19 @@ impl PartialOrd for TilePriority {
     }
 }
 
+/// A queued request. `seq` grows with every request, so within a priority the heap
+/// pops the **newest** first: after a fast pan the tiles just requested are the ones
+/// on screen, and the ones requested a second ago are usually behind the camera.
 #[derive(Debug)]
 struct PrioritizedRequest {
     priority: TilePriority,
+    seq: u64,
     id: TileId,
 }
 
 impl PartialEq for PrioritizedRequest {
     fn eq(&self, other: &Self) -> bool {
-        self.priority == other.priority && self.id == other.id
+        self.priority == other.priority && self.seq == other.seq
     }
 }
 
@@ -55,13 +59,24 @@ impl PartialOrd for PrioritizedRequest {
 
 impl Ord for PrioritizedRequest {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.priority.cmp(&other.priority)
+        self.priority
+            .cmp(&other.priority)
+            .then_with(|| self.seq.cmp(&other.seq))
     }
+}
+
+/// Requests waiting for a connection slot, plus every id queued **or** in flight — the
+/// set `request_tile` deduplicates against.
+#[derive(Default)]
+struct RequestQueue {
+    heap: BinaryHeap<PrioritizedRequest>,
+    known: HashSet<TileId>,
+    next_seq: u64,
 }
 
 pub struct TileFetcher {
     runtime: Option<Runtime>,
-    queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
+    queue: Arc<Mutex<RequestQueue>>,
     notify: Arc<Notify>,
     pub label: &'static str,
 }
@@ -92,7 +107,7 @@ impl TileFetcher {
             .build()
             .expect("Failed to build reqwest client");
 
-        let queue = Arc::new(Mutex::new((BinaryHeap::new(), HashSet::new())));
+        let queue = Arc::new(Mutex::new(RequestQueue::default()));
         let notify = Arc::new(Notify::new());
 
         let worker_queue = queue.clone();
@@ -122,21 +137,54 @@ impl TileFetcher {
 
     pub fn request_tile(&self, id: TileId, priority: TilePriority) {
         let mut q = self.queue.lock().unwrap();
-        if !q.1.contains(&id) {
-            log::info!("[FETCH REQ] kind={} id=z{}/x{}/y{} prio={:?}", self.label, id.z, id.x, id.y, priority);
-            q.1.insert(id);
-            q.0.push(PrioritizedRequest { priority, id });
+        if q.known.insert(id) {
+            log::debug!("[FETCH REQ] kind={} id=z{}/x{}/y{} prio={:?}", self.label, id.z, id.x, id.y, priority);
+            let seq = q.next_seq;
+            q.next_seq += 1;
+            q.heap.push(PrioritizedRequest { priority, seq, id });
             self.notify.notify_one();
         }
     }
 
+    /// Drops every **queued** request whose id `keep` rejects and returns those ids.
+    /// Requests already on the wire are left alone — their bytes are half-paid for.
+    ///
+    /// This is what stops a fast camera sweep from leaving hundreds of requests for
+    /// tiles it has already flown past at the head of the line, each costing a
+    /// connection slot, a decode and an upload before the tiles now on screen get one.
+    /// The caller owns the matching `Fetching` cache entries and must forget them, or
+    /// they would never be requested again.
+    pub fn cancel_queued(&self, mut keep: impl FnMut(&TileId) -> bool) -> Vec<TileId> {
+        let mut q = self.queue.lock().unwrap();
+        if q.heap.is_empty() {
+            return Vec::new();
+        }
+        let mut cancelled = Vec::new();
+        q.heap.retain(|r| {
+            let k = keep(&r.id);
+            if !k {
+                cancelled.push(r.id);
+            }
+            k
+        });
+        for id in &cancelled {
+            q.known.remove(id);
+        }
+        cancelled
+    }
+
+    /// Requests waiting for a connection slot (not counting those in flight).
+    pub fn queued_len(&self) -> usize {
+        self.queue.lock().unwrap().heap.len()
+    }
+
     pub fn is_loading_complete(&self) -> bool {
-        self.queue.lock().unwrap().1.is_empty()
+        self.queue.lock().unwrap().known.is_empty()
     }
 
     async fn worker_loop(
         client: reqwest::Client,
-        queue: Arc<Mutex<(BinaryHeap<PrioritizedRequest>, HashSet<TileId>)>>,
+        queue: Arc<Mutex<RequestQueue>>,
         notify: Arc<Notify>,
         tx: mpsc::UnboundedSender<(TileId, Result<TileImage, String>)>,
         base_url: String,
@@ -146,14 +194,17 @@ impl TileFetcher {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
 
         loop {
-            // Get the next request or wait
+            // Slot first, then pop. The other order picks the next request while all
+            // slots are busy and then holds it through the wait, so the tile that goes
+            // out is whatever was newest *then* — possibly seconds stale by the time
+            // a slot frees, and immune to `cancel_queued` the whole time.
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
             let request = {
                 let mut q = queue.lock().unwrap();
-                q.0.pop()
+                q.heap.pop()
             };
 
             if let Some(req) = request {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let client_clone = client.clone();
                 let tx_clone = tx.clone();
                 let queue_clone = queue.clone();
@@ -171,11 +222,12 @@ impl TileFetcher {
                     let _ = tx_clone.send((id, res));
                     {
                         let mut q = queue_clone.lock().unwrap();
-                        q.1.remove(&id);
+                        q.known.remove(&id);
                     }
                     drop(permit);
                 });
             } else {
+                drop(permit);
                 notify.notified().await;
             }
         }
@@ -246,7 +298,7 @@ impl TileFetcher {
 
         match &result {
             Ok((w, h, _)) => {
-                log::info!(
+                log::debug!(
                     "[FETCH OK] kind={} id=z{}/x{}/y{} bytes={} net={:.1}ms decode={:.1}ms total={:.1}ms dims={}x{}",
                     label, id.z, id.x, id.y, bytes_len, http_time, decode_time, total_time, w, h
                 );

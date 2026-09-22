@@ -166,6 +166,12 @@ pub struct TileSystem {
     ///
     /// Empty, and never written, while terrain is off. See [`Self::set_drawn_meshes`].
     drawn: DrawnMeshes,
+    /// Every imagery / height tile this frame asked for, whether or not the request
+    /// was new. Anything still queued in a fetcher and **not** in here is a tile the
+    /// camera has moved away from; see [`Self::cancel_unwanted_fetches`]. Kept across
+    /// frames only to reuse the allocation.
+    wanted_textures: std::collections::HashSet<TileId>,
+    wanted_heights: std::collections::HashSet<TileId>,
 }
 
 /// Which tile's mesh covers a point, as of the last frame that drew one.
@@ -234,6 +240,8 @@ impl TileSystem {
             config,
             last_camera_pos: None,
             drawn: DrawnMeshes::default(),
+            wanted_textures: Default::default(),
+            wanted_heights: Default::default(),
         }
     }
 
@@ -258,6 +266,9 @@ impl TileSystem {
         visible_tiles: &[(TileId, Vec3, f32)],
         missing_meshes: &[TileId],
     ) {
+        self.wanted_textures.clear();
+        self.wanted_heights.clear();
+
         // Handle prefetching based on camera velocity
         if self.config.enable_prefetch {
             if let Some(last_pos) = self.last_camera_pos {
@@ -298,6 +309,7 @@ impl TileSystem {
                             let max_x_y = (1 << id.z) - 1;
                             for n in neighbors {
                                 if n.x <= max_x_y && n.y <= max_x_y {
+                                    self.wanted_textures.insert(n);
                                     if self.texture_manager.cache.peek_state(&n).is_none() {
                                         self.texture_manager.request_tile(n, TilePriority::Low);
                                     }
@@ -316,12 +328,12 @@ impl TileSystem {
         // ever un-deferred by a request having gone out.
         if let Some(heights) = self.height_manager.as_mut() {
             for (id, _, _) in visible_tiles {
-                Self::request_height_chain(heights, *id);
+                Self::request_height_chain(heights, &mut self.wanted_heights, *id);
             }
             // Fallback parent meshes are drawn too, and they are not always in
             // `visible_tiles`. Without this they would defer forever.
             for id in missing_meshes {
-                Self::request_height_chain(heights, *id);
+                Self::request_height_chain(heights, &mut self.wanted_heights, *id);
             }
             heights.update();
         }
@@ -361,6 +373,7 @@ impl TileSystem {
         }
 
         for (id, _, _) in visible_tiles {
+            self.wanted_textures.insert(*id);
             if self.texture_manager.cache.peek_state(id).is_none() {
                 self.texture_manager.request_tile(*id, TilePriority::High);
             }
@@ -368,23 +381,54 @@ impl TileSystem {
             // Proactively fetch immediate parent texture at low priority so it
             // is available as a fallback before the own texture arrives.
             if let Some(p) = id.parent() {
+                self.wanted_textures.insert(p);
                 if self.texture_manager.cache.peek_state(&p).is_none() {
                     self.texture_manager.request_tile(p, TilePriority::Low);
                 }
             }
         }
 
+        self.cancel_unwanted_fetches();
         self.texture_manager.update(device, queue);
     }
 
-    /// Queues `id`'s height tile and its immediate parent fallback, if they are not known.
-    fn request_height_chain(heights: &mut HeightTileManager, id: TileId) {
+    /// Drops queued fetches for tiles this frame no longer asked for.
+    ///
+    /// Without it a fast pan or zoom leaves every tile it swept past in the fetch
+    /// queues. They still cost a connection slot, a PNG decode, a height decode and a
+    /// GPU upload each, they sit ahead of what is now on screen, and while they are
+    /// `Fetching` they hold cache slots. The ground under the camera then waits
+    /// seconds for data the camera no longer needs — the "terrain catches up slowly
+    /// after a fast move" symptom. Requests already on the wire are kept.
+    ///
+    /// Cheap: one lock per fetcher, and an early return when the queue is empty, which
+    /// is every frame of a camera at rest once its tiles have arrived.
+    fn cancel_unwanted_fetches(&mut self) {
+        let tex = self.texture_manager.cancel_unwanted(&self.wanted_textures);
+        let hgt = match self.height_manager.as_mut() {
+            Some(h) => h.cancel_unwanted(&self.wanted_heights),
+            None => 0,
+        };
+        if tex + hgt > 0 {
+            log::debug!("[FETCH CANCEL] imagery={tex} height={hgt}");
+        }
+    }
+
+    /// Queues `id`'s height tile and its immediate parent fallback, if they are not
+    /// known, and records both as wanted this frame.
+    fn request_height_chain(
+        heights: &mut HeightTileManager,
+        wanted: &mut std::collections::HashSet<TileId>,
+        id: TileId,
+    ) {
         let src = heights.source_tile_for(id);
+        wanted.insert(src);
         if heights.cache.peek_state(&src).is_none() {
             heights.request_tile(src, TilePriority::High);
         }
 
         if let Some(p) = src.parent() {
+            wanted.insert(p);
             if heights.cache.peek_state(&p).is_none() {
                 heights.request_tile(p, TilePriority::Low);
             }

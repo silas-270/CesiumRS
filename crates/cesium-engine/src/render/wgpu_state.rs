@@ -107,6 +107,10 @@ pub struct WgpuState<'a> {
     pub frame_count: u64,
 }
 
+/// Finished tile meshes turned into GPU buffers per frame, at most. See
+/// [`WgpuState::update_tile_cache`].
+const MESH_UPLOAD_BUDGET_PER_FRAME: usize = 48;
+
 fn create_depth_texture(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -509,8 +513,14 @@ impl<'a> WgpuState<'a> {
             self.tile_cache.get(id);
         }
 
-        // Process completed meshes
-        for (id, mesh) in self.tile_system.mesh_worker.process_results() {
+        // Process completed meshes — capped, like texture uploads. After a fast move
+        // the rayon pool finishes a hundred-odd meshes at once, and each one is two
+        // buffer creations here; the remainder lands over the next few frames.
+        for (id, mesh) in self
+            .tile_system
+            .mesh_worker
+            .process_results_up_to(MESH_UPLOAD_BUDGET_PER_FRAME)
+        {
             let vertex_buffer = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {

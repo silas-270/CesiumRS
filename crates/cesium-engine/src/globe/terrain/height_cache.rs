@@ -57,6 +57,9 @@ pub struct HeightTileManager {
     /// [`TileCacheManager`] for free.
     pub cache: TileCacheManager<Arc<HeightTile>>,
     rx: mpsc::UnboundedReceiver<(TileId, Result<TileImage, String>)>,
+    /// Finished decodes coming back from the rayon pool — see [`Self::update`].
+    decoded_tx: std::sync::mpsc::Sender<(TileId, Result<HeightTile, String>)>,
+    decoded_rx: std::sync::mpsc::Receiver<(TileId, Result<HeightTile, String>)>,
     fetcher: TileFetcher,
     ocean: OceanPolicy,
     max_level: u8,
@@ -71,6 +74,7 @@ pub struct HeightTileManager {
 impl HeightTileManager {
     pub fn new(config: &TileEngineConfig) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let (decoded_tx, decoded_rx) = std::sync::mpsc::channel();
 
         // B4: entries derived from the *declared slice* of the tile budget, by the same
         // arithmetic that sizes the imagery cache. Height tiles never change size, so
@@ -93,6 +97,8 @@ impl HeightTileManager {
         Self {
             cache: TileCacheManager::new(capacity, config.negative_cache_duration),
             rx,
+            decoded_tx,
+            decoded_rx,
             fetcher: TileFetcher::new(
                 tx,
                 config.terrain.source_url.clone(),
@@ -144,38 +150,67 @@ impl HeightTileManager {
         self.fetcher.request_tile(src, priority);
     }
 
-    /// Drains finished fetches and decodes them.
+    /// Drains finished fetches into the decoder, and finished decodes into the cache.
     ///
-    /// Decoding runs here, on the caller's thread, rather than in the fetch worker:
-    /// `TileFetcher` is shared verbatim with imagery and hands back RGBA. 65 536 texels
-    /// of integer arithmetic plus the mip is tens of microseconds, and it happens at
-    /// most a handful of times per frame.
+    /// Decoding runs on the rayon pool, **not** here. It is ~1 ms per tile on a desktop
+    /// core (`testing::tiles::test_stream_perf::decode_cost_per_height_tile` — five full
+    /// passes over 65 536 texels for the mip and F5's detail pyramid), and a fast camera
+    /// move lands a few dozen tiles in one frame: that was a 30 ms stall on desktop and
+    /// several times that on a phone, all inside `stream=`. The tile stays `Fetching`
+    /// until its decode comes back, so nothing can build a mesh from it early and
+    /// [`Self::is_loading_complete`] still waits for it.
     pub fn update(&mut self) {
         while let Ok((id, result)) = self.rx.try_recv() {
             if let Some(TileState::Ready(_)) = self.cache.peek_state(&id) {
                 continue;
             }
+            match result {
+                Ok((w, h, rgba)) => {
+                    let tx = self.decoded_tx.clone();
+                    let ocean = self.ocean;
+                    rayon::spawn(move || {
+                        let _ = tx.send((id, decode_terrarium(w, h, &rgba, ocean)));
+                    });
+                }
+                Err(e) => self.record_failure(id, &e),
+            }
+        }
 
-            match result.and_then(|(w, h, rgba)| decode_terrarium(w, h, &rgba, self.ocean)) {
+        while let Ok((id, result)) = self.decoded_rx.try_recv() {
+            if let Some(TileState::Ready(_)) = self.cache.peek_state(&id) {
+                continue;
+            }
+            match result {
                 Ok(tile) => {
-                    log::info!(
+                    log::debug!(
                         "[HEIGHT DECODED] id=z{}/x{}/y{} min_alt={}m max_alt={}m",
                         id.z, id.x, id.y, tile.h_min, tile.h_max
                     );
                     self.cache.mark_ready(id, Arc::new(tile));
                 }
-                Err(e) => {
-                    log::warn!(
-                        "[HEIGHT FAILED] z{}/x{}/y{}: {}",
-                        id.z,
-                        id.x,
-                        id.y,
-                        e
-                    );
-                    self.cache.mark_failed(id);
-                }
+                Err(e) => self.record_failure(id, &e),
             }
         }
+    }
+
+    fn record_failure(&mut self, id: TileId, e: &str) {
+        log::warn!("[HEIGHT FAILED] z{}/x{}/y{}: {}", id.z, id.x, id.y, e);
+        self.cache.mark_failed(id);
+    }
+
+    /// Cancels queued height requests for source tiles not in `wanted` — see
+    /// [`TileFetcher::cancel_queued`]. Returns how many were dropped.
+    pub fn cancel_unwanted(&mut self, wanted: &std::collections::HashSet<TileId>) -> usize {
+        let cancelled = self.fetcher.cancel_queued(|id| wanted.contains(id));
+        for id in &cancelled {
+            self.cache.forget_fetching(id);
+        }
+        cancelled.len()
+    }
+
+    /// Height requests waiting for a connection slot.
+    pub fn fetcher_queued_len(&self) -> usize {
+        self.fetcher.queued_len()
     }
 
     /// Height above the ellipsoid at tile-local `(u, v)` of `id`, in **megametres**,
@@ -631,6 +666,7 @@ impl HeightTileManager {
     pub fn clear(&mut self) {
         self.cache.clear();
         while self.rx.try_recv().is_ok() {}
+        while self.decoded_rx.try_recv().is_ok() {}
     }
 
     /// Inserts a tile directly, bypassing the fetcher. The seam the unit tests use to

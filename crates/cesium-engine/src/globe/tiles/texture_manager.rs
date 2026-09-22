@@ -2,6 +2,7 @@ use crate::globe::quadtree::TileId;
 use crate::globe::tiles::config::{TileEngineConfig, DEFAULT_IMAGERY_TEXTURE_SIZE_PX};
 use crate::globe::tiles::tile_cache::TileCacheManager;
 use crate::globe::tiles::tile_fetcher::{TileFetcher, TileImage, TilePriority};
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 /// Maximum number of imagery textures uploaded to the GPU in a single frame.
@@ -15,6 +16,15 @@ use tokio::sync::mpsc;
 /// ~7 frames, under 120 ms). Analogous to `MESH_REBUILD_BUDGET_PER_FRAME` in
 /// `globe/tiles/system.rs`.
 pub const TEXTURE_UPLOAD_BUDGET_PER_FRAME: usize = 30;
+
+/// Wall-clock ceiling on one frame's texture uploads, on top of the count cap above.
+///
+/// The count alone does not bound the frame: an upload is a `create_texture`, a 256 kB
+/// to 1 MB `write_texture` copy and a bind group, and thirty of them measured 4–8 ms of
+/// the update thread in `testing::rendering::terrain_rapid_pan` — nearly all of
+/// `stream=` during a fast pan once height decoding had moved off-thread. At least one
+/// tile is always uploaded, so the backlog always drains.
+pub const TEXTURE_UPLOAD_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Tracks the real decoded texel width of the current imagery style, live rather
 /// than the frozen [`DEFAULT_IMAGERY_TEXTURE_SIZE_PX`] this replaces (WP4/A,
@@ -196,12 +206,26 @@ impl TileTextureManager {
         self.fetcher.request_tile(id, priority);
     }
 
+    /// Cancels queued imagery requests for tiles not in `wanted` — see
+    /// [`TileFetcher::cancel_queued`]. Returns how many were dropped.
+    pub fn cancel_unwanted(&mut self, wanted: &HashSet<TileId>) -> usize {
+        let cancelled = self.fetcher.cancel_queued(|id| wanted.contains(id));
+        for id in &cancelled {
+            self.cache.forget_fetching(id);
+        }
+        cancelled.len()
+    }
+
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Cap GPU uploads per frame to prevent VRAM exhaustion on burst completions.
         // When the camera zooms out rapidly, hundreds of tiles can complete simultaneously;
         // draining them all in one frame caused a `SurfaceError::OutOfMemory` crash on
         // integrated GPUs. The remainder drains naturally over subsequent frames.
-        for _ in 0..TEXTURE_UPLOAD_BUDGET_PER_FRAME {
+        let start = std::time::Instant::now();
+        for i in 0..TEXTURE_UPLOAD_BUDGET_PER_FRAME {
+            if i > 0 && start.elapsed() >= TEXTURE_UPLOAD_TIME_BUDGET {
+                break;
+            }
             match self.rx.try_recv() {
                 Ok((id, result)) => self.process_tile_result(device, queue, id, result),
                 Err(_) => break,
@@ -273,7 +297,7 @@ impl TileTextureManager {
                     label: Some(&format!("Tile Bind Group {:?}", id)),
                 });
 
-                log::info!(
+                log::debug!(
                     "[TEXTURE UPLOAD] id=z{}/x{}/y{} dims={}x{} size={}B",
                     id.z, id.x, id.y, width, height, width * height * 4
                 );
