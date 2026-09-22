@@ -72,6 +72,9 @@ def main():
         for i in range(1, n):
             if rows[i]["mode"] != rows[i - 1]["mode"] or d[i] < floor:
                 continue
+            # agl/ground switch from "no data" to data when the first height tile lands.
+            if c in ("agl_m", "ground_cam_m") and math.isnan(rows[i - 1]["ground_cam_m"]) != math.isnan(rows[i]["ground_cam_m"]):
+                continue
             nb = [d[j] for j in range(max(1, i - WINDOW), min(n, i + WINDOW + 1)) if j != i]
             base = statistics.median(nb) if nb else 0.0
             ratio = d[i] / max(base, floor / RATIO)

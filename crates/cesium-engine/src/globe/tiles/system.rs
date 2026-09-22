@@ -552,6 +552,21 @@ impl TileSystem {
     /// before — that is what makes the flat path the *same* code rather than a code path
     /// that happens to add zero.
     pub fn ground_height_at(&self, pos: glam::DVec3) -> Option<f64> {
+        // View-independent: the deepest resident height data, bilinear. The drawn mesh is
+        // the wrong reference for collision — the points collision tests (under the
+        // camera, under the aircraft) are often off-screen, where the only drawn tile is
+        // a culled z1-z5 one whose grid spans hundreds of km; at Frankfurt that read
+        // 215-325 m instead of 100 m, and changed as the view rotated.
+        let h = self.height_manager.as_ref()?;
+        let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
+        let raw = h.peek_height_at_lon_lat(lon, lat)?;
+        Some(raw * self.config.terrain.exaggeration as f64)
+    }
+
+    /// Height of the surface as currently **drawn** under `pos` — the triangle net at the
+    /// level it is drawn at. Right for things placed on the visible surface (labels);
+    /// wrong for collision, see [`Self::ground_height_at`].
+    pub fn drawn_ground_height_at(&self, pos: glam::DVec3) -> Option<f64> {
         let h = self.height_manager.as_ref()?;
         let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
         let raw = match self.drawn.level_at(lon, lat) {
@@ -647,7 +662,7 @@ impl TileSystem {
 /// carried in f64 would be thrown away by the addition anyway.
 impl crate::label::GroundHeights for TileSystem {
     fn ground_height_above_ellipsoid(&self, pos: Vec3) -> Option<f32> {
-        self.ground_height_at(glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64))
+        self.drawn_ground_height_at(glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64))
             .map(|h| h as f32)
     }
 }
