@@ -498,14 +498,11 @@ fn the_raised_height_slice_covers_the_measured_working_set_and_still_leaves_imag
     );
 }
 
-/// The one structural fact the measurement above is about, stated without a socket:
-/// `TileCacheManager` will evict a `Fetching` placeholder.
-///
-/// This is the difference from Cesium's `GlobeSurfaceTile.eligibleForUnloading`, which
-/// refuses to free a tile in `RECEIVING`/`TRANSFORMING`. Whether it *matters* is the
-/// measurement; that it is *possible* is this assertion, and it costs nothing to keep.
+/// `TileCacheManager` never evicts a `Fetching` placeholder: placeholders live outside
+/// the LRU, the way Cesium's `GlobeSurfaceTile.eligibleForUnloading` refuses to free a
+/// tile still in flight. Evicting them was the churn loop the tile trace measured.
 #[test]
-fn the_cache_will_evict_a_tile_whose_fetch_is_still_in_flight() {
+fn the_cache_never_evicts_a_tile_whose_fetch_is_still_in_flight() {
     use cesium_engine::globe::tiles::tile_cache::TileCacheManager;
     use std::num::NonZeroUsize;
 
@@ -513,20 +510,16 @@ fn the_cache_will_evict_a_tile_whose_fetch_is_still_in_flight() {
         TileCacheManager::new(NonZeroUsize::new(2).unwrap(), Duration::from_secs(10));
     let id = |n: u32| TileId { z: 15, x: n, y: 0 };
 
-    cache.mark_fetching(id(0));
-    cache.mark_fetching(id(1));
-    assert!(matches!(
-        cache.peek_state(&id(0)),
-        Some(TileState::Fetching)
-    ));
-
-    // One more entry than the cache holds, and the oldest goes — `Fetching` or not.
-    cache.mark_fetching(id(2));
-    assert!(
-        cache.peek_state(&id(0)).is_none(),
-        "a Fetching placeholder survived eviction; if this ever holds, the dedup in \
-         HeightTileManager::request_tile is sound and the churn measurement is stale"
-    );
+    for n in 0..3 {
+        cache.mark_fetching(id(n));
+    }
+    cache.mark_ready(id(3), 0);
+    cache.mark_ready(id(4), 0);
+    cache.mark_ready(id(5), 0);
+    for n in 0..3 {
+        assert!(matches!(cache.peek_state(&id(n)), Some(TileState::Fetching)));
+    }
+    assert_eq!(cache.len(), 2, "ready data is still capped");
 }
 
 /// The second dedup layer, and the window it does not cover.

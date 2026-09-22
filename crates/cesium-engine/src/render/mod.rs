@@ -1,4 +1,5 @@
 pub mod wgpu_state;
+pub mod mesh_cache;
 
 pub mod capture;
 #[cfg(feature = "debug_panel")]

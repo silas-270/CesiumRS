@@ -172,6 +172,9 @@ pub struct TileSystem {
     /// frames only to reuse the allocation.
     wanted_textures: std::collections::HashSet<TileId>,
     wanted_heights: std::collections::HashSet<TileId>,
+    /// Positions whose ground height collision needs this frame; see
+    /// [`Self::want_ground_at`].
+    ground_points: Vec<glam::DVec3>,
 }
 
 /// Which tile's mesh covers a point, as of the last frame that drew one.
@@ -242,6 +245,7 @@ impl TileSystem {
             drawn: DrawnMeshes::default(),
             wanted_textures: Default::default(),
             wanted_heights: Default::default(),
+            ground_points: Vec::new(),
         }
     }
 
@@ -268,6 +272,10 @@ impl TileSystem {
     ) {
         self.wanted_textures.clear();
         self.wanted_heights.clear();
+        self.texture_manager.cache.begin_frame();
+        if let Some(h) = self.height_manager.as_mut() {
+            h.cache.begin_frame();
+        }
 
         // Handle prefetching based on camera velocity
         if self.config.enable_prefetch {
@@ -326,14 +334,19 @@ impl TileSystem {
         // below *defers* a tile whose heights have not arrived rather than baking sea
         // level into it (`docs/terrain-plan.md` §5 B2), and a deferred tile is only
         // ever un-deferred by a request having gone out.
+        // Heights are needed to *build* a mesh, so only tiles without one ask for them
+        // (`missing_meshes` already holds visible, fallback, ancestor and rebuild
+        // candidates). Asking for every visible tile, built or not, made the working set
+        // near the ground several times the cache's capacity. The ground under the camera
+        // and the aircraft is asked for too, so collision keeps its detailed data.
         if let Some(heights) = self.height_manager.as_mut() {
-            for (id, _, _) in visible_tiles {
-                Self::request_height_chain(heights, &mut self.wanted_heights, *id);
-            }
-            // Fallback parent meshes are drawn too, and they are not always in
-            // `visible_tiles`. Without this they would defer forever.
             for id in missing_meshes {
                 Self::request_height_chain(heights, &mut self.wanted_heights, *id);
+            }
+            for pos in self.ground_points.drain(..) {
+                let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
+                let (id, _, _) = HeightTileManager::tile_uv_at_lon_lat(lon, lat, heights.max_level());
+                Self::request_height_chain(heights, &mut self.wanted_heights, id);
             }
             heights.update();
         }
@@ -431,13 +444,13 @@ impl TileSystem {
     ) {
         let src = heights.source_tile_for(id);
         wanted.insert(src);
-        if heights.cache.peek_state(&src).is_none() {
+        if heights.cache.get_state(&src).is_none() {
             heights.request_tile(src, TilePriority::High);
         }
 
         if let Some(p) = src.parent() {
             wanted.insert(p);
-            if heights.cache.peek_state(&p).is_none() {
+            if heights.cache.get_state(&p).is_none() {
                 heights.request_tile(p, TilePriority::Low);
             }
         }
@@ -561,6 +574,13 @@ impl TileSystem {
         let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
         let raw = h.peek_height_at_lon_lat(lon, lat)?;
         Some(raw * self.config.terrain.exaggeration as f64)
+    }
+
+    /// Keeps the detailed height data under `pos` loaded (requested next `update`).
+    pub fn want_ground_at(&mut self, pos: glam::DVec3) {
+        if self.height_manager.is_some() {
+            self.ground_points.push(pos);
+        }
     }
 
     /// Height of the surface as currently **drawn** under `pos` — the triangle net at the
