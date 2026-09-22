@@ -1,3 +1,54 @@
+# Night report — 2026-09-23 (terrain: collision, streaming, uneven ground)
+
+Written while you slept; everything below is committed. Start with **"What to test"**.
+
+## What was wrong (root causes, each measured)
+
+| Symptom you reported | Root cause | Fix |
+|---|---|---|
+| Uneven ground in flat regions, "hole" in the runway | Heights were rounded to **whole metres** at decode. The source has 1/256 m and a runway's z15 texels step 10-20 cm, so flat ground became 1 m terraces one texel (~3 m) wide. The source data itself has no pits (checked STR + FRA runways: deepest 4 cm). | Sub-metre height storage (same memory). |
+| Ground drawn over the aircraft, grey/coarse flashes | A mesh waited for its own height tile; a tile entering the view had none, and the fallback climbed to a z3-z4 ancestor covering the whole screen, drawn up to **1.5 km** off the real ground at Innsbruck. | Meshes built at once from loaded data at most 2 levels coarser than their own (refined when their own data lands), synchronously, ancestors first, before the frame decides what to draw. |
+| (found on the way) floating terrain slabs with sky between them | My first version of the line above built tiles from *any* loaded data: a z12 valley tile from z5 data floats ~1 km above the valley. | The 2-level limit; the nearest built ancestor is drawn meanwhile. |
+| Tiles re-fetched although they were loaded | (a) fetch queue served newest first, so a moving camera starved everything older (the z0 height tile never arrived in a 7 s run); (b) caches smaller than one orbit's working set. | Fetches ranked by importance (size/distance, like Cesium); mesh cache 512 -> 4096, height budget 48 -> 96 MB (desktop). |
+| Camera into the ground / blocked / jumps, "hill in the way" | Collision ground under off-screen points was coarse or missing (starved); no line-of-sight check. | Detailed heights kept loaded around the whole orbit; camera also lifted until the aircraft is visible over the terrain. |
+| Aircraft not on the ground | Placed at the AIP airport elevation (FRA: 12 m above the terrain drawn there); model scales with zoom about an origin above the gear. | Fitted onto the drawn terrain on the ground, fading out 30-600 m above the airport; model lifted so it never sinks into terrain. |
+| Frame rate drops | Your runs were **debug builds** (`target/debug`), ~10x slower than release. | `[profile.dev]` now optimises deps (3) and the workspace (1). |
+| (found on the way) app sometimes hangs on exit | Test harness apps didn't forward winit's `exiting`, so the EGL surface was destroyed after the Wayland connection: heap corruption ("corrupted size vs. prev_size"), and the crash handler then deadlocked. The normal app was not affected. | Forwarded in all 10 harness apps; crash handler arms a 5 s alarm so it can never hang. |
+
+## Measured after the fixes (this machine, release unless noted)
+
+- **Collision (`--collide`, Innsbruck, real mouse drags into the ground while orbiting at 250 m, 1.7 km, 5 km; 3 runs):** camera never closer than **2.00 m** to the ground; camera below the *drawn* surface only during the first ~1.5 s (coarse startup data) plus 1-3 isolated frames of 1-3 m; aircraft hidden by terrain 5-6 frames per run (< 5 m, between line-of-sight samples); **no screenshot with sky below the horizon** (no holes, no slabs) in any run.
+- **Aircraft:** orbit centre exactly 7.50 m above the terrain under the parked aircraft in every frame (built-in offset); during takeoff within +-0.9 m of the runway.
+- **Caching (`--revisit`, identical second lap at 400 m):** height requests 995 -> **4**, mesh rebuilds 1286 -> **5**, imagery 217 -> **0**.
+- **Frame times:** release p99 ~4 ms; **debug (dev profile) p50 3.0 ms / p99 5.2 ms**, was p50 20.8 / p99 110 ms in your run.
+- **Exit:** 25/25 clean shutdowns of the collide test after the fix (was ~1 in 3 crashing or hanging).
+- **Tests:** tiles 21/21, camera 8/8, terrain 103/103 (serially), culling 32/32, lod 24/24, engine unit 25/25, flight 43/43; dev and release both build. The previously failing ground/camera tests were stale (default camera mode changed to Tracking, old zoom step, touch deadband) and are updated.
+
+## What to test
+
+```sh
+cargo run -- --terrain --style satellite-terrain     # plain cargo run is fast now
+python3 tools/camera_jumps.py camera_trace.csv        # collision/continuity checks
+python3 tools/tile_churn.py tile_trace.csv            # re-fetching / downgrades / slow frames
+```
+The first local debug build after pulling recompiles the dependencies optimised (once).
+Scripted versions: `--collide`, `--revisit`, `--tracking-orbit` (windowed, ~15-80 s).
+
+## Known limits (honest)
+
+- The first ~1 s after start shows no terrain, then coarse terrain for ~0.5 s: nothing can
+  be drawn before the first height tiles arrive from the network. The aircraft drops once
+  onto the terrain when they do.
+- Right after a fast swing into a direction never seen before, the nearest ground can be
+  drawn one or two levels coarse (visible triangle facets) for a moment while its data
+  loads.
+- Zoom (scroll) still moves in 10 % steps without easing; at 5 km that is ~500 m per notch.
+- Running the whole terrain test group *in parallel* still SIGSEGVs (pre-existing, also on
+  the old HEAD); run it with `--test-threads=1`.
+- Android build not verified (NDK not set up on the build server).
+
+---
+
 # Handoff — 2026-09-11
 
 Written so the next session can start cold without re-deriving anything. **The performance
