@@ -593,18 +593,22 @@ impl<'a> WgpuState<'a> {
             );
             self.last_subsystem_timings.extension_update_us =
                 extension_start.elapsed().as_secs_f64() * 1_000_000.0;
-            // Recalculate frustum since the extension may have moved the camera!
-            // Re-sample the ground under it first, for the same reason: in tracking and
-            // cockpit modes the extension is what puts the camera on the aircraft, so
-            // before it runs the sample is from wherever the camera was last frame.
-            let (moved_pos, _) = self.camera.global_transform_f64();
-            let ground_height = self
-                .tile_system
-                .ground_height_at(moved_pos)
-                .map(|h| h as f32);
-            self.camera.set_ground_height(ground_height);
-            frustum = self.camera.calculate_frustum_planes(aspect_ratio);
         }
+
+        // The one place ground collision is decided: after the extension has put the
+        // camera where it wants it, against the ground under each position tested.
+        if self.tile_system.has_terrain() {
+            let tiles = &self.tile_system;
+            self.camera
+                .enforce_bounds_with(&|p| tiles.ground_height_at(p));
+        }
+        let (moved_pos, _) = self.camera.global_transform_f64();
+        let ground_height = self
+            .tile_system
+            .ground_height_at(moved_pos)
+            .map(|h| h as f32);
+        self.camera.set_ground_height(ground_height);
+        frustum = self.camera.calculate_frustum_planes(aspect_ratio);
 
         #[cfg(feature = "debug_panel")]
         let (view_matrix, proj_matrix) = if self.debug_mode {
@@ -806,6 +810,26 @@ impl<'a> WgpuState<'a> {
         // Also kick off fetches for any fallback parent meshes we are trying to render!
         for (id, _, _) in &renderable_tiles {
             if self.tile_cache.peek(id).is_none() && !missing_meshes.contains(id) {
+                missing_meshes.push(*id);
+            }
+        }
+
+        // Every ancestor of a visible tile is a potential fallback: when a subtree is
+        // incomplete, `get_renderable_tiles` draws the nearest ancestor that has a mesh.
+        // Build the missing ones and keep the resident ones pinned, so that fallback is
+        // a coarser tile rather than a collapse to the root and a grey globe.
+        let mut ancestors: HashSet<TileId> = HashSet::new();
+        for (id, _, _) in &visible_tiles {
+            let mut a = id.parent();
+            while let Some(p) = a {
+                if !ancestors.insert(p) {
+                    break;
+                }
+                a = p.parent();
+            }
+        }
+        for id in &ancestors {
+            if self.tile_cache.get(id).is_none() && !missing_meshes.contains(id) {
                 missing_meshes.push(*id);
             }
         }
@@ -1168,6 +1192,15 @@ impl<'a> WgpuState<'a> {
             for (mesh_id, texture_id, uv_scale_offset) in &draw_list {
                 // Get the GPU texture bind group for the assigned texture (LRU-promoting, correct at draw time).
                 if let Some(render_data) = self.tile_system.get_render_data(*texture_id) {
+                    // The assigned texture was evicted and an ancestor stands in: its UV
+                    // window is relative to that ancestor, not to the one assigned.
+                    let uv_scale_offset = if render_data.texture_id != *texture_id
+                        && render_data.texture_id.z < mesh_id.z
+                    {
+                        crate::globe::tiles::system::TileSystem::compute_fallback_uv(*mesh_id, render_data.texture_id)
+                    } else {
+                        *uv_scale_offset
+                    };
                     if let Some(buffers) = self.tile_cache.peek(mesh_id) {
                         let center_f64 = buffers.center_f64;
                         let push = TilePushConstants {
@@ -1177,7 +1210,7 @@ impl<'a> WgpuState<'a> {
                                 (center_f64[2] - camera_pos_f64[2]) as f32,
                                 0.0,
                             ],
-                            uv_scale_offset: *uv_scale_offset,
+                            uv_scale_offset,
                         };
 
                         render_pass.set_push_constants(

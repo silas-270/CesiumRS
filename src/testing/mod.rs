@@ -25,6 +25,7 @@ pub struct VerifyConfig {
     pub cockpit_s23: bool,
     /// Headless capture of routes in Free mode at laptop native resolution.
     pub free_routes: bool,
+    pub tracking_orbit: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,

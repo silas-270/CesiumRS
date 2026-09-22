@@ -372,19 +372,27 @@ impl TileSystem {
             self.mesh_worker.request_mesh(*id, segments, build);
         }
 
+        let mut ancestors_seen = std::collections::HashSet::new();
         for (id, _, _) in visible_tiles {
             self.wanted_textures.insert(*id);
             if self.texture_manager.cache.peek_state(id).is_none() {
                 self.texture_manager.request_tile(*id, TilePriority::High);
             }
 
-            // Proactively fetch immediate parent texture at low priority so it
-            // is available as a fallback before the own texture arrives.
-            if let Some(p) = id.parent() {
+            // Every ancestor, not just the parent: whatever this tile falls back to while
+            // its own texture is missing — and whatever the renderer falls back to when a
+            // subtree is incomplete — has to be resident, or the fallback is grey. Present
+            // ones are promoted so the LRU never evicts the chain a visible tile stands on.
+            let mut a = id.parent();
+            while let Some(p) = a {
+                if !ancestors_seen.insert(p) {
+                    break;
+                }
                 self.wanted_textures.insert(p);
-                if self.texture_manager.cache.peek_state(&p).is_none() {
+                if self.texture_manager.cache.get_state(&p).is_none() {
                     self.texture_manager.request_tile(p, TilePriority::Low);
                 }
+                a = p.parent();
             }
         }
 

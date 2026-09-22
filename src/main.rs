@@ -113,6 +113,9 @@ mod inner {
         #[arg(long)]
         pub free_routes: bool,
 
+        #[arg(long)]
+        pub tracking_orbit: bool,
+
         /// Base map imagery style: 'standard' (Carto dark) or 'satellite-terrain' (Esri satellite + 3D terrain)
         #[arg(long = "map-style", visible_alias = "style", value_enum, default_value_t = cesium_rs::MapStyle::Standard)]
         pub map_style: cesium_rs::MapStyle,
@@ -256,7 +259,7 @@ mod inner {
             );
             return;
         }
-        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit || cli.cockpit_s23 || cli.free_routes {
+        let config = if cli.verify || cli.stress || cli.regression || cli.flicker || cli.monitor || cli.profile || cli.benchmark || cli.cockpit || cli.cockpit_s23 || cli.free_routes || cli.tracking_orbit {
             Some(VerifyConfig {
                 enabled: cli.verify,
                 stress: cli.stress,
@@ -268,6 +271,7 @@ mod inner {
                 cockpit: cli.cockpit,
                 cockpit_s23: cli.cockpit_s23,
                 free_routes: cli.free_routes,
+                tracking_orbit: cli.tracking_orbit,
                 stress_mode: cli.stress_mode,
                 prefetch: cli.prefetch,
                 cache_size: cli.cache_size,

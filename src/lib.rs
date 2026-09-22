@@ -47,6 +47,9 @@ pub fn run(config: Option<testing::VerifyConfig>) {
             testing::rendering::cockpit_s23::run(cfg);
         } else if cfg.free_routes {
             testing::rendering::free_routes::run(cfg);
+        } else if cfg.tracking_orbit {
+            let mut app = testing::rendering::tracking_orbit::TrackingOrbitApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
         } else if cfg.benchmark {
             let mut app = testing::benchmark::BenchmarkApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
