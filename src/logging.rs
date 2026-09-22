@@ -5,23 +5,48 @@ use std::sync::Mutex;
 
 pub const LOG_FILE_NAME: &str = "cesium.log";
 
-/// A writer that outputs to both stderr and a shared file, flushing immediately.
+/// A writer that outputs to both stderr and a shared file.
+///
+/// The **file** write is synchronous: one `write` syscall into the page cache, which
+/// survives the process dying, so a crash never loses the lines before it.
+///
+/// The **stderr** mirror is not. It goes through a bounded queue to a background thread
+/// and is dropped when the queue is full. A terminal is the slowest sink there is and it
+/// pushes back — with the per-tile telemetry on, a fast camera move logs hundreds of
+/// lines in one frame, and writing them to stderr inline made the render thread wait on
+/// the terminal emulator. The file has every line; the console is a convenience.
 struct DualWriter {
     file: Mutex<File>,
+    console: std::sync::mpsc::SyncSender<Vec<u8>>,
+}
+
+/// Lines the stderr mirror may fall behind by before it starts dropping them.
+const CONSOLE_QUEUE_LINES: usize = 4096;
+
+fn spawn_console_mirror() -> std::sync::mpsc::SyncSender<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CONSOLE_QUEUE_LINES);
+    let _ = std::thread::Builder::new()
+        .name("log-console".into())
+        .spawn(move || {
+            let stderr = std::io::stderr();
+            for line in rx {
+                let mut out = stderr.lock();
+                let _ = out.write_all(&line);
+            }
+        });
+    tx
 }
 
 impl Write for DualWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::stderr().write_all(buf);
+        let _ = self.console.try_send(buf.to_vec());
         if let Ok(mut f) = self.file.lock() {
             let _ = f.write_all(buf);
-            let _ = f.flush();
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::stderr().flush();
         if let Ok(mut f) = self.file.lock() {
             let _ = f.flush();
         }
@@ -124,6 +149,7 @@ pub fn init_logging() -> PathBuf {
     // 3. Configure env_logger to write to DualWriter (stderr + cesium.log)
     let dual_writer = DualWriter {
         file: Mutex::new(file),
+        console: spawn_console_mirror(),
     };
 
     let mut builder = env_logger::Builder::from_default_env();

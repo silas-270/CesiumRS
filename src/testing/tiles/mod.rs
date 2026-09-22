@@ -10,3 +10,5 @@ pub mod test_tile_system_stress;
 pub mod test_texture_size;
 #[cfg(test)]
 pub mod tile_system_tests;
+#[cfg(test)]
+pub mod test_stream_perf;

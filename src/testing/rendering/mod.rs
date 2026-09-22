@@ -24,6 +24,8 @@ pub mod haze_capture;
 #[cfg(test)]
 pub mod terrain_capture;
 #[cfg(test)]
+pub mod terrain_rapid_pan;
+#[cfg(test)]
 pub mod terrain_step_capture;
 #[cfg(test)]
 pub mod terrain_e1_capture;

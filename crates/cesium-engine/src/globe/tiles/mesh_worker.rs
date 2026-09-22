@@ -81,8 +81,17 @@ impl MeshWorkerPool {
     }
 
     pub fn process_results(&mut self) -> Vec<(TileId, TileMesh)> {
+        self.process_results_up_to(usize::MAX)
+    }
+
+    /// [`Self::process_results`], taking at most `max` finished meshes. The rest stay in
+    /// the channel — and stay `requested`, so they are not built twice — for next frame.
+    pub fn process_results_up_to(&mut self, max: usize) -> Vec<(TileId, TileMesh)> {
         let mut results = Vec::new();
-        while let Ok((id, mesh)) = self.receiver.try_recv() {
+        while results.len() < max {
+            let Ok((id, mesh)) = self.receiver.try_recv() else {
+                break;
+            };
             self.requested.remove(&id);
             results.push((id, mesh));
         }
