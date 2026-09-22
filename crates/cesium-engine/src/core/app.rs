@@ -455,6 +455,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                 let state = {
                     let mut state = state;
                     state.camera_trace = crate::camera::trace::CameraTrace::create();
+                    crate::globe::tiles::trace::enable();
                     state
                 };
                 self.wgpu_state = Some(state);

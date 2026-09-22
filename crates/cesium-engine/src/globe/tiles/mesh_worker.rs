@@ -56,6 +56,7 @@ impl MeshWorkerPool {
         }
 
         self.requested.insert(id);
+        crate::tile_event!("mesh", "REQ", Some(id));
         let sender = self.sender.clone();
         let mode_str = match &build {
             MeshBuild::Flat => "Flat",

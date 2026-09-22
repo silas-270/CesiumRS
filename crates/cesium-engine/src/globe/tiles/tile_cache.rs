@@ -12,6 +12,16 @@ pub enum TileState<T> {
 pub struct TileCacheManager<T> {
     cache: LruCache<TileId, TileState<T>>,
     negative_cache_duration: Duration,
+    /// Tile-trace kind (`tex`, `hgt`); see [`crate::globe::tiles::trace`].
+    label: &'static str,
+}
+
+fn state_name<T>(s: &TileState<T>) -> &'static str {
+    match s {
+        TileState::Fetching => "fetching",
+        TileState::Ready(_) => "ready",
+        TileState::Failed(_) => "failed",
+    }
 }
 
 impl<T> TileCacheManager<T> {
@@ -19,6 +29,21 @@ impl<T> TileCacheManager<T> {
         Self {
             cache: LruCache::new(capacity),
             negative_cache_duration,
+            label: "cache",
+        }
+    }
+
+    pub fn labeled(mut self, label: &'static str) -> Self {
+        self.label = label;
+        self
+    }
+
+    fn insert(&mut self, id: TileId, state: TileState<T>, event: &str) {
+        crate::tile_event!(self.label, event, Some(id));
+        if let Some((old, old_state)) = self.cache.push(id, state) {
+            if old != id {
+                crate::tile_event!(self.label, "EVICT", Some(old), "{}", state_name(&old_state));
+            }
         }
     }
 
@@ -35,6 +60,7 @@ impl<T> TileCacheManager<T> {
 
         if is_expired_failure {
             self.cache.pop(id);
+            crate::tile_event!(self.label, "EXPIRE", Some(*id));
             return None;
         }
 
@@ -56,15 +82,15 @@ impl<T> TileCacheManager<T> {
     }
 
     pub fn mark_fetching(&mut self, id: TileId) {
-        self.cache.put(id, TileState::Fetching);
+        self.insert(id, TileState::Fetching, "REQ");
     }
 
     pub fn mark_ready(&mut self, id: TileId, data: T) {
-        self.cache.put(id, TileState::Ready(data));
+        self.insert(id, TileState::Ready(data), "READY");
     }
 
     pub fn mark_failed(&mut self, id: TileId) {
-        self.cache.put(id, TileState::Failed(Instant::now()));
+        self.insert(id, TileState::Failed(Instant::now()), "FAIL");
     }
 
     /// Drops `id`'s placeholder if it is still `Fetching`, so a later request goes out
@@ -72,10 +98,17 @@ impl<T> TileCacheManager<T> {
     pub fn forget_fetching(&mut self, id: &TileId) {
         if matches!(self.cache.peek(id), Some(TileState::Fetching)) {
             self.cache.pop(id);
+            crate::tile_event!(self.label, "CANCEL", Some(*id));
         }
     }
 
     pub fn resize(&mut self, new_capacity: NonZeroUsize) {
+        crate::tile_event!(self.label, "RESIZE", None, "{}", new_capacity);
+        while self.cache.len() > new_capacity.get() {
+            if let Some((old, old_state)) = self.cache.pop_lru() {
+                crate::tile_event!(self.label, "EVICT", Some(old), "{}", state_name(&old_state));
+            }
+        }
         self.cache.resize(new_capacity);
     }
 
