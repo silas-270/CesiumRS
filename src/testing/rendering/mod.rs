@@ -3,6 +3,7 @@ pub mod culling_visual;
 pub mod cockpit_capture;
 pub mod cockpit_s23;
 pub mod free_routes;
+pub mod tracking_orbit;
 #[cfg(test)]
 pub mod test_20_tiles;
 #[cfg(test)]

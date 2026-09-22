@@ -265,21 +265,41 @@ impl Camera {
 
     pub fn look_at_plane(&mut self) {
         let forward = -self.local_pos.normalize_or_zero();
-        if forward.length_squared() > 0.001 {
-            let mut up = Vec3::Y;
-            if forward.dot(up).abs() > 0.95 {
-                up = Vec3::Z;
-            }
-            let right = forward.cross(up).normalize_or_zero();
-            if right.length_squared() > 0.001 {
-                let actual_up = right.cross(forward).normalize_or_zero();
-                let rot_mat = glam::Mat3::from_cols(right, actual_up, -forward);
-                self.local_ori = Quat::from_mat3(&rot_mat);
-            }
+        if forward.length_squared() < 0.001 {
+            return;
         }
+        // Right comes from the orbit yaw rather than from `forward × Y`, so the basis
+        // stays continuous at steep pitch instead of rolling over when forward nears Y.
+        let yaw = self.local_pos.x.atan2(self.local_pos.z);
+        let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+        let up = right.cross(forward).normalize_or_zero();
+        self.local_ori = Quat::from_mat3(&glam::Mat3::from_cols(right, up, -forward));
     }
 
+    /// Distance from the Earth's centre the camera may not come below at `global_pos`:
+    /// the ellipsoid, or the ground `ground` reports **at that position**, plus clearance.
+    fn floor_at(global_pos: glam::DVec3, ground: &dyn Fn(glam::DVec3) -> Option<f64>) -> f64 {
+        let d = global_pos.length();
+        let dir = global_pos.normalize_or_zero();
+        let t = 1.0
+            / (dir.x * dir.x * INV_A2_F64 + dir.y * dir.y * INV_B2_F64 + dir.z * dir.z * INV_A2_F64)
+                .sqrt();
+        let terrain = if d - t <= MIN_COLLISION_TERRAIN_HEIGHT as f64 {
+            ground(global_pos).filter(|g| *g > 0.0).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        t + terrain + SURFACE_CLEARANCE
+    }
+
+    /// [`Self::enforce_bounds_with`] against the ellipsoid alone.
     pub fn enforce_bounds(&mut self) {
+        self.enforce_bounds_with(&|_| None);
+    }
+
+    /// Keeps the camera within its distance limits and above the ground, sampling
+    /// `ground` (height above the ellipsoid, megametres) at every position it tests.
+    pub fn enforce_bounds_with(&mut self, ground: &dyn Fn(glam::DVec3) -> Option<f64>) {
         if self.mode == CameraMode::Cockpit {
             return;
         }
@@ -306,13 +326,7 @@ impl Camera {
 
             let anchor_dist = self.anchor_pos.length();
             let anchor_floor = if anchor_dist > 1.0 {
-                let adir = self.anchor_pos.normalize_or_zero();
-                let at = 1.0
-                    / (adir.x * adir.x * INV_A2_F64
-                        + adir.y * adir.y * INV_B2_F64
-                        + adir.z * adir.z * INV_A2_F64)
-                    .sqrt();
-                self.terrain_collision_floor(at, anchor_dist).unwrap_or(at + SURFACE_CLEARANCE)
+                Self::floor_at(self.anchor_pos, ground)
             } else {
                 EARTH_RADIUS_A_F64 + SURFACE_CLEARANCE
             };
@@ -332,15 +346,7 @@ impl Camera {
             let is_above_ground = |pos: Vec3| -> bool {
                 let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
                 let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
-                let d = global_pos.length();
-                let dir = global_pos.normalize_or_zero();
-                let t = 1.0
-                    / (dir.x * dir.x * INV_A2_F64
-                        + dir.y * dir.y * INV_B2_F64
-                        + dir.z * dir.z * INV_A2_F64)
-                    .sqrt();
-                let floor = self.terrain_collision_floor(t, d).unwrap_or(t + SURFACE_CLEARANCE);
-                d >= floor
+                global_pos.length() >= Self::floor_at(global_pos, ground)
             };
 
             if cur_pitch < min_pitch || !is_above_ground(self.local_pos) {
@@ -379,17 +385,8 @@ impl Camera {
 
         let (global_pos_dvec, _) = self.global_transform_f64();
         let dist = global_pos_dvec.length();
-
         let dir = global_pos_dvec.normalize_or_zero();
-        let t = 1.0
-            / (dir.x * dir.x * INV_A2_F64
-                + dir.y * dir.y * INV_B2_F64
-                + dir.z * dir.z * INV_A2_F64)
-                .sqrt();
-        let dynamic_min_distance = match self.terrain_collision_floor(t, dist) {
-            Some(floor) => floor,
-            None => t + 0.000002,
-        };
+        let dynamic_min_distance = Self::floor_at(global_pos_dvec, ground);
 
         if dist < dynamic_min_distance {
             log::info!(
@@ -414,30 +411,6 @@ impl Camera {
                 local_pos_dvec.z as f32,
             );
         }
-    }
-
-    /// The distance from the Earth's centre the camera may not come below, when the
-    /// terrain is what sets it — `None` when the ellipsoid still does.
-    ///
-    /// `None` on three counts, in the order they are cheapest to decide:
-    ///
-    /// - no ground height is known (terrain off, or nothing has streamed in yet);
-    /// - the camera is above [`MIN_COLLISION_TERRAIN_HEIGHT`], where the sample is a
-    ///   coarse average and a floor built on it would wander;
-    /// - the ground is at or below the ellipsoid, where the ellipsoid floor is already
-    ///   the higher of the two and the old expression is exactly right. The Dead Sea
-    ///   shore at −430 m is the case this covers: nothing should let the camera descend
-    ///   *further* than it could before because the DEM says the ground is low.
-    ///
-    /// `ellipsoid_radius` is `t`, the ellipsoid's radius along the camera's own
-    /// direction, already computed by the caller; `dist` is the camera's distance from
-    /// the centre. Both megametres.
-    fn terrain_collision_floor(&self, ellipsoid_radius: f64, dist: f64) -> Option<f64> {
-        let ground = self.ground_height? as f64;
-        if dist - ellipsoid_radius > MIN_COLLISION_TERRAIN_HEIGHT as f64 || ground <= 0.0 {
-            return None;
-        }
-        Some(ellipsoid_radius + ground + SURFACE_CLEARANCE)
     }
 
     // --- CONVENIENCE INPUT WRAPPERS ---
@@ -581,56 +554,9 @@ impl Camera {
             )
         };
 
-        let is_above_ground = |pos: Vec3| -> bool {
-            let pos_dvec = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);
-            let global_pos = self.anchor_pos + (self.anchor_ori * pos_dvec);
-            let d = global_pos.length();
-            let dir = global_pos.normalize_or_zero();
-            let t = 1.0
-                / (dir.x * dir.x * INV_A2_F64
-                    + dir.y * dir.y * INV_B2_F64
-                    + dir.z * dir.z * INV_A2_F64)
-                    .sqrt();
-            let floor = self.terrain_collision_floor(t, d).unwrap_or(t + SURFACE_CLEARANCE);
-            d >= floor
-        };
-
-        let anchor_dist = self.anchor_pos.length();
-        let anchor_floor = if anchor_dist > 1.0 {
-            let adir = self.anchor_pos.normalize_or_zero();
-            let at = 1.0
-                / (adir.x * adir.x * INV_A2_F64
-                    + adir.y * adir.y * INV_B2_F64
-                    + adir.z * adir.z * INV_A2_F64)
-                    .sqrt();
-            self.terrain_collision_floor(at, anchor_dist).unwrap_or(at + SURFACE_CLEARANCE)
-        } else {
-            EARTH_RADIUS_A_F64 + SURFACE_CLEARANCE
-        };
-        let h_plane = (anchor_dist - anchor_floor) as f32;
-        let min_sin_pitch = ((SURFACE_CLEARANCE as f32 - h_plane) / dist).clamp(-0.999, 0.999);
-        let min_pitch = min_sin_pitch.asin();
-
-        let clamped_target_pitch = target_pitch.max(min_pitch);
-        let max_pitch = 85.0_f32.to_radians();
-
-        let new_pitch = if is_above_ground(test_pos(clamped_target_pitch, new_yaw)) {
-            clamped_target_pitch
-        } else if is_above_ground(test_pos(max_pitch, new_yaw)) {
-            let mut low = clamped_target_pitch;
-            let mut high = max_pitch;
-            for _ in 0..12 {
-                let mid = (low + high) * 0.5;
-                if is_above_ground(test_pos(mid, new_yaw)) {
-                    high = mid;
-                } else {
-                    low = mid;
-                }
-            }
-            high
-        } else {
-            clamped_target_pitch
-        };
+        // Ground collision is not decided here: `enforce_bounds_with`, run once per frame
+        // with the real ground under each position it tests, lifts the pitch if needed.
+        let new_pitch = target_pitch;
 
         self.local_pos = test_pos(new_pitch, new_yaw);
         self.look_at_plane();
@@ -749,11 +675,7 @@ impl Camera {
     /// setter is one field write per frame and `enforce_bounds` runs exactly where it
     /// always ran.
     pub fn set_ground_height(&mut self, ground_height: Option<f32>) {
-        let changed = self.ground_height != ground_height;
         self.ground_height = ground_height;
-        if changed && ground_height.is_some() {
-            self.enforce_bounds();
-        }
     }
 
     /// Vertical field of view, in radians — the one the projection matrix uses.
