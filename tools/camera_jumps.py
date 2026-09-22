@@ -47,7 +47,7 @@ def main():
         top = int(sys.argv[sys.argv.index("--top") + 1])
 
     with open(path) as f:
-        rows = list(csv.DictReader(f))
+        rows = [r for r in csv.DictReader(f) if None not in r.values()]
     if len(rows) < 3:
         print("trace too short")
         return

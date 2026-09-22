@@ -496,27 +496,16 @@ impl HeightTileManager {
     /// a stalled fetch can never be mistaken for flat ground.
     ///
     /// Non-promoting, like every readiness check in this engine.
-    /// # Why an already-loaded ancestor is not good enough
+    /// # What it gates now
     ///
-    /// [`Self::resolve_source`] answers with the *deepest ready* ancestor, which is the
-    /// right answer for a query. It is the wrong answer for a **mesh**, because a mesh
-    /// is built once and Phase E2 — the rebuild-on-better-data pass — does not exist
-    /// yet. `TileSystem::update` prefetches the whole ancestor chain at `Low`, so a
-    /// coarse ancestor routinely lands before the tile's own height tile does; building
-    /// from it bakes a smoothed, hundreds-of-metres-too-low surface into the cache with
-    /// nothing to correct it. Measured, not reasoned: the first Phase C capture over
-    /// the Alps at 4.5 km had its whole foreground flattened this way.
-    ///
-    /// So the answer is `Ready` only once `source_tile_for(id)` — the deepest level the
-    /// source actually serves for this tile — has arrived, or has **failed**, in which
-    /// case the best available ancestor is genuinely the best there will ever be. While
-    /// it is still in flight the tile is `Pending` and the engine draws the parent's
-    /// mesh, exactly as it already draws the parent's texture: coarser geometry, not a
-    /// hole, and not a wrong shape that sticks.
-    ///
-    /// This is **not** E2. It removes the common case that would need a rebuild; a
-    /// tile that falls back to an ancestor because its own fetch failed still wants one,
-    /// which is why the mesh records [`crate::globe::geometry::TileMesh::height_source`].
+    /// Meshes no longer wait on it: `HeightPatch::sample` builds from the deepest data
+    /// resident ([`Self::resolve_source`]) so a tile entering the view is drawn at once,
+    /// and E2 rebuilds it when better data lands. `Ready` here means "the best data
+    /// this tile will ever get is resident" — `source_tile_for(id)` has arrived, or has
+    /// **failed** and the best ancestor is final — which is what E2's staleness test
+    /// and the culling bounds (`height_bounds_for`) need: a rebuild or a bound taken
+    /// while the tile's own data is still in flight would be taken from data that is
+    /// about to be superseded.
     pub fn status_of(&self, id: TileId) -> PatchStatus {
         let mut curr = self.source_tile_for(id);
         loop {

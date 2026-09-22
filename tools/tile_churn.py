@@ -25,7 +25,7 @@ def main():
     path = args[0] if args else "tile_trace.csv"
     slow_ms = float(sys.argv[sys.argv.index("--slow") + 1]) if "--slow" in sys.argv else 50.0
 
-    rows = list(csv.DictReader(open(path)))
+    rows = [r for r in csv.DictReader(open(path)) if None not in r.values()]
     lap = "start"
     laps = ["start"]
     stats = defaultdict(Counter)          # lap -> counter

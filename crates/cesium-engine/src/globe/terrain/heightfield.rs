@@ -103,6 +103,11 @@ pub enum PatchStatus {
 /// The skirt ring's *altitude* still comes from the edge, not the halo — see
 /// [`Heightfield::vertex_altitude`]: skirts hang inward from the edge, they do not
 /// reach outside the tile (invariant I-5).
+/// How many levels coarser than a tile's own height source the data it is built from
+/// may be while that source is still in flight; see [`HeightPatch::sample`]. Two levels
+/// is a 4x coarser sample spacing — smoothed, but at the right height.
+pub const MAX_SOURCE_LEVEL_GAP: u8 = 2;
+
 #[derive(Clone, Debug)]
 pub struct HeightPatch {
     segments: u32,
@@ -146,6 +151,15 @@ impl HeightPatch {
         // a mesh, and the renderer's fallback then climbed to whatever ancestor *had* one
         // — a single new tile at the edge of the view could swap the whole screen for a
         // z4 mesh whose 16x16 grid sits hundreds of metres off the real ground.
+        //
+        // …but only from data at most `MAX_SOURCE_LEVEL_GAP` levels coarser than the
+        // tile's own source. A z12 valley tile built from z5 data is the average of 50 km
+        // of Alps — a slab floating a kilometre above the valley next to neighbours built
+        // from their own data, with sky showing through the gaps. Until closer data is in,
+        // the tile waits and the renderer draws its nearest built ancestor instead, whose
+        // own data matches its scale. When the tile's own fetch has *failed*
+        // (`status_of` is `Ready` with an ancestor answering) the best ancestor is final
+        // and is used whatever the gap.
         let (source, tile) = match heights.source_for(id) {
             Some(found) => found,
             None => {
@@ -155,6 +169,11 @@ impl HeightPatch {
                 })
             }
         };
+        if source.z + MAX_SOURCE_LEVEL_GAP < heights.source_tile_for(id).z
+            && heights.status_of(id) != PatchStatus::Ready
+        {
+            return Err(PatchStatus::Pending);
+        }
 
         let grid_size = (segments + 3) as usize;
         let inv_seg = 1.0 / segments as f64;

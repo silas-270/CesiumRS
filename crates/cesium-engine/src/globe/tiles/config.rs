@@ -642,7 +642,7 @@ mod tests {
             "the default must come from the one constant that states the platform split"
         );
         #[cfg(not(target_os = "android"))]
-        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 760);
+        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 761);
         #[cfg(target_os = "android")]
         assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 253);
     }

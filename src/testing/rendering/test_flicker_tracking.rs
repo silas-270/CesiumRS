@@ -248,6 +248,19 @@ impl<'a> ApplicationHandler for FlickerTrackingApp<'a> {
         }
     }
 
+    // The GPU state has to go while the event loop (and with it the Wayland
+
+    // connection its EGL surface references) still exists; dropped afterwards it
+
+    // corrupted the heap ("corrupted size vs. prev_size") and hung on exit.
+
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+
+        self.inner.exiting(event_loop);
+
+    }
+
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.inner.about_to_wait(event_loop);
     }
