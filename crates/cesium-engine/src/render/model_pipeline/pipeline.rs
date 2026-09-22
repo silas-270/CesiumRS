@@ -174,6 +174,9 @@ pub struct ModelRenderer {
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
     pub bind_group: wgpu::BindGroup,
+    /// Lowest vertex `y` of the finished (normalised, scaled) mesh, in model units. For
+    /// an aircraft this is the bottom of the gear relative to the model origin.
+    pub min_y: f32,
 }
 
 impl ModelRenderer {
@@ -361,6 +364,11 @@ impl ModelRenderer {
                 v.position[2] *= scale;
             }
         }
+        let min_y = vertices
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::INFINITY, f32::min)
+            .min(0.0);
 
         stage("mesh walk");
         use wgpu::util::DeviceExt;
@@ -600,6 +608,7 @@ impl ModelRenderer {
             index_buffer,
             num_indices: indices.len() as u32,
             bind_group,
+            min_y,
         })
     }
 

@@ -41,7 +41,9 @@ fn fixture(name: &str, ocean: OceanPolicy) -> HeightTile {
 
 // ── B1: the decoder, pinned against committed tiles ──────────────────────────
 
-/// The five fixtures' **exact** full-tile extrema, `OceanPolicy::Raw`.
+/// The five fixtures' full-tile extrema, `OceanPolicy::Raw`, in whole metres rounded
+/// **outward** (min down, max up) from the sub-metre decode — the Zugspitze summit texel
+/// is 2947.x m, so its bound is 2948.
 ///
 /// These are the regression baseline. They were computed independently of the
 /// decoder under test (a standalone Python pass over the same PNGs) before being
@@ -56,7 +58,7 @@ fn fixture(name: &str, ocean: OceanPolicy) -> HeightTile {
 fn raw_decode_reproduces_the_fixture_extrema() {
     for (name, min, max) in [
         (EVEREST, 5136, 8753),
-        (ZUGSPITZE, 848, 2947),
+        (ZUGSPITZE, 848, 2948),
         (COAST, -23, 123),
         (PACIFIC, -4324, -2276),
         (DEAD_SEA, -412, -412),
@@ -76,7 +78,7 @@ fn raw_decode_reproduces_the_fixture_extrema() {
 fn clamped_decode_lifts_only_the_sub_sea_level_side() {
     for (name, min, max) in [
         (EVEREST, 5136, 8753),
-        (ZUGSPITZE, 848, 2947),
+        (ZUGSPITZE, 848, 2948),
         (COAST, 0, 123),
         (PACIFIC, 0, 0),
         (DEAD_SEA, 0, 0),
@@ -107,7 +109,7 @@ fn the_open_ocean_carries_bathymetry_not_a_flat_sheet() {
     assert!(raw.h_min < -4000, "and some of it is 4 km down");
 
     let clamped = fixture(PACIFIC, OceanPolicy::ClampToZero);
-    assert!(clamped.data.iter().all(|&h| h == 0));
+    assert!(clamped.samples().all(|h| h == 0.0));
 }
 
 /// And the documented price of that choice, asserted rather than left implicit: the
@@ -115,11 +117,10 @@ fn the_open_ocean_carries_bathymetry_not_a_flat_sheet() {
 #[test]
 fn clamping_flattens_the_dead_sea_as_documented() {
     let raw = fixture(DEAD_SEA, OceanPolicy::Raw);
-    assert!(raw.data.iter().all(|&h| h == -412));
+    assert!(raw.samples().all(|h| h == -412.0));
     assert!(fixture(DEAD_SEA, OceanPolicy::ClampToZero)
-        .data
-        .iter()
-        .all(|&h| h == 0));
+        .samples()
+        .all(|h| h == 0.0));
 }
 
 /// A coastal tile is the one fixture where the policy matters *within* a tile rather
@@ -130,8 +131,12 @@ fn a_coastal_tile_keeps_its_land_and_lifts_its_water() {
     let clamped = fixture(COAST, OceanPolicy::ClampToZero);
     assert_eq!(raw.h_max, clamped.h_max);
     assert!(raw.h_min < 0 && clamped.h_min == 0);
-    for (r, c) in raw.data.iter().zip(clamped.data.iter()) {
-        assert_eq!(*c, (*r).max(0));
+    // Each tile is quantised across its own range, so the two agree to within one
+    // quantisation step of each (a few centimetres here), not bit for bit.
+    let step = |t: &cesium_engine::globe::terrain::HeightTile| (t.h_max - t.h_min) as f32 / 65535.0;
+    let tol = step(&raw) + step(&clamped) + 1e-3;
+    for (r, c) in raw.samples().zip(clamped.samples()) {
+        assert!((c - r.max(0.0)).abs() <= tol, "{c} vs {r}");
     }
 }
 
@@ -209,7 +214,7 @@ fn the_min_max_pyramid_bounds_every_block_it_covers() {
             let (lo, hi) = (tile.mip_min(cx, cy), tile.mip_max(cx, cy));
             assert!(lo <= hi, "cell ({cx},{cy}) has an inverted interval");
 
-            let (mut block_min, mut block_max) = (i16::MAX, i16::MIN);
+            let (mut block_min, mut block_max) = (f32::INFINITY, f32::NEG_INFINITY);
             for y in cy * HEIGHT_MIP_BLOCK..(cy + 1) * HEIGHT_MIP_BLOCK {
                 for x in cx * HEIGHT_MIP_BLOCK..(cx + 1) * HEIGHT_MIP_BLOCK {
                     let h = tile.sample(x, y);
@@ -217,8 +222,10 @@ fn the_min_max_pyramid_bounds_every_block_it_covers() {
                     block_max = block_max.max(h);
                 }
             }
-            assert_eq!(lo, block_min, "mip_min of cell ({cx},{cy})");
-            assert_eq!(hi, block_max, "mip_max of cell ({cx},{cy})");
+            // Whole metres, rounded outward: the tightest integer bounds that contain
+            // every sample of the block.
+            assert_eq!(lo, block_min.floor() as i16, "mip_min of cell ({cx},{cy})");
+            assert_eq!(hi, block_max.ceil() as i16, "mip_max of cell ({cx},{cy})");
             global_min = global_min.min(lo);
             global_max = global_max.max(hi);
         }

@@ -90,14 +90,10 @@ mod tests {
         // Zoom in (delta > 0, e.g. 1.0)
         camera.zoom(1.0);
 
-        // At distance 250m (0.00025), which is above 20m threshold (0.00002):
-        // speed = 0.00025
-        // move_distance = 0.00025 * 0.15 * 1.0 = 0.0000375
-        // forward = -Vec3::Z
-        // With Quat::IDENTITY, local_pos.z becomes 0.00025 - 0.0000375 = 0.0002125
+        // Tracking zoom scales the orbit distance by (1 - 0.1 * delta): 250 m -> 225 m.
         assert!(
-            (camera.local_pos.z - 0.0002125).abs() < 1e-7,
-            "Expected camera to move to 0.0002125, got {:?}",
+            (camera.local_pos.z - 0.000225).abs() < 1e-7,
+            "Expected camera to move to 0.000225, got {:?}",
             camera.local_pos.z
         );
 

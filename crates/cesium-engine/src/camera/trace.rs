@@ -22,6 +22,14 @@ fn orbit(local: Vec3) -> (f64, f64, f64) {
     (yaw, pitch, d * 1.0e6)
 }
 
+/// Distance from the Earth's centre to the ellipsoid along `p`, megametres.
+fn ellipsoid_radius(p: DVec3) -> f64 {
+    const A: f64 = 6.378137;
+    const B: f64 = 6.356_752_314_2;
+    let d = p.normalize_or_zero();
+    1.0 / (d.x * d.x / (A * A) + d.y * d.y / (B * B) + d.z * d.z / (A * A)).sqrt()
+}
+
 pub struct CameraTrace {
     out: BufWriter<File>,
     start: Instant,
@@ -39,7 +47,8 @@ impl CameraTrace {
             out,
             "frame,t_ms,mode,x_m,y_m,z_m,lat,lon,alt_m,agl_m,heading,pitch,roll,\
              orbit_yaw,orbit_pitch,orbit_dist_m,ground_cam_m,ground_anchor_m,\
-             anchor_x_m,anchor_y_m,anchor_z_m,collision_move_m"
+             anchor_x_m,anchor_y_m,anchor_z_m,collision_move_m,\
+             drawn_agl_m,los_min_m,anchor_heading"
         );
         log::info!("Camera trace -> {TRACE_FILE}");
         Some(Self {
@@ -57,7 +66,14 @@ impl CameraTrace {
 
     /// Call once per frame after the collision pass. `ground` is the same query the
     /// collision pass used (height above the ellipsoid, megametres).
-    pub fn record(&mut self, camera: &Camera, ground: &dyn Fn(DVec3) -> Option<f64>) {
+    /// `drawn` is the height of the surface as drawn (the rendered mesh), for checking
+    /// the camera never ends up inside it.
+    pub fn record(
+        &mut self,
+        camera: &Camera,
+        ground: &dyn Fn(DVec3) -> Option<f64>,
+        drawn: &dyn Fn(DVec3) -> Option<f64>,
+    ) {
         let (pos, ori) = camera.global_transform_f64();
         let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
 
@@ -83,10 +99,32 @@ impl CameraTrace {
         let collision_move = (camera.local_pos - self.pre_local).length() as f64 * 1.0e6;
         let a = camera.anchor_pos * 1.0e6;
 
+        // Height above the drawn surface, and the lowest clearance of the line of sight
+        // to the aircraft over the terrain (negative: a hill hides it).
+        let above = |p: DVec3, h: Option<f64>| h.map_or(f64::NAN, |h| (p.length() - ellipsoid_radius(p) - h) * 1.0e6);
+        let drawn_agl = above(pos, drawn(pos));
+        let mut los_min = f64::NAN;
+        let mut anchor_heading = f64::NAN;
+        if camera.mode == CameraMode::Tracking && camera.anchor_pos.length() > 1.0 {
+            for i in 1..10 {
+                let t = i as f64 / 10.0;
+                let q = pos + (camera.anchor_pos - pos) * t;
+                let c = above(q, ground(q));
+                if !c.is_nan() && (los_min.is_nan() || c < los_min) {
+                    los_min = c;
+                }
+            }
+            let aup = camera.anchor_pos.normalize();
+            let aeast = DVec3::Y.cross(aup).normalize_or_zero();
+            let anorth = aup.cross(aeast);
+            let afwd = camera.anchor_ori * DVec3::NEG_Z;
+            anchor_heading = afwd.dot(aeast).atan2(afwd.dot(anorth)).to_degrees();
+        }
+
         let _ = writeln!(
             self.out,
             "{},{:.3},{:?},{:.3},{:.3},{:.3},{:.8},{:.8},{:.3},{:.3},{:.4},{:.4},{:.4},\
-             {:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4}",
+             {:.4},{:.4},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.3},{:.3},{:.4}",
             self.frame,
             self.start.elapsed().as_secs_f64() * 1000.0,
             camera.mode,
@@ -109,6 +147,9 @@ impl CameraTrace {
             a.y,
             a.z,
             collision_move,
+            drawn_agl,
+            los_min,
+            anchor_heading,
         );
         self.frame += 1;
         if self.frame % 120 == 0 {

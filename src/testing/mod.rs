@@ -27,6 +27,7 @@ pub struct VerifyConfig {
     pub free_routes: bool,
     pub tracking_orbit: bool,
     pub revisit: bool,
+    pub collide: bool,
     pub stress_mode: String,
     pub prefetch: bool,
     pub cache_size: usize,

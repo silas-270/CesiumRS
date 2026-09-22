@@ -513,8 +513,17 @@ fn eye_at(lon: f64, lat: f64, alt_m: f64) -> Vec3 {
 fn camera_at(lon: f64, lat: f64, alt_m: f64) -> Camera {
     let e = eye_at(lon, lat, alt_m);
     let mut cam = Camera::new(e, Vec3::ZERO);
+    // Free: these poses are world positions, not offsets from an aircraft. The default
+    // became Tracking after these tests were written, and the clamp took the orbit arm.
+    cam.mode = cesium_engine::camera::CameraMode::Free;
     cam.set_eye(e, Vec3::ZERO);
     cam
+}
+
+/// The collision pass the engine runs each frame, against a flat ground of `metres`.
+fn collide_with_ground(cam: &mut Camera, metres: f64) {
+    let ground = metres * M_TO_MM;
+    cam.enforce_bounds_with(&|_| Some(ground));
 }
 
 /// `enforce_bounds`'s clamp arm, written out: where a camera pointing this way ends up
@@ -555,7 +564,7 @@ fn placed_at(lon: f64, lat: f64, alt_m: f64) -> (Vec3, glam::DVec3) {
 fn ground_below_the_camera_does_not_move_it() {
     let mut cam = camera_at(11.40, 47.26, 900.0);
     let before = cam.local_pos;
-    cam.set_ground_height(Some((583.0 * M_TO_MM) as f32));
+    collide_with_ground(&mut cam, 583.0);
     assert_eq!(
         cam.local_pos.to_array().map(f32::to_bits),
         before.to_array().map(f32::to_bits),
@@ -575,7 +584,7 @@ fn a_camera_inside_a_mountain_is_pushed_onto_its_surface() {
 
     let floor = ellipsoid_radius_under(&cam) + 2_000.0 * M_TO_MM + 2.0 * M_TO_MM;
     let want = clamped_local_pos(&cam, floor);
-    cam.set_ground_height(Some((2_000.0 * M_TO_MM) as f32));
+    collide_with_ground(&mut cam, 2_000.0);
 
     assert_eq!(
         cam.local_pos.to_array().map(f32::to_bits),
@@ -598,7 +607,7 @@ fn above_the_threshold_the_terrain_floor_is_not_enforced() {
     // 16 km of (exaggerated) ground, a camera at 20 km: above the gate, left alone.
     let mut high = camera_at(11.3833, 47.3167, 20_000.0);
     let before = high.local_pos;
-    high.set_ground_height(Some((16_000.0 * M_TO_MM) as f32));
+    collide_with_ground(&mut high, 16_000.0);
     assert_eq!(
         high.local_pos.to_array().map(f32::to_bits),
         before.to_array().map(f32::to_bits),
@@ -609,7 +618,7 @@ fn above_the_threshold_the_terrain_floor_is_not_enforced() {
     let mut low = camera_at(11.3833, 47.3167, 14_000.0);
     let floor = ellipsoid_radius_under(&low) + 16_000.0 * M_TO_MM + 2.0 * M_TO_MM;
     let want = clamped_local_pos(&low, floor);
-    low.set_ground_height(Some((16_000.0 * M_TO_MM) as f32));
+    collide_with_ground(&mut low, 16_000.0);
     assert_eq!(
         low.local_pos.to_array().map(f32::to_bits),
         want.to_array().map(f32::to_bits),

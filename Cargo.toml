@@ -58,6 +58,17 @@ tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
 # Tests carry heavy f64 sweeps (see src/testing/culling/). At the default
 # opt-level = 0 the culling harness runs ~8x slower, which dominates the
 # edit-measure loop. Debuggability of test code is unaffected in practice.
+# `cargo run` without `--release` is how the app is usually started while developing.
+# Unoptimised wgpu/image/tokio made that ~10x slower than release (20 ms frames against
+# 2 ms on the same machine), which reads as a performance bug in the engine. Dependencies
+# are built once, so optimising them costs nothing per edit; the workspace crates get
+# opt-level 1 to stay quick to rebuild while no longer crawling.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.test]
 opt-level = 2
 

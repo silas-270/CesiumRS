@@ -161,7 +161,41 @@ pub struct FlightTrackerApp {
     pub custom_route_input: String,
     /// Status or error message for route loading in UI
     pub route_status_msg: Option<(String, bool)>,
+    /// Where the aircraft meets the rendered terrain; see [`TerrainFit`].
+    terrain: TerrainFit,
 }
+
+/// How the aircraft is fitted onto the rendered terrain, refreshed every frame by
+/// `sample_ground`.
+///
+/// The flight profile puts the aircraft on the ground at the airport's published
+/// elevation, which is not the height of the terrain the engine draws there — at
+/// Frankfurt the DEM runway is 12 m lower than the 111 m AIP figure, so the aircraft
+/// hovered; elsewhere it sinks. `offset_m` moves it onto the drawn ground: in full while
+/// on the ground, fading out with height above the airport.
+#[derive(Default)]
+struct TerrainFit {
+    /// Metres added to the profile altitude, along the local vertical.
+    offset_m: f64,
+    /// 1 on the ground, 0 from `FIT_FADE_TOP_M` above the airport up.
+    weight: f64,
+    /// Height of the (offset) flight position above the terrain under it, metres.
+    agl_m: f64,
+    /// Progress and time the fit was last computed at, to tell a jump from playback.
+    at: Option<(f64, std::time::Instant)>,
+}
+
+/// Height above the airport below which the aircraft is fitted to the terrain in full.
+const FIT_FADE_BOTTOM_M: f64 = 30.0;
+/// Height above the airport above which the profile altitude is used as it is.
+const FIT_FADE_TOP_M: f64 = 600.0;
+/// Time constant with which the fit follows the terrain (better height data arriving,
+/// the aircraft rolling over a slope), seconds.
+const FIT_SMOOTHING_S: f64 = 0.15;
+/// Height of the exterior model's origin above the flight position when airborne, metres.
+const AIRBORNE_MODEL_LIFT_M: f64 = 7.5;
+/// Gap left between the gear and the ground, metres.
+const GEAR_CLEARANCE_M: f64 = 0.2;
 
 impl FlightTrackerApp {
     /// Constructs the app and a handle for sending commands to it from other threads.
@@ -177,6 +211,7 @@ impl FlightTrackerApp {
             cockpit_renderer: None,
             cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
+            terrain: TerrainFit::default(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -207,6 +242,7 @@ impl FlightTrackerApp {
             cockpit_renderer: None,
             cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
+            terrain: TerrainFit::default(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -267,9 +303,52 @@ impl FlightTrackerApp {
                     s.rotation = prev_state.rotation;
                 }
             }
+            s.position += s.position.normalize() * (self.terrain.offset_m * 1.0e-6);
         }
 
         state
+    }
+
+    /// Refreshes [`TerrainFit`] for the current progress from the engine's ground query.
+    fn fit_to_terrain(&mut self, ground: &dyn Fn(DVec3) -> Option<f64>) {
+        let p = *self.progress.lock().unwrap();
+        let now = std::time::Instant::now();
+        let Some(flight) = self.flights.first() else {
+            self.terrain = TerrainFit::default();
+            return;
+        };
+        let (Some(first), Some(last)) = (flight.telemetry_points.first(), flight.telemetry_points.last())
+        else {
+            return;
+        };
+        let field_m = if p < 0.5 { first.altitude } else { last.altitude };
+        let (Some(raw), Some(tel)) =
+            (self.get_plane_state_at_time_delta(p, 0.0), self.get_telemetry_at(p))
+        else {
+            return;
+        };
+        let Some(ground_m) = ground(raw.position).map(|g| g * 1.0e6) else {
+            return;
+        };
+
+        let above_field = tel.altitude - field_m;
+        let t = ((above_field - FIT_FADE_BOTTOM_M) / (FIT_FADE_TOP_M - FIT_FADE_BOTTOM_M)).clamp(0.0, 1.0);
+        let weight = 1.0 - t * t * (3.0 - 2.0 * t);
+        let target = (ground_m - field_m) * weight;
+
+        // Follow smoothly during playback; snap after a jump in progress or on the first frame.
+        let offset = match self.terrain.at {
+            Some((q, then)) if (q - p).abs() < 0.002 => {
+                let dt = now.duration_since(then).as_secs_f64();
+                let k = 1.0 - (-dt / FIT_SMOOTHING_S).exp();
+                self.terrain.offset_m + (target - self.terrain.offset_m) * k
+            }
+            _ => target,
+        };
+        self.terrain.offset_m = offset;
+        self.terrain.weight = weight;
+        self.terrain.agl_m = tel.altitude + offset - ground_m;
+        self.terrain.at = Some((p, now));
     }
 
     pub fn get_sun_intensity_at(&self, progress_val: f64) -> Option<f64> {
@@ -649,6 +728,10 @@ impl GlobeExtension for FlightTrackerApp {
                 });
             }
         }
+    }
+
+    fn sample_ground(&mut self, ground: &dyn Fn(DVec3) -> Option<f64>) {
+        self.fit_to_terrain(ground);
     }
 
     fn update(
@@ -1036,11 +1119,25 @@ impl GlobeExtension for FlightTrackerApp {
         // Draw airplane
         if let Some(airplane) = &self.airplane_renderer {
             if let Some(state) = airplane_state {
-                // Elevate 7.5m (0.0000075 Megameters) to avoid clipping while sitting
-                // just above the ribbon's own 5m z-fighting offset in polyline.wgsl.
+                // The model's scale grows with camera distance (below), about an origin
+                // above its gear, so the lift that keeps it out of the ground has to be
+                // worked out at that scale. Airborne it sits 7.5 m up, clear of the
+                // ribbon's own 5 m z-fighting offset in polyline.wgsl; on the ground the
+                // gear rests on the terrain; and at any height its lowest point stays
+                // above the terrain under it however large the zoom has made it.
                 let up_dir = state.position.normalize();
-                let elevated_position = state.position + up_dir * 0.0000075;
                 let camera_pos = glam::DVec3::from_slice(&camera_pos_f64);
+                let model_scale_m = (((state.position + up_dir * AIRBORNE_MODEL_LIFT_M * 1.0e-6)
+                    - camera_pos)
+                    .length()
+                    * 0.008325)
+                    .clamp(33.5e-6, 1.0)
+                    * 1.0e6;
+                let gear_depth_m = -(airplane.min_y as f64) * model_scale_m;
+                let w = self.terrain.weight;
+                let lift_m = (AIRBORNE_MODEL_LIFT_M * (1.0 - w) + (gear_depth_m + GEAR_CLEARANCE_M) * w)
+                    .max(gear_depth_m + GEAR_CLEARANCE_M - self.terrain.agl_m);
+                let elevated_position = state.position + up_dir * (lift_m * 1.0e-6);
                 let relative_pos_f64 = elevated_position - camera_pos;
                 let relative_pos = glam::Vec3::new(
                     relative_pos_f64.x as f32,

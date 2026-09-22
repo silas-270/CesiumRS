@@ -30,7 +30,7 @@ impl<'a> TrackingOrbitApp<'a> {
 
         let config = TileEngineConfig {
             max_cache_size: NonZeroUsize::new(2048).unwrap(),
-            mesh_cache_size: NonZeroUsize::new(512).unwrap(),
+            mesh_cache_size: NonZeroUsize::new(cesium_engine::globe::tiles::config::MESH_CACHE_ENTRIES).unwrap(),
             target_texel_ratio: 1.0,
             enable_prefetch: true,
             base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),

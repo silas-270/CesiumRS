@@ -391,7 +391,8 @@ fn the_old_floor_put_the_camera_under_the_drawn_ground() {
         let mut cam = Camera::new(eye, Vec3::ZERO);
         cam.set_eye(eye, Vec3::ZERO);
         cam.mode = CameraMode::Free;
-        cam.set_ground_height(Some((ground_m / MM_TO_M) as f32));
+        let ground_mm = ground_m / MM_TO_M;
+        cam.enforce_bounds_with(&|_| Some(ground_mm));
         cam.global_transform_f64().0.length()
     };
 

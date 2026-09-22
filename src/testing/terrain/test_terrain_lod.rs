@@ -630,9 +630,9 @@ fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight()
     use cesium_engine::globe::tiles::config::HEIGHT_TILE_BYTES;
     assert_eq!(
         HEIGHT_TILE_BYTES,
-        256 * 256 * 2 + 2 * (16 * 16 * 2) + 2 + 2 * HEIGHT_DETAIL_PYRAMID_CELLS,
-        "E1 adds one i16 per tile and F5 adds 84 more; if this moved, the cache entry \
-         count in `docs/terrain-plan.md` §5 B4 needs re-deriving"
+        256 * 256 * 2 + 2 * (16 * 16 * 2) + 2 + 2 * HEIGHT_DETAIL_PYRAMID_CELLS + 8,
+        "E1 adds one i16 per tile, F5 adds 84 more and the sub-metre quantisation 8 bytes \
+         of base and step; if this moved, the cache entry count needs re-deriving"
     );
     // The derived entry count must follow from the one constant that states the budget and
     // nothing else. It is 381 on desktop since §9 F2b resized the slice to 48 MiB; Android
@@ -646,7 +646,7 @@ fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight()
     #[cfg(not(target_os = "android"))]
     assert_eq!(
         config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
-        380
+        760
     );
     // Not a size_of pin: `HeightTile` boxes its grids, so the i16 lands in a struct whose
     // own size is dominated by three pointers. The accounting constant above is what the

@@ -45,8 +45,11 @@ pub const TERRARIUM_MAX_LEVEL: u8 = 15;
 /// of the entry, and one entry off the derived count: 50 331 648 / 132 266 is 380 where
 /// 50 331 648 / 132 098 was 381. That is what four levels of measured shape cost in memory,
 /// and it is the whole of it.
-pub const HEIGHT_TILE_BYTES: usize =
-    256 * 256 * 2 + 2 * (16 * 16 * 2) + 2 + 2 * crate::globe::terrain::HEIGHT_DETAIL_PYRAMID_CELLS;
+pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2
+    + 2 * (16 * 16 * 2)
+    + 2
+    + 2 * crate::globe::terrain::HEIGHT_DETAIL_PYRAMID_CELLS
+    + 8; // the per-tile quantisation base and step
 
 /// What to do with the sub-sea-level samples the Terrarium source carries.
 ///
@@ -127,8 +130,17 @@ pub const TERRAIN_ENABLED_BY_DEFAULT: bool = !cfg!(target_os = "android");
 pub const HEIGHT_CACHE_BUDGET_BYTES: usize = if cfg!(target_os = "android") {
     32 * 1024 * 1024
 } else {
-    48 * 1024 * 1024
+    96 * 1024 * 1024
 };
+
+/// Tile meshes kept resident. A mesh is ~15 kB of GPU buffers (≈357 vertices of 32 bytes
+/// plus indices), so this is ~60 MB on desktop.
+///
+/// Raised from 512: one 360° orbit near the ground draws more meshes than that, so the
+/// second lap of the same orbit evicted and rebuilt 786 of them — each rebuilt first from
+/// coarse ancestor data (its own height tile had been evicted too) and sharpened a moment
+/// later, i.e. the ground visibly re-loaded (`testing::rendering::revisit`).
+pub const MESH_CACHE_ENTRIES: usize = if cfg!(target_os = "android") { 1536 } else { 4096 };
 
 /// Terrain height data — `docs/terrain-plan.md` §4 A3, §5, §6 and §7.
 ///
@@ -458,7 +470,7 @@ impl Default for TileEngineConfig {
             // let imagery textures climb past 1.9GB and still rising, on a
             // device that was down to 1.4GB available.
             tile_cache_budget_bytes: 512 * 1024 * 1024,
-            mesh_cache_size: NonZeroUsize::new(512).unwrap(),
+            mesh_cache_size: NonZeroUsize::new(MESH_CACHE_ENTRIES).unwrap(),
             target_texel_ratio: 1.0,
             fog: crate::globe::quadtree::FogConfig::default(),
             prefetch_radius: 1, // Number of tiles to prefetch in velocity direction
@@ -624,13 +636,13 @@ mod tests {
     fn the_default_height_budget_lands_on_the_measured_entry_count() {
         let terrain = TerrainConfig::default();
         // E1's two bytes plus F5's 168-byte pyramid, on top of the samples and the mips.
-        assert_eq!(HEIGHT_TILE_BYTES, 132_266);
+        assert_eq!(HEIGHT_TILE_BYTES, 132_274);
         assert_eq!(
             terrain.height_cache_budget_bytes, HEIGHT_CACHE_BUDGET_BYTES,
             "the default must come from the one constant that states the platform split"
         );
         #[cfg(not(target_os = "android"))]
-        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 380);
+        assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 760);
         #[cfg(target_os = "android")]
         assert_eq!(terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES, 253);
     }

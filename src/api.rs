@@ -282,8 +282,11 @@ impl CesiumViewerBuilder {
         let config = TileEngineConfig {
             max_cache_size: NonZeroUsize::new(self.tile_cache_size)
                 .unwrap_or(NonZeroUsize::new(1).unwrap()),
-            mesh_cache_size: NonZeroUsize::new(self.tile_cache_size / 4)
-                .unwrap_or(NonZeroUsize::new(1).unwrap()),
+            mesh_cache_size: NonZeroUsize::new(
+                (self.tile_cache_size / 4)
+                    .max(cesium_engine::globe::tiles::config::MESH_CACHE_ENTRIES),
+            )
+            .unwrap_or(NonZeroUsize::new(1).unwrap()),
             tile_cache_budget_bytes: self.tile_cache_budget_bytes,
             target_texel_ratio: self.target_texel_ratio,
             enable_prefetch: self.enable_prefetch,

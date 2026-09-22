@@ -18,6 +18,8 @@ fn make_touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> Touch {
 #[test]
 fn test_touch_interpreter_single_finger_pan() {
     let mut camera = Camera::new(glam::Vec3::new(0.0, 0.0, 20.0), glam::Vec3::ZERO);
+    // Globe drag and inertia are Free-mode behaviour; the default mode is Tracking.
+    camera.mode = cesium_engine::camera::CameraMode::Free;
     let mut interpreter = TouchInterpreter::new();
     let screen_w = 800.0;
     let screen_h = 600.0;
@@ -27,9 +29,12 @@ fn test_touch_interpreter_single_finger_pan() {
     let redrew = interpreter.handle_touch_event(&touch_down, &mut camera, screen_w, screen_h);
     assert!(!redrew, "Touch down shouldn't request redraw on its own");
 
-    // 2. First finger drag
+    // 2. First finger drag. Crossing the 8 px deadband starts the drag at the current
+    // position (so the globe does not snap); the camera moves from the next move on.
     let touch_move = make_touch(1, TouchPhase::Moved, 450.0, 300.0);
-    let redrew2 = interpreter.handle_touch_event(&touch_move, &mut camera, screen_w, screen_h);
+    interpreter.handle_touch_event(&touch_move, &mut camera, screen_w, screen_h);
+    let touch_move2 = make_touch(1, TouchPhase::Moved, 480.0, 300.0);
+    let redrew2 = interpreter.handle_touch_event(&touch_move2, &mut camera, screen_w, screen_h);
     assert!(redrew2, "Drag move should trigger camera movement and request redraw");
 
     // 3. First finger lift
@@ -40,6 +45,8 @@ fn test_touch_interpreter_single_finger_pan() {
 #[test]
 fn test_touch_interpreter_pinch_to_zoom() {
     let mut camera = Camera::new(glam::Vec3::new(0.0, 0.0, 20.0), glam::Vec3::ZERO);
+    // Globe drag and inertia are Free-mode behaviour; the default mode is Tracking.
+    camera.mode = cesium_engine::camera::CameraMode::Free;
     let start_distance = camera.local_pos.length();
 
     let mut interpreter = TouchInterpreter::new();
@@ -68,6 +75,8 @@ fn test_touch_interpreter_pinch_to_zoom() {
 #[test]
 fn test_touch_interpreter_two_finger_tilt() {
     let mut camera = Camera::new(glam::Vec3::new(0.0, 0.0, 20.0), glam::Vec3::ZERO);
+    // Globe drag and inertia are Free-mode behaviour; the default mode is Tracking.
+    camera.mode = cesium_engine::camera::CameraMode::Free;
     let mut interpreter = TouchInterpreter::new();
     let screen_w = 800.0;
     let screen_h = 600.0;
@@ -92,6 +101,8 @@ fn test_touch_interpreter_two_finger_tilt() {
 #[test]
 fn test_camera_inertia_decay() {
     let mut camera = Camera::new(glam::Vec3::new(0.0, 0.0, 20.0), glam::Vec3::ZERO);
+    // Globe drag and inertia are Free-mode behaviour; the default mode is Tracking.
+    camera.mode = cesium_engine::camera::CameraMode::Free;
     let mut interpreter = TouchInterpreter::new();
     let screen_w = 800.0;
     let screen_h = 600.0;

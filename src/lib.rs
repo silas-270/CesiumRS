@@ -47,6 +47,9 @@ pub fn run(config: Option<testing::VerifyConfig>) {
             testing::rendering::cockpit_s23::run(cfg);
         } else if cfg.free_routes {
             testing::rendering::free_routes::run(cfg);
+        } else if cfg.collide {
+            let mut app = testing::rendering::collide::CollideApp::new(cfg);
+            event_loop.run_app(&mut app).unwrap();
         } else if cfg.revisit {
             let mut app = testing::rendering::revisit::RevisitApp::new(cfg);
             event_loop.run_app(&mut app).unwrap();
