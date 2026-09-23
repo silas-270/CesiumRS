@@ -117,5 +117,20 @@ mod tests {
             "Expected camera to remain clamped at 0.00002, got {:?}",
             camera.local_pos.z
         );
+
+        // Zoom out to max distance (30.0 Mm, same cap as free mode)
+        camera.set_local_transform(Vec3::new(0.0, 0.0, 50.0), Quat::IDENTITY);
+        assert!(
+            (camera.local_pos.z - 30.0).abs() < 1e-4,
+            "Expected camera to be clamped to 30.0 Mm max distance, got {:?}",
+            camera.local_pos.z
+        );
+
+        camera.zoom(-10.0);
+        assert!(
+            (camera.local_pos.z - 30.0).abs() < 1e-4,
+            "Expected camera to stay clamped to 30.0 Mm max distance after zoom out, got {:?}",
+            camera.local_pos.z
+        );
     }
 }

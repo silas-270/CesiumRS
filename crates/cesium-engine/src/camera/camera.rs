@@ -325,8 +325,8 @@ impl Camera {
             } else if dist < 0.00002 {
                 dist = 0.00002;
                 self.local_pos = self.local_pos.normalize_or_zero() * dist;
-            } else if dist > 0.020 {
-                dist = 0.020;
+            } else if dist > 30.0 {
+                dist = 30.0;
                 self.local_pos = self.local_pos.normalize_or_zero() * dist;
             }
 
@@ -527,7 +527,7 @@ impl Camera {
         if self.mode == CameraMode::Tracking {
             let mut dist = self.local_pos.length();
             dist *= (1.0 - delta * 0.1).clamp(0.2, 5.0);
-            dist = dist.clamp(0.00002, 0.020); // 20m to 20km
+            dist = dist.clamp(0.00002, 30.0); // 20m to 30,000km
             let dir = self.local_pos.normalize_or_zero();
             self.local_pos = if dir.length_squared() > 0.001 {
                 dir * dist
@@ -568,8 +568,8 @@ impl Camera {
         } else if dist < 0.00002 {
             dist = 0.00002;
             self.local_pos = self.local_pos.normalize_or_zero() * dist;
-        } else if dist > 0.020 {
-            dist = 0.020;
+        } else if dist > 30.0 {
+            dist = 30.0;
             self.local_pos = self.local_pos.normalize_or_zero() * dist;
         }
 

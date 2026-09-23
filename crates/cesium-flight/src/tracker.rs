@@ -1144,9 +1144,7 @@ impl GlobeExtension for FlightTrackerApp {
         let current_progress = *self.progress.lock().unwrap();
         let airplane_state = self.get_plane_state_at(current_progress);
 
-        // From inside the aircraft the exterior model surrounds the camera and the
-        // trajectory ribbon runs straight through the windshield, so cockpit mode draws
-        // the interior in place of both.
+        // In cockpit mode we draw the cockpit interior.
         if self.view_mode == CameraMode::Cockpit {
             let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.cockpit_model");
             self.render_cockpit(
@@ -1156,7 +1154,6 @@ impl GlobeExtension for FlightTrackerApp {
                 camera_pos_f64,
                 airplane_state,
             );
-            return;
         }
 
         let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.entities");
@@ -1235,8 +1232,9 @@ impl GlobeExtension for FlightTrackerApp {
             });
         }
 
-        // Draw airplane
-        if let Some(airplane) = &self.airplane_renderer {
+        // Draw airplane exterior if not in cockpit mode
+        if self.view_mode != CameraMode::Cockpit {
+            if let Some(airplane) = &self.airplane_renderer {
             if let Some(state) = airplane_state {
                 // The model's scale grows with camera distance (below), about an origin
                 // above its gear, so the lift that keeps it out of the ground has to be
@@ -1336,6 +1334,7 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
     }
+}
 
     #[cfg(feature = "debug_panel")]
     fn render_ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
