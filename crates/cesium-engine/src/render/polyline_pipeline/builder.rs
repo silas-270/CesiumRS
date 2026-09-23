@@ -44,6 +44,14 @@ pub struct AdaptiveSubdivisionBuilder {
     /// Minimum time step in seconds to avoid infinite recursion.
     pub min_step: f64,
     pub force_all_samples: bool,
+    /// Stretches of the path, as `(start, end, max_length)` — times in seconds, length in
+    /// Megametres — inside which no segment may be longer than `max_length`, however
+    /// straight the path is there.
+    ///
+    /// For geometry that is moved point by point after it is built, such as a route line
+    /// laid onto terrain: the tolerance test alone leaves a straight stretch with nothing
+    /// between its two ends to move.
+    pub max_segment_lengths: Vec<(f64, f64, f64)>,
 }
 
 impl AdaptiveSubdivisionBuilder {
@@ -52,7 +60,35 @@ impl AdaptiveSubdivisionBuilder {
             tolerance,
             min_step: 0.1, // 100 ms
             force_all_samples: false,
+            max_segment_lengths: Vec::new(),
         }
+    }
+
+    /// Whether the segment from `t_start` to `t_end`, `length` long, crosses a stretch
+    /// whose [`Self::max_segment_lengths`] it exceeds.
+    fn too_long(&self, t_start: f64, t_end: f64, length: f64) -> bool {
+        self.max_segment_lengths
+            .iter()
+            .any(|&(a, b, max)| t_start < b && t_end > a && length > max)
+    }
+
+    /// Whether the segment from `t_start` to `t_end` crosses any of the stretches in
+    /// [`Self::max_segment_lengths`].
+    fn held_short(&self, t_start: f64, t_end: f64) -> bool {
+        self.max_segment_lengths
+            .iter()
+            .any(|&(a, b, _)| t_start < b && t_end > a)
+    }
+
+    /// The first end of a stretch in [`Self::max_segment_lengths`] after `t`. Each gets a
+    /// point of its own, so whatever changes there changes at a point of the line and not
+    /// partway along a segment.
+    fn next_stretch_end(&self, t: f64) -> f64 {
+        self.max_segment_lengths
+            .iter()
+            .flat_map(|&(a, b, _)| [a, b])
+            .filter(|&e| e > t + 1e-9)
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// Build a flat list of control points from the position property.
@@ -104,7 +140,9 @@ impl AdaptiveSubdivisionBuilder {
         let max_step = 60.0 * 5.0; // 5-minute max step
 
         while current_time < stop_time.seconds {
-            let next_time = (current_time + max_step).min(stop_time.seconds);
+            let next_time = (current_time + max_step)
+                .min(self.next_stretch_end(current_time))
+                .min(stop_time.seconds);
             let p_start = last_p;
             let p_end = property.evaluate(SimulationTime::new(next_time)).unwrap();
 
@@ -147,7 +185,12 @@ impl AdaptiveSubdivisionBuilder {
         let line_vec = p_end - p_start;
         let length_sq = line_vec.length_squared();
 
-        let dist = if length_sq < 1e-8 {
+        // A chord of no length is measured from its start. `1e-8` Mm² is any chord under
+        // 100 m, so such chords are measured by their own half-length and halved down to
+        // `min_step`. Inside a stretch held to a maximum length every chord is that short
+        // on purpose, so there only a chord of truly no length (under 0.1 mm) counts.
+        let degenerate_sq = if self.held_short(t_start, t_end) { 1e-20 } else { 1e-8 };
+        let dist = if length_sq < degenerate_sq {
             (p_mid_true - p_start).length()
         } else {
             let t = ((p_mid_true - p_start).dot(line_vec) / length_sq).clamp(0.0, 1.0);
@@ -155,7 +198,7 @@ impl AdaptiveSubdivisionBuilder {
             (p_mid_true - projection).length()
         };
 
-        if dist > self.tolerance {
+        if dist > self.tolerance || self.too_long(t_start, t_end, line_vec.length()) {
             self.subdivide(property, t_start, t_mid, p_start, p_mid_true, points);
             points.push((p_mid_true, t_mid));
             self.subdivide(property, t_mid, t_end, p_mid_true, p_end, points);

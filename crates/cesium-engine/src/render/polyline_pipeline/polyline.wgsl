@@ -138,7 +138,8 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let height_scale_mult = min(scale_mult, 4500.0);
     let final_half_height = pc.physical_half_height * height_scale_mult;
 
-    // Slight elevation to avoid z-fighting with the globe surface
+    // Slight elevation to avoid z-fighting with the globe surface. `RIBBON_LIFT_M` in
+    // pipeline.rs states it for the CPU side; keep the two equal.
     let elevation = up_3d * 0.000005;
 
     // Side sign: corner 0 → -1 (left), corner 1 → +1 (right)

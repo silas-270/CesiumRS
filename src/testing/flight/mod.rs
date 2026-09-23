@@ -16,3 +16,5 @@ pub mod test_coordinate_axes_smoothness;
 pub mod test_multi_route_suite;
 #[cfg(test)]
 pub mod test_route_window;
+#[cfg(test)]
+pub mod test_terrain_fit;

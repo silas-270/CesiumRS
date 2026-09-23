@@ -5,5 +5,6 @@ pub mod cockpit_model;
 pub mod cockpit_screens;
 pub mod flight_handle;
 pub mod preset;
+pub mod terrain_fit;
 pub mod tracker;
 pub mod telemetry;

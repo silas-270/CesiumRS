@@ -1,5 +1,10 @@
 use crate::render::polyline_pipeline::builder::ControlPoint;
 
+/// Height the vertex shader lifts the line above its control points, metres: `elevation`
+/// in `polyline.wgsl`, which spells it in Megametres. For code that places control
+/// points relative to something else drawn, and has to allow for it. Keep the two equal.
+pub const RIBBON_LIFT_M: f64 = 5.0;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PolylinePushConstants {
@@ -224,6 +229,20 @@ impl PolylineRenderer {
         if let Some(buf) = &self.cp_buffer {
             queue.write_buffer(buf, 0, bytemuck::cast_slice(points));
         }
+    }
+
+    /// Overwrites the uploaded control points from index `first` on with `points`,
+    /// leaving the count and the rest as they are. For moving part of a line in place;
+    /// anything that changes the number of points goes through [`Self::update_geometry`].
+    pub fn write_points(&self, queue: &wgpu::Queue, first: usize, points: &[ControlPoint]) {
+        let Some(buf) = &self.cp_buffer else {
+            return;
+        };
+        if points.is_empty() || first + points.len() > self.cp_count as usize {
+            return;
+        }
+        let offset = (first * std::mem::size_of::<ControlPoint>()) as u64;
+        queue.write_buffer(buf, offset, bytemuck::cast_slice(points));
     }
 
 
