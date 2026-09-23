@@ -65,9 +65,9 @@ pub const LINE_GROUND_LIFT_M: f64 = 1.5;
 pub const LINE_GROUND_SPACING_M: f64 = 10.0;
 /// Longest segment of the route line where the fit fades out, from the ground phases to
 /// [`FADE_TOP_M`] above the field, metres. The fit's weight is not linear in height, so
-/// a line straight across a long stretch of it parts from the aircraft: by 0.19 m at
-/// 250 m above Frankfurt with the builder's own points alone, under a centimetre at
-/// 100 m spacing, which leaves the builder's 0.1 m tolerance as the larger error.
+/// a line straight across a long stretch of it parts from the aircraft: by 1.4 m at
+/// 250 m above Frankfurt with the builder's own points alone. At 100 m what is left is
+/// the builder's own 0.1 m tolerance (0.09 m measured).
 pub const LINE_FADE_SPACING_M: f64 = 100.0;
 /// Ground points the route line reads per frame. Both ground phases of Frankfurt-Stuttgart
 /// are some 500 points, so height data that lands is followed within a few frames while no
