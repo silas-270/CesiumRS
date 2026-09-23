@@ -13,6 +13,7 @@ use cesium_engine::time::SimulationTime;
 use crate::flight_handle::{FlightCommand, FlightHandle};
 
 use crate::telemetry::{generate, FlightPlanConfig, FlightRequest, LatLon};
+use crate::terrain_fit::{AircraftFit, GroundEnds, LineFit};
 
 pub struct PendingFlight {
     pub id: String,
@@ -59,6 +60,11 @@ pub struct FlightEntity {
     /// unevenly against the clock, so this is what turns "fifty miles ahead of the
     /// aircraft" into something the shader can compare against. Sorted by progress.
     pub route_distances: Vec<(f32, f32)>,
+    /// Where the flight meets the ground at either end; see [`crate::terrain_fit`].
+    pub ends: GroundEnds,
+    /// The route line's control points, fitted onto the terrain near the airports by the
+    /// same rule as the aircraft. `renderer` draws [`LineFit::points`].
+    pub line: LineFit,
 }
 
 impl FlightEntity {
@@ -118,6 +124,70 @@ fn camera_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
+/// Plans `pending` and builds what is drawn for it. `None` for a plan with no points.
+fn build_flight(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    config: &wgpu::SurfaceConfiguration,
+    camera_bind_group_layout: &wgpu::BindGroupLayout,
+    pending: &PendingFlight,
+) -> Option<FlightEntity> {
+    use cesium_engine::property::Property;
+
+    let points = generate(&pending.to_request());
+    let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
+
+    let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+    let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+
+    for pt in &points {
+        let ecef_array = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
+        let position = DVec3::from_array(ecef_array);
+        let time = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
+        property.add_sample(time, position);
+        sun_intensity_property.add_sample(time, pt.sun_intensity as f64);
+    }
+
+    let start_time = property.start_time()?;
+    let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
+    let ends = GroundEnds::new(&points)?;
+    let mut builder = AdaptiveSubdivisionBuilder::new(1e-7); // High precision tolerance
+    builder.max_segment_lengths = ends.line_spacing();
+    let control_points = builder.build(&property, reference_point);
+    let route_distances: Vec<(f32, f32)> =
+        control_points.iter().map(|cp| (cp.progress, cp.distance)).collect();
+
+    println!("Flight path loaded: {} ({} control points)", pending.id, control_points.len());
+
+    let line = LineFit::new(control_points, &ends, &points);
+    let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
+    // Upload geometry once; the terrain fit rewrites only the parts it moves.
+    renderer.update_geometry(device, queue, line.points());
+
+    let mut poly_config = PolylineConfig {
+        color_end: [0.9, 0.9, 0.9, 1.0],
+        ..PolylineConfig::default()
+    };
+
+    if pending.is_secondary {
+        poly_config.split_progress = 0.5;
+    }
+
+    Some(FlightEntity {
+        id: pending.id.clone(),
+        renderer,
+        config: poly_config,
+        property,
+        sun_intensity_property,
+        telemetry_points: points,
+        total_duration_ms: calculated_duration_ms,
+        reference_point,
+        route_distances,
+        ends,
+        line,
+    })
+}
+
 pub struct FlightTrackerApp {
     pub progress: std::sync::Arc<std::sync::Mutex<f64>>,
     pub pending_flights: Vec<PendingFlight>,
@@ -161,37 +231,11 @@ pub struct FlightTrackerApp {
     pub custom_route_input: String,
     /// Status or error message for route loading in UI
     pub route_status_msg: Option<(String, bool)>,
-    /// Where the aircraft meets the rendered terrain; see [`TerrainFit`].
-    terrain: TerrainFit,
+    /// Where the aircraft meets the rendered terrain, refreshed every frame by
+    /// `sample_ground`; see [`crate::terrain_fit`].
+    terrain: AircraftFit,
 }
 
-/// How the aircraft is fitted onto the rendered terrain, refreshed every frame by
-/// `sample_ground`.
-///
-/// The flight profile puts the aircraft on the ground at the airport's published
-/// elevation, which is not the height of the terrain the engine draws there — at
-/// Frankfurt the DEM runway is 12 m lower than the 111 m AIP figure, so the aircraft
-/// hovered; elsewhere it sinks. `offset_m` moves it onto the drawn ground: in full while
-/// on the ground, fading out with height above the airport.
-#[derive(Default)]
-struct TerrainFit {
-    /// Metres added to the profile altitude, along the local vertical.
-    offset_m: f64,
-    /// 1 on the ground, 0 from `FIT_FADE_TOP_M` above the airport up.
-    weight: f64,
-    /// Height of the (offset) flight position above the terrain under it, metres.
-    agl_m: f64,
-    /// Progress and time the fit was last computed at, to tell a jump from playback.
-    at: Option<(f64, std::time::Instant)>,
-}
-
-/// Height above the airport below which the aircraft is fitted to the terrain in full.
-const FIT_FADE_BOTTOM_M: f64 = 30.0;
-/// Height above the airport above which the profile altitude is used as it is.
-const FIT_FADE_TOP_M: f64 = 600.0;
-/// Time constant with which the fit follows the terrain (better height data arriving,
-/// the aircraft rolling over a slope), seconds.
-const FIT_SMOOTHING_S: f64 = 0.15;
 /// Height of the exterior model's origin above the flight position when airborne, metres.
 const AIRBORNE_MODEL_LIFT_M: f64 = 7.5;
 /// Gap left between the gear and the ground, metres.
@@ -211,7 +255,7 @@ impl FlightTrackerApp {
             cockpit_renderer: None,
             cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
-            terrain: TerrainFit::default(),
+            terrain: AircraftFit::default(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -242,7 +286,7 @@ impl FlightTrackerApp {
             cockpit_renderer: None,
             cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
-            terrain: TerrainFit::default(),
+            terrain: AircraftFit::default(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -309,46 +353,23 @@ impl FlightTrackerApp {
         state
     }
 
-    /// Refreshes [`TerrainFit`] for the current progress from the engine's ground query.
+    /// Refreshes the aircraft's [`AircraftFit`] for the current progress from the engine's
+    /// ground query.
     fn fit_to_terrain(&mut self, ground: &dyn Fn(DVec3) -> Option<f64>) {
         let p = *self.progress.lock().unwrap();
-        let now = std::time::Instant::now();
         let Some(flight) = self.flights.first() else {
-            self.terrain = TerrainFit::default();
+            self.terrain = AircraftFit::default();
             return;
         };
-        let (Some(first), Some(last)) = (flight.telemetry_points.first(), flight.telemetry_points.last())
-        else {
+        let t_s = p * flight.total_duration_ms as f64 / 1000.0;
+        let ends = flight.ends;
+        let (Some(raw), Some(altitude_m)) = (
+            self.get_plane_state_at_time_delta(p, 0.0),
+            crate::terrain_fit::altitude_at(&flight.telemetry_points, t_s),
+        ) else {
             return;
         };
-        let field_m = if p < 0.5 { first.altitude } else { last.altitude };
-        let (Some(raw), Some(tel)) =
-            (self.get_plane_state_at_time_delta(p, 0.0), self.get_telemetry_at(p))
-        else {
-            return;
-        };
-        let Some(ground_m) = ground(raw.position).map(|g| g * 1.0e6) else {
-            return;
-        };
-
-        let above_field = tel.altitude - field_m;
-        let t = ((above_field - FIT_FADE_BOTTOM_M) / (FIT_FADE_TOP_M - FIT_FADE_BOTTOM_M)).clamp(0.0, 1.0);
-        let weight = 1.0 - t * t * (3.0 - 2.0 * t);
-        let target = (ground_m - field_m) * weight;
-
-        // Follow smoothly during playback; snap after a jump in progress or on the first frame.
-        let offset = match self.terrain.at {
-            Some((q, then)) if (q - p).abs() < 0.002 => {
-                let dt = now.duration_since(then).as_secs_f64();
-                let k = 1.0 - (-dt / FIT_SMOOTHING_S).exp();
-                self.terrain.offset_m + (target - self.terrain.offset_m) * k
-            }
-            _ => target,
-        };
-        self.terrain.offset_m = offset;
-        self.terrain.weight = weight;
-        self.terrain.agl_m = tel.altitude + offset - ground_m;
-        self.terrain.at = Some((p, now));
+        self.terrain.update(&ends, p, t_s, altitude_m, raw.position, ground);
     }
 
     pub fn get_sun_intensity_at(&self, progress_val: f64) -> Option<f64> {
@@ -677,60 +698,16 @@ impl GlobeExtension for FlightTrackerApp {
         }
 
         for pending in self.pending_flights.drain(..) {
-            let points = generate(&pending.to_request());
-
-            let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
-
-            let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
-            let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
-
-            for pt in &points {
-                let ecef_array = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
-                let position = DVec3::from_array(ecef_array);
-                let time = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
-                property.add_sample(time, position);
-                sun_intensity_property.add_sample(time, pt.sun_intensity as f64);
-            }
-
-            use cesium_engine::property::Property;
-            if let Some(start_time) = property.start_time() {
-                let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
-                let builder = AdaptiveSubdivisionBuilder::new(1e-7); // High precision tolerance
-                let control_points = builder.build(&property, reference_point);
-        let route_distances: Vec<(f32, f32)> =
-            control_points.iter().map(|cp| (cp.progress, cp.distance)).collect();
-                
-                println!("Flight path loaded: {} ({} control points)", pending.id, control_points.len());
-
-                let mut renderer = PolylineRenderer::new(device, config, camera_bind_group_layout);
-                // Upload geometry statically once
-                renderer.update_geometry(device, queue, &control_points);
-                
-                let mut poly_config = PolylineConfig {
-                    color_end: [0.9, 0.9, 0.9, 1.0],
-                    ..PolylineConfig::default()
-                };
-
-                if pending.is_secondary {
-                    poly_config.split_progress = 0.5;
-                }
-
-                self.flights.push(FlightEntity {
-                    id: pending.id.clone(),
-                    renderer,
-                    config: poly_config,
-                    property,
-                    sun_intensity_property,
-                    telemetry_points: points,
-                    total_duration_ms: calculated_duration_ms,
-                    reference_point,
-                    route_distances,
-                });
+            if let Some(flight) = build_flight(device, queue, config, camera_bind_group_layout, &pending) {
+                self.flights.push(flight);
             }
         }
     }
 
     fn sample_ground(&mut self, ground: &dyn Fn(DVec3) -> Option<f64>) {
+        for flight in &mut self.flights {
+            flight.line.sample(&flight.ends, ground);
+        }
         self.fit_to_terrain(ground);
     }
 
@@ -830,56 +807,21 @@ impl GlobeExtension for FlightTrackerApp {
                 let camera_bind_group_layout = camera_bind_group_layout(device);
 
                 for pending in self.pending_flights.drain(..) {
-                    let points = generate(&pending.to_request());
-                    
-                    let calculated_duration_ms = points.last().map(|p| p.time_offset_ms).unwrap_or(0);
-
-                    let mut property = SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
-                    let mut sun_intensity_property = cesium_engine::property::sampled::SampledScalarProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
-
-                    for pt in &points {
-                        let ecef_array = lon_lat_alt_to_ecef_f64(pt.longitude, pt.latitude, pt.altitude);
-                        let position = DVec3::from_array(ecef_array);
-                        let time = SimulationTime::new(pt.time_offset_ms as f64 / 1000.0);
-                        property.add_sample(time, position);
-                        sun_intensity_property.add_sample(time, pt.sun_intensity as f64);
-                    }
-
-                    use cesium_engine::property::Property;
-                    if let Some(start_time) = property.start_time() {
-                        let reference_point = property.evaluate(start_time).unwrap_or(glam::DVec3::ZERO);
-                        let builder = AdaptiveSubdivisionBuilder::new(1e-7);
-                        let control_points = builder.build(&property, reference_point);
-        let route_distances: Vec<(f32, f32)> =
-            control_points.iter().map(|cp| (cp.progress, cp.distance)).collect();
-                        
-                        println!("Flight path dynamically loaded: {} ({} control points)", pending.id, control_points.len());
-                        
-                        let mut renderer = PolylineRenderer::new(device, config, &camera_bind_group_layout);
-                        renderer.update_geometry(device, queue, &control_points);
-                        
-                        let mut poly_config = PolylineConfig {
-                            color_end: [0.9, 0.9, 0.9, 1.0],
-                            ..PolylineConfig::default()
-                        };
-
-                        if pending.is_secondary {
-                            poly_config.split_progress = 0.5;
-                        }
-
-                        self.flights.push(FlightEntity {
-                            id: pending.id.clone(),
-                            renderer,
-                            config: poly_config,
-                            property,
-                            sun_intensity_property,
-                            telemetry_points: points,
-                            total_duration_ms: calculated_duration_ms,
-                            reference_point,
-                            route_distances,
-                        });
+                    if let Some(flight) =
+                        build_flight(device, queue, config, &camera_bind_group_layout, &pending)
+                    {
+                        self.flights.push(flight);
                     }
                 }
+            }
+        }
+
+        // The parts of each route line the terrain fit moved in `sample_ground`.
+        for flight in &mut self.flights {
+            for range in flight.line.take_changes().into_iter().flatten() {
+                flight
+                    .renderer
+                    .write_points(queue, range.start, &flight.line.points()[range]);
             }
         }
 
