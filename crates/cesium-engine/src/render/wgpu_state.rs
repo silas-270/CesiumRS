@@ -538,11 +538,18 @@ impl<'a> WgpuState<'a> {
         self.last_visible_set.clear();
     }
 
+    /// Switches to an HTTP imagery source, leaving offline SVG mode if it was active.
     pub fn set_base_imagery_url(&mut self, url: String) {
-        if self.tile_system.config.base_imagery_url == url {
+        let was_http = matches!(
+            self.tile_system.config.tile_source_mode,
+            crate::globe::tiles::config::TileSourceMode::HttpNetwork
+        );
+        if was_http && self.tile_system.config.base_imagery_url == url {
             return;
         }
         self.tile_system.config.base_imagery_url = url.clone();
+        self.tile_system.config.tile_source_mode =
+            crate::globe::tiles::config::TileSourceMode::HttpNetwork;
         self.tile_system
             .texture_manager
             .set_base_url(url, self.tile_system.config.offline_mode);

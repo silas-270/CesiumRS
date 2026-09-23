@@ -176,21 +176,45 @@ impl<'a> App<'a> {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Map Style:");
-                    let current_url = &state.tile_system.config.base_imagery_url;
-                    let is_sat_terrain = current_url == crate::globe::tiles::config::SATELLITE_IMAGERY_URL
-                        && state.tile_system.config.terrain.enabled;
-                    let mut selected_sat = is_sat_terrain;
-                    if ui.radio_value(&mut selected_sat, false, "Standard (Carto Dark)").changed() {
-                        state.set_base_imagery_url(
-                            crate::globe::tiles::config::STANDARD_IMAGERY_URL.to_string(),
-                        );
+
+                    // Determine which of the three styles is currently active.
+                    use crate::globe::tiles::config::{TileSourceMode, STANDARD_IMAGERY_URL, SATELLITE_IMAGERY_URL};
+                    #[derive(PartialEq, Clone, Copy)]
+                    enum StyleSel { Standard, Satellite, Offline }
+
+                    let sel = match &state.tile_system.config.tile_source_mode {
+                        TileSourceMode::SvgVector(_) => StyleSel::Offline,
+                        TileSourceMode::HttpNetwork => {
+                            if state.tile_system.config.base_imagery_url == SATELLITE_IMAGERY_URL {
+                                StyleSel::Satellite
+                            } else {
+                                StyleSel::Standard
+                            }
+                        }
+                    };
+                    let mut sel = sel;
+
+                    if ui.radio_value(&mut sel, StyleSel::Standard, "Standard").changed() {
+                        state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string());
                         state.set_terrain_enabled(false);
                     }
-                    if ui.radio_value(&mut selected_sat, true, "Satellite + Terrain (Esri)").changed() {
-                        state.set_base_imagery_url(
-                            crate::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string(),
-                        );
+                    if ui.radio_value(&mut sel, StyleSel::Satellite, "Satellite + Terrain").changed() {
+                        state.set_base_imagery_url(SATELLITE_IMAGERY_URL.to_string());
                         state.set_terrain_enabled(true);
+                    }
+                    if ui.radio_value(&mut sel, StyleSel::Offline, "Offline (SVG)").changed() {
+                        match crate::globe::tiles::vector::bundled_world_renderer() {
+                            Ok(renderer) => {
+                                state.set_tile_source_mode(
+                                    String::new(),
+                                    TileSourceMode::SvgVector(std::sync::Arc::new(renderer)),
+                                );
+                                state.set_terrain_enabled(false);
+                            }
+                            Err(e) => {
+                                log::error!("Debug panel: failed to switch to offline mode: {e}");
+                            }
+                        }
                     }
                 });
 

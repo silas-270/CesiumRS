@@ -39,7 +39,7 @@ use cesium_engine::globe::tiles::config::{
     OceanPolicy, TerrainConfig, TileEngineConfig, TileSourceMode, SATELLITE_IMAGERY_URL,
     STANDARD_IMAGERY_URL,
 };
-use cesium_engine::globe::tiles::vector::SvgTileRenderer;
+use cesium_engine::globe::tiles::vector;
 use std::sync::Arc;
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
@@ -298,9 +298,7 @@ impl CesiumViewerBuilder {
         // Parse the embedded SVG world map once; shared via Arc across all tile workers.
         let tile_source_mode = match self.map_style {
             MapStyle::Offline => {
-                static WORLD_SVG: &[u8] =
-                    include_bytes!("../assets/maps/world_vector_dark.svg");
-                let renderer = SvgTileRenderer::from_svg_bytes(WORLD_SVG)
+                let renderer = vector::bundled_world_renderer()
                     .expect("Bundled world_vector_dark.svg must be a valid SVG");
                 TileSourceMode::SvgVector(Arc::new(renderer))
             }
@@ -487,11 +485,9 @@ impl ViewerHandle {
                     .try_send(ViewerCommand::TerrainSetEnabled(true));
             }
             MapStyle::Offline => {
-                // Parse the embedded SVG at switch time (first call only; subsequent calls
-                // re-parse, but this is a rare user gesture so O(50ms) is acceptable).
-                static WORLD_SVG: &[u8] =
-                    include_bytes!("../assets/maps/world_vector_dark.svg");
-                match SvgTileRenderer::from_svg_bytes(WORLD_SVG) {
+                // Parse the embedded SVG at switch time (every call re-parses, but this
+                // is a rare user gesture so O(50ms) is acceptable).
+                match vector::bundled_world_renderer() {
                     Ok(renderer) => {
                         let mode = TileSourceMode::SvgVector(Arc::new(renderer));
                         let _ = self.tx.try_send(ViewerCommand::MapSetSourceMode {
