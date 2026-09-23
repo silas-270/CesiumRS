@@ -683,6 +683,15 @@ impl<'a> WgpuState<'a> {
         if let Some(ext) = &mut self.extension {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.extension");
             let extension_start = Instant::now();
+            if self.tile_system.has_terrain() {
+                let corridors = ext.runway_corridors().to_vec();
+                if self.tile_system.set_runway_corridors(corridors) {
+                    self.tile_cache.clear();
+                    self.tile_system.mesh_worker.clear();
+                    self.display_state.clear();
+                    self.last_visible_set.clear();
+                }
+            }
             let tiles = &self.tile_system;
             ext.sample_ground(&|p| {
                 if tiles.has_terrain() {

@@ -99,6 +99,11 @@ impl FlightHandle {
         arr_heading_deg: Option<f64>, 
         runways: Vec<RunwayData>,
     ) {
+        let mut runways = runways;
+        if runways.is_empty() {
+            runways = crate::preset::lookup_airport_runways(departure_lat, departure_lon);
+            runways.extend(crate::preset::lookup_airport_runways(arrival_lat, arrival_lon));
+        }
         let dep_elevation_m = crate::preset::lookup_airport_elevation(departure_lat, departure_lon);
         let arr_elevation_m = crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon);
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
@@ -125,6 +130,8 @@ impl FlightHandle {
         let arr_elevation_m = route
             .arr_elevation_m
             .or_else(|| crate::preset::lookup_airport_elevation(route.arrival_lat, route.arrival_lon));
+        let mut runways = crate::preset::lookup_airport_runways(route.departure_lat, route.departure_lon);
+        runways.extend(crate::preset::lookup_airport_runways(route.arrival_lat, route.arrival_lon));
         let _ = self.tx.try_send(FlightCommand::LoadFlight {
             id: route.id.clone(),
             departure_lon: route.departure_lon,
@@ -137,9 +144,10 @@ impl FlightHandle {
             dep_elevation_m,
             arr_elevation_m,
             is_secondary: false,
-            runways: Vec::new(),
+            runways,
         });
     }
+
 
     /// Load a secondary (reference) flight path. Non-blocking.
     pub fn load_secondary_flight(

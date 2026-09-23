@@ -46,7 +46,8 @@ const AIRCRAFT_SMOOTHING_S: f64 = 0.15;
 /// How far above the field the profile may be and still count as on the ground, metres.
 /// The profile holds the field altitude exactly until rotation; this takes in the first
 /// half metre of the rotation, while the main gear is still rolling.
-const ON_GROUND_TOLERANCE_M: f64 = 0.5;
+pub const ON_GROUND_TOLERANCE_M: f64 = 0.5;
+
 /// Height of the route line above the drawn terrain while the aircraft is on the ground,
 /// metres.
 ///

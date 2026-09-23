@@ -37,7 +37,13 @@ pub trait GlobeExtension {
         camera_pos_f64: [f64; 3],
     );
 
+    /// Active runway corridors for terrain flattening, if any.
+    fn runway_corridors(&self) -> &[crate::globe::terrain::RunwayCorridor] {
+        &[]
+    }
+
     /// Called every frame during egui rendering to add custom UI elements
     #[cfg(feature = "debug_panel")]
     fn render_ui(&mut self, _ctx: &egui::Context, _ui: &mut egui::Ui) {}
 }
+

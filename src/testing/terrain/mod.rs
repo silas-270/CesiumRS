@@ -1,5 +1,8 @@
 #[cfg(test)]
+pub mod test_corridor;
+#[cfg(test)]
 pub mod test_detail_below_ceiling;
+
 #[cfg(test)]
 pub mod test_flight_tracking_terrain;
 #[cfg(test)]

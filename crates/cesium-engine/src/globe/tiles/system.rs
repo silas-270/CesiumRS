@@ -594,6 +594,31 @@ impl TileSystem {
         Some(raw * self.config.terrain.exaggeration as f64)
     }
 
+    pub fn ground_raw_height_at(&self, pos: glam::DVec3) -> Option<f64> {
+        let h = self.height_manager.as_ref()?;
+        let (lon, lat) = crate::globe::geometry::ecef_to_lon_lat_f64(pos);
+        let raw = h.peek_raw_height_at_lon_lat(lon, lat)?;
+        Some(raw * self.config.terrain.exaggeration as f64)
+    }
+
+    pub fn runway_corridors(&self) -> &[crate::globe::terrain::RunwayCorridor] {
+        self.height_manager
+            .as_ref()
+            .map(|h| h.runway_corridors.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn set_runway_corridors(&mut self, corridors: Vec<crate::globe::terrain::RunwayCorridor>) -> bool {
+        if let Some(h) = self.height_manager.as_mut() {
+            if h.runway_corridors != corridors {
+                h.runway_corridors = corridors;
+                return true;
+            }
+        }
+        false
+    }
+
+
     /// Drawn tiles whose mesh came from an ancestor's heights (`built_from` shallower
     /// than the tile's own source): their own height tile is requested next `update`,
     /// so E2 can rebuild them from it.
