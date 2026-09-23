@@ -15,6 +15,7 @@ use crate::flight_handle::{FlightCommand, FlightHandle};
 use crate::telemetry::{generate, FlightPlanConfig, FlightRequest, LatLon};
 use crate::terrain_fit::{AircraftFit, GroundEnds, LineFit};
 
+#[derive(Clone, Debug)]
 pub struct PendingFlight {
     pub id: String,
     pub departure_lon: f64,
@@ -394,6 +395,8 @@ pub struct FlightTrackerApp {
     terrain: AircraftFit,
     /// Active runway corridors for terrain flattening.
     pub cached_corridors: Vec<cesium_engine::globe::terrain::RunwayCorridor>,
+    /// Kept for snapshotting the flight tracker in headless 4K captures.
+    pub loaded_flight_requests: Vec<PendingFlight>,
 }
 
 /// Height of the exterior model's origin above the flight position when airborne, metres.
@@ -417,6 +420,7 @@ impl FlightTrackerApp {
             last_update_time: std::time::Instant::now(),
             terrain: AircraftFit::default(),
             cached_corridors: Vec::new(),
+            loaded_flight_requests: Vec::new(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -449,6 +453,7 @@ impl FlightTrackerApp {
             last_update_time: std::time::Instant::now(),
             terrain: AircraftFit::default(),
             cached_corridors: Vec::new(),
+            loaded_flight_requests: Vec::new(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -643,7 +648,7 @@ impl FlightTrackerApp {
         if let Some(elev) = crate::preset::lookup_airport_elevation(arrival_lat, arrival_lon) {
             config.arr_elevation_m = elev;
         }
-        self.pending_flights.push(PendingFlight {
+        let pending = PendingFlight {
             id: id.to_string(),
             departure_lon,
             departure_lat,
@@ -655,7 +660,12 @@ impl FlightTrackerApp {
             is_secondary,
             runways,
             config,
-        });
+        };
+        if !is_secondary {
+            self.loaded_flight_requests.retain(|f| f.is_secondary);
+        }
+        self.loaded_flight_requests.push(pending.clone());
+        self.pending_flights.push(pending);
     }
 
     /// Load a route from a pre-defined or parsed `FlightRouteDef`.
@@ -675,7 +685,7 @@ impl FlightTrackerApp {
         {
             config.arr_elevation_m = elev;
         }
-        self.pending_flights.push(PendingFlight {
+        let pending = PendingFlight {
             id: route.id,
             departure_lon: route.departure_lon,
             departure_lat: route.departure_lat,
@@ -687,7 +697,10 @@ impl FlightTrackerApp {
             is_secondary: false,
             runways,
             config,
-        });
+        };
+        self.loaded_flight_requests.retain(|f| f.is_secondary);
+        self.loaded_flight_requests.push(pending.clone());
+        self.pending_flights.push(pending);
     }
 
 
@@ -825,8 +838,9 @@ impl GlobeExtension for FlightTrackerApp {
                         }
                         if !is_secondary {
                             self.pending_flights.retain(|f| f.is_secondary);
+                            self.loaded_flight_requests.retain(|f| f.is_secondary);
                         }
-                        self.pending_flights.push(PendingFlight {
+                        let pending = PendingFlight {
                             id,
                             departure_lon,
                             departure_lat,
@@ -838,7 +852,9 @@ impl GlobeExtension for FlightTrackerApp {
                             is_secondary,
                             runways,
                             config,
-                        });
+                        };
+                        self.loaded_flight_requests.push(pending.clone());
+                        self.pending_flights.push(pending);
                     }
                     FlightCommand::SetRouteLineMode(m) => {
                         self.route_line_mode = m;
@@ -1467,6 +1483,27 @@ impl GlobeExtension for FlightTrackerApp {
 
     fn runway_corridors(&self) -> &[cesium_engine::globe::terrain::RunwayCorridor] {
         &self.cached_corridors
+    }
+
+    fn snapshot_for_headless(&self) -> Option<Box<dyn GlobeExtension>> {
+        let mut app = FlightTrackerApp::new(std::sync::Arc::new(std::sync::Mutex::new(
+            *self.progress.lock().unwrap(),
+        )));
+        app.pending_flights = self.loaded_flight_requests.clone();
+        app.loaded_flight_requests = self.loaded_flight_requests.clone();
+        app.view_mode = self.view_mode;
+        app.last_view_mode = self.view_mode;
+        app.plan_config = self.plan_config;
+        app.route_line_mode = self.route_line_mode;
+        app.is_playing = false;
+        app.cached_corridors = self.cached_corridors.clone();
+        if let Ok(cam_lock) = self.current_camera_state.lock() {
+            if let Some((_, pos, ori)) = *cam_lock {
+                app.pending_camera_restore =
+                    std::sync::Arc::new(std::sync::Mutex::new(Some((pos, ori))));
+            }
+        }
+        Some(Box::new(app))
     }
 }
 

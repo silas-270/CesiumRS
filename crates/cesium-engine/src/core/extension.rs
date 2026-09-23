@@ -1,6 +1,6 @@
 use glam::DVec3;
 
-pub trait GlobeExtension {
+pub trait GlobeExtension: Send + 'static {
     /// Called during engine initialization to load pipelines and resources
     fn init(
         &mut self,
@@ -42,8 +42,14 @@ pub trait GlobeExtension {
         &[]
     }
 
+    /// Snapshot the extension's configuration and state for a high-res headless render.
+    fn snapshot_for_headless(&self) -> Option<Box<dyn GlobeExtension>> {
+        None
+    }
+
     /// Called every frame during egui rendering to add custom UI elements
     #[cfg(feature = "debug_panel")]
     fn render_ui(&mut self, _ctx: &egui::Context, _ui: &mut egui::Ui) {}
 }
+
 
