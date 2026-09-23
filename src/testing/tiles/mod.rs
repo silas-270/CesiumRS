@@ -12,3 +12,5 @@ pub mod test_texture_size;
 pub mod tile_system_tests;
 #[cfg(test)]
 pub mod test_stream_perf;
+#[cfg(test)]
+pub mod test_svg_renderer;

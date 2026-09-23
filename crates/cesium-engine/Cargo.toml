@@ -12,11 +12,13 @@ tokio = { version = "1.37", features = ["rt", "rt-multi-thread", "sync", "macros
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "json", "charset", "http2"] }
 image = "0.25"
 # Offline SVG vector tile rendering — pure Rust, zero C deps, Android-safe.
-# We opt-out of system-fonts, text, raster-images and svgz: the world map SVG
-# has no text, no raster fills, and no embedded images, so all of those are
-# dead weight. tiny-skia is already in the tree via winit/sctk-adwaita.
-resvg = { version = "0.48", default-features = false }
+# usvg parses the map once; tiles are drawn with tiny-skia directly (see
+# svg_renderer.rs for why not resvg). We opt-out of system-fonts, text,
+# raster-images and svgz: the world map SVG has no text, no raster fills and no
+# embedded images, and it is un-gzipped with flate2 (already in the tree via
+# reqwest's gzip). tiny-skia is already in the tree via winit/sctk-adwaita.
 usvg = { version = "0.48", default-features = false }
+flate2 = "1"
 tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 log = "0.4"
 cfg-if = "1.0"
