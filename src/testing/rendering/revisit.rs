@@ -48,7 +48,8 @@ impl<'a> RevisitApp<'a> {
         };
 
         Self {
-            inner: App::new(config, Some(Box::new(flight_app)), None),
+            // The camera and tile traces are what this test produces.
+            inner: App::new(config, Some(Box::new(flight_app)), None).with_traces(true),
             flight,
             start: None,
             lap: None,

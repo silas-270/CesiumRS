@@ -37,6 +37,10 @@ pub struct App<'a> {
     extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
     command_rx: Option<mpsc::Receiver<ViewerCommand>>,
     touch_interpreter: crate::core::touch::TouchInterpreter,
+    /// Whether to write `camera_trace.csv` and `tile_trace.csv`: set by the
+    /// `CESIUM_TRACE` environment variable (`1`, `on`, `true`) or [`Self::with_traces`].
+    #[cfg(not(target_os = "android"))]
+    traces: bool,
 }
 
 impl<'a> App<'a> {
@@ -57,7 +61,20 @@ impl<'a> App<'a> {
             extension,
             command_rx,
             touch_interpreter: crate::core::touch::TouchInterpreter::new(),
+            #[cfg(not(target_os = "android"))]
+            traces: matches!(
+                std::env::var("CESIUM_TRACE").as_deref(),
+                Ok("1" | "on" | "true")
+            ),
         }
+    }
+
+    /// Writes the per-frame camera trace and the tile lifecycle trace whatever
+    /// `CESIUM_TRACE` says: for the test apps whose output they are.
+    #[cfg(not(target_os = "android"))]
+    pub fn with_traces(mut self, on: bool) -> Self {
+        self.traces = on;
+        self
     }
 
     pub fn render_state(&self) -> Option<&WgpuState<'a>> {
@@ -179,9 +196,10 @@ impl<'a> App<'a> {
 
                 ui.separator();
                 ui.collapsing("Terrain (height data)", |ui| {
-                    // Since §9 F4 this ships on (except on Android), and since Phase C it
-                    // moves vertices: the switch rebuilds the height manager, and E2
-                    // rebuilds the meshes that were flat when it was off.
+                    // The map style above sets this (satellite on, standard off); the box
+                    // overrides it for the style in use, e.g. relief under the dark map.
+                    // The switch rebuilds the height manager, and E2 rebuilds the meshes
+                    // that were flat when it was off.
                     let mut on = state.tile_system.config.terrain.enabled;
                     if ui
                         .checkbox(&mut on, "Draw the globe with relief")
@@ -454,8 +472,10 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                 #[cfg(not(target_os = "android"))]
                 let state = {
                     let mut state = state;
-                    state.camera_trace = crate::camera::trace::CameraTrace::create();
-                    crate::globe::tiles::trace::enable();
+                    if self.traces {
+                        state.camera_trace = crate::camera::trace::CameraTrace::create();
+                        crate::globe::tiles::trace::enable();
+                    }
                     state
                 };
                 self.wgpu_state = Some(state);

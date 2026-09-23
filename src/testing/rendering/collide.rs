@@ -50,7 +50,8 @@ impl<'a> CollideApp<'a> {
         let _ = std::fs::create_dir_all(&shot_dir);
 
         Self {
-            inner: App::new(config, Some(Box::new(flight_app)), None),
+            // The camera and tile traces are what this test produces.
+            inner: App::new(config, Some(Box::new(flight_app)), None).with_traces(true),
             flight,
             sim: Simulator::parse(&script),
             frame: 0,

@@ -152,19 +152,21 @@ pub fn init_logging() -> PathBuf {
         console: spawn_console_mirror(),
     };
 
-    let mut builder = env_logger::Builder::from_default_env();
+    // Warnings from every crate and the engine's own info lines, unless RUST_LOG says
+    // otherwise, in which case it alone decides (`RUST_LOG=warn,cesium_engine=debug` for
+    // the per-frame timings). Everything at debug by default wrote 191 MB in twelve
+    // minutes: two lines a frame of our own and six of winit's tracing spans.
+    let mut builder = env_logger::Builder::new();
+    if std::env::var_os("RUST_LOG").is_some() {
+        builder.parse_default_env();
+    } else {
+        builder
+            .filter_level(log::LevelFilter::Warn)
+            .filter_module("cesium_rs", log::LevelFilter::Info)
+            .filter_module("cesium_engine", log::LevelFilter::Info)
+            .filter_module("cesium_flight", log::LevelFilter::Info);
+    }
     builder
-        .filter_level(log::LevelFilter::Debug)
-        .filter_module("wgpu", log::LevelFilter::Warn)
-        .filter_module("wgpu_core", log::LevelFilter::Warn)
-        .filter_module("wgpu_hal", log::LevelFilter::Warn)
-        .filter_module("naga", log::LevelFilter::Warn)
-        .filter_module("reqwest", log::LevelFilter::Warn)
-        .filter_module("hyper", log::LevelFilter::Warn)
-        .filter_module("tokio", log::LevelFilter::Warn)
-        .filter_module("cesium_rs", log::LevelFilter::Debug)
-        .filter_module("cesium_engine", log::LevelFilter::Debug)
-        .filter_module("cesium_flight", log::LevelFilter::Debug)
         .format_timestamp_millis()
         .target(env_logger::Target::Pipe(Box::new(dual_writer)));
 

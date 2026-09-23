@@ -127,9 +127,8 @@ mod inner {
         pub map_style: cesium_rs::MapStyle,
 
 
-        /// Render real terrain relief from Terrarium height tiles (AWS Open Data).
-        /// Phase C of docs/terrain-plan.md. Culling is still fitted to the ellipsoid, so
-        /// low-altitude views lose near-field tiles until Phase D.
+        /// Draw terrain relief under the standard (Carto dark) style too. satellite-terrain
+        /// always has it; standard is the flat globe without this.
         #[arg(long = "terrain", default_value_t = false)]
         pub terrain: bool,
 
@@ -345,9 +344,8 @@ fn main() {
         pub map_style: cesium_rs::MapStyle,
 
 
-        /// Render real terrain relief from Terrarium height tiles (AWS Open Data).
-        /// Phase C of docs/terrain-plan.md. Culling is still fitted to the ellipsoid, so
-        /// low-altitude views lose near-field tiles until Phase D.
+        /// Draw terrain relief under the standard (Carto dark) style too. satellite-terrain
+        /// always has it; standard is the flat globe without this.
         #[arg(long = "terrain", default_value_t = false)]
         pub terrain: bool,
 

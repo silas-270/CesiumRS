@@ -56,10 +56,14 @@ pub enum CameraMode {
     Cockpit,
 }
 
-/// Base imagery style for the globe's tile layer.
+/// Base imagery style for the globe's tile layer, and with it the surface engine.
+///
+/// The two styles are the two modes of `docs/terrain-plan.md`: standard draws the flat
+/// globe (the engine without terrain, none of its work done), satellite-terrain draws
+/// relief. Switching style switches the surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum MapStyle {
-    /// Default dark, label-free vector-style basemap.
+    /// Default dark, label-free vector-style basemap, on the flat globe.
     #[default]
     #[value(name = "standard", alias = "carto", alias = "dark")]
     Standard,
@@ -143,7 +147,7 @@ impl Default for CesiumViewerBuilder {
             map_contrast: 0.0,
             map_brightness: 0.5,
             max_zoom: TileEngineConfig::default().max_zoom,
-            terrain: TerrainConfig::default().enabled,
+            terrain: false,
             terrain_exaggeration: TerrainConfig::default().exaggeration,
             terrain_ocean: TerrainOcean::default(),
             extension: None,
@@ -224,15 +228,11 @@ impl CesiumViewerBuilder {
         self
     }
 
-    /// Draw the globe with relief: fetch, decode and cache terrain height tiles, and
-    /// build the surface out of them.
+    /// Draw relief under the standard style too: fetch, decode and cache terrain height
+    /// tiles, and build the surface out of them.
     ///
-    /// Defaults to
-    /// [`TERRAIN_ENABLED_BY_DEFAULT`](cesium_engine::globe::tiles::config::TERRAIN_ENABLED_BY_DEFAULT)
-    /// since §9 F4 of `docs/terrain-plan.md` — `true` on desktop, `false` on Android
-    /// until the soak §9 F3 describes has been run. Phases C through E are what made it
-    /// more than a cache: relief, height-aware culling, the occlusion march and an LOD
-    /// term that refines on the shape of the ground.
+    /// Off by default: the map style decides, satellite-terrain with relief and standard
+    /// without (see [`MapStyle`]). This is the one way to get the dark map on relief.
     ///
     /// **Note for the Android target**: `android_main` builds its engine config from
     /// `TileEngineConfig::default()` and not from this builder, so setting this there
@@ -438,13 +438,16 @@ impl ViewerHandle {
 
     /// Switch the base map imagery and terrain mode live (e.g. standard vs. satellite + terrain).
     /// The tile texture cache is rebuilt, so already-loaded tiles briefly show the
-    /// fallback color while the new imagery re-fetches.
+    /// fallback color while the new imagery re-fetches. Standard also switches terrain off,
+    /// which drops the height cache and returns to the flat engine; `terrain_set_enabled`
+    /// afterwards puts relief back under it.
     pub fn map_set_style(&self, style: MapStyle) {
         match style {
             MapStyle::Standard => {
                 let _ = self
                     .tx
                     .try_send(ViewerCommand::MapSetImageryUrl(STANDARD_IMAGERY_URL.to_string()));
+                let _ = self.tx.try_send(ViewerCommand::TerrainSetEnabled(false));
             }
             MapStyle::SatelliteTerrain => {
                 let _ = self

@@ -2,6 +2,10 @@
 """Analyse tile_trace.csv: refetches, downgrades, flicker and slow frames.
 
     python3 tools/tile_churn.py [tile_trace.csv] [--slow MS]
+
+The viewer writes the trace only when asked: CESIUM_TRACE=1 cargo run (the --collide
+and --revisit tests always write it). Frame times are paced by vsync unless
+CESIUM_VSYNC=0.
 """
 import csv
 import sys
