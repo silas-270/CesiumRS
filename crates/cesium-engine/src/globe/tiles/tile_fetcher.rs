@@ -1,9 +1,12 @@
 use crate::globe::quadtree::TileId;
+use crate::globe::tiles::config::TileSourceMode;
+use crate::globe::tiles::vector::SvgTileRenderer;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, Notify};
+
 
 /// A decoded tile image: `(width, height, RGBA8 pixels)`. Dimensions travel
 /// with the pixels because imagery sources differ in tile size — the Carto
@@ -150,6 +153,20 @@ impl TileFetcher {
         offline_mode: bool,
         label: &'static str,
     ) -> Self {
+        Self::new_with_source(tx, base_url, offline_mode, label, TileSourceMode::default())
+    }
+
+    /// Full constructor that accepts a [`TileSourceMode`].
+    ///
+    /// [`Self::new`] is a convenience wrapper kept for the many existing call-sites that
+    /// use `base_url + offline_mode` — those use [`TileSourceMode::HttpNetwork`] implicitly.
+    pub fn new_with_source(
+        tx: tokio::sync::mpsc::UnboundedSender<(TileId, Result<TileImage, String>)>,
+        base_url: String,
+        offline_mode: bool,
+        label: &'static str,
+        source_mode: TileSourceMode,
+    ) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -168,6 +185,12 @@ impl TileFetcher {
         let worker_notify = notify.clone();
         let worker_tx = tx.clone();
 
+        // Extract the SVG renderer if we're in vector mode (cheap Arc clone).
+        let svg_renderer: Option<SvgTileRenderer> = match source_mode {
+            TileSourceMode::SvgVector(r) => Some((*r).clone()),
+            TileSourceMode::HttpNetwork => None,
+        };
+
         runtime.spawn(async move {
             Self::worker_loop(
                 client,
@@ -177,6 +200,7 @@ impl TileFetcher {
                 base_url,
                 offline_mode,
                 label,
+                svg_renderer,
             )
             .await;
         });
@@ -271,6 +295,7 @@ impl TileFetcher {
         base_url: String,
         offline_mode: bool,
         label: &'static str,
+        svg_renderer: Option<SvgTileRenderer>,
     ) {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
 
@@ -294,8 +319,16 @@ impl TileFetcher {
                 log::debug!("[FETCH POP] kind={} id=z{}/x{}/y{} prio={:?}", label, id.z, id.x, id.y, req.priority);
 
                 let url_clone = base_url.clone();
+                let svg_clone = svg_renderer.clone();
                 tokio::spawn(async move {
-                    let res = if offline_mode {
+                    let res = if let Some(svg) = svg_clone {
+                        // SVG vector mode: rasterize tile on a blocking thread so we don't
+                        // stall the tokio reactor.  ~1–4 ms per tile on a desktop core.
+                        tokio::task::spawn_blocking(move || svg.render_tile(id))
+                            .await
+                            .unwrap_or_else(|e| Err(format!("SVG rasterize task panicked: {e}")))
+                    } else if offline_mode {
+                        // Legacy offline stub: solid-white tiles for headless tests.
                         Ok((256, 256, vec![255; 256 * 256 * 4]))
                     } else {
                         Self::fetch_and_decode(client_clone, id, url_clone, label).await

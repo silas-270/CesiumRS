@@ -25,6 +25,7 @@ impl<'a> TestApp<'a> {
         let terrain_enabled = match config.map_style {
             crate::MapStyle::SatelliteTerrain => true,
             crate::MapStyle::Standard => config.terrain,
+            crate::MapStyle::Offline => false,
         };
 
         let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(

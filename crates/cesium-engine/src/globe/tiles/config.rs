@@ -1,5 +1,7 @@
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
+
 
 /// Default dark, label-free vector-style basemap. The `@2x` suffix requests
 /// 512x512 retina tiles, which carry genuinely twice the detail rather than
@@ -9,6 +11,38 @@ pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nol
 /// Esri World Imagery - free, no API key required.
 pub const SATELLITE_IMAGERY_URL: &str =
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+
+/// How the imagery tile layer is sourced.
+///
+/// The engine's [`TileFetcher`](super::tile_fetcher::TileFetcher) consults this at
+/// construction time to decide whether to open HTTP sockets or to rasterize tiles locally
+/// from an SVG world map.
+#[derive(Clone)]
+pub enum TileSourceMode {
+    /// Fetch tiles from an HTTP(S) XYZ endpoint (default).  `base_imagery_url` holds the
+    /// URL template.
+    HttpNetwork,
+    /// Rasterize tiles locally from a pre-parsed SVG world map — completely offline, zero
+    /// network activity.  The [`Arc`] lets the renderer be shared across the tokio worker
+    /// pool without copying the parse tree.
+    SvgVector(Arc<super::vector::SvgTileRenderer>),
+}
+
+impl Default for TileSourceMode {
+    fn default() -> Self {
+        TileSourceMode::HttpNetwork
+    }
+}
+
+/// A `Debug` impl that does not require `SvgTileRenderer: Debug`.
+impl std::fmt::Debug for TileSourceMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TileSourceMode::HttpNetwork => write!(f, "TileSourceMode::HttpNetwork"),
+            TileSourceMode::SvgVector(_) => write!(f, "TileSourceMode::SvgVector(<renderer>)"),
+        }
+    }
+}
 
 /// Mapzen/Tilezen "Terrarium" elevation tiles on AWS Open Data — free, no API key.
 ///
@@ -437,6 +471,10 @@ pub struct TileEngineConfig {
     pub max_zoom: u8,
     pub base_color: [u8; 4],
     pub offline_mode: bool,
+    /// How imagery tiles are produced — fetched from HTTP or rasterized locally from an
+    /// SVG world map.  Defaults to [`TileSourceMode::HttpNetwork`].  Set to
+    /// [`TileSourceMode::SvgVector`] to enable the fully-offline vector map mode.
+    pub tile_source_mode: TileSourceMode,
     pub map_saturation: f32,
     pub map_contrast: f32,
     pub map_brightness: f32,
@@ -486,6 +524,7 @@ impl Default for TileEngineConfig {
             max_zoom: 19,
             base_color: [20, 20, 20, 255],
             offline_mode: false,
+            tile_source_mode: TileSourceMode::default(),
             map_saturation: 0.0,
             map_contrast: 0.0,
             map_brightness: 0.5,
