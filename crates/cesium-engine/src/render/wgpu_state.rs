@@ -684,7 +684,13 @@ impl<'a> WgpuState<'a> {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.extension");
             let extension_start = Instant::now();
             let tiles = &self.tile_system;
-            ext.sample_ground(&|p| tiles.ground_height_at(p));
+            ext.sample_ground(&|p| {
+                if tiles.has_terrain() {
+                    tiles.ground_height_at(p)
+                } else {
+                    Some(0.0)
+                }
+            });
             ext.update(
                 &self.device,
                 &self.queue,

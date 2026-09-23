@@ -22,15 +22,29 @@ impl<'a> TestApp<'a> {
             Simulator { actions: vec![] }
         };
 
+        let terrain_enabled = match config.map_style {
+            crate::MapStyle::SatelliteTerrain => true,
+            crate::MapStyle::Standard => config.terrain,
+        };
+
         let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
             std::sync::Arc::new(std::sync::Mutex::new(0.0)),
         ));
+        if !terrain_enabled {
+            flight_app.plan_config.terrain_elevation = false;
+        }
         flight_app.add_flight_path("flight_FRA_STR", 8.5706, 50.0333, 9.2219, 48.6899, 10000, true, Vec::new());
         flight_app.reset_viewport = false;
 
+        let mut tile_config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
+        tile_config.terrain.enabled = terrain_enabled;
+        if config.map_style == crate::MapStyle::SatelliteTerrain {
+            tile_config.base_imagery_url = cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string();
+        }
+
         Self {
             inner: App::new(
-                cesium_engine::globe::tiles::config::TileEngineConfig::default(),
+                tile_config,
                 Some(flight_app),
                 None,
             ),

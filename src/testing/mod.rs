@@ -36,4 +36,6 @@ pub struct VerifyConfig {
     pub cam_z: f64,
     pub out_path: String,
     pub actions: Option<String>,
+    pub terrain: bool,
+    pub map_style: crate::MapStyle,
 }
