@@ -287,6 +287,8 @@ mod inner {
                 cam_z: cli.cam_z,
                 out_path: cli.out,
                 actions: cli.actions,
+                terrain: cli.terrain,
+                map_style: cli.map_style,
             })
         } else {
             None
@@ -303,6 +305,17 @@ mod inner {
                     eprintln!("Warning: Failed to parse route '{}': {}. Falling back to FRA-STR.", cli.route, e);
                     cesium_flight::preset::parse_route("FRA-STR").unwrap()
                 });
+
+            let terrain_enabled = match cli.map_style {
+                cesium_rs::MapStyle::SatelliteTerrain => true,
+                cesium_rs::MapStyle::Standard => cli.terrain,
+            };
+            if !terrain_enabled {
+                flight_handle.set_plan_config(cesium_flight::telemetry::FlightPlanConfig {
+                    terrain_elevation: false,
+                    ..cesium_flight::telemetry::FlightPlanConfig::default()
+                });
+            }
 
             flight_handle.load_route_def(&route_def);
 
@@ -378,6 +391,18 @@ fn main() {
             eprintln!("Warning: Failed to parse route '{}': {}. Falling back to FRA-STR.", cli.route, e);
             cesium_flight::preset::parse_route("FRA-STR").unwrap()
         });
+
+    let terrain_enabled = match cli.map_style {
+        cesium_rs::MapStyle::SatelliteTerrain => true,
+        cesium_rs::MapStyle::Standard => cli.terrain,
+    };
+    if !terrain_enabled {
+        flight_handle.set_plan_config(cesium_flight::telemetry::FlightPlanConfig {
+            terrain_elevation: false,
+            ..cesium_flight::telemetry::FlightPlanConfig::default()
+        });
+    }
+
     flight_handle.load_route_def(&route_def);
 
     let mut builder = cesium_rs::CesiumViewer::builder()
