@@ -550,6 +550,26 @@ impl<'a> WgpuState<'a> {
         self.last_visible_set.clear();
     }
 
+    /// Switch the imagery source to offline SVG vector mode (or back to HTTP).
+    ///
+    /// Called by the command handler when `MapStyle::Offline` is set.  Rebuilds the
+    /// [`TileFetcher`] with the new [`TileSourceMode`] so in-flight HTTP requests are
+    /// dropped immediately and new tiles come from the SVG rasterizer.
+    pub fn set_tile_source_mode(
+        &mut self,
+        url: String,
+        source_mode: crate::globe::tiles::config::TileSourceMode,
+    ) {
+        self.tile_system.config.base_imagery_url = url.clone();
+        self.tile_system.config.tile_source_mode = source_mode.clone();
+        self.tile_system
+            .texture_manager
+            .set_base_url_with_source(url, false, source_mode);
+        self.display_state.clear();
+        self.last_visible_set.clear();
+    }
+
+
     pub fn update_tile_cache(&mut self, visible_tiles: &[(TileId, Vec3, f32)]) {
         // Promote all actively used tiles so they aren't evicted
         for (id, _, _) in visible_tiles {

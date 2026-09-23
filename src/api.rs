@@ -36,8 +36,11 @@
 use cesium_engine::core::app::App;
 use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
 use cesium_engine::globe::tiles::config::{
-    OceanPolicy, TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_URL,
+    OceanPolicy, TerrainConfig, TileEngineConfig, TileSourceMode, SATELLITE_IMAGERY_URL,
+    STANDARD_IMAGERY_URL,
 };
+use cesium_engine::globe::tiles::vector::SvgTileRenderer;
+use std::sync::Arc;
 use std::num::NonZeroUsize;
 use std::sync::mpsc;
 #[cfg(not(target_os = "android"))]
@@ -58,9 +61,11 @@ pub enum CameraMode {
 
 /// Base imagery style for the globe's tile layer, and with it the surface engine.
 ///
-/// The two styles are the two modes of `docs/terrain-plan.md`: standard draws the flat
-/// globe (the engine without terrain, none of its work done), satellite-terrain draws
-/// relief. Switching style switches the surface.
+/// The three styles span the full quality/connectivity spectrum:
+///   - `Standard`: dark vector basemap fetched from Carto (online, flat globe).
+///   - `SatelliteTerrain`: Esri aerial imagery + Terrarium terrain (online, full 3D).
+///   - `Offline`: fully offline SVG vector map, rasterized on-CPU from a bundled world SVG
+///     — zero network activity, suitable for use during a full flight with no connectivity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum MapStyle {
     /// Default dark, label-free vector-style basemap, on the flat globe.
@@ -76,6 +81,13 @@ pub enum MapStyle {
         alias = "esri"
     )]
     SatelliteTerrain,
+    /// Fully offline SVG vector basemap — no network activity whatsoever.
+    ///
+    /// Tiles are rasterized on-CPU from `assets/maps/world_vector_dark.svg`, which is
+    /// embedded in the binary at compile time.  Suitable for use during long flights with
+    /// no connectivity.  Terrain is disabled in this mode.
+    #[value(name = "offline", alias = "minimal", alias = "vector")]
+    Offline,
 }
 
 /// What the terrain decoder does with the Terrarium source's sub-sea-level samples.
@@ -272,11 +284,27 @@ impl CesiumViewerBuilder {
         let base_imagery_url = match self.map_style {
             MapStyle::Standard => STANDARD_IMAGERY_URL.to_string(),
             MapStyle::SatelliteTerrain => SATELLITE_IMAGERY_URL.to_string(),
+            // In offline mode the URL is unused — SVG tiles are rasterized locally.
+            MapStyle::Offline => String::new(),
         };
 
         let terrain_enabled = match self.map_style {
             MapStyle::SatelliteTerrain => true,
+            // Terrain requires network access; offline mode always runs flat.
             MapStyle::Standard => self.terrain,
+            MapStyle::Offline => false,
+        };
+
+        // Parse the embedded SVG world map once; shared via Arc across all tile workers.
+        let tile_source_mode = match self.map_style {
+            MapStyle::Offline => {
+                static WORLD_SVG: &[u8] =
+                    include_bytes!("../assets/maps/world_vector_dark.svg");
+                let renderer = SvgTileRenderer::from_svg_bytes(WORLD_SVG)
+                    .expect("Bundled world_vector_dark.svg must be a valid SVG");
+                TileSourceMode::SvgVector(Arc::new(renderer))
+            }
+            _ => TileSourceMode::HttpNetwork,
         };
 
         let config = TileEngineConfig {
@@ -291,6 +319,7 @@ impl CesiumViewerBuilder {
             target_texel_ratio: self.target_texel_ratio,
             enable_prefetch: self.enable_prefetch,
             base_imagery_url,
+            tile_source_mode,
             map_saturation: self.map_saturation,
             map_contrast: self.map_contrast,
             map_brightness: self.map_brightness,
@@ -456,6 +485,25 @@ impl ViewerHandle {
                 let _ = self
                     .tx
                     .try_send(ViewerCommand::TerrainSetEnabled(true));
+            }
+            MapStyle::Offline => {
+                // Parse the embedded SVG at switch time (first call only; subsequent calls
+                // re-parse, but this is a rare user gesture so O(50ms) is acceptable).
+                static WORLD_SVG: &[u8] =
+                    include_bytes!("../assets/maps/world_vector_dark.svg");
+                match SvgTileRenderer::from_svg_bytes(WORLD_SVG) {
+                    Ok(renderer) => {
+                        let mode = TileSourceMode::SvgVector(Arc::new(renderer));
+                        let _ = self.tx.try_send(ViewerCommand::MapSetSourceMode {
+                            url: String::new(),
+                            mode,
+                        });
+                    }
+                    Err(e) => {
+                        log::error!("Failed to switch to offline mode: {e}");
+                    }
+                }
+                let _ = self.tx.try_send(ViewerCommand::TerrainSetEnabled(false));
             }
         }
     }

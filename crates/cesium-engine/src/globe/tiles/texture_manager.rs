@@ -1,5 +1,5 @@
 use crate::globe::quadtree::TileId;
-use crate::globe::tiles::config::{TileEngineConfig, DEFAULT_IMAGERY_TEXTURE_SIZE_PX};
+use crate::globe::tiles::config::{TileEngineConfig, TileSourceMode, DEFAULT_IMAGERY_TEXTURE_SIZE_PX};
 use crate::globe::tiles::tile_cache::TileCacheManager;
 use crate::globe::tiles::tile_fetcher::{TileFetcher, TileImage, TilePriority};
 use tokio::sync::mpsc;
@@ -167,7 +167,13 @@ impl TileTextureManager {
             label: Some("Fallback Tile Bind Group"),
         });
 
-        let fetcher = TileFetcher::new(tx, config.base_imagery_url.clone(), config.offline_mode, "Imagery");
+        let fetcher = TileFetcher::new_with_source(
+            tx,
+            config.base_imagery_url.clone(),
+            config.offline_mode,
+            "Imagery",
+            config.tile_source_mode.clone(),
+        );
         let cache = TileCacheManager::new(config.max_cache_size, config.negative_cache_duration).labeled("tex");
 
         Self {
@@ -397,13 +403,20 @@ impl TileTextureManager {
     /// the GPU bind_group_layout, sampler, and fallback_bind_group intact and compatible
     /// with the compiled render pipelines.
     pub fn set_base_url(&mut self, url: String, offline_mode: bool) {
+        self.set_base_url_with_source(url, offline_mode, TileSourceMode::HttpNetwork);
+    }
+
+    /// Like [`Self::set_base_url`] but also lets the caller switch [`TileSourceMode`].
+    /// Used when `MapStyle::Offline` is activated at runtime via `ViewerHandle::map_set_style`.
+    pub fn set_base_url_with_source(&mut self, url: String, offline_mode: bool, source_mode: TileSourceMode) {
         self.clear();
         self.bytes_per_tile = None;
         self.texture_size = ObservedTextureSize::default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.rx = rx;
-        self.fetcher = TileFetcher::new(tx, url, offline_mode, "Imagery");
+        self.fetcher = TileFetcher::new_with_source(tx, url, offline_mode, "Imagery", source_mode);
     }
+
 
     /// Updates the imagery cache byte budget (e.g. when terrain is toggled) and
     /// resizes the cache accordingly if the decoded tile size is known.

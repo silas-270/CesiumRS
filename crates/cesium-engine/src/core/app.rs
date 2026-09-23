@@ -834,6 +834,9 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                         ViewerCommand::MapSetImageryUrl(url) => {
                             state.set_base_imagery_url(url);
                         }
+                        ViewerCommand::MapSetSourceMode { url, mode } => {
+                            state.set_tile_source_mode(url, mode);
+                        }
                         ViewerCommand::TerrainSetEnabled(on) => {
                             state.set_terrain_enabled(on);
                         }

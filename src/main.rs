@@ -309,6 +309,7 @@ mod inner {
             let terrain_enabled = match cli.map_style {
                 cesium_rs::MapStyle::SatelliteTerrain => true,
                 cesium_rs::MapStyle::Standard => cli.terrain,
+                cesium_rs::MapStyle::Offline => false,
             };
             if !terrain_enabled {
                 flight_handle.set_plan_config(cesium_flight::telemetry::FlightPlanConfig {
@@ -395,6 +396,7 @@ fn main() {
     let terrain_enabled = match cli.map_style {
         cesium_rs::MapStyle::SatelliteTerrain => true,
         cesium_rs::MapStyle::Standard => cli.terrain,
+        cesium_rs::MapStyle::Offline => false,
     };
     if !terrain_enabled {
         flight_handle.set_plan_config(cesium_flight::telemetry::FlightPlanConfig {

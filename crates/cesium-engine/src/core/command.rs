@@ -23,6 +23,12 @@ pub enum ViewerCommand {
     /// placeholders). Reconstructs the tile texture cache, so already-loaded
     /// tiles briefly fall back to the base color while the new imagery loads.
     MapSetImageryUrl(String),
+    /// Switch the imagery source mode (e.g. to offline SVG vector tiles).
+    /// Carries both the URL (may be empty for SVG mode) and the new source mode.
+    MapSetSourceMode {
+        url: String,
+        mode: crate::globe::tiles::config::TileSourceMode,
+    },
     /// Turn terrain height data on or off (`docs/terrain-plan.md` §4 A3). Rebuilds the
     /// height cache and its fetcher, or drops them entirely when turning off.
     ///
