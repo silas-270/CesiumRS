@@ -19,6 +19,7 @@ flamegraph.svg.bak
 parse_flamegraph.py
 
 # Screenshot/test render outputs (use a /screenshots folder if needed)
+/screenshots/
 test.png
 test*.png
 test_*.png

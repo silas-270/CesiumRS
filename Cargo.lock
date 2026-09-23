@@ -532,6 +532,7 @@ dependencies = [
  "glam",
  "gltf",
  "image",
+ "libc",
  "log",
  "lru",
  "ndk",

@@ -290,6 +290,55 @@ impl<'a> App<'a> {
                 ui.separator();
                 if let Some(ext) = &mut state.extension {
                     ext.render_ui(ctx, ui);
+                    ui.separator();
+                }
+
+                ui.label("📸 Screenshot (4K UHD)");
+                let is_capturing = crate::core::screenshot::SCREENSHOT_IN_PROGRESS
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!is_capturing, egui::Button::new("📷 Capture 4K Screenshot"))
+                        .clicked()
+                    {
+                        let camera_state = crate::core::screenshot::ScreenshotCameraState {
+                            anchor_pos: state.camera.anchor_pos,
+                            anchor_ori: state.camera.anchor_ori,
+                            local_pos: state.camera.local_pos,
+                            local_ori: state.camera.local_ori,
+                            focal_length: state.camera.focal_length,
+                            sun_intensity: state.camera.sun_intensity,
+                            mode: state.camera.mode,
+                        };
+                        let label_snapshot = crate::core::screenshot::LabelManagerStateSnapshot {
+                            enabled: state.label_manager.enabled,
+                            size_scale: state.label_manager.size_scale,
+                            max_importance_rank: state.label_manager.max_importance_rank,
+                            show_anchor_dots: state.label_manager.show_anchor_dots,
+                        };
+                        let ext_snapshot = state
+                            .extension
+                            .as_ref()
+                            .and_then(|e| e.snapshot_for_headless());
+                        crate::core::screenshot::trigger_4k_screenshot(
+                            state.tile_system.config.clone(),
+                            camera_state,
+                            ext_snapshot,
+                            Some(label_snapshot),
+                        );
+                    }
+                });
+
+                if let Ok(status_guard) = crate::core::screenshot::SCREENSHOT_STATUS.lock() {
+                    if let Some((msg, is_error)) = &*status_guard {
+                        if *is_error {
+                            ui.colored_label(egui::Color32::RED, msg);
+                        } else if is_capturing {
+                            ui.colored_label(egui::Color32::YELLOW, msg);
+                        } else {
+                            ui.colored_label(egui::Color32::GREEN, msg);
+                        }
+                    }
                 }
             });
     }

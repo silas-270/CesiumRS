@@ -44,3 +44,5 @@ pub mod terrain_balance;
 pub mod route_line_ground;
 #[cfg(test)]
 pub mod offline_switch;
+#[cfg(test)]
+pub mod test_screenshot;
