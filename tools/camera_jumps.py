@@ -5,6 +5,9 @@ A frame is a jump in a column when its change is much larger than the changes of
 the frames around it (and above a small absolute floor). Usage:
 
     python3 tools/camera_jumps.py [camera_trace.csv] [--top N]
+
+The viewer writes the trace only when asked: CESIUM_TRACE=1 cargo run (the --collide
+and --revisit tests always write it).
 """
 import csv
 import math

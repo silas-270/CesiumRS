@@ -75,6 +75,12 @@ pub enum OceanPolicy {
 /// Whether [`TerrainConfig::enabled`] defaults to `true` on **this** target —
 /// `docs/terrain-plan.md` §9 F4, and the one line where the platform split lives.
 ///
+/// **The desktop viewer does not go by this.** `CesiumViewer::builder()` in the root crate
+/// lets the map style decide: satellite-terrain with relief, standard on the flat globe
+/// (terrain is a look the user switches on, not something to pay for all flight). This
+/// default is what a bare `TileEngineConfig::default()` gets: the tests, the harnesses and
+/// Android's `android_main`.
+///
 /// **Desktop: `true`.** F1 and F2 cover it. The visible set over the ten real DEM poses
 /// costs 702 tiles against 483 flat, the drawn geometric error sits inside the shipped
 /// 12 px budget at every pose but the Himalayan cliffs, and the memory split is measured

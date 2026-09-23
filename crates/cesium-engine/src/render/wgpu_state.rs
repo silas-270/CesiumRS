@@ -119,6 +119,35 @@ const SYNC_MESH_BUDGET: std::time::Duration = std::time::Duration::from_millis(3
 /// [`WgpuState::update_tile_cache`].
 const MESH_UPLOAD_BUDGET_PER_FRAME: usize = 48;
 
+/// The swapchain's present mode, out of those the surface offers: vsync unless the
+/// `CESIUM_VSYNC` environment variable is `0`, `off` or `false`.
+///
+/// Nothing else paces the frame loop, so this decides how often a frame is drawn. Taking
+/// the driver's first mode, as before, meant IMMEDIATE or MAILBOX on Mesa: 264 fps on a
+/// 60 Hz laptop, one core and the integrated GPU busy the whole time. FIFO waits for the
+/// display and every driver has it; FIFO_RELAXED, where offered, shows a late frame at
+/// once instead of a whole refresh later. Unpaced is for measuring what a frame costs.
+fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    use wgpu::PresentMode::{Fifo, FifoRelaxed, Immediate, Mailbox};
+    let vsync = !matches!(
+        std::env::var("CESIUM_VSYNC").as_deref(),
+        Ok("0" | "off" | "false")
+    );
+    let preferred: &[wgpu::PresentMode] = if vsync {
+        &[FifoRelaxed, Fifo]
+    } else {
+        &[Immediate, Mailbox, Fifo]
+    };
+    let mode = preferred
+        .iter()
+        .copied()
+        .find(|m| available.contains(m))
+        .or_else(|| available.first().copied())
+        .unwrap_or(Fifo);
+    log::info!("[SURFACE] present mode {mode:?} (vsync {vsync}; offered {available:?})");
+    mode
+}
+
 fn create_depth_texture(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -226,7 +255,10 @@ impl<'a> WgpuState<'a> {
             let caps = s.get_capabilities(&adapter);
             caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0])
         }).unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
-        let present_mode = surface.as_ref().map(|s| s.get_capabilities(&adapter).present_modes[0]).unwrap_or(wgpu::PresentMode::Fifo);
+        let present_mode = surface
+            .as_ref()
+            .map(|s| choose_present_mode(&s.get_capabilities(&adapter).present_modes))
+            .unwrap_or(wgpu::PresentMode::Fifo);
         let alpha_mode = surface.as_ref().map(|s| s.get_capabilities(&adapter).alpha_modes[0]).unwrap_or(wgpu::CompositeAlphaMode::Auto);
 
         let config = wgpu::SurfaceConfiguration {
@@ -1647,6 +1679,10 @@ impl<'a> WgpuState<'a> {
     }
 
     fn log_frame(&self, frame_idx: u64, frame_total_time: std::time::Duration, visible_tiles_len: usize) {
+        // A line a frame, so debug: at info it was 76 MB in twelve minutes.
+        if !log::log_enabled!(log::Level::Debug) {
+            return;
+        }
         let fps = if frame_total_time.as_secs_f64() > 0.0 {
             1.0 / frame_total_time.as_secs_f64()
         } else {
@@ -1657,7 +1693,7 @@ impl<'a> WgpuState<'a> {
         let (cam_lon, cam_lat) = crate::globe::geometry::ecef_to_lon_lat_f64(cam_dvec);
         let cam_alt_m = self.camera.altitude() * 1_000_000.0;
 
-        log::info!(
+        log::debug!(
             "[FRAME {:06}] dt={:.2}ms ({:.1} FPS) | update={:.2}ms (quad={:.2}ms, horiz={:.2}ms, stream={:.2}ms, disp={:.2}ms), draw={:.2}ms (terrain={:.2}ms, sky={:.2}ms, ext={:.2}ms), egui={:.2}ms, present={:.2}ms | cam: mode={:?} lat={:.4}° lon={:.4}° alt={:.1}m agl={:.1}m | tiles: vis={} rend={} miss={} reb={} | cache: mesh={}/{} tex={}/{} hgt={}/{}",
             frame_idx,
             frame_total_time.as_secs_f64() * 1000.0,
