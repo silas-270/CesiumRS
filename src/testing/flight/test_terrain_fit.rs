@@ -294,3 +294,42 @@ fn airborne_the_fit_does_not_follow_the_ground_below() {
 fn ends_lon(ends: &GroundEnds) -> f64 {
     ecef_to_lon_lat_f64(ends.dep.anchor).0
 }
+
+/// STR-FRA exactly as the viewer plans it in satellite mode, with preset headings and elevations.
+fn str_fra() -> (Vec<TelemetryPoint>, SampledPositionProperty) {
+    let r = cesium_flight::preset::parse_route("STR-FRA").unwrap();
+    let mut config = FlightPlanConfig::default();
+    config.terrain_elevation = true;
+    config.dep_elevation_m = r.dep_elevation_m.unwrap();
+    config.arr_elevation_m = r.arr_elevation_m.unwrap();
+    let points = generate(&FlightRequest {
+        departure: LatLon::new(r.departure_lat, r.departure_lon),
+        arrival: LatLon::new(r.arrival_lat, r.arrival_lon),
+        target_duration_ms: r.total_duration_ms,
+        dep_heading_deg: r.dep_heading_deg,
+        arr_heading_deg: r.arr_heading_deg,
+        runways: Vec::new(),
+        config,
+    });
+    let mut property =
+        SampledPositionProperty::new().with_algorithm(InterpolationAlgorithm::CatmullRom);
+    for p in &points {
+        property.add_sample(
+            SimulationTime::new(p.time_offset_ms as f64 / 1000.0),
+            DVec3::from_array(lon_lat_alt_to_ecef_f64(p.longitude, p.latitude, p.altitude)),
+        );
+    }
+    (points, property)
+}
+
+#[test]
+fn str_fra_ends_are_found() {
+    let (points, _) = str_fra();
+    let ends = GroundEnds::new(&points).unwrap();
+    assert!((ends.dep.field_m - 392.0).abs() < 1e-9);
+    assert!((ends.arr.field_m - 114.0).abs() < 1e-9);
+    assert!((60.0..90.0).contains(&ends.dep.edge_s), "lift-off at {}", ends.dep.edge_s);
+    assert!((1740.0..1760.0).contains(&ends.arr.edge_s), "touchdown at {}", ends.arr.edge_s);
+    assert!(ends.on_ground(0.0) && ends.on_ground(ends.end_s));
+    assert!(!ends.on_ground(ends.dep.edge_s + 1.0) && !ends.on_ground(ends.arr.edge_s - 1.0));
+}
