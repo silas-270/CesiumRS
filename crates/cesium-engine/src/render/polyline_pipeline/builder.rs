@@ -72,14 +72,6 @@ impl AdaptiveSubdivisionBuilder {
             .any(|&(a, b, max)| t_start < b && t_end > a && length > max)
     }
 
-    /// Whether the segment from `t_start` to `t_end` crosses any of the stretches in
-    /// [`Self::max_segment_lengths`].
-    fn held_short(&self, t_start: f64, t_end: f64) -> bool {
-        self.max_segment_lengths
-            .iter()
-            .any(|&(a, b, _)| t_start < b && t_end > a)
-    }
-
     /// The first end of a stretch in [`Self::max_segment_lengths`] after `t`. Each gets a
     /// point of its own, so whatever changes there changes at a point of the line and not
     /// partway along a segment.
@@ -185,12 +177,10 @@ impl AdaptiveSubdivisionBuilder {
         let line_vec = p_end - p_start;
         let length_sq = line_vec.length_squared();
 
-        // A chord of no length is measured from its start. `1e-8` Mm² is any chord under
-        // 100 m, so such chords are measured by their own half-length and halved down to
-        // `min_step`. Inside a stretch held to a maximum length every chord is that short
-        // on purpose, so there only a chord of truly no length (under 0.1 mm) counts.
-        let degenerate_sq = if self.held_short(t_start, t_end) { 1e-20 } else { 1e-8 };
-        let dist = if length_sq < degenerate_sq {
+        // Only a chord of no length (under 0.1 mm) is measured from its start. The
+        // threshold was once `1e-8`, which in Megametres is any chord under 100 m: those
+        // were measured by their own half-length and halved down to `min_step`.
+        let dist = if length_sq < 1e-20 {
             (p_mid_true - p_start).length()
         } else {
             let t = ((p_mid_true - p_start).dot(line_vec) / length_sq).clamp(0.0, 1.0);
