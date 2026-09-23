@@ -44,7 +44,7 @@ impl<'a> TestApp<'a> {
         }
         if config.map_style == crate::MapStyle::Offline {
             let renderer = cesium_engine::globe::tiles::vector::bundled_world_renderer()
-                .expect("Bundled world_vector_dark.svg must be a valid SVG");
+                .expect("Bundled offline world map must be a valid SVG");
             tile_config.base_imagery_url = String::new();
             tile_config.tile_source_mode = cesium_engine::globe::tiles::config::TileSourceMode::SvgVector(
                 std::sync::Arc::new(renderer),

@@ -83,8 +83,8 @@ pub enum MapStyle {
     SatelliteTerrain,
     /// Fully offline SVG vector basemap — no network activity whatsoever.
     ///
-    /// Tiles are rasterized on-CPU from `assets/maps/world_vector_dark.svg`, which is
-    /// embedded in the binary at compile time.  Suitable for use during long flights with
+    /// Tiles are rasterized on-CPU from `assets/maps/world_vector_dark.svg.gz` (Natural
+    /// Earth 1:10m), which is embedded in the binary at compile time.  Suitable for use during long flights with
     /// no connectivity.  Terrain is disabled in this mode.
     #[value(name = "offline", alias = "minimal", alias = "vector")]
     Offline,
@@ -299,7 +299,7 @@ impl CesiumViewerBuilder {
         let tile_source_mode = match self.map_style {
             MapStyle::Offline => {
                 let renderer = vector::bundled_world_renderer()
-                    .expect("Bundled world_vector_dark.svg must be a valid SVG");
+                    .expect("Bundled offline world map must be a valid SVG");
                 TileSourceMode::SvgVector(Arc::new(renderer))
             }
             _ => TileSourceMode::HttpNetwork,
