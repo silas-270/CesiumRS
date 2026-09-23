@@ -42,3 +42,5 @@ pub mod terrain_f5_capture;
 pub mod terrain_balance;
 #[cfg(test)]
 pub mod route_line_ground;
+#[cfg(test)]
+pub mod offline_switch;
