@@ -46,3 +46,6 @@ haze_capture/
 parametric_results.csv
 camera_trace.csv
 tile_trace.csv
+
+# Natural Earth downloads of tools/generate_world_svg.py (re-fetched on demand)
+tools/.cache/
