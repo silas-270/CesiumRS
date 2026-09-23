@@ -91,6 +91,110 @@ pub fn lookup_airport_elevation(lat: f64, lon: f64) -> Option<f64> {
     best_elev
 }
 
+pub const KNOWN_RUNWAYS: &[crate::flight_handle::RunwayData] = &[
+    // EDDS (Stuttgart) Runway 07/25
+    crate::flight_handle::RunwayData {
+        airport_id: 1001,
+        length_ft: 10974.0, // 3,345 m
+        width_ft: 148.0,    // 45 m
+        le_heading: 73.0,
+        le_lat: 48.685699,
+        le_lon: 9.200130,
+        he_heading: 253.0,
+        he_lat: 48.694000,
+        he_lon: 9.243800,
+    },
+    // EDDF (Frankfurt) Runway 07C/25C
+    crate::flight_handle::RunwayData {
+        airport_id: 1002,
+        length_ft: 13123.0, // 4,000 m
+        width_ft: 197.0,    // 60 m
+        le_heading: 69.0,
+        le_lat: 50.032600,
+        le_lon: 8.534630,
+        he_heading: 249.0,
+        he_lat: 50.045101,
+        he_lon: 8.586980,
+    },
+    // EDDF Runway 07R/25L
+    crate::flight_handle::RunwayData {
+        airport_id: 1002,
+        length_ft: 13123.0,
+        width_ft: 197.0,
+        le_heading: 69.0,
+        le_lat: 50.027500,
+        le_lon: 8.534170,
+        he_heading: 249.0,
+        he_lat: 50.040100,
+        he_lon: 8.586530,
+    },
+    // EDDF Runway 07L/25R
+    crate::flight_handle::RunwayData {
+        airport_id: 1002,
+        length_ft: 9186.0,
+        width_ft: 148.0,
+        le_heading: 69.0,
+        le_lat: 50.037102,
+        le_lon: 8.497080,
+        he_heading: 249.0,
+        he_lat: 50.045799,
+        he_lon: 8.533720,
+    },
+    // EDDF Runway 18/36
+    crate::flight_handle::RunwayData {
+        airport_id: 1002,
+        length_ft: 13123.0,
+        width_ft: 148.0,
+        le_heading: 179.0,
+        le_lat: 50.034154,
+        le_lon: 8.525944,
+        he_heading: 359.0,
+        he_lat: 49.998493,
+        he_lon: 8.526297,
+    },
+];
+
+pub fn lookup_airport_runways(lat: f64, lon: f64) -> Vec<crate::flight_handle::RunwayData> {
+    let mut result = Vec::new();
+    let airport = LatLon::new(lat, lon);
+    for r in KNOWN_RUNWAYS {
+        let le = LatLon::new(r.le_lat, r.le_lon);
+        let he = LatLon::new(r.he_lat, r.he_lon);
+        if distance_m(le, airport) <= 25_000.0 || distance_m(he, airport) <= 25_000.0 {
+            result.push(r.clone());
+        }
+    }
+    result
+}
+
+/// Returns official AIP runway threshold elevations `(start_elev_m, end_elev_m)` along the runway in the direction of heading.
+pub fn lookup_runway_threshold_elevations(lat: f64, lon: f64, heading_deg: f64) -> Option<(f64, f64)> {
+    let airport = LatLon::new(lat, lon);
+    // STR (EDDS)
+    if distance_m(airport, LatLon::new(48.6899, 9.2219)) < 25_000.0 {
+        let h_diff = (heading_deg - 73.0).abs();
+        if h_diff < 45.0 || (360.0 - h_diff) < 45.0 {
+            // Runway 07 (THR 07 -> THR 25)
+            return Some((386.18, 359.97));
+        } else {
+            // Runway 25 (THR 25 -> THR 07)
+            return Some((359.97, 386.18));
+        }
+    }
+    // FRA (EDDF)
+    if distance_m(airport, LatLon::new(50.0333, 8.5706)) < 25_000.0 {
+        let h_diff_69 = (heading_deg - 69.0).abs();
+        let is_07 = h_diff_69 < 45.0 || (360.0 - h_diff_69) < 45.0;
+        if is_07 {
+            return Some((100.28, 110.95));
+        } else {
+            return Some((110.95, 100.28));
+        }
+    }
+    None
+}
+
+
 impl RoutePresetInfo {
     pub fn to_route_def(&self) -> FlightRouteDef {
         FlightRouteDef {

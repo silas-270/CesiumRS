@@ -20,11 +20,14 @@
 //!   `HeightBounds` interval plus the scaled-space bounding sphere the culler takes as
 //!   its input (D1, D2). Still behind `TerrainConfig::enabled`, which is still `false`.
 
+pub mod corridor;
 pub mod height_cache;
 pub mod height_tile;
 pub mod heightfield;
 
+pub use corridor::RunwayCorridor;
 pub use height_cache::HeightTileManager;
+
 pub use height_tile::{
     decode_terrarium, HeightTile, HEIGHT_DETAIL_LEVELS, HEIGHT_DETAIL_PYRAMID_CELLS,
 };

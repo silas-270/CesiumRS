@@ -65,7 +65,10 @@ pub struct FlightEntity {
     /// The route line's control points, fitted onto the terrain near the airports by the
     /// same rule as the aircraft. `renderer` draws [`LineFit::points`].
     pub line: LineFit,
+    /// Runway corridors along departure and arrival runways for terrain flattening.
+    pub runway_corridors: Vec<cesium_engine::globe::terrain::RunwayCorridor>,
 }
+
 
 impl FlightEntity {
     /// How far along the route the aircraft is at `progress`, in Megametres.
@@ -124,6 +127,157 @@ fn camera_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
+fn build_runway_corridors(
+    pending: &PendingFlight,
+    points: &[crate::telemetry::generator::TelemetryPoint],
+) -> Vec<cesium_engine::globe::terrain::RunwayCorridor> {
+    use cesium_engine::globe::terrain::RunwayCorridor;
+    use crate::telemetry::geo::{distance_m, initial_bearing, destination, LatLon};
+
+    if points.is_empty() {
+        return Vec::new();
+    }
+
+    let mut corridors = Vec::new();
+    let on_ground = |p: &&crate::telemetry::generator::TelemetryPoint, field: f64| {
+        (p.altitude - field).abs() <= crate::terrain_fit::ON_GROUND_TOLERANCE_M
+    };
+
+    // 1. Departure Runway Corridor
+    let first = &points[0];
+    let dep_on = points.iter().take_while(|p| on_ground(p, first.altitude)).count();
+    let dep_heading_rad = if dep_on > 1 {
+        let last_dep = &points[dep_on - 1];
+        initial_bearing(
+            LatLon::new(first.latitude, first.longitude),
+            LatLon::new(last_dep.latitude, last_dep.longitude),
+        )
+    } else {
+        first.heading_rad
+    };
+
+    let p0 = LatLon::new(first.latitude, first.longitude);
+    let mut dep_runway_data: Option<crate::flight_handle::RunwayData> = None;
+    let mut best_dist = f64::MAX;
+    for r in &pending.runways {
+        let d1 = distance_m(p0, LatLon::new(r.le_lat, r.le_lon));
+        let d2 = distance_m(p0, LatLon::new(r.he_lat, r.he_lon));
+        let d = d1.min(d2);
+        if d < 10_000.0 && d < best_dist {
+            best_dist = d;
+            dep_runway_data = Some(r.clone());
+        }
+    }
+
+    let (dep_start, dep_end, dep_width_m) = if let Some(r) = dep_runway_data {
+        let d_le = distance_m(p0, LatLon::new(r.le_lat, r.le_lon));
+        let d_he = distance_m(p0, LatLon::new(r.he_lat, r.he_lon));
+        let width = if r.width_ft > 0.0 { r.width_ft as f64 * 0.3048 } else { 45.0 };
+        if d_le <= d_he {
+            (LatLon::new(r.le_lat, r.le_lon), LatLon::new(r.he_lat, r.he_lon), width)
+        } else {
+            (LatLon::new(r.he_lat, r.he_lon), LatLon::new(r.le_lat, r.le_lon), width)
+        }
+    } else {
+        let width = 45.0;
+        let end = destination(p0, dep_heading_rad, 3300.0);
+        (p0, end, width)
+    };
+
+    let dep_known_elevs = crate::preset::lookup_runway_threshold_elevations(
+        first.latitude,
+        first.longitude,
+        dep_heading_rad.to_degrees(),
+    );
+    let (dep_start_elev, dep_end_elev) = if let Some((h0, h1)) = dep_known_elevs {
+        (Some(h0), Some(h1))
+    } else {
+        (Some(pending.config.dep_elevation_m), Some(pending.config.dep_elevation_m))
+    };
+
+    let dep_half_width = (dep_width_m * 0.5 + 5.0).max(25.0);
+    corridors.push(RunwayCorridor::new(
+        dep_start.lon_deg,
+        dep_start.lat_deg,
+        dep_end.lon_deg,
+        dep_end.lat_deg,
+        dep_start_elev,
+        dep_end_elev,
+        dep_half_width,
+        35.0,
+    ));
+
+    // 2. Arrival Runway Corridor
+    let last = &points[points.len() - 1];
+    let arr_on = points.iter().rev().take_while(|p| on_ground(p, last.altitude)).count();
+    let touchdown_idx = points.len().saturating_sub(arr_on);
+    let touchdown_pt = &points[touchdown_idx];
+    let p_arr = LatLon::new(last.latitude, last.longitude);
+    let mut arr_runway_data: Option<crate::flight_handle::RunwayData> = None;
+    let mut best_arr_dist = f64::MAX;
+    for r in &pending.runways {
+        let d1 = distance_m(p_arr, LatLon::new(r.le_lat, r.le_lon));
+        let d2 = distance_m(p_arr, LatLon::new(r.he_lat, r.he_lon));
+        let d = d1.min(d2);
+        if d < 10_000.0 && d < best_arr_dist {
+            best_arr_dist = d;
+            arr_runway_data = Some(r.clone());
+        }
+    }
+
+    let arr_heading_rad = if arr_on > 1 {
+        initial_bearing(
+            LatLon::new(touchdown_pt.latitude, touchdown_pt.longitude),
+            LatLon::new(last.latitude, last.longitude),
+        )
+    } else {
+        last.heading_rad
+    };
+
+    let (arr_start, arr_end, arr_width_m) = if let Some(r) = arr_runway_data {
+        let pt_touchdown = LatLon::new(touchdown_pt.latitude, touchdown_pt.longitude);
+        let d_le = distance_m(pt_touchdown, LatLon::new(r.le_lat, r.le_lon));
+        let d_he = distance_m(pt_touchdown, LatLon::new(r.he_lat, r.he_lon));
+        let width = if r.width_ft > 0.0 { r.width_ft as f64 * 0.3048 } else { 45.0 };
+        if d_le <= d_he {
+            (LatLon::new(r.le_lat, r.le_lon), LatLon::new(r.he_lat, r.he_lon), width)
+        } else {
+            (LatLon::new(r.he_lat, r.he_lon), LatLon::new(r.le_lat, r.le_lon), width)
+        }
+    } else {
+        let width = 45.0;
+        let pt_touchdown = LatLon::new(touchdown_pt.latitude, touchdown_pt.longitude);
+        let start = destination(pt_touchdown, arr_heading_rad + std::f64::consts::PI, 400.0);
+        let end = destination(start, arr_heading_rad, 3300.0);
+        (start, end, width)
+    };
+
+    let arr_known_elevs = crate::preset::lookup_runway_threshold_elevations(
+        last.latitude,
+        last.longitude,
+        arr_heading_rad.to_degrees(),
+    );
+    let (arr_start_elev, arr_end_elev) = if let Some((h0, h1)) = arr_known_elevs {
+        (Some(h0), Some(h1))
+    } else {
+        (Some(pending.config.arr_elevation_m), Some(pending.config.arr_elevation_m))
+    };
+
+    let arr_half_width = (arr_width_m * 0.5 + 5.0).max(25.0);
+    corridors.push(RunwayCorridor::new(
+        arr_start.lon_deg,
+        arr_start.lat_deg,
+        arr_end.lon_deg,
+        arr_end.lat_deg,
+        arr_start_elev,
+        arr_end_elev,
+        arr_half_width,
+        35.0,
+    ));
+
+    corridors
+}
+
 /// Plans `pending` and builds what is drawn for it. `None` for a plan with no points.
 fn build_flight(
     device: &wgpu::Device,
@@ -173,6 +327,8 @@ fn build_flight(
         poly_config.split_progress = 0.5;
     }
 
+    let runway_corridors = build_runway_corridors(pending, &points);
+
     Some(FlightEntity {
         id: pending.id.clone(),
         renderer,
@@ -185,8 +341,10 @@ fn build_flight(
         route_distances,
         ends,
         line,
+        runway_corridors,
     })
 }
+
 
 pub struct FlightTrackerApp {
     pub progress: std::sync::Arc<std::sync::Mutex<f64>>,
@@ -234,6 +392,8 @@ pub struct FlightTrackerApp {
     /// Where the aircraft meets the rendered terrain, refreshed every frame by
     /// `sample_ground`; see [`crate::terrain_fit`].
     terrain: AircraftFit,
+    /// Active runway corridors for terrain flattening.
+    pub cached_corridors: Vec<cesium_engine::globe::terrain::RunwayCorridor>,
 }
 
 /// Height of the exterior model's origin above the flight position when airborne, metres.
@@ -256,6 +416,7 @@ impl FlightTrackerApp {
             cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
             terrain: AircraftFit::default(),
+            cached_corridors: Vec::new(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -287,6 +448,7 @@ impl FlightTrackerApp {
             cockpit_load_failed: false,
             last_update_time: std::time::Instant::now(),
             terrain: AircraftFit::default(),
+            cached_corridors: Vec::new(),
             is_playing: false,
             play_speed: 0.1,
             view_mode: cesium_engine::camera::camera::CameraMode::Free,
@@ -469,6 +631,11 @@ impl FlightTrackerApp {
         is_secondary: bool,
         runways: Vec<crate::flight_handle::RunwayData>,
     ) {
+        let mut runways = runways;
+        if runways.is_empty() {
+            runways = crate::preset::lookup_airport_runways(departure_lat, departure_lon);
+            runways.extend(crate::preset::lookup_airport_runways(arrival_lat, arrival_lon));
+        }
         let mut config = self.plan_config;
         if let Some(elev) = crate::preset::lookup_airport_elevation(departure_lat, departure_lon) {
             config.dep_elevation_m = elev;
@@ -493,6 +660,8 @@ impl FlightTrackerApp {
 
     /// Load a route from a pre-defined or parsed `FlightRouteDef`.
     pub fn load_route(&mut self, route: crate::preset::FlightRouteDef) {
+        let mut runways = crate::preset::lookup_airport_runways(route.departure_lat, route.departure_lon);
+        runways.extend(crate::preset::lookup_airport_runways(route.arrival_lat, route.arrival_lon));
         let mut config = self.plan_config;
         if let Some(elev) = route
             .dep_elevation_m
@@ -516,10 +685,11 @@ impl FlightTrackerApp {
             dep_heading_deg: route.dep_heading_deg,
             arr_heading_deg: route.arr_heading_deg,
             is_secondary: false,
-            runways: Vec::new(),
+            runways,
             config,
         });
     }
+
 
     /// Draws the cockpit interior around the camera, at true world scale.
     ///
@@ -702,6 +872,7 @@ impl GlobeExtension for FlightTrackerApp {
                 self.flights.push(flight);
             }
         }
+        self.cached_corridors = self.flights.iter().flat_map(|f| f.runway_corridors.clone()).collect();
     }
 
     fn sample_ground(&mut self, ground: &dyn Fn(DVec3) -> Option<f64>) {
@@ -710,6 +881,7 @@ impl GlobeExtension for FlightTrackerApp {
         }
         self.fit_to_terrain(ground);
     }
+
 
     fn update(
         &mut self,
@@ -813,8 +985,10 @@ impl GlobeExtension for FlightTrackerApp {
                         self.flights.push(flight);
                     }
                 }
+                self.cached_corridors = self.flights.iter().flat_map(|f| f.runway_corridors.clone()).collect();
             }
         }
+
 
         // The parts of each route line the terrain fit moved in `sample_ground`.
         for flight in &mut self.flights {
@@ -1291,4 +1465,9 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
     }
+
+    fn runway_corridors(&self) -> &[cesium_engine::globe::terrain::RunwayCorridor] {
+        &self.cached_corridors
+    }
 }
+

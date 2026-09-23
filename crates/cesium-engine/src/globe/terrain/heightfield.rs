@@ -185,17 +185,36 @@ impl HeightPatch {
         // edge, which is precisely the degenerate central difference C2 is avoiding.
         let uv = |u: f64, v: f64| HeightTileManager::ancestor_uv_unclamped(id, source, u, v);
 
+        let b = tile_bounds(&id);
+        let overlapping: Vec<&crate::globe::terrain::RunwayCorridor> = heights
+            .runway_corridors
+            .iter()
+            .filter(|c| c.overlaps_bounds(&b))
+            .collect();
+
         let mut grid = vec![0.0; grid_size * grid_size];
         let (mut h_min, mut h_max) = (f64::INFINITY, f64::NEG_INFINITY);
         for r in 0..grid_size {
             let v = (r as f64 - 1.0) * inv_seg;
+            let lat = if !overlapping.is_empty() {
+                web_mercator_y_to_lat_f64(id.y as f64 + v, id.z)
+            } else {
+                0.0
+            };
             for c in 0..grid_size {
                 let u = (c as f64 - 1.0) * inv_seg;
                 let (su, sv) = uv(u, v);
                 // `sample_bilinear` is metres and clamps its own arguments into the
                 // source tile; the clamp is what makes an invalid halo degrade to the
                 // edge value rather than read out of bounds.
-                let h = tile.sample_bilinear(su, sv) * 1.0e-6 * exaggeration;
+                let mut raw_h = tile.sample_bilinear(su, sv);
+                if !overlapping.is_empty() {
+                    let lon = b.lon_min + u * (b.lon_max - b.lon_min);
+                    for corridor in &overlapping {
+                        raw_h = corridor.filter_height(lon, lat, raw_h);
+                    }
+                }
+                let h = raw_h * 1.0e-6 * exaggeration;
                 grid[r * grid_size + c] = h;
 
                 let interior = (1..=(segments as usize + 1)).contains(&r)

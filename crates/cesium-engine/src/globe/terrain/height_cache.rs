@@ -69,6 +69,8 @@ pub struct HeightTileManager {
     /// Entries the byte budget allows — reported by the debug panel, so terrain's
     /// share of the tile budget is visible rather than inferred.
     capacity: NonZeroUsize,
+    /// Active runway corridors for flattening terrain in airport zones.
+    pub runway_corridors: Vec<crate::globe::terrain::RunwayCorridor>,
 }
 
 impl HeightTileManager {
@@ -113,6 +115,7 @@ impl HeightTileManager {
             max_level: config.terrain.max_level,
             offline_mode: config.offline_mode,
             capacity,
+            runway_corridors: Vec::new(),
         }
     }
 
@@ -308,9 +311,22 @@ impl HeightTileManager {
     /// answer to within the relief this query is used to resolve.
     ///
     /// [`tile_bounds`]: crate::globe::quadtree::tile_bounds
-    pub fn peek_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
+    /// Raw unflattened DEM height at `(lon, lat)`.
+    pub fn peek_raw_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
         let (id, u, v) = Self::tile_uv_at_lon_lat(lon_deg, lat_deg, self.max_level);
         self.peek_height_at(id, u, v)
+    }
+
+    pub fn peek_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
+        let raw_mm = self.peek_raw_height_at_lon_lat(lon_deg, lat_deg)?;
+        if self.runway_corridors.is_empty() {
+            return Some(raw_mm);
+        }
+        let mut h_m = raw_mm * 1.0e6;
+        for corridor in &self.runway_corridors {
+            h_m = corridor.filter_height(lon_deg, lat_deg, h_m);
+        }
+        Some(h_m * METRES_TO_MEGAMETRES)
     }
 
     /// Height in **megametres** of the **drawn triangle mesh** under a geodetic
@@ -390,10 +406,22 @@ impl HeightTileManager {
         let fu = gu - i0 as f64;
         let fv = gv - j0 as f64;
 
+        let b = crate::globe::quadtree::tile_bounds(&id);
         let corner = |di: u32, dj: u32| {
-            let (su, sv) = Self::ancestor_uv(id, src, (i0 + di) as f64 / nf, (j0 + dj) as f64 / nf);
-            tile.sample_bilinear(su, sv) * METRES_TO_MEGAMETRES
+            let u_corner = (i0 + di) as f64 / nf;
+            let v_corner = (j0 + dj) as f64 / nf;
+            let (su, sv) = Self::ancestor_uv(id, src, u_corner, v_corner);
+            let mut h = tile.sample_bilinear(su, sv);
+            if !self.runway_corridors.is_empty() {
+                let lon = b.lon_min + u_corner * (b.lon_max - b.lon_min);
+                let lat = crate::globe::quadtree::web_mercator_y_to_lat_f64(id.y as f64 + v_corner, id.z);
+                for corridor in &self.runway_corridors {
+                    h = corridor.filter_height(lon, lat, h);
+                }
+            }
+            h * METRES_TO_MEGAMETRES
         };
+
         // `v` runs south, so `dj = 0` is the north row.
         let (nw, ne, sw, se) = (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1));
 
