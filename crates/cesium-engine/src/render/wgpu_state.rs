@@ -220,8 +220,41 @@ impl<'a> WgpuState<'a> {
         mut extension: Option<Box<dyn crate::core::extension::GlobeExtension>>,
     ) -> Self {
         let size = window.as_ref().map(|w| w.inner_size()).unwrap_or(headless_size.unwrap_or(winit::dpi::PhysicalSize::new(800, 600)));
+        let backends = if let Ok(b) = std::env::var("WGPU_BACKEND") {
+            match b.to_lowercase().as_str() {
+                "gl" | "gles" => wgpu::Backends::GL,
+                "vulkan" | "vk" => wgpu::Backends::VULKAN,
+                _ => wgpu::Backends::all(),
+            }
+        } else {
+            #[cfg(target_os = "android")]
+            {
+                // On Android, ANativeWindow can only connect to one API at a time.
+                // Creating a surface with Backends::all() attempts Vulkan first, which connects
+                // to ANativeWindow. If Vulkan is non-compliant (e.g. Android Emulator SwiftShader),
+                // wgpu falls back to GL, but eglCreateWindowSurface fails because ANativeWindow
+                // is already connected to Vulkan.
+                // We test Vulkan adapter compliance first WITHOUT a surface:
+                let vk_instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::VULKAN,
+                    ..Default::default()
+                });
+                if let Some(vk_adapter) = vk_instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await {
+                    log::info!("[WGPU] Compliant Vulkan adapter found: {}", vk_adapter.get_info().name);
+                    wgpu::Backends::VULKAN
+                } else {
+                    log::info!("[WGPU] No compliant Vulkan adapter found; using GL backend");
+                    wgpu::Backends::GL
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                wgpu::Backends::all()
+            }
+        };
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             ..Default::default()
         });
 
@@ -236,24 +269,6 @@ impl<'a> WgpuState<'a> {
             .await
             .unwrap();
 
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::POLYGON_MODE_LINE
-                        | wgpu::Features::PUSH_CONSTANTS
-                        | gpu_timing_features(&adapter),
-                    required_limits: wgpu::Limits {
-                        max_push_constant_size: 128,
-                        ..Default::default()
-                    },
-                    memory_hints: wgpu::MemoryHints::default(),
-                },
-                None,
-            )
-            .await
-            .unwrap();
-
         let adapter_info = adapter.get_info();
         log::info!(
             "WGPU Adapter: '{}' ({:?}, backend {:?}, driver '{}')",
@@ -263,23 +278,79 @@ impl<'a> WgpuState<'a> {
             adapter_info.driver
         );
 
+        let mut required_features = gpu_timing_features(&adapter);
+        if adapter.features().contains(wgpu::Features::POLYGON_MODE_LINE) {
+            required_features |= wgpu::Features::POLYGON_MODE_LINE;
+        }
+        if adapter.features().contains(wgpu::Features::PUSH_CONSTANTS) {
+            required_features |= wgpu::Features::PUSH_CONSTANTS;
+        }
+
+        let max_push_constant_size = if adapter.features().contains(wgpu::Features::PUSH_CONSTANTS) {
+            128
+        } else {
+            0
+        };
+
+        let required_limits = wgpu::Limits {
+            max_push_constant_size,
+            ..adapter.limits()
+        };
+
+        let (device, queue) = match adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features,
+                    required_limits: required_limits.clone(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                },
+                None,
+            )
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::warn!("First request_device failed ({:?}), retrying with adapter limits and minimal features", e);
+                adapter
+                    .request_device(
+                        &wgpu::DeviceDescriptor {
+                            label: None,
+                            required_features: wgpu::Features::empty(),
+                            required_limits: adapter.limits(),
+                            memory_hints: wgpu::MemoryHints::default(),
+                        },
+                        None,
+                    )
+                    .await
+                    .expect("Failed to create wgpu device with minimal features")
+            }
+        };
+
         device.on_uncaptured_error(Box::new(|err| {
             let bt = std::backtrace::Backtrace::capture();
             log::error!("CRITICAL WGPU ERROR: {:?}\nBacktrace:\n{}", err, bt);
         }));
 
-        let surface_format = surface.as_ref().map(|s| {
-            let caps = s.get_capabilities(&adapter);
+        let surface_caps = surface.as_ref().map(|s| s.get_capabilities(&adapter));
+        let surface_format = surface_caps.as_ref().map(|caps| {
             caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0])
         }).unwrap_or(wgpu::TextureFormat::Rgba8UnormSrgb);
-        let present_mode = surface
+        let present_mode = surface_caps
             .as_ref()
-            .map(|s| choose_present_mode(&s.get_capabilities(&adapter).present_modes))
+            .map(|caps| choose_present_mode(&caps.present_modes))
             .unwrap_or(wgpu::PresentMode::Fifo);
-        let alpha_mode = surface.as_ref().map(|s| s.get_capabilities(&adapter).alpha_modes[0]).unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        let alpha_mode = surface_caps.as_ref().map(|caps| caps.alpha_modes[0]).unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        let surface_usage = surface_caps.as_ref().map(|caps| {
+            if caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
+            } else {
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            }
+        }).unwrap_or(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: surface_usage,
             format: surface_format,
             width: size.width,
             height: size.height,
