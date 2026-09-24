@@ -161,14 +161,26 @@ Two more effects sit on top of that base model:
 `sky_pipeline/mod.rs` owns both `sky.wgsl` and the pipeline that runs it — a full-screen
 triangle that reconstructs a world-space ray. The colour along that ray comes from
 `render/atmosphere.wgsl`, a physically based single-scattering atmosphere shared with the
-globe (see "The sky must agree with the globe" below):
+globe (see "The sky must agree with the globe" below).
 
-- **Rayleigh + Mie + ozone, one raymarch, no tables.** 16 quadratically spaced samples
+**Performance rule: nothing is raymarched per pixel or per vertex.** The model is baked by
+`render/sky_lut/` into one 128x98 `Rgba16Float` texture — the sky from the camera over
+(azimuth from the sun, view zenith angle with Hillaire's horizon-squeezed mapping), plus two
+rows of ground skylight and ground sunlight against the sun's cos-zenith — and re-rendered
+only when the sun's elevation (1e-3 in sine, 0.06°) or the camera height (3%) has moved,
+and then spread over four frames, one band each (a whole LUT is ~0.4ms on the laptop's
+Vega 8, which rendered every frame was +4% frame time). The sky
+pixel does one fetch; the terrain vertex two; the terrain fragment one, and only where there
+is haze to show. The user's budget for this was "no more than 1% slower than before"; the
+`sky_perf` harness (`src/testing/rendering/sky_perf.rs`) measures it with GPU timestamps.
+Measured on the laptop's Vega 8 the LUT version is at or below the old painted gradient.
+
+- **Rayleigh + Mie + ozone, one raymarch per LUT texel.** 16 quadratically spaced samples
   along the view ray; the sunlight reaching each sample is attenuated along its own path
   analytically with the Chapman function (the same one the haze uses), so there is no inner
   loop. The planet's shadow is a ray/sphere test on that sun ray. Everything a sunset is
   made of comes out of this rather than being painted: the reddened sun, the yellow-orange
-  band along the horizon under it, the aureole (Mie, g = 0.8), the blue-grey Earth's shadow
+  band along the horizon under it, the aureole (Mie, g = 0.72), the blue-grey Earth's shadow
   rising from the antisolar horizon after sunset with the pink Belt of Venus on top of it,
   and the deep blue twilight zenith.
 - **The twilight zenith is blue because of ozone.** Light still reaching the upper air
@@ -182,15 +194,18 @@ globe (see "The sky must agree with the globe" below):
   ozone-filtered light of the upper twilight sky, which is what lights the air inside the
   Earth's shadow and keeps it blue-grey instead of black. Weighted by each sample's own
   sunlight (floor 0.15), or it swamps the red sunset band into lavender.
-- **Exposure and tone curve.** `atmo_exposure` opens up by up to 7 stops through twilight
-  (the eye adapting, but not all the way — it still gets darker), then a per-channel
+- **Exposure and tone curve.** `atmo_exposure` opens up by up to 10 stops through twilight
+  (~6.5 at -6°, when a real sky is still clearly lit; the eye adapting, but not all the
+  way — it still gets darker), then a per-channel
   `1 - exp(-x)` shoulder and a 1.3 display saturation (the shoulder alone left the noon sky
   pale cyan).
-- **A sun disc** seen through the same air: its colour is the transmittance of its own line
-  of sight, so it goes white, yellow, orange, red as it sets, screen-blended over the sky.
-  Atmospheric refraction (Bennett's formula) is undone on the view ray before the disc test,
-  which both lifts the sun just after geometric sunset and flattens it into an oval at the
-  horizon.
+- **A sun disc and glow**, evaluated only within ~14° of the sun. Colour is the
+  transmittance of its own line of sight (power 0.7, normalised), so it goes white, yellow,
+  orange as it sets; a two-part exponential glow (0.8 at 1.1°, 0.3 at 4.6° e-folding) and
+  the limb-darkened disc are screen-blended over the sky *after* the altitude darkening —
+  darkened with the sky, the disc read as a grey dot. Atmospheric refraction (Bennett's
+  formula) is undone on the view ray before the disc test, which lifts the sun just after
+  geometric sunset and flattens it into an oval at the horizon.
 - **A moon** with a procedural surface: value-noise maria, finer speckle for craters, and a
   touch of limb darkening so it does not read as a sticker. Procedural rather than a
   texture because this pipeline binds nothing but the camera uniform — an image would mean
@@ -198,7 +213,8 @@ globe (see "The sky must agree with the globe" below):
   `MOON_ANGULAR_RADIUS` is deliberately about five times life size; at the real quarter of
   a degree it is a handful of pixels and reads as a stray dot.
 - **Stars**, hashed off the world-space ray so the field is pinned to the celestial sphere
-  and stays put as the aircraft flies and turns.
+  and stays put as the aircraft flies and turns. Gated to a sun more than ~7° down: at the
+  end of civil twilight the sky is still lit.
 - **A hash-based dither**, about one 8-bit ULP, added just before the final return. The
   gradient is smooth and mostly monochrome and this renders for hours in the background, so
   banding gets more visible the longer a session runs, not less. Screen-space rather than
@@ -207,16 +223,17 @@ globe (see "The sky must agree with the globe" below):
 **The sky must agree with the globe at the horizon.** It used to be enforced by
 copy-pasted palette functions in both shaders, and had already drifted once. Now both shader
 modules are built by prepending `atmosphere.wgsl` to their own source (`concat!` in
-`wgpu_state.rs`), and the globe's vertex shader traces the *same* ray the sky shader would
-have traced past each vertex (`atmo_integrate`, phase functions applied per fragment so the
-aureole does not facet). Distant terrain fades into exactly the sky above it. Both apply the
+`wgpu_state.rs`), and the globe's haze reads the *same* sky LUT in the direction of each
+fragment — the LUT's rows below the horizon are exactly the air in front of the ground.
+Distant terrain fades into exactly the sky above it. Both apply the
 same altitude darkening, `mix(0.35, 1.0, depth)`.
 
 ### Ground light at sunset
 
-The ground takes its light from the same atmosphere, per vertex: the direct sun
-(`atmo_sun_transmittance`, zero once that ground is in the Earth's shadow) and skylight
-from three short raymarches (zenith, low toward and low away from the sun). Their
+The ground takes its light from the same atmosphere, per vertex, from the LUT's two ground
+rows: the direct sun (transmittance, zero once that ground is in the Earth's shadow) and
+skylight (three short raymarches — zenith, low toward and low away from the sun — done in
+the LUT pass). Their
 *colour* tints the ground, pulled halfway to white (`GROUND_TINT_STRENGTH`) because the eye
 white-balances — golden hour reads warm, blue hour cool, neither dyed. Brightness follows
 its own ramp from +2° to -10°, so the ground darkens with the sky instead of staying at
@@ -449,6 +466,19 @@ back into the depth that produces it, on satellite imagery:
 ```
 SUNSET_DIR=out cargo test --lib sunset_capture -- --ignored --nocapture
 SUNSET_ELEVS=45,0 SUNSET_VIEWS=g_sun,g_anti ...   # narrow it
+```
+
+`src/testing/rendering/sky_perf.rs` (`#[ignore]`d) is the performance gate: the real flight
+view (tracking at FRA; Carto dark and satellite+terrain; noon and sunset) offscreen at
+1080p, with GPU timestamps around each frame's scene (`WgpuState::scene_timestamps`; the
+device only asks for timestamp features when `CESIUM_GPU_TIMING` is set, which the test
+does). Frames are queued back to back so the GPU stays at its top clock — waiting per frame
+let an APU drop clocks between frames and the numbers swung by 30%. Build the lib test
+binary for both commits, run them alternately on the target machine, compare medians:
+
+```
+cargo test --release --lib --no-run   # then run the binary:
+./cesium_rs-<hash> sky_perf --ignored --nocapture   # SKY_PERF_SCENES/FRAMES/BATCHES
 ```
 
 `src/testing/rendering/haze_capture.rs` (also `#[ignore]`d) is the zoom-out counterpart —

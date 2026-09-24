@@ -8,6 +8,7 @@ pub fn create_pipelines(
     shader: &wgpu::ShaderModule,
     camera_bind_group_layout: &wgpu::BindGroupLayout,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
+    sky_lut_layout: &wgpu::BindGroupLayout,
 ) -> (
     wgpu::RenderPipeline,
     wgpu::RenderPipeline,
@@ -20,15 +21,12 @@ pub fn create_pipelines(
 
     let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Render Pipeline Layout"),
-        bind_group_layouts: &[camera_bind_group_layout, texture_bind_group_layout],
+        bind_group_layouts: &[camera_bind_group_layout, texture_bind_group_layout, sky_lut_layout],
         push_constant_ranges: &push_constant_ranges,
     });
 
-    let basic_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Basic Pipeline Layout"),
-        bind_group_layouts: &[camera_bind_group_layout],
-        push_constant_ranges: &push_constant_ranges,
-    });
+    // The wireframe shares vs_main, which reads the sky LUT, so it needs the full layout.
+    let basic_pipeline_layout = &render_pipeline_layout;
 
     #[cfg(feature = "debug_panel")]
     let debug_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -93,7 +91,7 @@ pub fn create_pipelines(
 
     let wireframe_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Wireframe Pipeline"),
-        layout: Some(&basic_pipeline_layout),
+        layout: Some(basic_pipeline_layout),
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: "vs_main",
