@@ -3,7 +3,7 @@ use glam::Vec3;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 pub static RENDERING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -518,7 +518,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
             EngineEvent::Destroy => {
                 // Exits the winit run_app() loop. WgpuState is dropped when App is dropped
                 // immediately after, releasing the wgpu::Device and all Vulkan resources.
-                event_loop.exit();
+                _event_loop.exit();
             }
         }
     }

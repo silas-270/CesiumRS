@@ -53,6 +53,7 @@ pub struct WgpuState<'a> {
     pub window: Option<Arc<Window>>,
     solid_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    sky_lut: crate::render::sky_lut::SkyLut,
     #[allow(dead_code)]
     wireframe_pipeline: wgpu::RenderPipeline,
     depth_texture_view: wgpu::TextureView,
@@ -61,6 +62,10 @@ pub struct WgpuState<'a> {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     pub camera: Camera,
+    /// Two GPU timestamps bracketing the scene (sky, globe, extensions) of every frame,
+    /// when a measurement harness has installed a query set here. Needs the device to have
+    /// been created with `CESIUM_GPU_TIMING` set; see `src/testing/rendering/sky_perf.rs`.
+    pub scene_timestamps: Option<wgpu::QuerySet>,
     #[cfg(feature = "debug_panel")]
     pub debug_mode: bool,
     #[cfg(feature = "debug_panel")]
@@ -127,6 +132,17 @@ const MESH_UPLOAD_BUDGET_PER_FRAME: usize = 48;
 /// 60 Hz laptop, one core and the integrated GPU busy the whole time. FIFO waits for the
 /// display and every driver has it; FIFO_RELAXED, where offered, shows a late frame at
 /// once instead of a whole refresh later. Unpaced is for measuring what a frame costs.
+/// GPU timestamp features, requested only when `CESIUM_GPU_TIMING` is set (by the
+/// frame-time harness) and the adapter has them. Off in normal runs.
+fn gpu_timing_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    if std::env::var_os("CESIUM_GPU_TIMING").is_some() && adapter.features().contains(wanted) {
+        wanted
+    } else {
+        wgpu::Features::empty()
+    }
+}
+
 fn choose_present_mode(available: &[wgpu::PresentMode]) -> wgpu::PresentMode {
     use wgpu::PresentMode::{Fifo, FifoRelaxed, Immediate, Mailbox};
     let vsync = !matches!(
@@ -225,7 +241,8 @@ impl<'a> WgpuState<'a> {
                 &wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::POLYGON_MODE_LINE
-                        | wgpu::Features::PUSH_CONSTANTS,
+                        | wgpu::Features::PUSH_CONSTANTS
+                        | gpu_timing_features(&adapter),
                     required_limits: wgpu::Limits {
                         max_push_constant_size: 128,
                         ..Default::default()
@@ -324,6 +341,8 @@ impl<'a> WgpuState<'a> {
             label: Some("camera_bind_group"),
         });
 
+        let sky_lut = crate::render::sky_lut::SkyLut::new(&device, &camera_buffer);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(concat!(include_str!("atmosphere.wgsl"), include_str!("globe_pipeline/shader.wgsl")).into()),
@@ -345,6 +364,7 @@ impl<'a> WgpuState<'a> {
                 &shader,
                 &camera_bind_group_layout,
                 &tile_system.texture_manager.bind_group_layout,
+                &sky_lut.layout,
             );
 
         let sky_pipeline = crate::render::sky_pipeline::create_sky_pipeline(
@@ -352,6 +372,7 @@ impl<'a> WgpuState<'a> {
             &config,
             &sky_shader,
             &camera_bind_group_layout,
+            &sky_lut.layout,
         );
 
         #[cfg(feature = "debug_panel")]
@@ -391,6 +412,7 @@ impl<'a> WgpuState<'a> {
             window,
             solid_pipeline,
             sky_pipeline,
+            sky_lut,
             wireframe_pipeline,
             depth_texture_view,
             tile_cache,
@@ -398,6 +420,7 @@ impl<'a> WgpuState<'a> {
             camera_buffer,
             camera_bind_group,
             camera,
+            scene_timestamps: None,
             #[cfg(feature = "debug_panel")]
             debug_mode: false,
             #[cfg(feature = "debug_panel")]
@@ -1368,6 +1391,14 @@ impl<'a> WgpuState<'a> {
         view: &wgpu::TextureView,
         visible_tiles: &[(TileId, Vec3, f32)],
     ) {
+        // The atmosphere, re-evaluated into its small LUT only when the sun or the
+        // camera height has moved; the sky and the globe below just sample it.
+        self.sky_lut.update(
+            encoder,
+            self.camera_uniform.sun_elevation(),
+            self.camera.altitude() as f32,
+        );
+
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1425,6 +1456,7 @@ impl<'a> WgpuState<'a> {
 
             render_pass.set_pipeline(&self.solid_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(2, &self.sky_lut.bind_group, &[]);
 
             // Draw front-to-back: `visible_tiles` is the ordered (near-to-far,
             // per WP2b's `QuadtreeNode::reorder_children_near_to_far`) list for
@@ -1520,6 +1552,7 @@ impl<'a> WgpuState<'a> {
             let sky_start = Instant::now();
             render_pass.set_pipeline(&self.sky_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.sky_lut.bind_group, &[]);
             // Full-screen triangle is drawn with exactly 3 virtual vertices
             render_pass.draw(0..3, 0..1);
             self.last_subsystem_timings.sky_us = sky_start.elapsed().as_secs_f64() * 1_000_000.0;
@@ -1665,7 +1698,13 @@ impl<'a> WgpuState<'a> {
         self.compute_debug_vertices(main_view_proj, &visible_tiles, camera_pos);
 
         let render_start = Instant::now();
+        if let Some(q) = &self.scene_timestamps {
+            encoder.write_timestamp(q, 0);
+        }
         self.render_scene(&mut encoder, &view, &visible_tiles);
+        if let Some(q) = &self.scene_timestamps {
+            encoder.write_timestamp(q, 1);
+        }
         self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
         
         {
@@ -1747,7 +1786,13 @@ impl<'a> WgpuState<'a> {
             });
 
         let render_start = Instant::now();
+        if let Some(q) = &self.scene_timestamps {
+            encoder.write_timestamp(q, 0);
+        }
         self.render_scene(&mut encoder, &view, &visible_tiles);
+        if let Some(q) = &self.scene_timestamps {
+            encoder.write_timestamp(q, 1);
+        }
         self.last_timings.render_scene_us = render_start.elapsed().as_secs_f64() * 1_000_000.0;
 
         let _submit_present_span = crate::core::trace::ScopedTrace::new("cesium.render.submit_present");

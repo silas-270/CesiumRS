@@ -36,6 +36,11 @@ impl CameraUniform {
         }
     }
 
+    /// Sine of the sun's elevation, as carried in `sun_dir.w`.
+    pub(super) fn sun_elevation(&self) -> f32 {
+        self.sun_dir[3]
+    }
+
     pub(super) fn update_matrix(
         &mut self,
         view: Mat4,

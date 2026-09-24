@@ -11,6 +11,11 @@ struct CameraUniform {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
+@group(1) @binding(0)
+var sky_lut: texture_2d<f32>;
+@group(1) @binding(1)
+var sky_lut_sampler: sampler;
+
 struct SkyOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) clip_pos_xy: vec2<f32>,
@@ -45,6 +50,17 @@ const MOON_ANGULAR_RADIUS: f32 = 0.0212;
 /// brightest thing in frame.
 const SUN_ANGULAR_RADIUS: f32 = 0.00863;
 const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
+
+/// The sun's glow: peak strength and angular e-folding width (radians) of a tight halo
+/// and a wide one. Tuned against the headless sunset sweep.
+const SUN_GLOW_CORE: f32 = 0.8;
+const SUN_GLOW_CORE_WIDTH: f32 = 0.02;
+const SUN_GLOW_WIDE: f32 = 0.3;
+const SUN_GLOW_WIDE_WIDTH: f32 = 0.08;
+
+fn screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(1.0) - (vec3<f32>(1.0) - a) * (vec3<f32>(1.0) - clamp(b, vec3<f32>(0.0), vec3<f32>(1.0)));
+}
 
 /// The night sky's own faint glow (airglow, starlight, light pollution), which the
 /// single-scattering atmosphere has no source for once the sun is far enough down.
@@ -172,60 +188,80 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
 
     // ── The air ──────────────────────────────────────────────────────────────
-    let origin = atmo_position(camera.camera_pos.xyz);
-    let scatter = atmo_integrate(origin, view_dir, sun_dir, 1.0e9, ATMO_VIEW_STEPS);
-    var radiance = atmo_radiance(scatter, cos_sun);
-
-    // ── The sun's disc ───────────────────────────────────────────────────────
     //
-    // Seen through the same air as everything else, so a low sun is reddened and dimmed
-    // by exactly the transmittance of its own line of sight. Undo refraction on the view
-    // ray before testing the disc: that both lifts the sun (it is still visible just
-    // after it has geometrically set) and flattens it near the horizon.
-    let up = normalize(origin);
-    let view_elev = asin(clamp(dot(view_dir, up), -1.0, 1.0));
-    let true_elev = view_elev - radians(refraction_lift_deg(degrees(view_elev)));
-    let horiz = view_dir - up * dot(view_dir, up);
-    let horiz_len = length(horiz);
-    var unrefracted = view_dir;
-    if (horiz_len > 1e-4) {
-        unrefracted = horiz / horiz_len * cos(true_elev) + up * sin(true_elev);
-    }
-    let cos_disc = dot(unrefracted, sun_dir);
-    let cos_sun_edge = cos(SUN_ANGULAR_RADIUS);
-    let disc = smoothstep(cos_sun_edge - SUN_DISC_SOFT_EDGE, cos_sun_edge, cos_disc);
-    let celestial_fade = mix(0.55, 1.0, altitude_scalar);
+    // One texture fetch: the atmosphere is evaluated into the sky LUT (render/sky_lut/),
+    // not here.
+    let origin = atmo_position(camera.camera_pos.xyz);
+    let r = length(origin);
+    let up = origin / r;
+    let view = sky_lut_view(view_dir, up, sun_dir);
+    let radiance = textureSampleLevel(sky_lut, sky_lut_sampler, sky_lut_uv(view.x, view.y, r), 0.0).rgb;
     var base_color = atmo_tonemap(radiance, sun_elevation);
-    // Added over the tone-mapped sky rather than into its radiance, and on its own
-    // brightness scale: a disc tens of thousands of times brighter than the sky would
-    // clip white at any exposure. Its colour is the transmittance of its own line of
-    // sight, normalised against the red channel so it stays a bright disc: white high
-    // up, yellow, orange, then red at the horizon.
-    let t_sun = scatter.transmittance;
-    let disc_color = vec3<f32>(1.0) - exp(-t_sun * (6.0 / pow(max(t_sun.r, 1e-3), 0.6)));
-    // Screen blend: always brighter than the sky behind it, never clipped flat.
-    base_color = mix(base_color, vec3<f32>(1.0) - (vec3<f32>(1.0) - base_color) * (vec3<f32>(1.0) - disc_color), disc);
-
     // Altitude is a second, independent axis: the flight climbing into cruise drains the
     // sky toward space regardless of the hour — a cruise at noon must not look like a
     // taxi at noon. MUST match the globe's haze (globe_pipeline/shader.wgsl).
     base_color *= mix(0.35, 1.0, altitude_scalar);
 
+    let celestial_fade = mix(0.55, 1.0, altitude_scalar);
+
+    // ── The sun ──────────────────────────────────────────────────────────────
+    //
+    // After the altitude darkening, so the disc stays the brightest thing on screen at
+    // every depth — darkened with the sky it read as a grey dot. Only evaluated near it
+    // (cos 0.97 is ~14 degrees), so the rest of the sky pays nothing.
+    if (cos_sun > 0.97) {
+        // Its colour is the transmittance of its own line of sight (the same analytic
+        // column the LUT uses), softened (power 0.7) toward what the eye reports —
+        // white high up, yellow, orange, deep orange-red on the horizon — and normalised
+        // so the disc stays the brightest thing in the sky however dim the light is.
+        let t_sun = atmo_sun_transmittance(r, dot(up, sun_dir));
+        let t_soft = pow(t_sun, vec3<f32>(0.7));
+        let hue = t_soft / max(max(t_soft.r, t_soft.g), 1e-4);
+        let visible = smoothstep(0.0, 0.02, t_sun.r);
+
+        // A glow in two parts, colour of the sun, laid over the sky's own aureole: a
+        // tight bright halo that makes the disc read as blinding, and a wider soft one.
+        // Screen-blended so it lifts the sky without ever clipping it into a flat blob.
+        let a = sqrt(max(2.0 * (1.0 - cos_sun), 0.0));
+        let glow = (SUN_GLOW_CORE * exp(-a / SUN_GLOW_CORE_WIDTH)
+            + SUN_GLOW_WIDE * exp(-a / SUN_GLOW_WIDE_WIDTH)) * visible * celestial_fade;
+        base_color = screen(base_color, hue * glow);
+
+        // The disc. Undo refraction on the view ray first: that lifts the sun (still
+        // visible just after it has geometrically set) and flattens it near the horizon.
+        let view_elev = asin(clamp(view.x, -1.0, 1.0));
+        let true_elev = view_elev - radians(refraction_lift_deg(degrees(view_elev)));
+        let horiz = view_dir - up * view.x;
+        let horiz_len = length(horiz);
+        var unrefracted = view_dir;
+        if (horiz_len > 1e-4) {
+            unrefracted = horiz / horiz_len * cos(true_elev) + up * sin(true_elev);
+        }
+        let cos_disc = dot(unrefracted, sun_dir);
+        let cos_sun_edge = cos(SUN_ANGULAR_RADIUS);
+        let disc = smoothstep(cos_sun_edge - SUN_DISC_SOFT_EDGE, cos_sun_edge, cos_disc);
+        // A little limb darkening, so it is a ball of light and not a sticker.
+        let rr = clamp(acos(clamp(cos_disc, -1.0, 1.0)) / SUN_ANGULAR_RADIUS, 0.0, 1.0);
+        let limb = mix(0.82, 1.0, sqrt(max(1.0 - rr * rr, 0.0)));
+        let disc_color = vec3<f32>(1.0) - exp(-hue * (5.0 * limb));
+        base_color = mix(base_color, screen(base_color, disc_color), disc * visible);
+    }
+
     // The night's own faint glow, graded from zenith to horizon by the air column.
-    let view_up = clamp(dot(view_dir, up), 0.0, 1.0);
+    let view_up = clamp(view.x, 0.0, 1.0);
     base_color += mix(NIGHT_HORIZON, NIGHT_ZENITH, sqrt(view_up)) * night_amount;
 
     // ── Stars ────────────────────────────────────────────────────────────────
     //
-    // Attenuated by the air column and extinguished by the background sky luminance: as
-    // the local sky darkens, the brightest stars emerge first at the zenith and fill the
-    // sky down to the horizon.
+    // Dimmed toward the horizon by the air, and extinguished by the background sky
+    // luminance: as the local sky darkens, the brightest stars emerge first at the zenith
+    // and fill the sky down to the horizon. Never before the sun is ~7 degrees down,
+    // whatever the sky's brightness says: the first stars come out around the end of
+    // civil twilight.
     let sky_luminance = dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let lum_factor = smoothstep(0.005, 0.08, sky_luminance);
-    // Never before the sun is ~4 degrees down, whatever the sky's brightness says: the
-    // first stars come out around the middle of civil twilight.
-    let star_extinction = dot(scatter.transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
-        * (1.0 - lum_factor) * smoothstep(-0.07, -0.12, sun_elevation);
+    let star_extinction = smoothstep(-0.02, 0.3, view.x) * (1.0 - lum_factor)
+        * smoothstep(-0.12, -0.17, sun_elevation);
     base_color += star_field(view_dir, clamp(lum_factor, 0.0, 1.0)) * star_extinction;
 
     // The moon, with a face on it. Sitting exactly opposite the sun it is always at full,

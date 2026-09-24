@@ -1,14 +1,20 @@
 // ── Physically based atmosphere ──────────────────────────────────────────────
 //
-// Shared by the sky (sky_pipeline/sky.wgsl) and the globe (globe_pipeline/shader.wgsl):
-// both shader modules are built by prepending this file to their own source (the
-// `concat!` in `render/wgpu_state.rs`), so the sky at the horizon and the haze over distant ground
-// come out of the same function and cannot drift apart. See docs/lighting.md.
+// Prepended (`concat!` in `render/wgpu_state.rs` and `render/sky_lut/mod.rs`) to the sky
+// (sky_pipeline/sky.wgsl), the globe (globe_pipeline/shader.wgsl) and the sky LUT pass
+// (sky_lut/sky_lut.wgsl), so all three share one model and one LUT parametrisation and
+// the sky at the horizon cannot drift apart from the haze over distant ground. See
+// docs/lighting.md.
+//
+// **Nothing here is raymarched per pixel or per vertex.** The model is evaluated only by
+// the sky LUT pass (`render/sky_lut/`), into a small texture that is re-rendered when the
+// sun or the camera height has moved enough to matter; the sky and the globe just sample
+// it. See the "Sky LUT" section at the bottom of this file.
 //
 // Single scattering by air (Rayleigh) and aerosol (Mie), with ozone absorption, along a
 // short non-uniform raymarch. The light reaching each sample is attenuated along its own
 // path to the sun analytically — the Chapman function, the exact column of an
-// exponential atmosphere over a sphere — so there is no inner loop and no lookup table.
+// exponential atmosphere over a sphere — so there is no inner loop.
 // Everything a sunset is made of falls out of this without being painted on:
 //
 // - the sun and the light near it redden, because the sunlight crosses ~35 air masses;
@@ -50,9 +56,11 @@ const ATMO_BETA_M_EXT: f32 = 4.440e-3;
 const ATMO_BETA_O3: vec3<f32> = vec3<f32>(3.2e-3, 3.76e-3, 0.17e-3);
 const ATMO_O3_CENTER: f32 = 25.0;
 const ATMO_O3_HALF: f32 = 15.0;
-/// Aerosol forward-scattering asymmetry. 0.8 is a clear continental day; it is what
-/// makes the bright aureole hugging the sun.
-const ATMO_MIE_G: f32 = 0.80;
+/// Aerosol forward-scattering asymmetry. 0.8 is a clear continental day, but its
+/// aureole tone-maps to a white blob several degrees across that swallowed the sun's
+/// disc; at 0.72 the sky around the sun stays below white and the disc and its glow
+/// (sky.wgsl) read against it.
+const ATMO_MIE_G: f32 = 0.72;
 /// Strength of the multiple-scattering stand-in, and how far above each sample it looks
 /// for the sunlight feeding it (km).
 const ATMO_MS_STRENGTH: f32 = 4.0;
@@ -66,9 +74,6 @@ const ATMO_MS_TANGENT: f32 = 25.0;
 const ATMO_MS_FLOOR: f32 = 0.15;
 /// Solar irradiance in display units before exposure.
 const ATMO_SUN_E: f32 = 24.0;
-/// Radiance of the sun's disc relative to ATMO_SUN_E; the tone curve clips it white at
-/// noon and leaves it a coloured disc once the air has reddened and dimmed it.
-const ATMO_SUN_DISC: f32 = 60.0;
 
 const ATMO_VIEW_STEPS: i32 = 16;
 
@@ -265,8 +270,9 @@ fn atmo_radiance(s: AtmoScatter, c: f32) -> vec3<f32> {
 /// Exposure: the eye opens up as the light goes, but not all the way — the scene still
 /// has to get darker through twilight into night. `sun_elevation` is sin(elevation).
 fn atmo_exposure(sun_elevation: f32) -> f32 {
-    // In stops: none with the sun up, ~5 by the end of civil twilight, 7 at night.
-    return exp2(7.0 * smoothstep(0.04, -0.18, sun_elevation));
+    // In stops: none with the sun up, ~6.5 by the end of civil twilight (-6 degrees,
+    // when the sky is still clearly lit), 10 at night.
+    return exp2(10.0 * smoothstep(0.04, -0.20, sun_elevation));
 }
 
 /// Saturation applied after the tone curve. The per-channel shoulder desaturates
@@ -283,3 +289,81 @@ fn atmo_tonemap(radiance: vec3<f32>, sun_elevation: f32) -> vec3<f32> {
         vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+
+// ── Sky LUT ──────────────────────────────────────────────────────────────────
+//
+// One Rgba16Float texture, SKY_LUT_W x SKY_LUT_ROWS, holding pre-exposure radiance:
+//
+// - rows 0..SKY_LUT_SKY_ROWS: the sky as seen from the camera, over azimuth from the sun
+//   (u, squared toward the sun, where the aureole needs the resolution) and view zenith
+//   angle (v, Hillaire 2020's mapping: squeezed toward the horizon, whose position moves
+//   with the camera's height). Rays below the horizon end on the ground, so the same
+//   rows are the aerial perspective the globe's haze fades into.
+// - row SKY_LUT_SKY_ROWS: skylight on horizontal ground, against the sun's cos-zenith
+//   there (GROUND_MU_MIN..1 across u), in units of solar irradiance.
+// - row SKY_LUT_SKY_ROWS + 1: direct sunlight transmitted to the ground, same axis.
+
+const SKY_LUT_W: f32 = 128.0;
+const SKY_LUT_SKY_ROWS: f32 = 96.0;
+const SKY_LUT_ROWS: f32 = 98.0;
+const GROUND_MU_MIN: f32 = -0.3;
+
+/// (zenith angle of the horizon, angle of the horizon below the local horizontal) at
+/// radius `r` km.
+fn sky_lut_horizon(r: f32) -> vec2<f32> {
+    let rho = sqrt(max(r * r - ATMO_R * ATMO_R, 0.0));
+    let beta = acos(clamp(rho / r, 0.0, 1.0));
+    return vec2<f32>(ATMO_PI - beta, beta);
+}
+
+/// Texture coordinate of the sky seen at cos view-zenith `cos_theta` and cos azimuth
+/// from the sun `cos_phi`, from radius `r` km.
+fn sky_lut_uv(cos_theta: f32, cos_phi: f32, r: f32) -> vec2<f32> {
+    let hz = sky_lut_horizon(r);
+    let theta = acos(clamp(cos_theta, -1.0, 1.0));
+    var v: f32;
+    if (theta < hz.x) {
+        v = 0.5 * (1.0 - sqrt(max(1.0 - theta / hz.x, 0.0)));
+    } else {
+        v = 0.5 + 0.5 * sqrt(clamp((theta - hz.x) / max(hz.y, 1e-4), 0.0, 1.0));
+    }
+    let u = sqrt(acos(clamp(cos_phi, -1.0, 1.0)) / ATMO_PI);
+    return vec2<f32>(
+        (u * (SKY_LUT_W - 1.0) + 0.5) / SKY_LUT_W,
+        (v * (SKY_LUT_SKY_ROWS - 1.0) + 0.5) / SKY_LUT_ROWS,
+    );
+}
+
+/// The inverse, for the LUT pass: (view zenith angle, azimuth) of the texel at (u, v),
+/// both 0..1 over the sky rows.
+fn sky_lut_angles(u: f32, v: f32, r: f32) -> vec2<f32> {
+    let hz = sky_lut_horizon(r);
+    var theta: f32;
+    if (v < 0.5) {
+        let c = 1.0 - 2.0 * v;
+        theta = hz.x * (1.0 - c * c);
+    } else {
+        let c = 2.0 * v - 1.0;
+        theta = hz.x + hz.y * c * c;
+    }
+    return vec2<f32>(theta, u * u * ATMO_PI);
+}
+
+/// Texture coordinate of one of the two ground rows (0 = skylight, 1 = sunlight) for the
+/// sun at cos-zenith `mu` over that ground.
+fn ground_lut_uv(mu: f32, row: f32) -> vec2<f32> {
+    let u = clamp((mu - GROUND_MU_MIN) / (1.0 - GROUND_MU_MIN), 0.0, 1.0);
+    return vec2<f32>(
+        (u * (SKY_LUT_W - 1.0) + 0.5) / SKY_LUT_W,
+        (SKY_LUT_SKY_ROWS + row + 0.5) / SKY_LUT_ROWS,
+    );
+}
+
+/// Cos view-zenith and cos azimuth-from-the-sun of `dir`, seen from local `up`.
+fn sky_lut_view(dir: vec3<f32>, up: vec3<f32>, sun_dir: vec3<f32>) -> vec2<f32> {
+    let cos_theta = dot(dir, up);
+    let vh = dir - up * cos_theta;
+    let sh = sun_dir - up * dot(sun_dir, up);
+    let d = sqrt(max(dot(vh, vh) * dot(sh, sh), 1e-12));
+    return vec2<f32>(cos_theta, clamp(dot(vh, sh) / d, -1.0, 1.0));
+}

@@ -23,6 +23,8 @@ pub mod light_audit;
 #[cfg(test)]
 pub mod sunset_capture;
 #[cfg(test)]
+pub mod sky_perf;
+#[cfg(test)]
 pub mod fog_capture;
 #[cfg(test)]
 pub mod haze_capture;

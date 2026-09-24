@@ -133,20 +133,17 @@ struct VertexOutput {
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) world_pos: vec3<f32>,
-    // The air between the eye and the horizon behind this vertex, from the shared
-    // atmosphere (atmosphere.wgsl) — phase functions are applied per fragment, since
-    // the sun's aureole is far too sharp to interpolate across a triangle.
-    @location(3) haze_rayleigh: vec3<f32>,
-    @location(4) haze_mie: vec3<f32>,
-    @location(5) haze_ms: vec3<f32>,
-    // Light arriving at this piece of ground: `rgb` direct sun through the air (zero in
-    // the Earth's shadow), and the skylight's colour.
-    @location(6) sun_light: vec3<f32>,
-    @location(7) sky_light: vec3<f32>,
+    // Light arriving at this piece of ground, from the sky LUT: direct sun through its
+    // own air column (zero in the Earth's shadow), and skylight, both per unit of solar
+    // irradiance.
+    @location(3) sun_light: vec3<f32>,
+    @location(4) sky_light: vec3<f32>,
 };
 
-/// Steps for the skylight estimate at the ground. Short, near-vertical rays.
-const SKYLIGHT_STEPS: i32 = 6;
+@group(2) @binding(0)
+var sky_lut: texture_2d<f32>;
+@group(2) @binding(1)
+var sky_lut_sampler: sampler;
 
 struct PushConstants {
     relative_center: vec3<f32>,
@@ -163,37 +160,12 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.uv = model.uv * push_constants.uv_scale_offset.xy + push_constants.uv_scale_offset.zw;
     out.world_pos = world_pos;
 
-    let sun_dir = camera.sun_dir.xyz;
-    let frag_pos = camera.camera_pos.xyz + world_pos;
-
-    // Haze: the sky the terrain hides, i.e. the same ray the sky shader would have
-    // traced, unclipped by the terrain — so distant ground fades into exactly the colour
-    // of the horizon above it.
-    let view_dir = normalize(world_pos);
-    let haze = atmo_integrate(atmo_position(camera.camera_pos.xyz), view_dir, sun_dir, 1.0e9, ATMO_VIEW_STEPS);
-    out.haze_rayleigh = haze.rayleigh;
-    out.haze_mie = haze.mie;
-    out.haze_ms = haze.ms;
-
-    // Light on the ground: direct sun through its own air column, and skylight from
-    // three sample directions (zenith, and low toward and away from the sun).
-    let ground = atmo_position(frag_pos);
-    let up = normalize(ground);
-    out.sun_light = atmo_sun_transmittance(length(ground), dot(up, sun_dir));
-
-    var toward = sun_dir - up * dot(sun_dir, up);
-    if (length(toward) < 1e-4) {
-        toward = vec3<f32>(1.0, 0.0, 0.0) - up * up.x;
-    }
-    toward = normalize(toward);
-    let low_sun = normalize(up * 0.4 + toward);
-    let low_anti = normalize(up * 0.4 - toward);
-    let zen = atmo_integrate(ground, up, sun_dir, 1.0e9, SKYLIGHT_STEPS);
-    let ls = atmo_integrate(ground, low_sun, sun_dir, 1.0e9, SKYLIGHT_STEPS);
-    let la = atmo_integrate(ground, low_anti, sun_dir, 1.0e9, SKYLIGHT_STEPS);
-    out.sky_light = 0.5 * atmo_radiance(zen, dot(up, sun_dir))
-        + 0.25 * atmo_radiance(ls, dot(low_sun, sun_dir))
-        + 0.25 * atmo_radiance(la, dot(low_anti, sun_dir));
+    // Two texture fetches; the LUT holds these against the sun's cos-zenith over the
+    // ground (atmosphere.wgsl, "Sky LUT").
+    let up = normalize(atmo_position(camera.camera_pos.xyz + world_pos));
+    let mu = dot(up, camera.sun_dir.xyz);
+    out.sky_light = textureSampleLevel(sky_lut, sky_lut_sampler, ground_lut_uv(mu, 0.0), 0.0).rgb;
+    out.sun_light = textureSampleLevel(sky_lut, sky_lut_sampler, ground_lut_uv(mu, 1.0), 0.0).rgb;
     return out;
 }
 
@@ -251,7 +223,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let up_local = normalize(camera.camera_pos.xyz + in.world_pos);
     let sun_up = max(dot(up_local, camera.sun_dir.xyz), 0.0) + 0.25;
     let e_direct = in.sun_light * sun_up;
-    let e_sky = in.sky_light * (ATMO_PI / ATMO_SUN_E);
+    let e_sky = in.sky_light;
     let light_tint = white_balanced(e_direct + e_sky, GROUND_TINT_STRENGTH);
     let sun_tint = white_balanced(in.sun_light, GROUND_TINT_STRENGTH);
 
@@ -325,16 +297,6 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // ── Aerial perspective ───────────────────────────────────────────────────────
     let frag_pos = camera.camera_pos.xyz + in.world_pos;
-    let view_dir_terrain = normalize(in.world_pos);
-    let cos_sun_terrain = dot(view_dir_terrain, camera.sun_dir.xyz);
-    var haze_scatter: AtmoScatter;
-    haze_scatter.rayleigh = in.haze_rayleigh;
-    haze_scatter.mie = in.haze_mie;
-    haze_scatter.ms = in.haze_ms;
-    haze_scatter.transmittance = vec3<f32>(1.0);
-    var horizon_haze_color = atmo_tonemap(atmo_radiance(haze_scatter, cos_sun_terrain), sun_elevation);
-    // MUST match sky.wgsl's altitude darkening.
-    horizon_haze_color *= mix(0.35, 1.0, altitude_scalar);
 
     // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km).
     // Pushed further out so near and mid-distance terrain stays crisp and clear,
@@ -343,6 +305,20 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     let AERIAL_HAZE_ONSET_MM: f32 = 0.035;
     let AERIAL_HAZE_FULL_MM: f32 = 0.160;
     let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, haze_path_length);
+
+    // The colour it fades into is the sky the terrain hides: the sky LUT in the same
+    // direction, whose rows below the horizon are exactly the air in front of the ground.
+    // Only looked up where there is haze to show.
+    var horizon_haze_color = vec3<f32>(0.0);
+    if (aerial_blend > 0.0) {
+        let cam = atmo_position(camera.camera_pos.xyz);
+        let r_cam = length(cam);
+        let view = sky_lut_view(normalize(in.world_pos), cam / r_cam, camera.sun_dir.xyz);
+        let radiance = textureSampleLevel(sky_lut, sky_lut_sampler,
+            sky_lut_uv(view.x, view.y, r_cam), 0.0).rgb;
+        // MUST match sky.wgsl's altitude darkening.
+        horizon_haze_color = atmo_tonemap(radiance, sun_elevation) * mix(0.35, 1.0, altitude_scalar);
+    }
 
     let final_color = mix(shaded_color, horizon_haze_color, aerial_blend);
 

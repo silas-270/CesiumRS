@@ -5,10 +5,11 @@ pub fn create_sky_pipeline(
     config: &wgpu::SurfaceConfiguration,
     sky_shader: &wgpu::ShaderModule,
     camera_bind_group_layout: &wgpu::BindGroupLayout,
+    sky_lut_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Sky Pipeline Layout"),
-        bind_group_layouts: &[camera_bind_group_layout],
+        bind_group_layouts: &[camera_bind_group_layout, sky_lut_layout],
         push_constant_ranges: &[],
     });
 
