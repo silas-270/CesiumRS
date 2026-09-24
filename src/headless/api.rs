@@ -1,7 +1,9 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use log::{error, info};
-use cesium_engine::globe::tiles::config::{TileEngineConfig, STANDARD_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TileEngineConfig, TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL};
+use cesium_engine::globe::tiles::vector;
+use std::sync::Arc;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -15,6 +17,32 @@ pub struct LatLon {
 pub struct HeadlessRoute {
     pub start: LatLon,
     pub end: LatLon,
+}
+
+/// Tile config shared by every headless render (Hub, Onboarding, Account and destination
+/// globes). These always use the bundled Natural Earth vector map, rasterized on the CPU
+/// just like the live `MapStyle::Offline`, so they never touch the network and look the
+/// same whether or not the device is online.
+///
+/// A future `palette` (light/dark) argument belongs here: the SVG source means a theme
+/// only has to recolour the vector fills, not fetch a different tile set.
+fn headless_tile_config() -> Result<TileEngineConfig, String> {
+    let renderer = vector::bundled_world_renderer()?;
+    let mut config = TileEngineConfig::default();
+    config.offline_mode = false;
+    config.base_imagery_url = String::new();
+    config.tile_source_mode = TileSourceMode::SvgVector(Arc::new(renderer));
+    config.imagery_max_level = OFFLINE_IMAGERY_MAX_LEVEL;
+    // Terrain heights come from the network; the vector map is always flat.
+    config.terrain.enabled = false;
+    config.transparent_background = true;
+
+    // Lowered mesh subdivision to prevent massive VRAM over-allocation on mobile
+    config.target_texel_ratio = 1.0;
+    config.mesh_segments = 32;
+    config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
+    config.mesh_cache_size = std::num::NonZeroUsize::new(1024).unwrap();
+    Ok(config)
 }
 
 #[no_mangle]
@@ -89,16 +117,13 @@ pub extern "C" fn render_routes_headless_custom(
     let eye = dir * distance;
 
     let extension = Box::new(crate::headless::route_builder::RoutesExtension::new(&extension_routes));
-    let mut config = TileEngineConfig::default();
-    config.offline_mode = false;
-    config.base_imagery_url = STANDARD_IMAGERY_URL.to_string();
-    config.transparent_background = true;
-    
-    // Lowered mesh subdivision to prevent massive VRAM over-allocation on mobile
-    config.target_texel_ratio = 1.0; 
-    config.mesh_segments = 32; 
-    config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
-    config.mesh_cache_size = std::num::NonZeroUsize::new(1024).unwrap();
+    let config = match headless_tile_config() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Headless render aborted: offline world map unavailable: {e}");
+            return false;
+        }
+    };
 
     // Remove unused total_x, total_y, total_z warnings
     let _ = total_x;
@@ -187,14 +212,13 @@ pub extern "C" fn render_routes_headless_horizon(
     let final_up = (cam_plane_up * roll_rad.cos() + v_right * roll_rad.sin()).normalize_or_zero();
 
     let extension = Box::new(crate::headless::route_builder::RoutesExtension::new(&extension_routes));
-    let mut config = TileEngineConfig::default();
-    config.offline_mode = false;
-    config.base_imagery_url = STANDARD_IMAGERY_URL.to_string();
-    config.transparent_background = true;
-    config.target_texel_ratio = 1.0; 
-    config.mesh_segments = 32; 
-    config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
-    config.mesh_cache_size = std::num::NonZeroUsize::new(1024).unwrap();
+    let config = match headless_tile_config() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Headless render aborted: offline world map unavailable: {e}");
+            return false;
+        }
+    };
 
     pollster::block_on(crate::headless::routes_headless_app::run_headless_render(
         width,
