@@ -21,6 +21,8 @@ pub mod test_headless;
 #[cfg(test)]
 pub mod light_audit;
 #[cfg(test)]
+pub mod sunset_capture;
+#[cfg(test)]
 pub mod fog_capture;
 #[cfg(test)]
 pub mod haze_capture;

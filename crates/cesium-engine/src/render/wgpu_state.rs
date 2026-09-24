@@ -326,12 +326,12 @@ impl<'a> WgpuState<'a> {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("globe_pipeline/shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(concat!(include_str!("atmosphere.wgsl"), include_str!("globe_pipeline/shader.wgsl")).into()),
         });
 
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sky Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("sky_pipeline/sky.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(concat!(include_str!("atmosphere.wgsl"), include_str!("sky_pipeline/sky.wgsl")).into()),
         });
 
         let config_engine = engine_config;
