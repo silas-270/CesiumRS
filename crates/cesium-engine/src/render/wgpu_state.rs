@@ -468,6 +468,43 @@ impl<'a> WgpuState<'a> {
         self.window = Some(window);
     }
 
+    /// `self.size.height` in **CSS-equivalent** pixels, for [`lod_factor_for`]'s
+    /// `viewport_height_px` — the fix for imagery tiles rendering as the source's flat
+    /// "no data" placeholder near the ground on high-density Android phones.
+    ///
+    /// `self.size` is the swapchain's physical size (`window.inner_size()`), so on a
+    /// display whose `scale_factor` is above `1.0` it is already `scale_factor` times
+    /// larger than the CSS/logical pixels Cesium's own equivalent (`frameState.pixelRatio`,
+    /// see `TerrainConfig::max_geometric_error_px`'s doc comment, which describes the exact
+    /// same units gap for the terrain geometric term) is normalized against. `lod_factor_for`
+    /// is linear in this argument, so an undivided physical height inflates the demanded
+    /// texel density by `scale_factor` — on a typical flagship phone (`scale_factor` 2.6–4,
+    /// against ~1.0 on the desktop machine this was developed on, which is why nothing here
+    /// noticed) that pushes imagery requests several quadtree levels deeper than the same
+    /// on-screen framing needs. Deeper than `SATELLITE_IMAGERY_URL`'s real photographic
+    /// coverage at most locations, whose response for a level it has no imagery for is not
+    /// an error but a flat, near-white placeholder tile (HTTP 200, confirmed against the
+    /// live Esri endpoint) — decoded and uploaded like any other successful tile, so no
+    /// existing fallback or error path catches it.
+    ///
+    /// [`lod_factor_for`] itself is deliberately left untouched — its own doc comment
+    /// forbids it: `target_texel_ratio`'s default is calibrated to reproduce a hard-coded
+    /// `2.0` at a specific physical viewport, and the WP1 LOD harness's 204-pose CSVs are
+    /// pinned to that calibration byte for byte. Dividing by `scale_factor` here instead of
+    /// there keeps that calibration intact: the harness constructs `WgpuState` headless
+    /// (`self.window` is `None`), so this returns `self.size.height` unchanged for it, and
+    /// for any windowed run whose `scale_factor` happens to be `1.0` (the desktop machine
+    /// this was calibrated on).
+    fn imagery_lod_height_px(&self) -> f32 {
+        let scale_factor = self
+            .window
+            .as_ref()
+            .map(|w| w.scale_factor() as f32)
+            .filter(|s| *s > 0.0)
+            .unwrap_or(1.0);
+        self.size.height as f32 / scale_factor
+    }
+
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
@@ -848,11 +885,17 @@ impl<'a> WgpuState<'a> {
             // recomputed fresh every frame like `lod_factor`. `altitude` is megameters
             // (this engine's world frame); `fog_density_for` takes metres — see
             // `globe::quadtree::fog`'s module doc comment's Units section.
+            //
+            // `imagery_lod_height_px()` divides `self.size.height` by the window's
+            // `scale_factor` before it reaches `lod_factor_for` — see that method's doc
+            // comment for why. `lod_factor_for` itself is untouched (its calibration and
+            // the WP1 harness's pinned CSVs stay bit-identical: the harness runs headless,
+            // `self.window` is `None` there, and the divisor is `1.0` whenever it is).
             self.quadtree_manager.set_frame_params(
                 crate::globe::quadtree::lod_factor_for(
                     self.tile_system.config.target_texel_ratio,
                     self.tile_system.texture_manager.current_texture_size_px(),
-                    self.size.height as f32,
+                    self.imagery_lod_height_px(),
                     self.camera.fovy(),
                 ),
                 self.tile_system.config.max_zoom,
