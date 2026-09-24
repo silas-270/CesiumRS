@@ -37,6 +37,7 @@ impl CameraUniform {
     }
 
     /// Sine of the sun's elevation, as carried in `sun_dir.w`.
+    #[allow(dead_code)]
     pub(super) fn sun_elevation(&self) -> f32 {
         self.sun_dir[3]
     }

@@ -1391,13 +1391,9 @@ impl<'a> WgpuState<'a> {
         view: &wgpu::TextureView,
         visible_tiles: &[(TileId, Vec3, f32)],
     ) {
-        // The atmosphere, re-evaluated into its small LUT only when the sun or the
-        // camera height has moved; the sky and the globe below just sample it.
-        self.sky_lut.update(
-            encoder,
-            self.camera_uniform.sun_elevation(),
-            self.camera.altitude() as f32,
-        );
+        // The atmosphere LUT, re-evaluated each frame in a single pass;
+        // the sky and the globe sample it directly.
+        self.sky_lut.update(encoder);
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),

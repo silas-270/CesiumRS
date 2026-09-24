@@ -52,10 +52,11 @@ const SUN_ANGULAR_RADIUS: f32 = 0.00863;
 const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
 
 /// The sun's glow: peak strength and angular e-folding width (radians) of a tight halo
-/// and a wide one. Tuned against the headless sunset sweep.
-const SUN_GLOW_CORE: f32 = 0.8;
-const SUN_GLOW_CORE_WIDTH: f32 = 0.02;
-const SUN_GLOW_WIDE: f32 = 0.3;
+/// immediately around the disc. The wide aureole is already provided continuously by
+/// Mie scattering in the sky LUT.
+const SUN_GLOW_CORE: f32 = 1.6;
+const SUN_GLOW_CORE_WIDTH: f32 = 0.035;
+const SUN_GLOW_WIDE: f32 = 0.0;
 const SUN_GLOW_WIDE_WIDTH: f32 = 0.08;
 
 fn screen(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
@@ -195,7 +196,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let r = length(origin);
     let up = origin / r;
     let view = sky_lut_view(view_dir, up, sun_dir);
-    let radiance = textureSampleLevel(sky_lut, sky_lut_sampler, sky_lut_uv(view.x, view.y, r), 0.0).rgb;
+    let radiance = textureSampleLevel(sky_lut, sky_lut_sampler, sky_lut_sky_uv(view.x, view.y, r), 0.0).rgb;
     var base_color = atmo_tonemap(radiance, sun_elevation);
     // Altitude is a second, independent axis: the flight climbing into cruise drains the
     // sky toward space regardless of the hour — a cruise at noon must not look like a
@@ -223,8 +224,9 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         // tight bright halo that makes the disc read as blinding, and a wider soft one.
         // Screen-blended so it lifts the sky without ever clipping it into a flat blob.
         let a = sqrt(max(2.0 * (1.0 - cos_sun), 0.0));
+        let glow_window = smoothstep(0.97, 0.985, cos_sun);
         let glow = (SUN_GLOW_CORE * exp(-a / SUN_GLOW_CORE_WIDTH)
-            + SUN_GLOW_WIDE * exp(-a / SUN_GLOW_WIDE_WIDTH)) * visible * celestial_fade;
+            + SUN_GLOW_WIDE * exp(-a / SUN_GLOW_WIDE_WIDTH)) * visible * celestial_fade * glow_window;
         base_color = screen(base_color, hue * glow);
 
         // The disc. Undo refraction on the view ray first: that lifts the sun (still
@@ -242,8 +244,10 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         let disc = smoothstep(cos_sun_edge - SUN_DISC_SOFT_EDGE, cos_sun_edge, cos_disc);
         // A little limb darkening, so it is a ball of light and not a sticker.
         let rr = clamp(acos(clamp(cos_disc, -1.0, 1.0)) / SUN_ANGULAR_RADIUS, 0.0, 1.0);
-        let limb = mix(0.82, 1.0, sqrt(max(1.0 - rr * rr, 0.0)));
-        let disc_color = vec3<f32>(1.0) - exp(-hue * (5.0 * limb));
+        let limb = mix(0.85, 1.0, sqrt(max(1.0 - rr * rr, 0.0)));
+        // Center of the sun is a piercing white-hot core, rolling off into warm golden/orange edges
+        let disc_core = mix(hue, vec3<f32>(1.0), 0.70 * (1.0 - rr * rr));
+        let disc_color = clamp(disc_core * (1.5 * limb), vec3<f32>(0.0), vec3<f32>(1.0));
         base_color = mix(base_color, screen(base_color, disc_color), disc * visible);
     }
 
@@ -261,7 +265,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let sky_luminance = dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let lum_factor = smoothstep(0.005, 0.08, sky_luminance);
     let star_extinction = smoothstep(-0.02, 0.3, view.x) * (1.0 - lum_factor)
-        * smoothstep(-0.12, -0.17, sun_elevation);
+        * (1.0 - smoothstep(-0.20, -0.12, sun_elevation));
     base_color += star_field(view_dir, clamp(lum_factor, 0.0, 1.0)) * star_extinction;
 
     // The moon, with a face on it. Sitting exactly opposite the sun it is always at full,

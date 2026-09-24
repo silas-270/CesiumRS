@@ -41,8 +41,8 @@ const ATMO_HR: f32 = 8.0;
 const ATMO_HM: f32 = 1.2;
 /// Sea-level coefficients, per km, for 680/550/440 nm (Bruneton 2017 / Hillaire 2020).
 const ATMO_BETA_R: vec3<f32> = vec3<f32>(5.802e-3, 13.558e-3, 33.1e-3);
-const ATMO_BETA_M_SCA: f32 = 3.996e-3;
-const ATMO_BETA_M_EXT: f32 = 4.440e-3;
+const ATMO_BETA_M_SCA: f32 = 2.8e-3;
+const ATMO_BETA_M_EXT: f32 = 3.2e-3;
 /// Ozone absorption at the peak of its layer, per km, and the layer's shape: a tent
 /// centred at 25km, 15km either side.
 ///
@@ -63,7 +63,7 @@ const ATMO_O3_HALF: f32 = 15.0;
 const ATMO_MIE_G: f32 = 0.72;
 /// Strength of the multiple-scattering stand-in, and how far above each sample it looks
 /// for the sunlight feeding it (km).
-const ATMO_MS_STRENGTH: f32 = 4.0;
+const ATMO_MS_STRENGTH: f32 = 3.5;
 const ATMO_MS_LIFT: f32 = 8.0;
 /// Lowest height (km) the sun's ray may skim for the light feeding multiple scattering.
 const ATMO_MS_TANGENT: f32 = 25.0;
@@ -71,7 +71,7 @@ const ATMO_MS_TANGENT: f32 = 25.0;
 /// not reach it. The rest follows the sample's own sunlight: low, long horizon paths at
 /// sunset are lit by a dim red sun, and letting the (bluish) skylight term swamp them
 /// is what washed the sunset band out to lavender.
-const ATMO_MS_FLOOR: f32 = 0.15;
+const ATMO_MS_FLOOR: f32 = 0.08;
 /// Solar irradiance in display units before exposure.
 const ATMO_SUN_E: f32 = 24.0;
 
@@ -125,7 +125,7 @@ fn atmo_sun_transmittance(r: f32, mu: f32) -> vec3<f32> {
     if (mu < 0.0) {
         r_low = rr * sqrt(max(1.0 - mu * mu, 0.0));
     }
-    let lit = smoothstep(ATMO_R - 1.0, ATMO_R, r_low);
+    let lit = smoothstep(ATMO_R - 15.0, ATMO_R + 15.0, r_low);
     if (lit <= 0.0) {
         return vec3<f32>(0.0);
     }
@@ -148,10 +148,14 @@ fn atmo_sun_transmittance(r: f32, mu: f32) -> vec3<f32> {
 /// shadow — and it is weighted by how little air there is up there to scatter it.
 fn atmo_ms_source(r: f32, mu: f32) -> vec3<f32> {
     var r_lift = r + ATMO_MS_LIFT;
-    let mu_down = min(mu, 0.0);
-    r_lift = max(r_lift, (ATMO_R + ATMO_MS_TANGENT) / sqrt(max(1.0 - mu_down * mu_down, 1e-4)));
+    let cos_zenith = clamp(mu, -1.0, 1.0);
+    if (cos_zenith < 0.0) {
+        let sin_zenith = max(sqrt(max(1.0 - cos_zenith * cos_zenith, 0.0)), 0.35);
+        r_lift = max(r_lift, (ATMO_R + ATMO_MS_TANGENT) / sin_zenith);
+    }
+    r_lift = min(r_lift, ATMO_TOP);
     let above = max(r_lift - r - ATMO_MS_LIFT, 0.0);
-    return atmo_sun_transmittance(r_lift, mu) * exp(-above / ATMO_HR);
+    return atmo_sun_transmittance(r_lift, max(mu, -0.30)) * exp(-above / ATMO_HR);
 }
 
 fn atmo_ray_sphere(o: vec3<f32>, d: vec3<f32>, radius: f32) -> vec2<f32> {
@@ -270,9 +274,9 @@ fn atmo_radiance(s: AtmoScatter, c: f32) -> vec3<f32> {
 /// Exposure: the eye opens up as the light goes, but not all the way — the scene still
 /// has to get darker through twilight into night. `sun_elevation` is sin(elevation).
 fn atmo_exposure(sun_elevation: f32) -> f32 {
-    // In stops: none with the sun up, ~6.5 by the end of civil twilight (-6 degrees,
-    // when the sky is still clearly lit), 10 at night.
-    return exp2(10.0 * smoothstep(0.04, -0.20, sun_elevation));
+    // In stops: none with the sun up, ~5.5 by the end of civil twilight (-6 degrees,
+    // when the sky is still clearly lit), ~7.0 at deeper night.
+    return exp2(7.0 * smoothstep(0.04, -0.22, sun_elevation));
 }
 
 /// Saturation applied after the tone curve. The per-channel shoulder desaturates
@@ -327,6 +331,19 @@ fn sky_lut_uv(cos_theta: f32, cos_phi: f32, r: f32) -> vec2<f32> {
     } else {
         v = 0.5 + 0.5 * sqrt(clamp((theta - hz.x) / max(hz.y, 1e-4), 0.0, 1.0));
     }
+    let u = sqrt(acos(clamp(cos_phi, -1.0, 1.0)) / ATMO_PI);
+    return vec2<f32>(
+        (u * (SKY_LUT_W - 1.0) + 0.5) / SKY_LUT_W,
+        (v * (SKY_LUT_SKY_ROWS - 1.0) + 0.5) / SKY_LUT_ROWS,
+    );
+}
+
+/// Texture coordinate for sky pixels (view ray above or at the horizon): clamps theta to stay
+/// at or above the horizon so the sky dome never samples below into ground rows.
+fn sky_lut_sky_uv(cos_theta: f32, cos_phi: f32, r: f32) -> vec2<f32> {
+    let hz = sky_lut_horizon(r);
+    let theta = min(acos(clamp(cos_theta, -1.0, 1.0)), hz.x);
+    let v = 0.5 * (1.0 - sqrt(max(1.0 - theta / hz.x, 0.0)));
     let u = sqrt(acos(clamp(cos_phi, -1.0, 1.0)) / ATMO_PI);
     return vec2<f32>(
         (u * (SKY_LUT_W - 1.0) + 0.5) / SKY_LUT_W,
