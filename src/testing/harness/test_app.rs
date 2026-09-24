@@ -41,6 +41,12 @@ impl<'a> TestApp<'a> {
         tile_config.terrain.enabled = terrain_enabled;
         if config.map_style == crate::MapStyle::SatelliteTerrain {
             tile_config.base_imagery_url = cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string();
+            // Must travel with the URL above — see `TileEngineConfig::imagery_max_level`'s
+            // doc comment. Without it this harness silently keeps the `Standard` style's
+            // cap (20, effectively unenforced under `max_zoom` 19) while showing satellite
+            // imagery, so `--verify --map-style satellite-terrain` would not exercise the
+            // cap it exists to demonstrate.
+            tile_config.imagery_max_level = cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_MAX_LEVEL;
         }
         if config.map_style == crate::MapStyle::Offline {
             let renderer = cesium_engine::globe::tiles::vector::bundled_world_renderer()
@@ -49,6 +55,7 @@ impl<'a> TestApp<'a> {
             tile_config.tile_source_mode = cesium_engine::globe::tiles::config::TileSourceMode::SvgVector(
                 std::sync::Arc::new(renderer),
             );
+            tile_config.imagery_max_level = cesium_engine::globe::tiles::config::OFFLINE_IMAGERY_MAX_LEVEL;
         }
 
         Self {

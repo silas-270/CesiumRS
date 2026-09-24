@@ -10,7 +10,10 @@
 //!   cargo test --lib rendering::offline_switch -- --ignored --nocapture
 //! ```
 
-use cesium_engine::globe::tiles::config::{TileEngineConfig, TileSourceMode, STANDARD_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{
+    TileEngineConfig, TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL, STANDARD_IMAGERY_MAX_LEVEL,
+    STANDARD_IMAGERY_URL,
+};
 use cesium_engine::globe::tiles::vector;
 use cesium_engine::render::wgpu_state::WgpuState;
 use std::sync::Arc;
@@ -85,13 +88,13 @@ async fn run(dir: &std::path::Path) {
 
     // What the panel's "Offline (SVG)" radio does.
     let renderer = vector::bundled_world_renderer().expect("bundled SVG parses");
-    state.set_tile_source_mode(String::new(), TileSourceMode::SvgVector(Arc::new(renderer)));
+    state.set_tile_source_mode(String::new(), TileSourceMode::SvgVector(Arc::new(renderer)), OFFLINE_IMAGERY_MAX_LEVEL);
     state.set_terrain_enabled(false);
     assert!(is_offline(&state), "config must report offline after switching in");
     render_settled(&mut state, &path("switch_2_offline.png")).await;
 
     // What the panel's "Standard" radio does.
-    state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string());
+    state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string(), STANDARD_IMAGERY_MAX_LEVEL);
     state.set_terrain_enabled(false);
     assert!(!is_offline(&state), "config must report HTTP after leaving offline");
     assert_eq!(state.tile_system.config.base_imagery_url, STANDARD_IMAGERY_URL);

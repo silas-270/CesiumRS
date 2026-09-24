@@ -135,4 +135,22 @@ impl TileId {
             })
         }
     }
+
+    /// This tile, or its ancestor at `level` when `self.z > level` — the id whose
+    /// texture covers this tile's footprint once imagery requests are capped to a
+    /// source's real depth (`TileEngineConfig::imagery_max_level`) while the quadtree
+    /// itself, and terrain geometry with it, still subdivides deeper. A no-op when
+    /// `self.z <= level`, so callers can apply it unconditionally.
+    pub fn ancestor_at_level(&self, level: u8) -> TileId {
+        if self.z <= level {
+            *self
+        } else {
+            let shift = self.z - level;
+            TileId {
+                z: level,
+                x: self.x >> shift,
+                y: self.y >> shift,
+            }
+        }
+    }
 }

@@ -286,7 +286,10 @@ mod tests {
                 }
 
                 // 1. Switch to Satellite + Terrain while tracking plane on runway
-                state.set_base_imagery_url(cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string());
+                state.set_base_imagery_url(
+                    cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string(),
+                    cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_MAX_LEVEL,
+                );
                 state.set_terrain_enabled(true);
 
                 // Render multiple frames after switch — must not crash or freeze
