@@ -39,9 +39,12 @@ It is the depth scalar, 1 on the runway and 0 at cruise, computed in
 
 They own different things:
 
-- **Depth** owns saturation and the flattening of form. As the flight climbs, the map
-  drains toward greyscale and the terrain's directional shading gives way to flat ambient,
-  so the world becomes shapeless — there is deliberately nothing to look at at cruise.
+- **Depth** owns the flattening of form. As the flight climbs, the terrain's directional
+  shading gives way to flat ambient, so the world becomes shapeless — there is deliberately
+  nothing to look at at cruise. The map still drains toward greyscale on the way there, but
+  on the *light's* schedule (`camera_uniform.rs`): full colour while the sun is up and
+  through sunset, fading out across civil and nautical twilight. Running it on depth pulled
+  half the colour out of the map by the time the sun touched the horizon.
 - **Daylight** owns brightness, light direction and colour.
 
 Contrast is deliberately *not* driven by depth. The colour grading pulls contrast toward a
@@ -156,72 +159,38 @@ Two more effects sit on top of that base model:
 ## The sky
 
 `sky_pipeline/mod.rs` owns both `sky.wgsl` and the pipeline that runs it — a full-screen
-triangle that reconstructs a world-space ray and ray-marches an atmosphere shell with a
-Beer-Lambert opacity. Added to it:
+triangle that reconstructs a world-space ray. The colour along that ray comes from
+`render/atmosphere.wgsl`, a physically based single-scattering atmosphere shared with the
+globe (see "The sky must agree with the globe" below):
 
-- **A shared palette function.** `sky_palette(sun_elevation)` returns a `[zenith, horizon]`
-  pair, mixed from four anchors — `NOON_ZENITH`/`NOON_HORIZON`/`NIGHT_ZENITH`/
-  `NIGHT_HORIZON` — on the same day/night ramp as `celestial.rs`, plus a twilight-only violet
-  cast on the zenith (`TWILIGHT_ZENITH_VIOLET`) so a clear dusk zenith reads as a saturated
-  blue-violet rather than just fading toward the near-black night colour.
-  `sky_hue_rotation(sun_elevation, toward_sun)` (renamed from `sky_warm_tint`) is a separate
-  multiplicative tint on the horizon colour, bidirectional: on the sun's side of the sky
-  (`toward_sun` near 1) it warms, derived from the Rayleigh channel weights used only as a
-  relative hue (not a real extinction term — seeing what a literal Beer-Lambert transmittance
-  does to a horizon sunset was the reason this wasn't attempted: it computes to a near-black
-  smear, not a glow, because a real sunset's brightness is dominated by inscattered light
-  along the view path, which this engine doesn't integrate); on the antisolar side
-  (`toward_sun` near 0) it instead cools toward a hand-picked saturated blue — the "Earth's
-  shadow" band a clear dusk sky shows opposite the sun. `sky.wgsl` builds `toward_sun` from
-  `cos_sun`, so the warm half of the sky is the half the sun is in — without that a sunset is
-  an even orange band all the way round, which is the giveaway of a faked sky.
-  `globe_pipeline/shader.wgsl` used to apply the old tint *unconditionally*, on the claim that
-  a per-pixel terrain fragment has no clean "toward the sun" direction the way the sky dome's
-  view ray does. That claim doesn't hold: `-to_camera` (already computed there for the
-  horizon-haze grazing test) *is* that fragment's view ray, so `cos_sun_terrain =
-  dot(-to_camera, sun_dir)` gives the same signal, and the terrain's horizon ring now gets the
-  same direction-aware hue rotation the sky dome does. Both files' `toward_sun` remap
-  (`-0.2, 0.9`) is now part of the byte-identical-function contract below, not just the
-  function bodies themselves — it's a local at each call site, not inside the shared function.
-
-  `sky.wgsl` alone (not shared — `fs_solid` only ever needs a horizon colour, never a mid-sky
-  one) also overlays a twilight-only "glow" band (`TWILIGHT_GLOW_PEACH` on the sun's side,
-  `BELT_OF_VENUS_PINK` on the antisolar side) between zenith and horizon, for the pale
-  peach/gold and pink Belt-of-Venus colours a clear sunset shows that a plain 2-stop gradient
-  can't represent. It's a smooth `rise * (1 - fall)` bump (two smoothsteps meeting at
-  `GLOW_BAND_POSITION`) laid additively over the always-computed `mix(zenith, horizon,
-  color_mix)`, not a piecewise split of `color_mix` itself. An earlier version *did* split
-  `color_mix` into two separately-interpolated segments; the colour was continuous at the
-  join but its slope wasn't (the two segments aim at very different anchors), which read as a
-  distinct bright line hovering in the sky parallel to the horizon — caught by eye in
-  `light_audit_sweep`'s `02_sunset` frames. A smoothstep's derivative is exactly zero at both
-  of its own edges, so the bump is flat (no kink) exactly at its peak. Being an overlay with
-  zero weight at twilight=0 also makes "noon and full-night renders are unaffected" automatic
-  and independent of the bump's shape, rather than relying on an algebraic identity between
-  two interpolation curves.
-
-  The same "bright line hanging in the air" came back a second time anyway, and the fix for
-  it is the rule worth remembering: **the glow band changes the sky's hue, never its
-  brightness.** A line in the sky is not a kink in a curve — it is a local *maximum* of
-  luminance, which the eye reads as an edge however smoothly the ramp leads into it, and
-  laying hand-picked constants over the gradient at their own brightness put one right in
-  the middle of the sky. Altitude made it worse (the gradient is dimmed by `* 0.12` at the
-  zenith and `* 0.25` at the horizon, the constants were not), so the higher the flight
-  climbed the more the band detached from the horizon it belongs to.
-
-  Dimming the anchors on the same altitude schedule was the first attempt and only shrank
-  the peak — measured on `02_sunset`, a `+55` bump above the surrounding sky became `+14`,
-  which is still a line. The anchor is now rescaled to the exact luminance of the pixel it
-  is replacing before being mixed in, so the sky's luminance profile from zenith to horizon
-  stays monotonic *by construction*, at any altitude and for any anchor colour anyone picks
-  later. Same measurement: `+2` or less, which is dither. What survives is a band of colour
-  — peach on the sun's side, Belt-of-Venus pink opposite — which is what was wanted in the
-  first place.
-- **A sun disc**, its angular radius a named, derived constant (`SUN_ANGULAR_RADIUS`,
-  mirroring the already-documented `MOON_ANGULAR_RADIUS` below it) rather than a pair of
-  unexplained cosine thresholds, with a two-lobe forward-scatter halo, drawn *before* the
-  atmosphere is composited so a low sun is reddened and dimmed by the air it is seen
-  through.
+- **Rayleigh + Mie + ozone, one raymarch, no tables.** 16 quadratically spaced samples
+  along the view ray; the sunlight reaching each sample is attenuated along its own path
+  analytically with the Chapman function (the same one the haze uses), so there is no inner
+  loop. The planet's shadow is a ray/sphere test on that sun ray. Everything a sunset is
+  made of comes out of this rather than being painted: the reddened sun, the yellow-orange
+  band along the horizon under it, the aureole (Mie, g = 0.8), the blue-grey Earth's shadow
+  rising from the antisolar horizon after sunset with the pink Belt of Venus on top of it,
+  and the deep blue twilight zenith.
+- **The twilight zenith is blue because of ozone.** Light still reaching the upper air
+  after sunset crosses the ozone layer almost edge-on, and the Chappuis band takes its
+  orange out (Hulburt 1953). The ozone path is the exact chord through the 10–40km layer.
+  With textbook 680/550/440nm coefficients the zenith came out mauve-brown; the red ozone
+  coefficient is raised (a display's red primary sits near the Chappuis peak) and the set
+  doubled to stand in for the aerosol extinction single scattering leaves out.
+- **Multiple scattering is a stand-in.** An isotropic term lit by the sunlight at a point
+  high enough that its sun ray skims the planet no lower than 25km — the blue,
+  ozone-filtered light of the upper twilight sky, which is what lights the air inside the
+  Earth's shadow and keeps it blue-grey instead of black. Weighted by each sample's own
+  sunlight (floor 0.15), or it swamps the red sunset band into lavender.
+- **Exposure and tone curve.** `atmo_exposure` opens up by up to 7 stops through twilight
+  (the eye adapting, but not all the way — it still gets darker), then a per-channel
+  `1 - exp(-x)` shoulder and a 1.3 display saturation (the shoulder alone left the noon sky
+  pale cyan).
+- **A sun disc** seen through the same air: its colour is the transmittance of its own line
+  of sight, so it goes white, yellow, orange, red as it sets, screen-blended over the sky.
+  Atmospheric refraction (Bennett's formula) is undone on the view ray before the disc test,
+  which both lifts the sun just after geometric sunset and flattens it into an oval at the
+  horizon.
 - **A moon** with a procedural surface: value-noise maria, finer speckle for craters, and a
   touch of limb darkening so it does not read as a sticker. Procedural rather than a
   texture because this pipeline binds nothing but the camera uniform — an image would mean
@@ -235,16 +204,31 @@ Beer-Lambert opacity. Added to it:
   banding gets more visible the longer a session runs, not less. Screen-space rather than
   per-frame, so it doesn't flicker over a session.
 
-**The sky must agree with the globe at the horizon.** This used to be enforced only by a
-comment in each file asking whoever edited one to remember the other — and it had already
-failed, with the two horizon colours drifted apart by up to 0.05 per channel. Now it's
-enforced by construction: `sky_palette`/`sky_hue_rotation` are textually identical functions
-in both files (there is no shared-WGSL-include mechanism in this codebase, so "identical"
-means copy-pasted, not `#include`d — edit all copies in the same commit), called with the
-same `camera.sun_dir.w` input and, now, matching `toward_sun`/`toward_sun_terrain` remap
-constants at each call site, so the horizon colour they compute cannot drift apart without
-the source itself drifting, which is visible in a diff. Both also carry the same
-`EARTH_RADIUS_MM` and the same altitude dimming.
+**The sky must agree with the globe at the horizon.** It used to be enforced by
+copy-pasted palette functions in both shaders, and had already drifted once. Now both shader
+modules are built by prepending `atmosphere.wgsl` to their own source (`concat!` in
+`wgpu_state.rs`), and the globe's vertex shader traces the *same* ray the sky shader would
+have traced past each vertex (`atmo_integrate`, phase functions applied per fragment so the
+aureole does not facet). Distant terrain fades into exactly the sky above it. Both apply the
+same altitude darkening, `mix(0.35, 1.0, depth)`.
+
+### Ground light at sunset
+
+The ground takes its light from the same atmosphere, per vertex: the direct sun
+(`atmo_sun_transmittance`, zero once that ground is in the Earth's shadow) and skylight
+from three short raymarches (zenith, low toward and low away from the sun). Their
+*colour* tints the ground, pulled halfway to white (`GROUND_TINT_STRENGTH`) because the eye
+white-balances — golden hour reads warm, blue hour cool, neither dyed. Brightness follows
+its own ramp from +2° to -10°, so the ground darkens with the sky instead of staying at
+noon brightness under a dusk sky.
+
+What this replaced was the cause of the grey-orange ground: (1) the map's saturation was
+drained linearly with *depth*, so it was already ~45% grey when the sun reached the
+horizon; (2) the ambient light was multiplied by the chroma of the *view-dependent* horizon
+haze colour (including the warm hue rotation and the sun glow), which was very saturated
+orange toward the sun and blue away from it, so the same field changed colour with the
+camera heading and turned orange-on-grey at dusk; and (3) the moonlit grey conversion
+started at sunset, on `night_amount`.
 
 ### Terrain lighting: the mesopic night curve and the daytime highlight roll-off
 
@@ -455,6 +439,16 @@ camera modes to PNGs and prints the depth scalar for each frame:
 
 ```
 cargo test --lib light_audit_sweep -- --ignored --nocapture
+```
+
+`src/testing/rendering/sunset_capture.rs` (`#[ignore]`d) is the one to tune the sunset
+with: six fixed views (toward the sun, away from it, the zenith, from 3km both ways, and the
+ground from 9km) at fixed sun elevations (+10, +3, 0, -3, -6, -10 degrees), each turned
+back into the depth that produces it, on satellite imagery:
+
+```
+SUNSET_DIR=out cargo test --lib sunset_capture -- --ignored --nocapture
+SUNSET_ELEVS=45,0 SUNSET_VIEWS=g_sun,g_anti ...   # narrow it
 ```
 
 `src/testing/rendering/haze_capture.rs` (also `#[ignore]`d) is the zoom-out counterpart —

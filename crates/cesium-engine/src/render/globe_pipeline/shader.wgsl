@@ -110,91 +110,6 @@ fn air_path_length(camera_pos: vec3<f32>, frag_pos: vec3<f32>) -> f32 {
     return HAZE_SCALE_HEIGHT_MM * max(column_frag - column_cam, 0.0);
 }
 
-// ── Shared sky palette ──────────────────────────────────────────────────
-// MUST match sky_pipeline/sky.wgsl / globe_pipeline/shader.wgsl exactly (this
-// is the other one). See docs/lighting.md, "The sky must agree with the
-// globe at the horizon." Both files call these with the same sun_elevation
-// (camera.sun_dir.w) and, for sky_hue_rotation, the same toward_sun remap
-// constants (-0.2, 0.9) at each call site — that remap is a local, not part
-// of the shared function body, so it has to be kept in sync by hand too.
-// Edit all copies in the same commit; verify with light_audit_sweep before
-// trusting.
-
-const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
-const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
-const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.002, 0.002, 0.004);
-const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.008, 0.009, 0.014);
-
-/// Deep blue-violet the zenith picks up during civil twilight, instead of
-/// just fading toward the near-black NIGHT_ZENITH — a clear dusk zenith
-/// stays saturated blue-violet for a while after sunset, which a straight
-/// day-to-night fade can't show. Hand-picked from clear dusk reference
-/// photographs (Wikimedia Commons, inspected during this work).
-const TWILIGHT_ZENITH_VIOLET: vec3<f32> = vec3<f32>(0.10, 0.08, 0.28);
-/// How far toward TWILIGHT_ZENITH_VIOLET the zenith moves at full twilight.
-/// Not 1.0: a full replacement read as an unmotivated colour swap against
-/// light_audit_sweep — starting point for tuning, not a derived number.
-const TWILIGHT_ZENITH_MIX: f32 = 0.6;
-
-// Relative Rayleigh scattering weight per channel (R,G,B), normalised to
-// green = 1, from inverse-4th-power-of-wavelength coefficients for
-// 680/550/440nm air. Used only as a relative HUE weight below, not as a real
-// extinction term — see the plan's "design decision" note for why a literal
-// Beer-Lambert transmittance here would darken toward black instead of glow.
-const RAYLEIGH_WEIGHT: vec3<f32> = vec3<f32>(0.43, 1.0, 2.45);
-
-/// `sun_elevation` is sin(elevation), carried on camera.sun_dir.w
-/// (render/celestial.rs), not radians. Returns [zenith, horizon].
-fn sky_palette(sun_elevation: f32) -> array<vec3<f32>, 2> {
-    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-    var zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
-    let horizon = mix(NOON_HORIZON, NIGHT_HORIZON, night_amount);
-
-    // Twilight-only violet cast — see TWILIGHT_ZENITH_VIOLET above. Same
-    // "not day AND not night" trapezoid sky_hue_rotation gates on below, so
-    // it appears and disappears on the same schedule as the rest of the
-    // twilight-only colour and vanishes at noon and at full night.
-    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
-    zenith = mix(zenith, TWILIGHT_ZENITH_VIOLET, twilight * TWILIGHT_ZENITH_MIX);
-
-    return array<vec3<f32>, 2>(zenith, horizon);
-}
-
-/// Multiplicative hue rotation on the horizon colour, split by which side of
-/// the sky a fragment is on relative to the sun (`toward_sun`: 1 = the sun's
-/// half, 0 = the antisolar half).
-///
-/// Replaces the old direction-blind `sky_warm_tint`, which only ever warmed
-/// the sun's side and left the antisolar side untouched. A real dusk sky
-/// also cools toward a saturated blue opposite the sun — the "Earth's
-/// shadow" band sitting under the pink "Belt of Venus" the glow band puts
-/// higher in the sky (see fs_sky's glow-band code below). Both sides fade to
-/// neutral (1,1,1) outside the twilight window via the same trapezoid the
-/// old function used — verified against light_audit_sweep to reproduce the
-/// old dusk timing exactly on the sun side.
-///
-/// MUST match the other file's copy of this function, AND the `-0.2, 0.9`
-/// remap used to build `toward_sun` at every call site (sky.wgsl's
-/// `toward_sun`, globe_pipeline/shader.wgsl's `toward_sun_terrain`) — see
-/// docs/lighting.md.
-fn sky_hue_rotation(sun_elevation: f32, toward_sun: f32) -> vec3<f32> {
-    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
-    // 1/RAYLEIGH_WEIGHT rescaled so the reddest channel lands on the old
-    // hand-picked tint's peak (1.35) — the one number here still tuned by
-    // eye, down from a whole extra hand-authored RGB key.
-    let warm = (1.0 / RAYLEIGH_WEIGHT) * (1.35 / 2.3256);
-    // Earth's-shadow blue — hand-tuned from reference photographs, not
-    // derived from RAYLEIGH_WEIGHT: the shadow band is the daytime sky's own
-    // colour seen through the Earth's shadow, not a scattering-hue
-    // relationship, so there's no channel weight to invert here.
-    let shadow = vec3<f32>(0.55, 0.62, 0.95);
-    let side_tint = mix(shadow, warm, toward_sun);
-    return mix(vec3<f32>(1.0), side_tint, twilight);
-}
-
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
@@ -218,7 +133,20 @@ struct VertexOutput {
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) world_pos: vec3<f32>,
+    // The air between the eye and the horizon behind this vertex, from the shared
+    // atmosphere (atmosphere.wgsl) — phase functions are applied per fragment, since
+    // the sun's aureole is far too sharp to interpolate across a triangle.
+    @location(3) haze_rayleigh: vec3<f32>,
+    @location(4) haze_mie: vec3<f32>,
+    @location(5) haze_ms: vec3<f32>,
+    // Light arriving at this piece of ground: `rgb` direct sun through the air (zero in
+    // the Earth's shadow), and the skylight's colour.
+    @location(6) sun_light: vec3<f32>,
+    @location(7) sky_light: vec3<f32>,
 };
+
+/// Steps for the skylight estimate at the ground. Short, near-vertical rays.
+const SKYLIGHT_STEPS: i32 = 6;
 
 struct PushConstants {
     relative_center: vec3<f32>,
@@ -234,6 +162,38 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     out.normal = model.normal;
     out.uv = model.uv * push_constants.uv_scale_offset.xy + push_constants.uv_scale_offset.zw;
     out.world_pos = world_pos;
+
+    let sun_dir = camera.sun_dir.xyz;
+    let frag_pos = camera.camera_pos.xyz + world_pos;
+
+    // Haze: the sky the terrain hides, i.e. the same ray the sky shader would have
+    // traced, unclipped by the terrain — so distant ground fades into exactly the colour
+    // of the horizon above it.
+    let view_dir = normalize(world_pos);
+    let haze = atmo_integrate(atmo_position(camera.camera_pos.xyz), view_dir, sun_dir, 1.0e9, ATMO_VIEW_STEPS);
+    out.haze_rayleigh = haze.rayleigh;
+    out.haze_mie = haze.mie;
+    out.haze_ms = haze.ms;
+
+    // Light on the ground: direct sun through its own air column, and skylight from
+    // three sample directions (zenith, and low toward and away from the sun).
+    let ground = atmo_position(frag_pos);
+    let up = normalize(ground);
+    out.sun_light = atmo_sun_transmittance(length(ground), dot(up, sun_dir));
+
+    var toward = sun_dir - up * dot(sun_dir, up);
+    if (length(toward) < 1e-4) {
+        toward = vec3<f32>(1.0, 0.0, 0.0) - up * up.x;
+    }
+    toward = normalize(toward);
+    let low_sun = normalize(up * 0.4 + toward);
+    let low_anti = normalize(up * 0.4 - toward);
+    let zen = atmo_integrate(ground, up, sun_dir, 1.0e9, SKYLIGHT_STEPS);
+    let ls = atmo_integrate(ground, low_sun, sun_dir, 1.0e9, SKYLIGHT_STEPS);
+    let la = atmo_integrate(ground, low_anti, sun_dir, 1.0e9, SKYLIGHT_STEPS);
+    out.sky_light = 0.5 * atmo_radiance(zen, dot(up, sun_dir))
+        + 0.25 * atmo_radiance(ls, dot(low_sun, sun_dir))
+        + 0.25 * atmo_radiance(la, dot(low_anti, sun_dir));
     return out;
 }
 
@@ -242,6 +202,24 @@ var t_diffuse: texture_2d<f32>;
 @group(1) @binding(1)
 var s_diffuse: sampler;
 
+const LUMA: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
+
+/// How much of the light's physical colour the ground is allowed to take on. The eye
+/// (and every camera) white-balances toward the light it is in, so a golden-hour field
+/// reads warm, not orange, and a blue-hour one cool, not blue. 1.0 would be the raw
+/// physical ratio, which makes the ground look dyed.
+const GROUND_TINT_STRENGTH: f32 = 0.5;
+
+/// Normalises a light colour to unit luminance, then pulls it toward white.
+fn white_balanced(light: vec3<f32>, strength: f32) -> vec3<f32> {
+    let lum = dot(light, LUMA);
+    if (lum < 1e-6) {
+        return vec3<f32>(1.0);
+    }
+    let hue = clamp(light / lum, vec3<f32>(0.0), vec3<f32>(3.0));
+    return mix(vec3<f32>(1.0), hue, strength);
+}
+
 @fragment
 fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // This is the flight's depth, not daylight: 1 on the runway, 0 at cruise. It flattens
@@ -249,127 +227,119 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // deliberate "deep focus" look. Daylight is a separate axis entirely, below.
     let altitude_scalar = camera.sun_params.x;
 
-    let key_color = camera.light_color.rgb;
-    let key_strength = camera.light_color.a;
-
     let sun_elevation = camera.sun_dir.w;
     let day_amount = smoothstep(0.0, 0.10, sun_elevation);
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
-    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
+    // The eye keeps colour well into civil twilight; the grey, moonlit look only takes
+    // over once it is properly dark. Starting it at sunset (with `night_amount`) is what
+    // used to drain the ground to grey while the sky was still on fire.
+    let scotopic = smoothstep(-0.08, -0.25, sun_elevation);
 
-    // Sun and moon directions with smooth weighted blend
-    let night_key = smoothstep(-0.02, -0.22, sun_elevation);
+    // ── Light arriving at the ground ──────────────────────────────────────────
+    //
+    // Both lights come from the same atmosphere the sky is drawn with (vs_main). The
+    // direct sun is `in.sun_light` — reddened and dimmed by its own air column, and zero
+    // once this ground is in the Earth's shadow; the skylight is `in.sky_light`.
     let n_dot_sun = dot(in.normal, camera.sun_dir.xyz);
     let n_dot_moon = dot(in.normal, camera.moon_dir.xyz);
+    let sun_lum = dot(in.sun_light, LUMA);
 
-    // Soft terminator wrap for low sun grazing terrain at sunset/twilight
-    let wrap_sun = max((n_dot_sun + 0.12) / 1.12, 0.0);
-    let from_sun = mix(max(n_dot_sun, 0.0), wrap_sun, twilight) * (1.0 - night_key);
-    let from_moon = max(n_dot_moon, 0.0) * night_key;
+    // Horizontal-ground irradiance, per unit of solar irradiance. The +0.25 on the sun
+    // stands for everything on real ground that faces a low sun — trees, walls, hedges —
+    // which a flat satellite image cannot show but which is most of why a golden-hour
+    // landscape reads warm.
+    let up_local = normalize(camera.camera_pos.xyz + in.world_pos);
+    let sun_up = max(dot(up_local, camera.sun_dir.xyz), 0.0) + 0.25;
+    let e_direct = in.sun_light * sun_up;
+    let e_sky = in.sky_light * (ATMO_PI / ATMO_SUN_E);
+    let light_tint = white_balanced(e_direct + e_sky, GROUND_TINT_STRENGTH);
+    let sun_tint = white_balanced(in.sun_light, GROUND_TINT_STRENGTH);
 
-    // Energy-conserving ambient & diffuse balance:
-    // In daylight: ambient ~0.60, diffuse up to ~0.38 (total <= 0.98, preventing concrete/roof blowout).
-    // At night: ambient smoothly transitions to a soft moonlit floor (~0.12 at cruise), direct moonlight adds ~0.08.
+    // Brightness keeps the long-standing schedule (flat and bright in daylight, a soft
+    // moonlit floor at night), with golden hour a little dimmer than noon.
     let day_ambient = mix(0.70, 0.58, altitude_scalar);
     let night_ambient = mix(0.18, 0.26, altitude_scalar);
-    let base_ambient = mix(day_ambient, night_ambient, night_amount);
+    // The ground darkens with the light, from just before sunset to the end of civil
+    // twilight — not on `night_amount`, which kept it at full daylight brightness under
+    // a dusk sky.
+    let dusk = smoothstep(0.04, -0.18, sun_elevation);
+    let base_ambient = mix(day_ambient, night_ambient, dusk) * mix(0.9, 1.0, day_amount);
+    let moon_tint = vec3<f32>(0.80, 0.86, 0.98);
+    let ambient_tint = mix(light_tint, moon_tint, scotopic);
+    let ambient_rgb = base_ambient * ambient_tint;
 
+    // Directional sun, strength following how much sunlight actually gets through.
+    let wrap_sun = max((n_dot_sun + 0.12) / 1.12, 0.0);
+    let sun_strength = sqrt(clamp(sun_lum, 0.0, 1.0));
+    let from_sun = wrap_sun * sun_strength;
+    let from_moon = max(n_dot_moon, 0.0) * night_amount;
     let day_diffuse_max = 0.38 * mix(0.2, 1.0, altitude_scalar);
     let night_diffuse_max = 0.08;
-    let max_diffuse = mix(day_diffuse_max, night_diffuse_max, night_amount);
-    let diffuse_intensity = (from_sun + from_moon) * max_diffuse * key_strength;
-    let diffuse_rgb = vec3<f32>(diffuse_intensity) * key_color;
+    let diffuse_rgb = from_sun * day_diffuse_max * sun_tint
+        + vec3<f32>(from_moon * night_diffuse_max);
 
     let tex_color_raw = textureSample(t_diffuse, s_diffuse, in.uv);
-    
+
     // Extract map color grading parameters from the uniform (-1.0 to 1.0)
     let saturation_adj = camera.sun_params.y;
     let contrast_adj = camera.sun_params.z;
     let brightness_adj = camera.sun_params.w;
-    
+
     var tex_color_rgb = tex_color_raw.rgb;
-    
+
     // 1. Daytime highlight compression: gently roll off extreme whites (runway concrete/roofs)
     // so textures preserve surface detail without blowing out into blinding white patches.
     let highlight_excess = max(tex_color_rgb - vec3<f32>(0.75), vec3<f32>(0.0));
     tex_color_rgb = tex_color_rgb - highlight_excess * 0.45 * day_amount;
 
-    // 2. Realistic Night Tone Curve (Mesopic human eye response):
-    // In real night vision, daytime satellite sun-patches are suppressed,
-    // and the landscape takes on a soft, dark, monotone moonlit presence.
-    // We gate the highlight compression to brighter textures (photographic satellite tiles)
-    // while leaving dark vector basemaps (Dark Matter) untouched so roads remain legible.
-    let night_lum = dot(tex_color_rgb, vec3<f32>(0.299, 0.587, 0.114));
+    // 2. Night tone curve (mesopic response): daytime sun-patches in photographic tiles
+    // are suppressed and the landscape takes on a soft, dark, monotone moonlit presence.
+    // Gated to brighter textures (photographic satellite tiles) so dark vector basemaps
+    // (Dark Matter) stay legible.
+    let night_lum = dot(tex_color_rgb, LUMA);
     let photo_gate = smoothstep(0.04, 0.35, night_lum);
-    let night_gamma = mix(1.0, 1.35, night_amount * photo_gate);
+    let night_gamma = mix(1.0, 1.35, scotopic * photo_gate);
     tex_color_rgb = pow(tex_color_rgb, vec3<f32>(night_gamma));
-    
-    // At night, desaturate toward a cool slate-blue moonlit monochrome rather than harsh black/white
-    let moon_tint = vec3<f32>(0.75, 0.82, 0.95);
-    let moonlit_gray = mix(vec3<f32>(night_lum), vec3<f32>(night_lum) * moon_tint, 0.65);
-    tex_color_rgb = mix(tex_color_rgb, moonlit_gray, night_amount * 0.80 * photo_gate);
+    let moonlit_gray = vec3<f32>(dot(tex_color_rgb, LUMA));
+    tex_color_rgb = mix(tex_color_rgb, moonlit_gray, scotopic * 0.80 * photo_gate);
 
     // Performance optimization: skip explicit color grading entirely if all adjustments are 0.0
     if (saturation_adj != 0.0 || contrast_adj != 0.0 || brightness_adj != 0.0) {
-        
-        // 1. Brightness (-1 to 1) -> multiplicative scaling
         if (brightness_adj != 0.0) {
             let multiplier = max(1.0 + brightness_adj * 2.0, 0.0);
             tex_color_rgb = tex_color_rgb * multiplier;
         }
-        
-        // 2. Contrast (-1 to 1) 
         if (contrast_adj != 0.0) {
             let contrast_factor = max(1.0 + contrast_adj, 0.0);
             tex_color_rgb = (tex_color_rgb - 0.5) * contrast_factor + 0.5;
         }
-        
-        // 3. Saturation (-1 to 1)
         if (saturation_adj != 0.0) {
-            let luminance = dot(tex_color_rgb, vec3<f32>(0.299, 0.587, 0.114));
+            let luminance = dot(tex_color_rgb, LUMA);
             let saturation_factor = max(1.0 + saturation_adj, 0.0);
             tex_color_rgb = mix(vec3<f32>(luminance), tex_color_rgb, saturation_factor);
         }
     }
     tex_color_rgb = clamp(tex_color_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
 
-    let frag_pos = camera.camera_pos.xyz + in.world_pos;
-    let true_frag_dist = length(in.world_pos);
-    let view_dir_terrain = in.world_pos / max(true_frag_dist, 1e-6);
-
-    let cos_sun_terrain = dot(view_dir_terrain, camera.sun_dir.xyz);
-    let toward_sun_terrain = smoothstep(-0.2, 0.9, cos_sun_terrain);
-    var horizon_haze_color = sky_palette(sun_elevation)[1]
-        * sky_hue_rotation(sun_elevation, toward_sun_terrain);
-    horizon_haze_color = mix(horizon_haze_color * 0.25, horizon_haze_color, altitude_scalar);
-
-    // Forward-scatter sun glow matching sky.wgsl so distant terrain merges smoothly into the solar halo
-    let sun_glow_terrain = pow(max(cos_sun_terrain, 0.0), 350.0) * 0.6
-                         + pow(max(cos_sun_terrain, 0.0), 12.0) * 0.05;
-    let sun_tint_terrain = mix(vec3<f32>(1.0, 0.45, 0.2), vec3<f32>(1.0, 0.96, 0.9),
-                               smoothstep(0.0, 0.25, sun_elevation));
-    let celestial_fade = mix(0.55, 1.0, altitude_scalar);
-    horizon_haze_color += sun_tint_terrain * sun_glow_terrain
-        * smoothstep(-0.08, 0.02, sun_elevation) * celestial_fade;
-
-    let zenith_color = mix(sky_palette(sun_elevation)[0] * 0.12, sky_palette(sun_elevation)[0], altitude_scalar);
-    let sky_irradiance = mix(zenith_color, horizon_haze_color, 0.4);
-
-    // Ground ambient receives twilight chromaticity and moonlight tint
-    let sky_lum = dot(sky_irradiance, vec3<f32>(0.299, 0.587, 0.114));
-    let sky_chroma = sky_irradiance / max(sky_lum, 0.001);
-    let ambient_rgb = mix(vec3<f32>(base_ambient), vec3<f32>(base_ambient) * sky_chroma, twilight * 0.70);
-
-    let twilight_floor = sky_irradiance * twilight * 0.02 * mix(0.4, 0.9, altitude_scalar);
-
-    let shaded_color = tex_color_rgb * (ambient_rgb + diffuse_rgb) + twilight_floor;
+    let shaded_color = tex_color_rgb * (ambient_rgb + diffuse_rgb);
 
     // ── Aerial perspective ───────────────────────────────────────────────────────
-    let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
+    let frag_pos = camera.camera_pos.xyz + in.world_pos;
+    let view_dir_terrain = normalize(in.world_pos);
+    let cos_sun_terrain = dot(view_dir_terrain, camera.sun_dir.xyz);
+    var haze_scatter: AtmoScatter;
+    haze_scatter.rayleigh = in.haze_rayleigh;
+    haze_scatter.mie = in.haze_mie;
+    haze_scatter.ms = in.haze_ms;
+    haze_scatter.transmittance = vec3<f32>(1.0);
+    var horizon_haze_color = atmo_tonemap(atmo_radiance(haze_scatter, cos_sun_terrain), sun_elevation);
+    // MUST match sky.wgsl's altitude darkening.
+    horizon_haze_color *= mix(0.35, 1.0, altitude_scalar);
 
     // haze_path_length is in Mm of sea-level-density air (1.0 = 1000km).
     // Pushed further out so near and mid-distance terrain stays crisp and clear,
     // while distant terrain smoothly transitions into horizon_haze_color at the horizon.
+    let haze_path_length = air_path_length(camera.camera_pos.xyz, frag_pos);
     let AERIAL_HAZE_ONSET_MM: f32 = 0.035;
     let AERIAL_HAZE_FULL_MM: f32 = 0.160;
     let aerial_blend = smoothstep(AERIAL_HAZE_ONSET_MM, AERIAL_HAZE_FULL_MM, haze_path_length);

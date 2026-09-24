@@ -53,25 +53,6 @@ impl CameraUniform {
             camera_pos_dvec.z as f32,
             1.0,
         ];
-        // Depth owns colour. As the flight climbs, `sun_intensity` — which is really an
-        // altitude fraction, 1 on the runway and 0 at cruise — drains the map toward
-        // greyscale and flattens its contrast, and the descent brings both back. The
-        // caller's own grading is what the ground looks like; altitude pulls away from it
-        // rather than replacing it, so the debug sliders still do what they say at sea
-        // level and simply matter less the higher the aircraft is.
-        // Saturation only. Contrast is deliberately left alone: the grading pulls contrast
-        // toward a mid-grey pivot, and against a basemap that is almost entirely near-black
-        // that *raises* the dark pixels — "flatter" came out as a washed-out, brighter map,
-        // which is the opposite of the intent.
-        const CRUISE_SATURATION: f32 = -1.0; // fully grey
-        let depth = sun_intensity.clamp(0.0, 1.0);
-        self.sun_params = [
-            sun_intensity,
-            CRUISE_SATURATION + (color_grading[0] - CRUISE_SATURATION) * depth,
-            color_grading[1],
-            color_grading[2],
-        ];
-
         // The sky follows the flight, not the clock: `sun_intensity` is the depth scalar
         // (1 on the runway, 0 at cruise), so the sun sets on the way up and rises again
         // on the way down, identically.
@@ -83,6 +64,28 @@ impl CameraUniform {
                 camera_pos_dvec.z as f32,
             ),
         );
+
+        // The map drains toward greyscale on the way to cruise, and comes back on the way
+        // down. That drain follows the *light*, not the altitude: it keeps the caller's
+        // grading while the sun is up and through sunset, and fades it out across civil
+        // and nautical twilight into the grey night. It used to run linearly with depth,
+        // which pulled almost half the colour out of the map by the time the sun reached
+        // the horizon — golden hour came out a grey-orange wash. Contrast is deliberately
+        // left alone: grading pulls contrast toward a mid-grey pivot, and against a
+        // near-black basemap that *raises* the dark pixels.
+        const CRUISE_SATURATION: f32 = -1.0; // fully grey
+        let colour = celestial::smoothstep(
+            celestial::NIGHT_ELEVATION + 0.02,
+            celestial::DUSK_ELEVATION,
+            sky.sun_elevation,
+        );
+        self.sun_params = [
+            sun_intensity,
+            CRUISE_SATURATION + (color_grading[0] - CRUISE_SATURATION) * colour,
+            color_grading[1],
+            color_grading[2],
+        ];
+
         self.sun_dir = [sky.sun_dir.x, sky.sun_dir.y, sky.sun_dir.z, sky.sun_elevation];
         self.moon_dir = [
             sky.moon_dir.x,
