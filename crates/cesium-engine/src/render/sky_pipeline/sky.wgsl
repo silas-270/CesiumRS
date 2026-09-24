@@ -31,9 +31,6 @@ fn vs_sky(@builtin(vertex_index) vertex_index: u32) -> SkyOutput {
     return out;
 }
 
-// MUST match the other file exactly — see docs/lighting.md.
-const EARTH_RADIUS_MM: f32 = 6.378137;      // Mm
-const ATMOSPHERE_THICKNESS_MM: f32 = 0.15;  // Mm; 150km shell for the sky raymarch
 
 /// Angular radius of the moon's disc, in radians.
 ///
@@ -49,101 +46,17 @@ const MOON_ANGULAR_RADIUS: f32 = 0.0212;
 const SUN_ANGULAR_RADIUS: f32 = 0.00863;
 const SUN_DISC_SOFT_EDGE: f32 = 0.00004;
 
-// ── Shared sky palette ──────────────────────────────────────────────────
-// MUST match sky_pipeline/sky.wgsl / globe_pipeline/shader.wgsl exactly (this
-// is the other one). See docs/lighting.md, "The sky must agree with the
-// globe at the horizon." Both files call these with the same sun_elevation
-// (camera.sun_dir.w) and, for sky_hue_rotation, the same toward_sun remap
-// constants (-0.2, 0.9) at each call site — that remap is a local, not part
-// of the shared function body, so it has to be kept in sync by hand too.
-// Edit all copies in the same commit; verify with light_audit_sweep before
-// trusting.
-
-const NOON_ZENITH: vec3<f32>   = vec3<f32>(0.15, 0.35, 0.75);
-const NOON_HORIZON: vec3<f32>  = vec3<f32>(0.70, 0.80, 0.90);
+/// The night sky's own faint glow (airglow, starlight, light pollution), which the
+/// single-scattering atmosphere has no source for once the sun is far enough down.
 const NIGHT_ZENITH: vec3<f32>  = vec3<f32>(0.002, 0.002, 0.004);
 const NIGHT_HORIZON: vec3<f32> = vec3<f32>(0.008, 0.009, 0.014);
 
-/// Deep blue-violet the zenith picks up during civil twilight, instead of
-/// just fading toward the near-black NIGHT_ZENITH — a clear dusk zenith
-/// stays saturated blue-violet for a while after sunset, which a straight
-/// day-to-night fade can't show. Hand-picked from clear dusk reference
-/// photographs (Wikimedia Commons, inspected during this work).
-const TWILIGHT_ZENITH_VIOLET: vec3<f32> = vec3<f32>(0.10, 0.08, 0.28);
-/// How far toward TWILIGHT_ZENITH_VIOLET the zenith moves at full twilight.
-/// Not 1.0: a full replacement read as an unmotivated colour swap against
-/// light_audit_sweep — starting point for tuning, not a derived number.
-const TWILIGHT_ZENITH_MIX: f32 = 0.6;
-
-// Relative Rayleigh scattering weight per channel (R,G,B), normalised to
-// green = 1, from inverse-4th-power-of-wavelength coefficients for
-// 680/550/440nm air. Used only as a relative HUE weight below, not as a real
-// extinction term — see the plan's "design decision" note for why a literal
-// Beer-Lambert transmittance here would darken toward black instead of glow.
-const RAYLEIGH_WEIGHT: vec3<f32> = vec3<f32>(0.43, 1.0, 2.45);
-
-/// `sun_elevation` is sin(elevation), carried on camera.sun_dir.w
-/// (render/celestial.rs), not radians. Returns [zenith, horizon].
-fn sky_palette(sun_elevation: f32) -> array<vec3<f32>, 2> {
-    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-    var zenith = mix(NOON_ZENITH, NIGHT_ZENITH, night_amount);
-    let horizon = mix(NOON_HORIZON, NIGHT_HORIZON, night_amount);
-
-    // Twilight-only violet cast — see TWILIGHT_ZENITH_VIOLET above. Same
-    // "not day AND not night" trapezoid sky_hue_rotation gates on below, so
-    // it appears and disappears on the same schedule as the rest of the
-    // twilight-only colour and vanishes at noon and at full night.
-    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
-    zenith = mix(zenith, TWILIGHT_ZENITH_VIOLET, twilight * TWILIGHT_ZENITH_MIX);
-
-    return array<vec3<f32>, 2>(zenith, horizon);
-}
-
-/// Multiplicative hue rotation on the horizon colour, split by which side of
-/// the sky a fragment is on relative to the sun (`toward_sun`: 1 = the sun's
-/// half, 0 = the antisolar half).
-///
-/// Replaces the old direction-blind `sky_warm_tint`, which only ever warmed
-/// the sun's side and left the antisolar side untouched. A real dusk sky
-/// also cools toward a saturated blue opposite the sun — the "Earth's
-/// shadow" band sitting under the pink "Belt of Venus" the glow band puts
-/// higher in the sky (see fs_sky's glow-band code below). Both sides fade to
-/// neutral (1,1,1) outside the twilight window via the same trapezoid the
-/// old function used — verified against light_audit_sweep to reproduce the
-/// old dusk timing exactly on the sun side.
-///
-/// MUST match the other file's copy of this function, AND the `-0.2, 0.9`
-/// remap used to build `toward_sun` at every call site (sky.wgsl's
-/// `toward_sun`, globe_pipeline/shader.wgsl's `toward_sun_terrain`) — see
-/// docs/lighting.md.
-fn sky_hue_rotation(sun_elevation: f32, toward_sun: f32) -> vec3<f32> {
-    let day_amount = smoothstep(0.0, 0.10, sun_elevation); // must match celestial.rs
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation); // must match celestial.rs
-    let twilight = (1.0 - day_amount) * (1.0 - night_amount);
-    // 1/RAYLEIGH_WEIGHT rescaled so the reddest channel lands on the old
-    // hand-picked tint's peak (1.35) — the one number here still tuned by
-    // eye, down from a whole extra hand-authored RGB key.
-    let warm = (1.0 / RAYLEIGH_WEIGHT) * (1.35 / 2.3256);
-    // Earth's-shadow blue — hand-tuned from reference photographs, not
-    // derived from RAYLEIGH_WEIGHT: the shadow band is the daytime sky's own
-    // colour seen through the Earth's shadow, not a scattering-hue
-    // relationship, so there's no channel weight to invert here.
-    let shadow = vec3<f32>(0.55, 0.62, 0.95);
-    let side_tint = mix(shadow, warm, toward_sun);
-    return mix(vec3<f32>(1.0), side_tint, twilight);
-}
-
-
-fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
-    let b = 2.0 * dot(rd, r0);
-    let c = dot(r0, r0) - radius * radius;
-    let d = b * b - 4.0 * c;
-    if (d < 0.0) {
-        return vec2<f32>(-1.0, -1.0);
-    }
-    let d_sqrt = sqrt(d);
-    return vec2<f32>((-b - d_sqrt) / 2.0, (-b + d_sqrt) / 2.0);
+/// Refraction lifts the sun near the horizon (Bennett's formula, apparent elevation in
+/// degrees in, lift in degrees out). The lift is larger at the lower limb than the upper,
+/// which is what squashes a setting sun into an oval.
+fn refraction_lift_deg(apparent_deg: f32) -> f32 {
+    let a = max(apparent_deg, -1.5);
+    return (1.0 / tan(radians(a + 7.31 / (a + 4.4)))) / 60.0;
 }
 
 // ── Procedural lunar surface ──────────────────────────────────────────────────
@@ -247,110 +160,73 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let world_pos = camera.inv_view_proj * clip_pos;
     let world_pos_xyz = world_pos.xyz / world_pos.w;
     let view_dir = normalize(world_pos_xyz);
-    
-    let origin = camera.camera_pos.xyz;
+
     // Not daylight: this runs 1 on the runway to 0 at cruise, and is what thins the sky
     // out as the flight climbs. Daylight is `camera.sun_dir.w`.
     let altitude_scalar = camera.sun_params.x;
     let sun_dir = camera.sun_dir.xyz;
     let sun_elevation = camera.sun_dir.w;
     let cos_sun = dot(view_dir, sun_dir);
-    
-    let earth_radius = EARTH_RADIUS_MM;
-    let atmosphere_thickness = ATMOSPHERE_THICKNESS_MM;
-    let atmosphere_radius = earth_radius + atmosphere_thickness;
-    
-    let t_atm = ray_sphere_intersect(origin, view_dir, atmosphere_radius);
-    
-    var dist_in_atm = 0.0;
-    if (t_atm.y > 0.0) {
-        let t_start = max(0.0, t_atm.x);
-        let t_stop = t_atm.y; 
-        dist_in_atm = max(0.0, t_stop - t_start);
-    }
-    
-    let t_closest = -dot(origin, view_dir);
-    let t_min = max(0.0, t_closest);
-    let p_closest = origin + view_dir * t_min;
-    let d = length(p_closest);
-    
-    let h_normalized = clamp((d - earth_radius) / atmosphere_thickness, 0.0, 1.0);
-    let density_at_d = exp(-h_normalized * 10.0);
-    let boundary_softener = smoothstep(1.0, 0.8, h_normalized);
-    let optical_depth = density_at_d * dist_in_atm * boundary_softener * 2.0;
-    
-    let space_color = vec3<f32>(0.002, 0.002, 0.004);
 
-    // Must match celestial.rs: DAY_ELEVATION / DUSK / NIGHT (used inside sky_palette).
     let day_amount = smoothstep(0.0, 0.10, sun_elevation);
     let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
 
-    let palette = sky_palette(sun_elevation);
-    var zenith_color = palette[0];
-    var horizon_color = palette[1];
+    // ── The air ──────────────────────────────────────────────────────────────
+    let origin = atmo_position(camera.camera_pos.xyz);
+    let scatter = atmo_integrate(origin, view_dir, sun_dir, 1.0e9, ATMO_VIEW_STEPS);
+    var radiance = atmo_radiance(scatter, cos_sun);
 
-    // The warm half of the sky is the half the sun is in; the antisolar half cools
-    // toward the Earth's-shadow blue instead of staying neutral. Without the warm
-    // side an even orange band all the way round would be the giveaway of a faked
-    // sky. MUST match globe_pipeline/shader.wgsl's toward_sun_terrain remap
-    // (-0.2, 0.9) — see docs/lighting.md.
-    let toward_sun = smoothstep(-0.2, 0.9, cos_sun);
-    horizon_color = horizon_color * sky_hue_rotation(sun_elevation, toward_sun);
+    // ── The sun's disc ───────────────────────────────────────────────────────
+    //
+    // Seen through the same air as everything else, so a low sun is reddened and dimmed
+    // by exactly the transmittance of its own line of sight. Undo refraction on the view
+    // ray before testing the disc: that both lifts the sun (it is still visible just
+    // after it has geometrically set) and flattens it near the horizon.
+    let up = normalize(origin);
+    let view_elev = asin(clamp(dot(view_dir, up), -1.0, 1.0));
+    let true_elev = view_elev - radians(refraction_lift_deg(degrees(view_elev)));
+    let horiz = view_dir - up * dot(view_dir, up);
+    let horiz_len = length(horiz);
+    var unrefracted = view_dir;
+    if (horiz_len > 1e-4) {
+        unrefracted = horiz / horiz_len * cos(true_elev) + up * sin(true_elev);
+    }
+    let cos_disc = dot(unrefracted, sun_dir);
+    let cos_sun_edge = cos(SUN_ANGULAR_RADIUS);
+    let disc = smoothstep(cos_sun_edge - SUN_DISC_SOFT_EDGE, cos_sun_edge, cos_disc);
+    let celestial_fade = mix(0.55, 1.0, altitude_scalar);
+    var base_color = atmo_tonemap(radiance, sun_elevation);
+    // Added over the tone-mapped sky rather than into its radiance, and on its own
+    // brightness scale: a disc tens of thousands of times brighter than the sky would
+    // clip white at any exposure. Its colour is the transmittance of its own line of
+    // sight, normalised against the red channel so it stays a bright disc: white high
+    // up, yellow, orange, then red at the horizon.
+    let t_sun = scatter.transmittance;
+    let disc_color = vec3<f32>(1.0) - exp(-t_sun * (6.0 / pow(max(t_sun.r, 1e-3), 0.6)));
+    // Screen blend: always brighter than the sky behind it, never clipped flat.
+    base_color = mix(base_color, vec3<f32>(1.0) - (vec3<f32>(1.0) - base_color) * (vec3<f32>(1.0) - disc_color), disc);
 
     // Altitude is a second, independent axis: the flight climbing into cruise drains the
-    // sky toward space regardless of the hour. Dropping this broke the "deep dive" the
-    // whole view is built around — a cruise at noon must not look like a taxi at noon.
-    horizon_color = mix(horizon_color * 0.25, horizon_color, altitude_scalar);
-    zenith_color = mix(zenith_color * 0.12, zenith_color, altitude_scalar);
+    // sky toward space regardless of the hour — a cruise at noon must not look like a
+    // taxi at noon. MUST match the globe's haze (globe_pipeline/shader.wgsl).
+    base_color *= mix(0.35, 1.0, altitude_scalar);
 
-    var base_color = space_color;
-    if (optical_depth > 0.0) {
-        // The bright band tightens toward the horizon as the air thins, which is what
-        // the sky actually does from the flight levels.
-        // Smooth continuous transition across the full sky dome from zenith to horizon.
-        // band_low covers the zenith optical depth (~0.15 at cruise to ~0.30 on ground),
-        // while band_high anchors at the dense horizon (~2.5).
-        let band_low  = mix(0.35, 0.15, altitude_scalar);
-        let band_high = mix(2.6, 2.2, altitude_scalar);
-        let color_mix = smoothstep(band_low, band_high, optical_depth);
-
-        var atmosphere_color = mix(zenith_color, horizon_color, color_mix);
-
-        // True optical absorption/scattering (Beer-Lambert law approximation)
-        let opacity = 1.0 - exp(-optical_depth * 10.0); 
-        
-        base_color = mix(space_color, atmosphere_color, opacity);
-    }
+    // The night's own faint glow, graded from zenith to horizon by the air column.
+    let view_up = clamp(dot(view_dir, up), 0.0, 1.0);
+    base_color += mix(NIGHT_HORIZON, NIGHT_ZENITH, sqrt(view_up)) * night_amount;
 
     // ── Stars ────────────────────────────────────────────────────────────────
     //
-    // Attenuated by the air column (optical depth) and extinguished by background
-    // sky luminance (twilight glow, daylight, and atmospheric scattering).
-    // In bright regions (daylight or orange twilight glow band), stars are completely
-    // suppressed; as the local sky darkens to night, the brightest stars emerge first
-    // at the zenith and progressively fill the sky down to the horizon.
+    // Attenuated by the air column and extinguished by the background sky luminance: as
+    // the local sky darkens, the brightest stars emerge first at the zenith and fill the
+    // sky down to the horizon.
     let sky_luminance = dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let lum_factor = smoothstep(0.005, 0.08, sky_luminance);
-    let star_cutoff = lum_factor;
-    let star_extinction = exp(-optical_depth * 0.35) * (1.0 - lum_factor);
-    base_color += star_field(view_dir, clamp(star_cutoff, 0.0, 1.0)) * star_extinction;
-
-    // ── The sun and the moon themselves ──────────────────────────────────────
-    //
-    // Both are drawn before the atmosphere is layered over them, so a low sun is
-    // reddened and dimmed by the air it is seen through, as it should be.
-
-    // The sun's disc is about half a degree across, so its cosine sits very close to 1.
-    let cos_sun_edge = cos(SUN_ANGULAR_RADIUS);
-    let sun_disc = smoothstep(cos_sun_edge - SUN_DISC_SOFT_EDGE, cos_sun_edge, cos_sun);
-    // A wide, faint forward-scatter halo. This is most of what sells a sun in a sky.
-    let sun_glow = pow(max(cos_sun, 0.0), 350.0) * 0.6
-                 + pow(max(cos_sun, 0.0), 12.0) * 0.05;
-    let sun_tint = mix(vec3<f32>(1.0, 0.45, 0.2), vec3<f32>(1.0, 0.96, 0.9),
-                       smoothstep(0.0, 0.25, sun_elevation));
-    let celestial_fade = mix(0.55, 1.0, altitude_scalar);
-    base_color += sun_tint * (sun_disc + sun_glow)
-        * smoothstep(-0.08, 0.02, sun_elevation) * celestial_fade;
+    // Never before the sun is ~4 degrees down, whatever the sky's brightness says: the
+    // first stars come out around the middle of civil twilight.
+    let star_extinction = dot(scatter.transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
+        * (1.0 - lum_factor) * smoothstep(-0.07, -0.12, sun_elevation);
+    base_color += star_field(view_dir, clamp(lum_factor, 0.0, 1.0)) * star_extinction;
 
     // The moon, with a face on it. Sitting exactly opposite the sun it is always at full,
     // which is the phase worth having: a full disc is what an aircraft crosses in the
