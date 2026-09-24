@@ -89,6 +89,12 @@ pub fn create_pipelines(
         },
     });
 
+    let wireframe_polygon_mode = if device.features().contains(wgpu::Features::POLYGON_MODE_LINE) {
+        wgpu::PolygonMode::Line
+    } else {
+        wgpu::PolygonMode::Fill
+    };
+
     let wireframe_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Wireframe Pipeline"),
         layout: Some(basic_pipeline_layout),
@@ -113,7 +119,7 @@ pub fn create_pipelines(
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
             cull_mode: Some(wgpu::Face::Back),
-            polygon_mode: wgpu::PolygonMode::Line,
+            polygon_mode: wireframe_polygon_mode,
             unclipped_depth: false,
             conservative: false,
         },
@@ -148,7 +154,7 @@ pub fn create_pipelines(
             strip_index_format: None,
             front_face: wgpu::FrontFace::Cw,
             cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Line,
+            polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
         },
