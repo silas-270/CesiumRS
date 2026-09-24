@@ -178,7 +178,10 @@ impl<'a> App<'a> {
                     ui.label("Map Style:");
 
                     // Determine which of the three styles is currently active.
-                    use crate::globe::tiles::config::{TileSourceMode, STANDARD_IMAGERY_URL, SATELLITE_IMAGERY_URL};
+                    use crate::globe::tiles::config::{
+                        TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL, SATELLITE_IMAGERY_MAX_LEVEL,
+                        SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_MAX_LEVEL, STANDARD_IMAGERY_URL,
+                    };
                     #[derive(PartialEq, Clone, Copy)]
                     enum StyleSel { Standard, Satellite, Offline }
 
@@ -195,11 +198,11 @@ impl<'a> App<'a> {
                     let mut sel = sel;
 
                     if ui.radio_value(&mut sel, StyleSel::Standard, "Standard").changed() {
-                        state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string());
+                        state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string(), STANDARD_IMAGERY_MAX_LEVEL);
                         state.set_terrain_enabled(false);
                     }
                     if ui.radio_value(&mut sel, StyleSel::Satellite, "Satellite + Terrain").changed() {
-                        state.set_base_imagery_url(SATELLITE_IMAGERY_URL.to_string());
+                        state.set_base_imagery_url(SATELLITE_IMAGERY_URL.to_string(), SATELLITE_IMAGERY_MAX_LEVEL);
                         state.set_terrain_enabled(true);
                     }
                     if ui.radio_value(&mut sel, StyleSel::Offline, "Offline (SVG)").changed() {
@@ -208,6 +211,7 @@ impl<'a> App<'a> {
                                 state.set_tile_source_mode(
                                     String::new(),
                                     TileSourceMode::SvgVector(std::sync::Arc::new(renderer)),
+                                    OFFLINE_IMAGERY_MAX_LEVEL,
                                 );
                                 state.set_terrain_enabled(false);
                             }
@@ -904,11 +908,11 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
                                 "cesium.scenario.{scenario_id}"
                             )));
                         }
-                        ViewerCommand::MapSetImageryUrl(url) => {
-                            state.set_base_imagery_url(url);
+                        ViewerCommand::MapSetImageryUrl { url, max_level } => {
+                            state.set_base_imagery_url(url, max_level);
                         }
-                        ViewerCommand::MapSetSourceMode { url, mode } => {
-                            state.set_tile_source_mode(url, mode);
+                        ViewerCommand::MapSetSourceMode { url, mode, max_level } => {
+                            state.set_tile_source_mode(url, mode, max_level);
                         }
                         ViewerCommand::TerrainSetEnabled(on) => {
                             state.set_terrain_enabled(on);

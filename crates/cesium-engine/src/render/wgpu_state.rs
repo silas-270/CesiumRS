@@ -576,15 +576,23 @@ impl<'a> WgpuState<'a> {
     }
 
     /// Switches to an HTTP imagery source, leaving offline SVG mode if it was active.
-    pub fn set_base_imagery_url(&mut self, url: String) {
+    ///
+    /// `max_level` is the new style's imagery depth cap
+    /// (`TileEngineConfig::imagery_max_level`) — see `ViewerCommand::MapSetImageryUrl`
+    /// for why it travels with the URL instead of being set separately.
+    pub fn set_base_imagery_url(&mut self, url: String, max_level: u8) {
         let was_http = matches!(
             self.tile_system.config.tile_source_mode,
             crate::globe::tiles::config::TileSourceMode::HttpNetwork
         );
-        if was_http && self.tile_system.config.base_imagery_url == url {
+        if was_http
+            && self.tile_system.config.base_imagery_url == url
+            && self.tile_system.config.imagery_max_level == max_level
+        {
             return;
         }
         self.tile_system.config.base_imagery_url = url.clone();
+        self.tile_system.config.imagery_max_level = max_level;
         self.tile_system.config.tile_source_mode =
             crate::globe::tiles::config::TileSourceMode::HttpNetwork;
         self.tile_system
@@ -598,14 +606,17 @@ impl<'a> WgpuState<'a> {
     ///
     /// Called by the command handler when `MapStyle::Offline` is set.  Rebuilds the
     /// [`TileFetcher`] with the new [`TileSourceMode`] so in-flight HTTP requests are
-    /// dropped immediately and new tiles come from the SVG rasterizer.
+    /// dropped immediately and new tiles come from the SVG rasterizer. `max_level` is
+    /// the new style's imagery depth cap, same as `set_base_imagery_url`.
     pub fn set_tile_source_mode(
         &mut self,
         url: String,
         source_mode: crate::globe::tiles::config::TileSourceMode,
+        max_level: u8,
     ) {
         self.tile_system.config.base_imagery_url = url.clone();
         self.tile_system.config.tile_source_mode = source_mode.clone();
+        self.tile_system.config.imagery_max_level = max_level;
         self.tile_system
             .texture_manager
             .set_base_url_with_source(url, false, source_mode);

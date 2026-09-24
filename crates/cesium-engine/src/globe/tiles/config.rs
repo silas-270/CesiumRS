@@ -8,9 +8,80 @@ use std::time::Duration;
 /// an upscale. Tile dimensions are derived from the decoded image, so styles
 /// served at 256x256 (e.g. `SATELLITE_IMAGERY_URL`) still work unchanged.
 pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png?key=cb1_28wa_1_ff42c0a0f313514c2bdb2e7a";
+
+/// Deepest level requested from [`STANDARD_IMAGERY_URL`]. This is CartoDB's own
+/// documented native max zoom for its raster basemap tiles (Positron/Dark Matter,
+/// which `dark_nolabels` is a palette of) — it is a live-rendered vector-tile
+/// basemap, not photography, so unlike [`SATELLITE_IMAGERY_MAX_LEVEL`] there is no
+/// "ran out of coverage" failure mode to probe for; this cap exists so the engine
+/// stops asking past the source's own stated resolution rather than to dodge a
+/// placeholder tile. Spot-checked live 2026-09-24: `z18`..`z22` over Manhattan all
+/// return `200` with genuine (if increasingly sparse, since it's a vector re-render
+/// rather than a photograph) content, so the source does not itself enforce this —
+/// the cap is the engine declining to ask past CartoDB's documented ceiling.
+pub const STANDARD_IMAGERY_MAX_LEVEL: u8 = 20;
+
 /// Esri World Imagery - free, no API key required.
 pub const SATELLITE_IMAGERY_URL: &str =
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+
+/// Deepest level requested from [`SATELLITE_IMAGERY_URL`] — the direct fix for
+/// imagery rendering as flat white close to the ground (see `wgpu_state.rs`'s
+/// `imagery_lod_height_px` for the DPI half of that bug; this is the other half,
+/// the one that holds even after the LOD math is right, because Esri's own real
+/// photographic depth varies by location and is shallower than the quadtree's
+/// `max_zoom` almost everywhere).
+///
+/// **Not the advertised max.** The service's `MapServer` metadata claims LODs to
+/// `z23`; that is the tile *scheme's* ceiling, not a promise of photography at every
+/// level. Probed live 2026-09-24 with `curl` against real coordinates — a city, two
+/// rural/agricultural spots, a desert, a taiga forest, a rainforest and open ocean —
+/// at `z12`..`z20`, run before this constant existed so nothing here could bias the
+/// pick:
+///
+/// | spot | last real `z` | first placeholder `z` |
+/// |---|--:|--:|
+/// | Manhattan, NYC | 20 (still real) | — |
+/// | rural Kansas farmland | 19 | 20 |
+/// | rural Bavaria (small town) | 19 | 20 |
+/// | Amazon rainforest | 19 | 20 |
+/// | Sahara desert | 17 | 18 |
+/// | Siberian taiga | 17 | 18 |
+/// | open mid-Pacific | 17 (flat ocean colour, genuine) | 18 |
+///
+/// The placeholder is not an HTTP error — it is `200 OK`, exactly `2521` bytes,
+/// byte-identical across every spot and level it was seen at, decoding to a
+/// near-uniform white (`(255,255,255)` dominant, tested at real coordinates;
+/// `(204,204,204)` was seen at one out-of-range x/y used only to first notice the
+/// signature). It decodes and uploads like any other successful tile, which is why
+/// no existing error path caught it.
+///
+/// **17**, not 19: two of seven spots (desert, taiga) and the open ocean already
+/// placeholder at `z18`, so `z18` is not "almost everywhere". `z17` was real at
+/// every spot tested, including those three. Sparser locations than any tested here
+/// (polar ice, deep ocean far from the spot-checked one) may still placeholder
+/// before `17`; this cap is "photographic almost everywhere; falls back to the
+/// capped ancestor's texture, stretched, past that", not a guarantee of coverage
+/// everywhere — see [`crate::globe::tiles::system::TileSystem::sync_imagery_requests`]
+/// for the fallback that makes an unreachable cap harmless.
+pub const SATELLITE_IMAGERY_MAX_LEVEL: u8 = 17;
+
+/// Deepest level requested from the bundled offline vector map
+/// ([`super::vector::bundled_world_renderer`], Natural Earth 1:10m). Unlike the two
+/// HTTP sources above this one can't "run out of coverage" and placeholder — it's
+/// vector geometry rasterized to whatever tile is asked for, so a deeper request just
+/// re-rasterizes the same paths at a larger scale with no new detail, wasted CPU on
+/// every worker thread (`SvgTileRenderer::render_tile`) for a texture no sharper than
+/// its ancestor's.
+///
+/// **9**, matching `tools/generate_world_svg.py`'s own `engine_min_zoom`, which
+/// clamps every feature's minimum-zoom tag to `min(9, ...)` when the SVG this
+/// renderer parses is generated — i.e. the tool that authors this data already
+/// treats `9` as its ceiling of meaningful zoom-dependent detail (512px-tile
+/// convention; see that function's doc comment for the 256px-vs-512px conversion).
+/// Past it every path already in the SVG is drawn at every deeper zoom regardless —
+/// there is no `10`, `11`, ... worth of geometry being left unrequested.
+pub const OFFLINE_IMAGERY_MAX_LEVEL: u8 = 9;
 
 /// How the imagery tile layer is sourced.
 ///
@@ -464,11 +535,32 @@ pub struct TileEngineConfig {
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
     pub base_imagery_url: String,
-    /// Maximum quadtree zoom level supported by this imagery source.
-    /// Prevents subdividing beyond the source's actual content depth, avoiding
-    /// wasted fetches and cache space for flat-colour or missing tiles.
-    /// Defaults to `19` for the standard basemap whose content stops at z=19.
+    /// Ceiling on the **quadtree's own subdivision**, shared by every arm — mesh
+    /// geometry (terrain shape refines under `TerrainConfig::detail_max_z`, itself
+    /// bounded by this) and imagery both. Not a per-source imagery depth: the three
+    /// imagery sources' real content stops well short of this in practice (see
+    /// [`Self::imagery_max_level`] and its doc comment for why that needed its own,
+    /// shallower field rather than reusing this one), and terrain geometry is
+    /// expected to subdivide past whatever imagery is showing.
     pub max_zoom: u8,
+    /// Deepest level **requested and displayed** for the current imagery source —
+    /// independent of [`Self::max_zoom`], which still bounds how deep the quadtree
+    /// (and, on the terrain arm, mesh shape) subdivides. A visible tile past this cap
+    /// is never asked for at its own depth; `TileSystem::sync_imagery_requests` maps
+    /// it to its ancestor at this level instead, and the existing "texture hasn't
+    /// loaded yet" fallback in `TileSystem::get_render_data` stretches that ancestor's
+    /// texture over it via `compute_fallback_uv` — so a capped tile looks exactly like
+    /// one whose own imagery simply hasn't arrived, not a new visual state.
+    ///
+    /// Set alongside `base_imagery_url`/`tile_source_mode` whenever the style changes
+    /// (`CesiumViewerBuilder::build`, `ViewerHandle::map_set_style`) — see
+    /// [`STANDARD_IMAGERY_MAX_LEVEL`], [`SATELLITE_IMAGERY_MAX_LEVEL`] and
+    /// [`OFFLINE_IMAGERY_MAX_LEVEL`] for the value each style carries and where it
+    /// comes from. Exists because each source's real depth differs — Esri's
+    /// photography runs out well short of this engine's `max_zoom` almost everywhere,
+    /// where it used to fail silently as a flat white "no data" tile rather than the
+    /// dark cache-miss fallback (see `SATELLITE_IMAGERY_MAX_LEVEL`'s doc comment).
+    pub imagery_max_level: u8,
     pub base_color: [u8; 4],
     pub offline_mode: bool,
     /// How imagery tiles are produced — fetched from HTTP or rasterized locally from an
@@ -522,6 +614,8 @@ impl Default for TileEngineConfig {
             negative_cache_duration: Duration::from_secs(10),
             base_imagery_url: STANDARD_IMAGERY_URL.to_string(),
             max_zoom: 19,
+            // Matches `base_imagery_url` above — the default style is `Standard`.
+            imagery_max_level: STANDARD_IMAGERY_MAX_LEVEL,
             base_color: [20, 20, 20, 255],
             offline_mode: false,
             tile_source_mode: TileSourceMode::default(),
@@ -616,6 +710,37 @@ mod tests {
     fn default_config_max_zoom_is_19() {
         let config = TileEngineConfig::default();
         assert_eq!(config.max_zoom, 19);
+    }
+
+    /// The default config's `imagery_max_level` must track its `base_imagery_url` —
+    /// `Standard`'s cap, not some other style's, since that's the default style. A
+    /// silent drift here would mean the default style over- or under-requests without
+    /// anything failing loudly.
+    #[test]
+    fn default_config_imagery_cap_matches_the_default_style() {
+        let config = TileEngineConfig::default();
+        assert_eq!(config.base_imagery_url, STANDARD_IMAGERY_URL);
+        assert_eq!(config.imagery_max_level, STANDARD_IMAGERY_MAX_LEVEL);
+    }
+
+    /// The two sources that can actually run out of real content — satellite
+    /// photography and the offline vector map's authored scale — have caps strictly
+    /// shallower than the quadtree's own `max_zoom` ceiling, which is the property the
+    /// whole fix depends on: if either ever crept up to or past `max_zoom`,
+    /// `TileId::ancestor_at_level` would become a no-op for every visible tile on that
+    /// style and imagery would once again be requested at the quadtree's own depth,
+    /// silently undoing this.
+    ///
+    /// `STANDARD_IMAGERY_MAX_LEVEL` is deliberately **not** asserted here: CartoDB's
+    /// tiles are live-rendered, not photographed, so its cap is the source's own
+    /// documented resolution ceiling rather than a "ran out of coverage" guard, and it
+    /// is allowed to sit at or above `max_zoom` — the quadtree's own ceiling binds
+    /// first there and `imagery_max_level` just never gets the chance to.
+    #[test]
+    fn the_sources_that_can_run_out_of_content_cap_shallower_than_max_zoom() {
+        let max_zoom = TileEngineConfig::default().max_zoom;
+        assert!(SATELLITE_IMAGERY_MAX_LEVEL < max_zoom);
+        assert!(OFFLINE_IMAGERY_MAX_LEVEL < max_zoom);
     }
 
     /// Terrain off must leave the imagery budget literally untouched — the flat path may

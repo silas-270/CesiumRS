@@ -64,3 +64,45 @@ fn test_compute_fallback_uv_3_levels() {
     // Offset Y: 2 * 0.125 = 0.25
     assert_eq!(uv, [0.125, 0.125, 0.625, 0.25]);
 }
+
+// `TileId::ancestor_at_level` — the imagery-depth-cap fix. `sync_imagery_requests`
+// maps every visible tile through this before requesting a texture for it, so the
+// cache never holds (and the fetcher never asks for) a tile deeper than a style's
+// `imagery_max_level`; the existing `compute_fallback_uv` tests above are what proves
+// the *display* half (an ungranted deep tile stretches its ancestor's texture) — this
+// is the *request* half.
+
+#[test]
+fn ancestor_at_level_is_a_no_op_at_or_above_the_cap() {
+    let shallow = TileId { z: 5, x: 3, y: 7 };
+    assert_eq!(shallow.ancestor_at_level(17), shallow);
+    assert_eq!(shallow.ancestor_at_level(5), shallow);
+}
+
+#[test]
+fn ancestor_at_level_climbs_to_exactly_the_cap() {
+    // z=20 tile, capped to 17 — three levels up, halving x/y each time (same
+    // arithmetic `TileId::parent` uses, just three steps at once).
+    let deep = TileId { z: 20, x: 308_729, y: 394_244 }; // NYC-ish, from the live
+                                                          // SATELLITE_IMAGERY_MAX_LEVEL probe
+    let capped = deep.ancestor_at_level(17);
+    assert_eq!(capped.z, 17);
+    assert_eq!(capped.x, 308_729 >> 3);
+    assert_eq!(capped.y, 394_244 >> 3);
+
+    // Walking `.parent()` three times from the deep tile must land on the same id —
+    // `ancestor_at_level` is a shortcut for that walk, not a different rule.
+    let walked = deep.parent().unwrap().parent().unwrap().parent().unwrap();
+    assert_eq!(capped, walked);
+}
+
+#[test]
+fn ancestor_at_level_matches_repeated_parent_calls_at_every_depth() {
+    let mut id = TileId { z: 9, x: 511, y: 3 };
+    for level in (0..=9).rev() {
+        assert_eq!(id.ancestor_at_level(level), id, "level {level}");
+        if let Some(p) = id.parent() {
+            id = p;
+        }
+    }
+}

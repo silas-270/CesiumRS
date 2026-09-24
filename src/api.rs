@@ -36,7 +36,8 @@
 use cesium_engine::core::app::App;
 use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
 use cesium_engine::globe::tiles::config::{
-    OceanPolicy, TerrainConfig, TileEngineConfig, TileSourceMode, SATELLITE_IMAGERY_URL,
+    OceanPolicy, TerrainConfig, TileEngineConfig, TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL,
+    SATELLITE_IMAGERY_MAX_LEVEL, SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_MAX_LEVEL,
     STANDARD_IMAGERY_URL,
 };
 use cesium_engine::globe::tiles::vector;
@@ -288,6 +289,16 @@ impl CesiumViewerBuilder {
             MapStyle::Offline => String::new(),
         };
 
+        // Each style's own real depth — see the three `_IMAGERY_MAX_LEVEL` constants'
+        // doc comments in `config.rs` for where each number comes from. Kept alongside
+        // `base_imagery_url` above rather than derived from it so the two can never
+        // silently drift apart.
+        let imagery_max_level = match self.map_style {
+            MapStyle::Standard => STANDARD_IMAGERY_MAX_LEVEL,
+            MapStyle::SatelliteTerrain => SATELLITE_IMAGERY_MAX_LEVEL,
+            MapStyle::Offline => OFFLINE_IMAGERY_MAX_LEVEL,
+        };
+
         let terrain_enabled = match self.map_style {
             MapStyle::SatelliteTerrain => true,
             // Terrain requires network access; offline mode always runs flat.
@@ -322,6 +333,7 @@ impl CesiumViewerBuilder {
             map_contrast: self.map_contrast,
             map_brightness: self.map_brightness,
             max_zoom: self.max_zoom,
+            imagery_max_level,
             terrain: TerrainConfig {
                 enabled: terrain_enabled,
                 exaggeration: self.terrain_exaggeration,
@@ -471,15 +483,17 @@ impl ViewerHandle {
     pub fn map_set_style(&self, style: MapStyle) {
         match style {
             MapStyle::Standard => {
-                let _ = self
-                    .tx
-                    .try_send(ViewerCommand::MapSetImageryUrl(STANDARD_IMAGERY_URL.to_string()));
+                let _ = self.tx.try_send(ViewerCommand::MapSetImageryUrl {
+                    url: STANDARD_IMAGERY_URL.to_string(),
+                    max_level: STANDARD_IMAGERY_MAX_LEVEL,
+                });
                 let _ = self.tx.try_send(ViewerCommand::TerrainSetEnabled(false));
             }
             MapStyle::SatelliteTerrain => {
-                let _ = self
-                    .tx
-                    .try_send(ViewerCommand::MapSetImageryUrl(SATELLITE_IMAGERY_URL.to_string()));
+                let _ = self.tx.try_send(ViewerCommand::MapSetImageryUrl {
+                    url: SATELLITE_IMAGERY_URL.to_string(),
+                    max_level: SATELLITE_IMAGERY_MAX_LEVEL,
+                });
                 let _ = self
                     .tx
                     .try_send(ViewerCommand::TerrainSetEnabled(true));
@@ -493,6 +507,7 @@ impl ViewerHandle {
                         let _ = self.tx.try_send(ViewerCommand::MapSetSourceMode {
                             url: String::new(),
                             mode,
+                            max_level: OFFLINE_IMAGERY_MAX_LEVEL,
                         });
                     }
                     Err(e) => {

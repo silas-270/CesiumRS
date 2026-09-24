@@ -368,7 +368,22 @@ impl TileSystem {
     /// This frame's imagery wish list: every visible tile, every ancestor of one (the
     /// textures a missing one falls back to), and the prefetch ring, ranked by
     /// [`importance`]. Resident ancestors are marked used so the LRU keeps them.
+    ///
+    /// **Capped at `config.imagery_max_level`.** A visible mesh tile past the cap (the
+    /// quadtree, and terrain geometry with it, may still subdivide deeper — see
+    /// [`TileEngineConfig::imagery_max_level`]) is never requested at its own depth;
+    /// [`TileId::ancestor_at_level`] maps it to the capped ancestor instead, which is
+    /// what actually gets fetched. That ancestor's texture is then what
+    /// [`Self::get_render_data`]'s existing fallback walk finds and stretches over the
+    /// deeper tile via [`Self::compute_fallback_uv`] — the same path a texture that
+    /// simply hasn't loaded yet already uses, not a second mechanism. This is what stops
+    /// imagery sources whose real depth is shallower than the quadtree's own (satellite
+    /// photography past its resolution, the offline vector map past its source scale)
+    /// from being asked for tiles beyond it, where — for `SATELLITE_IMAGERY_URL` at
+    /// least — the source hands back a flat, near-white "no data" placeholder rather
+    /// than an error (see `SATELLITE_IMAGERY_MAX_LEVEL`'s doc comment).
     fn sync_imagery_requests(&mut self, camera_pos: Vec3, visible_tiles: &[(TileId, Vec3, f32)]) {
+        let cap = self.config.imagery_max_level;
         let mut wanted: std::collections::HashMap<TileId, (TilePriority, f32)> =
             std::collections::HashMap::new();
         let cache = &mut self.texture_manager.cache;
@@ -388,8 +403,9 @@ impl TileSystem {
         };
 
         let mut ancestors_seen = std::collections::HashSet::new();
-        for (id, _, _) in visible_tiles {
-            want(*id, TilePriority::High);
+        for (raw_id, _, _) in visible_tiles {
+            let id = raw_id.ancestor_at_level(cap);
+            want(id, TilePriority::High);
             let mut a = id.parent();
             while let Some(p) = a {
                 if !ancestors_seen.insert(p) {
@@ -407,10 +423,11 @@ impl TileSystem {
                 let velocity = camera_pos - last_pos;
                 if velocity.length_squared() > 1e-6 {
                     let norm_vel = velocity.normalize();
-                    for (id, center, _) in visible_tiles {
-                        if id.z < 4 || (*center - camera_pos).normalize_or_zero().dot(norm_vel) <= 0.5 {
+                    for (raw_id, center, _) in visible_tiles {
+                        if raw_id.z < 4 || (*center - camera_pos).normalize_or_zero().dot(norm_vel) <= 0.5 {
                             continue;
                         }
+                        let id = raw_id.ancestor_at_level(cap);
                         let max_x_y = (1u32 << id.z) - 1;
                         for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
                             let (x, y) = (id.x as i64 + dx, id.y as i64 + dy);
