@@ -5,7 +5,7 @@ mod tests {
     use cesium_engine::render::wgpu_state::WgpuState;
     use std::time::Instant;
 
-    fn run_orbit_benchmark(mode_name: &'static str, terrain_enabled: bool, base_url: &'static str) {
+    fn run_orbit_benchmark(mode_name: &'static str, terrain_enabled: bool, base_url: String) {
         let handle = std::thread::spawn(move || {
             pollster::block_on(async {
                 let mut flight_app = Box::new(cesium_flight::tracker::FlightTrackerApp::new(
@@ -24,7 +24,7 @@ mod tests {
                 flight_app.reset_viewport = true;
 
                 let mut config = TileEngineConfig::default();
-                config.base_imagery_url = base_url.to_string();
+                config.base_imagery_url = base_url;
                 config.terrain.enabled = terrain_enabled;
 
                 let mut state = WgpuState::new(
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_tracking_flight_orbit_terrain_3d_render() {
-        run_orbit_benchmark("Satellite + Terrain 3D", true, SATELLITE_IMAGERY_URL);
+        run_orbit_benchmark("Satellite + Terrain 3D", true, SATELLITE_IMAGERY_URL.to_string());
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
         run_orbit_benchmark(
             "Standard Carto 2D",
             false,
-            cesium_engine::globe::tiles::config::STANDARD_IMAGERY_URL,
+            cesium_engine::globe::tiles::config::standard_imagery_url(),
         );
     }
 
@@ -265,7 +265,7 @@ mod tests {
                 flight_app.reset_viewport = true;
 
                 let mut config = TileEngineConfig::default();
-                config.base_imagery_url = cesium_engine::globe::tiles::config::STANDARD_IMAGERY_URL.to_string();
+                config.base_imagery_url = cesium_engine::globe::tiles::config::standard_imagery_url();
                 config.terrain.enabled = false;
 
                 let mut state = WgpuState::new(

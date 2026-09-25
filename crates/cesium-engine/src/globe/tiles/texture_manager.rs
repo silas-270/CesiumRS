@@ -31,7 +31,7 @@ pub const TEXTURE_UPLOAD_TIME_BUDGET: std::time::Duration = std::time::Duration:
 /// `wgpu::Device`/`Queue` in its API) so the tracking logic itself is unit-testable
 /// without a GPU, unlike the rest of [`TileTextureManager`].
 ///
-/// Assumes square tiles: every imagery style this engine serves (`STANDARD_IMAGERY_URL`
+/// Assumes square tiles: every imagery style this engine serves (`standard_imagery_url()`
 /// at 512x512, `SATELLITE_IMAGERY_URL` at 256x256) is, and `lod_factor_for` takes a
 /// single scalar `texture_size_px`, not separate width/height.
 #[derive(Clone, Copy, Debug, Default)]

@@ -12,7 +12,7 @@
 
 use cesium_engine::globe::tiles::config::{
     TileEngineConfig, TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL, STANDARD_IMAGERY_MAX_LEVEL,
-    STANDARD_IMAGERY_URL,
+    standard_imagery_url,
 };
 use cesium_engine::globe::tiles::vector;
 use cesium_engine::render::wgpu_state::WgpuState;
@@ -94,10 +94,10 @@ async fn run(dir: &std::path::Path) {
     render_settled(&mut state, &path("switch_2_offline.png")).await;
 
     // What the panel's "Standard" radio does.
-    state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string(), STANDARD_IMAGERY_MAX_LEVEL);
+    state.set_base_imagery_url(standard_imagery_url(), STANDARD_IMAGERY_MAX_LEVEL);
     state.set_terrain_enabled(false);
     assert!(!is_offline(&state), "config must report HTTP after leaving offline");
-    assert_eq!(state.tile_system.config.base_imagery_url, STANDARD_IMAGERY_URL);
+    assert_eq!(state.tile_system.config.base_imagery_url, standard_imagery_url());
     render_settled(&mut state, &path("switch_3_standard_again.png")).await;
 
     let std_vs_off = mean_diff(&path("switch_1_standard.png"), &path("switch_2_offline.png"));

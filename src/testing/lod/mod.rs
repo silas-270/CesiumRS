@@ -25,7 +25,7 @@
 //!
 //! `ratio < 1` is blurry (under-refined: too few texels for the screen area);
 //! `ratio > 1` is wasted bandwidth and memory (over-refined). `texture_size` is
-//! hard-coded to the engine's current default (512, `STANDARD_IMAGERY_URL`'s `@2x`
+//! hard-coded to the engine's current default (512, `standard_imagery_url()`'s `@2x`
 //! tiles) — WP4 is what makes it a real, per-style input; here it is still frozen.
 //! (`lod_factor` no longer is: see above.)
 //!

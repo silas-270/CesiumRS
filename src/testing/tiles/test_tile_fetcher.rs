@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use cesium_engine::globe::quadtree::TileId;
-    use cesium_engine::globe::tiles::config::STANDARD_IMAGERY_URL;
+    use cesium_engine::globe::tiles::config::standard_imagery_url;
     use cesium_engine::globe::tiles::tile_fetcher::{TileFetcher, TilePriority};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -20,7 +20,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let fetcher = TileFetcher::new(
             tx,
-            STANDARD_IMAGERY_URL.to_string(),
+            standard_imagery_url(),
             false,
             "Test",
         );
@@ -41,7 +41,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let fetcher = TileFetcher::new(
             tx,
-            STANDARD_IMAGERY_URL.to_string(),
+            standard_imagery_url(),
             false,
             "Test",
         );

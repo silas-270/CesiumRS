@@ -19,7 +19,7 @@ use super::super::culling::bench_update::bench_cells;
 use super::super::culling::cameras::{build_camera, ViewParams};
 use super::super::culling::sweep::{harness_pool, UPDATE_ITERATIONS};
 
-/// The engine's default imagery tile size — `STANDARD_IMAGERY_URL`'s `@2x` tiles
+/// The engine's default imagery tile size — `standard_imagery_url()`'s `@2x` tiles
 /// (`config.rs`). Deliberately a separate constant from the engine's own
 /// `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`: the harness must be able to state its
 /// texel-density assumption independently of the engine's. Used as the *default*

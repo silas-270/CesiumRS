@@ -7,9 +7,28 @@ use std::time::Duration;
 /// 512x512 retina tiles, which carry genuinely twice the detail rather than
 /// an upscale. Tile dimensions are derived from the decoded image, so styles
 /// served at 256x256 (e.g. `SATELLITE_IMAGERY_URL`) still work unchanged.
-pub const STANDARD_IMAGERY_URL: &str = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png?key=cb1_28wa_1_ff42c0a0f313514c2bdb2e7a";
+///
+/// **CARTO requires an API key**, and this repository is public, so the key is
+/// never in source: it is read at compile time from the `CARTO_API_KEY`
+/// environment variable. The Blocktime Gradle build passes it from its untracked
+/// `local.properties`; for a desktop build, export it before `cargo build`.
+/// Without a key CARTO still answers `200`, but every tile is stamped
+/// "API KEY REQUIRED" — hence the warning rather than a silent fallback.
+pub fn standard_imagery_url() -> String {
+    const BASE: &str = "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png";
+    match option_env!("CARTO_API_KEY").filter(|key| !key.is_empty()) {
+        Some(key) => format!("{BASE}?key={key}"),
+        None => {
+            static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+            WARN_ONCE.call_once(|| {
+                log::warn!("CARTO_API_KEY was not set at build time; the Standard basemap will be watermarked");
+            });
+            BASE.to_string()
+        }
+    }
+}
 
-/// Deepest level requested from [`STANDARD_IMAGERY_URL`]. This is CartoDB's own
+/// Deepest level requested from [`standard_imagery_url`]. This is CartoDB's own
 /// documented native max zoom for its raster basemap tiles (Positron/Dark Matter,
 /// which `dark_nolabels` is a palette of) — it is a live-rendered vector-tile
 /// basemap, not photography, so unlike [`SATELLITE_IMAGERY_MAX_LEVEL`] there is no
@@ -448,7 +467,7 @@ pub const MIN_TILE_CACHE_ENTRIES: usize = 64;
 /// Imagery tile edge length, in texels, that the LOD rule falls back to before it
 /// has any better information.
 ///
-/// Matches what [`STANDARD_IMAGERY_URL`]'s `@2x` suffix actually serves (512x512).
+/// Matches what [`standard_imagery_url`]'s `@2x` suffix actually serves (512x512).
 /// **No longer the value the LOD rule always runs at** — WP4/A
 /// (`docs/pre-terrain-plan.md`) feeds the real decoded tile size through live, via
 /// [`crate::globe::tiles::texture_manager::TileTextureManager::current_texture_size_px`],
@@ -492,7 +511,7 @@ pub fn tile_cache_entries_for(
 pub struct TileEngineConfig {
     /// Hard upper bound on imagery cache entries. Note this is a *count*, so on
     /// its own it doesn't bound memory: the same 2048 entries are 512MB of
-    /// 256x256 tiles but 2GB of the 512x512 ones `STANDARD_IMAGERY_URL` serves.
+    /// 256x256 tiles but 2GB of the 512x512 ones `standard_imagery_url()` serves.
     /// [`tile_cache_budget_bytes`](Self::tile_cache_budget_bytes) is what
     /// actually bounds it; whichever of the two is smaller wins.
     pub max_cache_size: NonZeroUsize,
@@ -599,7 +618,7 @@ impl Default for TileEngineConfig {
     fn default() -> Self {
         Self {
             max_cache_size: NonZeroUsize::new(2048).unwrap(),
-            // 512MB. At the 512x512 RGBA8 tiles STANDARD_IMAGERY_URL serves
+            // 512MB. At the 512x512 RGBA8 tiles standard_imagery_url() serves
             // (1MiB each, no mips) that lands on ~512 entries; at 256x256 it
             // stays at the 2048 cap, i.e. unchanged from before this budget
             // existed. Measured on a 35-minute device run: the count-only cap
@@ -612,7 +631,7 @@ impl Default for TileEngineConfig {
             prefetch_radius: 1, // Number of tiles to prefetch in velocity direction
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),
-            base_imagery_url: STANDARD_IMAGERY_URL.to_string(),
+            base_imagery_url: standard_imagery_url(),
             max_zoom: 19,
             // Matches `base_imagery_url` above — the default style is `Standard`.
             imagery_max_level: STANDARD_IMAGERY_MAX_LEVEL,
@@ -639,7 +658,7 @@ mod tests {
 
     const MIB: usize = 1024 * 1024;
 
-    /// The case this budget exists for: `STANDARD_IMAGERY_URL`'s `@2x` tiles are
+    /// The case this budget exists for: `standard_imagery_url()`'s `@2x` tiles are
     /// 512x512 RGBA8 = 1MiB each, so the old count-only cap of 2048 meant a 2GB
     /// ceiling. The budget has to bring that down without touching the cap.
     #[test]
@@ -719,7 +738,7 @@ mod tests {
     #[test]
     fn default_config_imagery_cap_matches_the_default_style() {
         let config = TileEngineConfig::default();
-        assert_eq!(config.base_imagery_url, STANDARD_IMAGERY_URL);
+        assert_eq!(config.base_imagery_url, standard_imagery_url());
         assert_eq!(config.imagery_max_level, STANDARD_IMAGERY_MAX_LEVEL);
     }
 

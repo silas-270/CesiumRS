@@ -38,7 +38,7 @@ use cesium_engine::core::command::{CameraCommandMode, ViewerCommand};
 use cesium_engine::globe::tiles::config::{
     OceanPolicy, TerrainConfig, TileEngineConfig, TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL,
     SATELLITE_IMAGERY_MAX_LEVEL, SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_MAX_LEVEL,
-    STANDARD_IMAGERY_URL,
+    standard_imagery_url,
 };
 use cesium_engine::globe::tiles::vector;
 use std::sync::Arc;
@@ -283,7 +283,7 @@ impl CesiumViewerBuilder {
     /// Consume the builder and produce a `CesiumViewer`.
     pub fn build(self) -> CesiumViewer {
         let base_imagery_url = match self.map_style {
-            MapStyle::Standard => STANDARD_IMAGERY_URL.to_string(),
+            MapStyle::Standard => standard_imagery_url(),
             MapStyle::SatelliteTerrain => SATELLITE_IMAGERY_URL.to_string(),
             // In offline mode the URL is unused — SVG tiles are rasterized locally.
             MapStyle::Offline => String::new(),
@@ -484,7 +484,7 @@ impl ViewerHandle {
         match style {
             MapStyle::Standard => {
                 let _ = self.tx.try_send(ViewerCommand::MapSetImageryUrl {
-                    url: STANDARD_IMAGERY_URL.to_string(),
+                    url: standard_imagery_url(),
                     max_level: STANDARD_IMAGERY_MAX_LEVEL,
                 });
                 let _ = self.tx.try_send(ViewerCommand::TerrainSetEnabled(false));

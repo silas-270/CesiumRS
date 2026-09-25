@@ -180,7 +180,7 @@ impl<'a> App<'a> {
                     // Determine which of the three styles is currently active.
                     use crate::globe::tiles::config::{
                         TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL, SATELLITE_IMAGERY_MAX_LEVEL,
-                        SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_MAX_LEVEL, STANDARD_IMAGERY_URL,
+                        SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_MAX_LEVEL, standard_imagery_url,
                     };
                     #[derive(PartialEq, Clone, Copy)]
                     enum StyleSel { Standard, Satellite, Offline }
@@ -198,7 +198,7 @@ impl<'a> App<'a> {
                     let mut sel = sel;
 
                     if ui.radio_value(&mut sel, StyleSel::Standard, "Standard").changed() {
-                        state.set_base_imagery_url(STANDARD_IMAGERY_URL.to_string(), STANDARD_IMAGERY_MAX_LEVEL);
+                        state.set_base_imagery_url(standard_imagery_url(), STANDARD_IMAGERY_MAX_LEVEL);
                         state.set_terrain_enabled(false);
                     }
                     if ui.radio_value(&mut sel, StyleSel::Satellite, "Satellite + Terrain").changed() {
