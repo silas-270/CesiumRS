@@ -15,7 +15,7 @@
 # nonsense percentiles.
 set -uo pipefail
 
-PKG="com.example.focusflight"
+PKG="com.silas270.blocktime"
 DURATION_S="${1:-600}"
 INTERVAL_S="${2:-20}"
 OUT="$(dirname "$0")/soak_$(date +%H%M%S)"
@@ -38,7 +38,7 @@ PROBE=${PROBE:-0}
 if [ "$PROBE" -lt 10 ]; then
   echo
   echo "ABORT: only $PROBE frames in 5s — the app is not rendering."
-  echo "Open Focusflight, start a flight, put it in the view you want measured,"
+  echo "Open Blocktime, start a flight, put it in the view you want measured,"
   echo "leave it in the foreground with the screen on, then re-run this."
   exit 1
 fi

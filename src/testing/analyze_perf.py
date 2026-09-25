@@ -8,7 +8,7 @@ harnesses — that alone answers "which subsystem, what % of the frame, is it a
 spike" without needing any device-specific tooling. A captured Perfetto trace
 and/or a memory-sample log are optional, best-effort inputs: this script tries
 `trace_processor_shell`/parses the log if given, but a missing tool or file is
-a warning, not a failure — see `tools/run_perf_scenario.sh` at the Focusflight
+a warning, not a failure — see `tools/run_perf_scenario.sh` at the Blocktime
 repo root for how these three inputs get produced from an on-device run.
 
 Usage:

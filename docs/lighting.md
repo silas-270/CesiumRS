@@ -5,7 +5,7 @@ is**. There is no clock anywhere in it.
 
 ## Why it works that way
 
-CesiumRS renders for **FocusFlight**, a productivity app. A session runs for hours in the
+CesiumRS renders for **Blocktime**, a productivity app. A session runs for hours in the
 background, which rules out shadow maps, per-pixel scattering and any full-screen post
 pass — all the power, for an effect nobody is looking directly at.
 

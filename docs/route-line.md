@@ -13,7 +13,7 @@ The polyline drawn along the flight's ground track, and the three ways it can be
 
 Showing the whole route from the first second of a long-haul flight both gives the route
 away and fills the screen with a line that is nowhere near the aircraft, which is at odds
-with what FocusFlight is for.
+with what Blocktime is for.
 
 The two distances are set by the Android side and are not exposed to the end user — they
 cross the FFI as parameters so a change of taste does not need a new engine build.

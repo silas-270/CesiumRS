@@ -41,7 +41,7 @@ pub static PENDING_CAMERA_RESTORE: Mutex<
 
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetPendingFlight(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetPendingFlight(
     mut _env: JNIEnv,
     _cls: JClass,
     dep_lon: jdouble,
@@ -60,7 +60,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetProgress(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetProgress(
     mut _env: JNIEnv,
     _cls: JClass,
     progress: jdouble,
@@ -78,7 +78,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 /// often — but they cross here rather than being fixed in Rust so that a change of taste
 /// does not need a new engine build.
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRouteLineMode(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetRouteLineMode(
     mut _env: JNIEnv,
     _cls: JClass,
     mode: jint,
@@ -100,7 +100,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetCameraMode(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetCameraMode(
     mut _env: JNIEnv,
     _cls: JClass,
     mode: jint,
@@ -116,7 +116,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetMapStyle(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetMapStyle(
     mut _env: JNIEnv,
     _cls: JClass,
     style: jint,
@@ -140,7 +140,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 /// the `.so`. It rebuilds the height manager in place, and E2 then rebuilds the flat
 /// meshes already on the card, four per frame.
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetTerrainEnabled(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetTerrainEnabled(
     mut _env: JNIEnv,
     _cls: JClass,
     enabled: jboolean,
@@ -153,7 +153,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 pub static CURRENT_TELEMETRY: Mutex<Option<std::sync::Arc<std::sync::Mutex<Option<cesium_flight::tracker::FlightTelemetry>>>>> = Mutex::new(None);
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeGetTelemetry(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeGetTelemetry(
     env: JNIEnv,
     _cls: JClass,
 ) -> jni::sys::jdoubleArray {
@@ -179,7 +179,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 /// backgrounded and resumed. `[mode (0=Free/1=Tracking/2=Cockpit), pos.x, pos.y, pos.z, ori.x,
 /// ori.y, ori.z, ori.w]`, mirroring `nativeGetTelemetry`'s shape. All zeros if unavailable.
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeGetCameraPose(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeGetCameraPose(
     env: JNIEnv,
     _cls: JClass,
 ) -> jni::sys::jdoubleArray {
@@ -218,7 +218,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 /// switch or a freshly loaded flight). Call `nativeSetCameraMode` first so the mode itself is
 /// already correct when this lands. A no-op for a brand-new flight, which simply never calls it.
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetCameraPose(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetCameraPose(
     mut _env: JNIEnv,
     _cls: JClass,
     x: jdouble,
@@ -237,7 +237,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRenderingEnabled(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetRenderingEnabled(
     mut _env: JNIEnv,
     _cls: JClass,
     enabled: jni::sys::jboolean,
@@ -246,7 +246,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetSuspended(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetSuspended(
     mut _env: JNIEnv,
     _cls: JClass,
     suspended: jni::sys::jboolean,
@@ -265,7 +265,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeDestroyEngine(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeDestroyEngine(
     mut _env: JNIEnv,
     _cls: JClass,
 ) {
@@ -277,7 +277,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeLoadPendingFlight(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeLoadPendingFlight(
     mut _env: JNIEnv,
     _cls: JClass,
 ) {
@@ -314,7 +314,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 /// `--features perf_trace`; never present in a shipped release `.so`.
 #[cfg(feature = "perf_trace")]
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeRunPerfScenario(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeRunPerfScenario(
     mut _env: JNIEnv,
     _cls: JClass,
     scenario_id: jint,
@@ -335,7 +335,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 /// elevation will visibly float over the sea-level sphere. That is the plan being
 /// right and the surface being absent — see `FlightPlanConfig::terrain_elevation`.
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetFieldElevations(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetFieldElevations(
     mut _env: JNIEnv,
     _cls: JClass,
     dep_elevation_m: jdouble,
@@ -345,7 +345,7 @@ pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBri
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_example_focusflight_engine_live_CesiumLiveJniBridge_nativeSetRunways(
+pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetRunways(
     mut env: JNIEnv,
     _cls: JClass,
     airport_ids: jni::objects::JIntArray,

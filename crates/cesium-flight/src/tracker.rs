@@ -382,7 +382,7 @@ pub struct FlightTrackerApp {
     /// How much of the route line is drawn. Applies to every loaded flight at once.
     pub route_line_mode: crate::flight_handle::RouteLineMode,
     /// Window extents the debug panel last set, in nautical miles, kept so the numbers
-    /// survive a trip through Full or Hidden. FocusFlight sets its own over the FFI and
+    /// survive a trip through Full or Hidden. Blocktime sets its own over the FFI and
     /// never sees these.
     #[cfg(feature = "debug_panel")]
     debug_route_window_nm: (f64, f64),
