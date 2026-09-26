@@ -8,8 +8,8 @@
 ///
 /// # Why f64 and not f32
 ///
-/// `docs/culling-math.md` §11.3 item 5 offers "leave it f32" as a conservative
-/// fallback, on the grounds that the mesh and the quadtree both called the f32
+/// An f32 version looks like a safe fallback (`docs/culling-math.md` §11.3 item 5,
+/// §12.3), on the grounds that the mesh and the quadtree both called the f32
 /// version and had to move together. They no longer have separate call sites:
 /// [`tile_bounds`] is the one source, so there is nothing left to get out of step.
 ///

@@ -219,7 +219,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let key_color = camera.light_color.rgb;
     let key_strength = camera.light_color.a;
 
-    let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
+    let night_key = 1.0 - smoothstep(-0.22, -0.02, camera.sun_dir.w);
     let n_dot_l_sun = max(dot(normal, camera.sun_dir.xyz), 0.0);
     let n_dot_l_moon = max(dot(normal, camera.moon_dir.xyz), 0.0);
     let from_sun = n_dot_l_sun * (1.0 - night_key);

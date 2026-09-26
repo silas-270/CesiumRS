@@ -14,14 +14,11 @@
 //! model it was converted from. The mesh walk in `model_pipeline` only emits geometry for
 //! nodes that have a mesh, so they cost nothing. They are worth keeping: they are exact
 //! positions to hang real nav, strobe and landing lights off later.
-//!
-//! The mesh this replaced, `A350.glb`, is still in the repository and nothing references
-//! it. It is kept deliberately, as something to fall back to.
 
 use cesium_engine::render::model_pipeline::pipeline::{ModelOptions, ModelRenderer};
 
 /// The model, baked into the binary.
-const GLB: &[u8] = include_bytes!("../../../A350-1000.glb");
+const GLB: &[u8] = include_bytes!("../../../assets/A350-1000.glb");
 
 /// Yaw applied to turn the model's +Z nose into the aircraft frame's forward axis.
 pub const YAW_CORRECTION: f32 = std::f32::consts::PI;
@@ -31,8 +28,8 @@ pub const YAW_CORRECTION: f32 = std::f32::consts::PI;
 ///
 /// The mesh's own origin is not this point, and the difference is not cosmetic: it is
 /// the pivot, so getting it wrong swings the whole airframe around during a turn. These
-/// numbers place the origin at the same fraction of the bounding box as the A350.glb this
-/// model replaces (50.0% across the span, 21.5% up, 55.8% of the way from tail to nose),
+/// numbers place the origin at the same fraction of the bounding box as the earlier A350
+/// mesh this model replaced (50.0% across the span, 21.5% up, 55.8% of the way from tail to nose),
 /// so the aircraft keeps rotating about the same point on its own body as before.
 const ORIGIN_OFFSET_M: [f32; 3] = [0.0, -0.235_659, 2.876_352];
 

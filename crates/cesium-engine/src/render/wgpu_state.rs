@@ -27,10 +27,10 @@ pub struct FrameTimings {
 pub struct SubsystemTimings {
     pub extension_update_us: f64,
     pub quadtree_us: f64,
-    /// **D3's march alone** — `QuadtreeManager::refresh_terrain_horizon`, once per frame.
+    /// **Terrain occlusion march alone** — `QuadtreeManager::refresh_terrain_horizon`, once per frame.
     ///
-    /// Split out of `quadtree_us` because the whole of `docs/terrain-plan.md` §7's
-    /// argument turns on how the stage's cost divides between the once-per-frame march
+    /// Split out of `quadtree_us` because the terrain-occlusion trade-off turns
+    /// on how the stage's cost divides between the once-per-frame march
     /// and the per-node test inside `update`, and a single quadtree number cannot say.
     /// Always zero on the flat arm, where the call is not made at all.
     pub terrain_horizon_us: f64,
@@ -76,7 +76,7 @@ pub struct WgpuState<'a> {
     pub debug_camera_initialized: bool,
     pub last_requested_tiles_count: usize,
     pub last_missing_tiles_count: usize,
-    /// **Phase E2** — meshes queued for *rebuild* last frame because better height data
+    /// Meshes queued for *rebuild* last frame because better height data
     /// arrived, capped at
     /// [`MESH_REBUILD_BUDGET_PER_FRAME`](crate::globe::tiles::system::MESH_REBUILD_BUDGET_PER_FRAME).
     ///
@@ -281,22 +281,27 @@ impl<'a> WgpuState<'a> {
             adapter_info.driver
         );
 
-        let mut required_features = gpu_timing_features(&adapter);
+        // The globe, model and polyline pipelines pass their per-draw data as a 128-byte
+        // push-constant block, so the engine cannot run without it. Vulkan, Metal and DX12
+        // all provide it; some GLES drivers do not. Failing here names the cause, where
+        // letting device creation succeed would only fail later, at pipeline creation.
+        const PUSH_CONSTANT_BYTES: u32 = 128;
+        assert!(
+            adapter.features().contains(wgpu::Features::PUSH_CONSTANTS)
+                && adapter.limits().max_push_constant_size >= PUSH_CONSTANT_BYTES,
+            "GPU adapter '{}' ({:?}) does not support {PUSH_CONSTANT_BYTES}-byte push constants, \
+             which CesiumRS requires",
+            adapter_info.name,
+            adapter_info.backend
+        );
+
+        let mut required_features = gpu_timing_features(&adapter) | wgpu::Features::PUSH_CONSTANTS;
         if adapter.features().contains(wgpu::Features::POLYGON_MODE_LINE) {
             required_features |= wgpu::Features::POLYGON_MODE_LINE;
         }
-        if adapter.features().contains(wgpu::Features::PUSH_CONSTANTS) {
-            required_features |= wgpu::Features::PUSH_CONSTANTS;
-        }
-
-        let max_push_constant_size = if adapter.features().contains(wgpu::Features::PUSH_CONSTANTS) {
-            128
-        } else {
-            0
-        };
 
         let required_limits = wgpu::Limits {
-            max_push_constant_size,
+            max_push_constant_size: PUSH_CONSTANT_BYTES,
             ..adapter.limits()
         };
 
@@ -314,13 +319,16 @@ impl<'a> WgpuState<'a> {
         {
             Ok(pair) => pair,
             Err(e) => {
-                log::warn!("First request_device failed ({:?}), retrying with adapter limits and minimal features", e);
+                log::warn!("First request_device failed ({:?}), retrying with adapter limits and only the required features", e);
                 adapter
                     .request_device(
                         &wgpu::DeviceDescriptor {
                             label: None,
-                            required_features: wgpu::Features::empty(),
-                            required_limits: adapter.limits(),
+                            required_features: wgpu::Features::PUSH_CONSTANTS,
+                            required_limits: wgpu::Limits {
+                                max_push_constant_size: PUSH_CONSTANT_BYTES,
+                                ..adapter.limits()
+                            },
                             memory_hints: wgpu::MemoryHints::default(),
                         },
                         None,
@@ -525,22 +533,22 @@ impl<'a> WgpuState<'a> {
             #[cfg(feature = "debug_panel")]
             egui_renderer,
             quadtree_manager: {
-                // Phase D1: which *surface model* the tree runs over is decided here
+                // Which *surface model* the tree runs over is decided here
                 // and only here — one match at the manager boundary rather than a
                 // branch per node. See `globe::quadtree::any`.
                 //
-                // Phase D3: the terrain arm additionally runs `Stage::TerrainOcclusion`
+                // The terrain arm additionally runs `Stage::TerrainOcclusion`
                 // (`CullPipeline::TERRAIN_DEFAULT`), which is sound and therefore lives
                 // in the terrain *default* rather than being bolted on for production
                 // only — see `globe::quadtree::terrain_occlusion`.
                 //
-                // **E1c**: production used to run `DEFAULT_WITH_FOG` / its terrain twin
+                // Production used to run `DEFAULT_WITH_FOG` / its terrain twin
                 // here, whose extra `Stage::Fog` was the fourth of four stages behind two
                 // that settle every node — so it never executed. Measured (204 bench poses
                 // plus ten real-terrain ones): making it reachable culled **zero** tiles at
                 // every camera, because fog saturates further out than the horizon does at
                 // every altitude. The stage is gone; what fog actually does to the tree is
-                // `apply_lod`'s relaxation, which is untouched. `docs/terrain-plan.md` §8.
+                // `apply_lod`'s relaxation, which is untouched.
                 let terrain = tile_system.config.terrain.enabled;
                 let mut qt = AnyQuadtree::for_terrain(terrain);
                 qt.set_pipeline(if terrain && tile_system.config.terrain.occlusion.enabled {
@@ -595,7 +603,7 @@ impl<'a> WgpuState<'a> {
     ///
     /// [`lod_factor_for`] itself is deliberately left untouched — its own doc comment
     /// forbids it: `target_texel_ratio`'s default is calibrated to reproduce a hard-coded
-    /// `2.0` at a specific physical viewport, and the WP1 LOD harness's 204-pose CSVs are
+    /// `2.0` at a specific physical viewport, and the LOD harness's 204-pose CSVs are
     /// pinned to that calibration byte for byte. Dividing by `scale_factor` here instead of
     /// there keeps that calibration intact: the harness constructs `WgpuState` headless
     /// (`self.window` is `None`), so this returns `self.size.height` unchanged for it, and
@@ -780,7 +788,7 @@ impl<'a> WgpuState<'a> {
                 index_buffer,
                 num_indices: mesh.indices.len() as u32,
                 center_f64: mesh.center_f64,
-                // E2: the entry remembers which height tile it was built from, so
+                // The entry remembers which height tile it was built from, so
                 // the next frame can ask whether better data has landed since. A
                 // rebuild arrives here exactly like a first build and `put`
                 // replaces the old entry — the previous mesh is drawn until the
@@ -843,7 +851,7 @@ impl<'a> WgpuState<'a> {
         self.tile_cache.begin_frame();
         let (camera_pos_dvec3, _) = self.camera.global_transform_f64();
 
-        // Phase E3.2 (`docs/terrain-plan.md` §8): one height sample under the camera per
+        // One height sample under the camera per
         // frame, before anything reads the camera's clearance. `ground_height_at` is
         // `None` with terrain off — no cache, no manager, no query — so on the flat path
         // this is one `Option` field written to `None` and `Camera::altitude_agl` stays
@@ -982,7 +990,7 @@ impl<'a> WgpuState<'a> {
         let frustum_obj = crate::globe::quadtree::Frustum::planes_only(frustum, camera_pos_dvec)
             .with_corners(self.camera.frustum_corners_relative(aspect_ratio));
 
-        // Hoisted above the quadtree block (WP5): both the fog density below and
+        // Hoisted above the quadtree block: both the fog density below and
         // the label zoom bucket further down need it, and it is one cheap call
         // either way.
         let altitude = self.camera.altitude();
@@ -996,9 +1004,9 @@ impl<'a> WgpuState<'a> {
             // invalidate. `self.camera`, never `debug_camera`: see the comment at the
             // top of this function. `texture_manager.current_texture_size_px()` is
             // the real decoded tile size once the current style's first tile has
-            // arrived (WP4/A, `docs/pre-terrain-plan.md`) — `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`
+            // arrived — `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`
             // only before that, or if imagery is disabled.
-            // WP5: fog density from camera altitude alone, the third argument below,
+            // Fog density from camera altitude alone, the third argument below,
             // recomputed fresh every frame like `lod_factor`. `altitude` is megameters
             // (this engine's world frame); `fog_density_for` takes metres — see
             // `globe::quadtree::fog`'s module doc comment's Units section.
@@ -1006,7 +1014,7 @@ impl<'a> WgpuState<'a> {
             // `imagery_lod_height_px()` divides `self.size.height` by the window's
             // `scale_factor` before it reaches `lod_factor_for` — see that method's doc
             // comment for why. `lod_factor_for` itself is untouched (its calibration and
-            // the WP1 harness's pinned CSVs stay bit-identical: the harness runs headless,
+            // the harness's pinned CSVs stay bit-identical: the harness runs headless,
             // `self.window` is `None` there, and the divisor is `1.0` whenever it is).
             self.quadtree_manager.set_frame_params(
                 crate::globe::quadtree::lod_factor_for(
@@ -1021,7 +1029,7 @@ impl<'a> WgpuState<'a> {
                     &self.tile_system.config.fog,
                 ),
             );
-            // E1: the geometric half of the LOD threshold, derived from the same viewport
+            // The geometric half of the LOD threshold, derived from the same viewport
             // and field of view as `lod_factor` above and applied only on the terrain arm.
             // Texture size and `target_texel_ratio` are deliberately absent — the shape of
             // the ground does not depend on which imagery style is loaded.
@@ -1039,7 +1047,7 @@ impl<'a> WgpuState<'a> {
                     0.0
                 },
             );
-            // Phase D1: tighten every node's height interval from whatever has landed
+            // Tighten every node's height interval from whatever has landed
             // in the height cache since the last frame, *before* culling against it.
             // A no-op on the flat arm. See `AnyQuadtree::refresh_height_bounds`.
             self.quadtree_manager.refresh_height_bounds(
@@ -1048,7 +1056,7 @@ impl<'a> WgpuState<'a> {
                 self.tile_system.config.terrain.exaggeration,
                 self.tile_system.config.terrain.detail_max_z,
             );
-            // Phase D3: build this frame's occlusion march from the tree the bounds pass
+            // Build this frame's occlusion march from the tree the bounds pass
             // has just tightened, then cull against it. A no-op on the flat arm, and
             // gated on camera altitude inside `TerrainHorizon::begin` — see
             // `globe::quadtree::terrain_occlusion`.
@@ -1075,7 +1083,7 @@ impl<'a> WgpuState<'a> {
         {
             let _span = crate::core::trace::ScopedTrace::new("cesium.update.label_manager");
             let label_start = Instant::now();
-            // Phase E3.4: the ground the labels stand on. `None` unless terrain is on,
+            // The ground the labels stand on. `None` unless terrain is on,
             // so the flat path builds no `&dyn` and the lift branch inside is never
             // taken — the label pass runs the code it always ran.
             let ground: Option<&dyn crate::label::GroundHeights> =
@@ -1191,7 +1199,7 @@ impl<'a> WgpuState<'a> {
             }
         }
 
-        // **Phase E2** (`docs/terrain-plan.md` §8): a mesh is no longer a pure function
+        // A mesh is no longer a pure function
         // of its `TileId`, so this pass has to collect the *stale* as well as the
         // missing. Stale means the height tile the mesh was built from has since been
         // bettered — see `tiles::system::fresher_height_source` for the one case in
@@ -1204,7 +1212,7 @@ impl<'a> WgpuState<'a> {
         //
         // With terrain off `select_mesh_rebuilds` returns before it reads anything, so
         // this is one `Option` test and an empty `Vec` on the flat path, and
-        // `missing_meshes` is bit-for-bit the list it was before E2.
+        // `missing_meshes` is bit-for-bit the list it was previously.
         self.last_mesh_rebuilds = 0;
         if self.tile_system.has_terrain() {
             let drawn: Vec<(TileId, Vec3, Option<TileId>)> = renderable_tiles
@@ -1567,7 +1575,7 @@ impl<'a> WgpuState<'a> {
             render_pass.set_bind_group(2, &self.sky_lut.bind_group, &[]);
 
             // Draw front-to-back: `visible_tiles` is the ordered (near-to-far,
-            // per WP2b's `QuadtreeNode::reorder_children_near_to_far`) list for
+            // per `QuadtreeNode::reorder_children_near_to_far`) list for
             // this frame, so walk it first and look each tile up in
             // display_state. But display_state can also hold tiles that just
             // left the visible set and are still inside their 200 ms grace

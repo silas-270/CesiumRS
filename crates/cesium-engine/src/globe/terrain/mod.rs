@@ -1,24 +1,24 @@
-//! Terrain — Phases B, C and D1/D2 of `docs/terrain-plan.md` §5, §6 and §7.
+//! Terrain: height data, relief meshes and height-aware culling.
 //!
-//! Height tiles are fetched, decoded, cached and queried here (B), turned into the mesh
-//! inputs a tile with relief is built from (C), and turned into the altitude interval and
-//! bounding sphere the quadtree culls against (D1, D2).
+//! Height tiles are fetched, decoded, cached and queried here, turned into the mesh
+//! inputs a tile with relief is built from, and turned into the altitude interval and
+//! bounding sphere the quadtree culls against.
 //!
-//! The occlusion march of §3.3 — culling tiles hidden behind mountains — is **D3**, and it
+//! The occlusion march of §3.3 — culling tiles hidden behind mountains — is terrain occlusion, and it
 //! lives in [`crate::globe::quadtree::terrain_occlusion`] rather than here: its occluders
 //! are the quadtree's own node floors ([`HeightBounds::floor_grid`]), so it needs nothing
 //! from this module but that one number per node.
-//! [`crate::globe::tiles::config::TerrainConfig::enabled`] is still `false` — that flip is
-//! Phase F's, after the on-device measurements.
+//! Whether terrain is on by default is decided per platform by
+//! [`crate::globe::tiles::config::TERRAIN_ENABLED_BY_DEFAULT`].
 //!
 //! - [`height_tile`] — the Terrarium decoder, the 256x256 `i16` sample grid, and the
 //!   16x16 min/max mip. Metres.
 //! - [`height_cache`] — the fetcher, the LRU, and `height_at` with ancestor
 //!   upsampling. Megametres at its boundary.
 //! - [`heightfield`] — the `Heightfield` surface model that finally consumes all of it:
-//!   the pre-sampled `HeightPatch` the mesh builder takes as its input (C), and the
+//!   the pre-sampled `HeightPatch` the mesh builder takes as its input, and the
 //!   `HeightBounds` interval plus the scaled-space bounding sphere the culler takes as
-//!   its input (D1, D2). Still behind `TerrainConfig::enabled`, which is still `false`.
+//!   its input. Still behind `TerrainConfig::enabled`, which is still `false`.
 
 pub mod corridor;
 pub mod height_cache;

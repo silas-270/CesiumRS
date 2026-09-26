@@ -1,9 +1,9 @@
 //! **The pre-check question**: can something a thousand times cheaper than the march
 //! decide, before the march runs, whether the march is going to remove anything?
 //!
-//! `docs/terrain-plan.md` §7f measured D3 against the frame and found the shape of the
+//! Measuring terrain occlusion against the frame found the shape of the
 //! answer: at six poses the stage removes twenty tiles at **one** of them and nothing at
-//! four others, while charging 300–500 µs at all five that clear the altitude gate. §7f
+//! four others, while charging 300–500 µs at all five that clear the altitude gate. The analysis
 //! names the discriminator it could not build — "**relief in view, not height above
 //! ground**" — and records that the quantity is the one the march itself computes, which
 //! is why it stayed a note.
@@ -14,10 +14,10 @@
 //!    six poses. Twenty-nine poses in six families — valley-under-a-wall, on a ridge,
 //!    terrain step, plain, coast, and the altitude band above the gate — each one placed
 //!    over the **DEM's** ground rather than over a number, with its heading measured off
-//!    the built camera ([`terrain_relief_poses_are_where_they_say`], and §7c's and §7f's
-//!    pose traps are why it comes first).
+//!    the built camera ([`terrain_relief_poses_are_where_they_say`], avoiding earlier
+//!    pose traps).
 //!
-//! 2. **Measures what D3 removes at each of them**, with both altitude gates opened, so
+//! 2. **Measures what terrain occlusion removes at each of them**, with both altitude gates opened, so
 //!    the raw benefit is visible rather than hidden behind the gate that is already
 //!    shipped. The instrument is `test_terrain_step::settle` — the production
 //!    [`Fill::Visible`] height policy, the renderer's own LOD factors, no GPU needed.
@@ -30,7 +30,7 @@
 //!    |---|---|---|
 //!    | `hi_above_eye_m` | `max(node.hi) − eye`, metres | relief as a **height** — the obvious one |
 //!    | `relief_hi_deg` | `max elev(near, node.hi)` | relief as an **angle**, i.e. height weighted by distance |
-//!    | `relief_floor_deg` | `max elev(near, max(floor_grid))` | the same angle off what D1 can **prove** is there — the quantity the march would stamp |
+//!    | `relief_floor_deg` | `max elev(near, max(floor_grid))` | the same angle off what height-aware bounds can **prove** is there — the quantity the march would stamp |
 //!    | `shadowed` | drawn tiles further out than that wall whose box top is under it | a **one-number march**: how many tiles could possibly fall in the shadow |
 //!
 //! Only visible leaves are walked, so the cost is the visible set (59–170 nodes) and not
@@ -71,17 +71,17 @@ const FRAMES: usize = 6;
 /// statistic that separates within one family and not across them is overfitted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Family {
-    /// A valley floor under a kilometre-scale wall — the one shape §7f found D3 pays at.
+    /// A valley floor under a kilometre-scale wall — the one shape where terrain occlusion pays.
     Valley,
     /// The camera standing on the ridge instead of under it.
     Ridge,
-    /// One step, then flat ground behind it — §7d's shape.
+    /// One step, then flat ground behind it — the terrain step shape.
     Step,
     /// Low relief in every direction.
     Plain,
     /// Water in front, land behind or beside.
     Coast,
-    /// Relief below, but the camera is well above the ground — §7f's freeloaders.
+    /// Relief below, but the camera is well above the ground.
     Above,
 }
 
@@ -104,8 +104,8 @@ impl ReliefPose {
     /// The `ViewParams` this pose becomes.
     ///
     /// `yaw_deg: -bearing` — `ViewParams::yaw_deg` is composed about the **nadir**-aligned
-    /// view axis, so a rotation of `+yaw` about `−up` is `−yaw` about `+up`. That is
-    /// §7d's first pose trap and [`terrain_relief_poses_are_where_they_say`] measures the
+    /// view axis, so a rotation of `+yaw` about `−up` is `−yaw` about `+up`.
+    /// [`terrain_relief_poses_are_where_they_say`] measures the
     /// heading off the built camera rather than trusting this line.
     fn view(&self, ground_m: f64) -> ViewParams {
         ViewParams {
@@ -125,7 +125,7 @@ impl ReliefPose {
 
 /// **The family**, and it is deliberately wider than the question.
 ///
-/// §7f's six poses are all in it (`inn_valley_300`, `alps_ridge_tuxer`,
+/// The earlier six poses are all in it (`inn_valley_300`, `alps_ridge_tuxer`,
 /// `reutlingen_albtrauf`, `stuttgart_kessel`, `alps_above_600`, `alps_cruise_9km` are the
 /// same places at the same AGLs), and twenty-three more are around them. The point of the
 /// extra ones is not coverage for its own sake: a pre-check that only has to separate
@@ -134,7 +134,7 @@ impl ReliefPose {
 pub(crate) fn relief_poses() -> Vec<ReliefPose> {
     use Family::*;
     vec![
-        // ── valley under a wall — where §7f says D3 pays ──────────────────────────
+        // ── valley under a wall — where terrain occlusion pays ──────────────────
         ReliefPose {
             name: "inn_valley_300",
             lon: 11.40,
@@ -498,7 +498,7 @@ pub(crate) struct Stats {
     /// `max elev(near, node.hi)`, degrees — relief as an **angle**, which is the same
     /// height with the distance divided back out.
     pub(crate) relief_hi_deg: f64,
-    /// The same, off `max(floor_grid)` instead of `hi`: what D1 can *prove* stands there,
+    /// The same, off `max(floor_grid)` instead of `hi`: what height-aware bounds can *prove* stands there,
     /// i.e. the altitude the march would actually stamp.
     pub(crate) relief_floor_deg: f64,
     /// Ground range of the node `relief_floor_deg` was taken at, metres.
@@ -526,7 +526,7 @@ struct Leaf {
     elev_hi_deg: f64,
     /// The same, to the highest of its sixteen provable sub-cell floors.
     elev_floor_deg: f64,
-    /// Upper bound on the elevation angle of every point of the node's D1 box — exactly
+    /// Upper bound on the elevation angle of every point of the node's height-aware box — exactly
     /// what `TerrainHorizon::occludes` tests, degrees.
     theta_box_deg: f64,
     hi_m: f64,
@@ -668,7 +668,7 @@ pub(crate) fn stats_of(
 fn gates_open() -> TerrainOcclusionConfig {
     TerrainOcclusionConfig {
         enabled: true,
-        // **Both gates opened on purpose.** The question here is what D3 removes, not
+        // **Both gates opened on purpose.** The question here is what terrain occlusion removes, not
         // what the shipped gate lets it try to remove; a pose the AGL gate already shuts
         // off would otherwise read a flat zero for a reason that has nothing to do with
         // the statistic under test.
@@ -786,12 +786,12 @@ const PROFILE_KM: [f64; 18] = [
     100.0,
 ];
 
-/// **The separation table.** What D3 removes at each pose, against what each candidate
+/// **The separation table.** What terrain occlusion removes at each pose, against what each candidate
 /// pre-check would have read before the march ran.
 ///
 /// Both altitude gates are opened, so the removal column is the stage's raw answer. The
-/// statistics are taken off the **D3-off** tree, because that is the tree a pre-check sees
-/// on the frame it has to decide on — and off the D3-on tree as well, because in
+/// statistics are taken off the **occlusion-off** tree, because that is the tree a pre-check sees
+/// on the frame it has to decide on — and off the occlusion-on tree as well, because in
 /// production the previous frame's visible set is the culled one and a pre-check that
 /// reads differently on the two would oscillate.
 #[test]
@@ -893,12 +893,12 @@ fn terrain_relief_statistic_separates_the_family() {
 
 /// **The pre-check can only ever remove culls, and here is the whole set it removed.**
 ///
-/// The soundness argument is one line — not marching is not culling, and D1+D2 is the arm
-/// the culling gate proves independently — but §7's rule is that a bound is measured
+/// The soundness argument is one line — not marching is not culling, and height-aware bounds plus the relief-aware horizon test is the arm
+/// the culling gate proves independently — but the rule is that a bound is measured
 /// rather than assumed, so this measures it.
 ///
 /// One settled tree per pose, then **two marches on that same tree**: one with the
-/// pre-check disabled (`min_relief_deg = −∞`, i.e. exactly §7f's engine) and one with it
+/// pre-check disabled (`min_relief_deg = −∞`) and one with it
 /// at its shipped threshold. Every node in the tree is then offered to both horizons, and
 /// the claim is set inclusion:
 ///

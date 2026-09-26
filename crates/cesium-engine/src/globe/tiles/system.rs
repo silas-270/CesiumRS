@@ -14,7 +14,7 @@ pub struct RenderData<'a> {
     pub uv_scale_offset: [f32; 4],
 }
 
-/// **Phase E2** (`docs/terrain-plan.md` §8) — how many meshes may be rebuilt in one
+/// How many meshes may be rebuilt in one
 /// frame, at most.
 ///
 /// The cap exists because the rebuild path has no natural back-pressure of its own:
@@ -41,7 +41,7 @@ pub struct RenderData<'a> {
 ///
 /// **So the arithmetic is not what binds, and saying so is the honest reading of the
 /// table.** A full budget costs 0.19 % of a frame at the shipped density and 2 % at the
-/// density §6 C4 measured as the outer option, and a budget of forty would still fit.
+/// density measured as the outer option, and a budget of forty would still fit.
 /// What sets the number is the *visual* argument: a rebuild is the ground under one
 /// tile changing shape, and geometry is less forgiving than texture — a texture swap is
 /// a blur, a mesh swap is the ground moving. Four tiles rippling over successive frames
@@ -63,7 +63,7 @@ pub const MESH_REBUILD_BUDGET_PER_FRAME: usize = 32;
 /// The height source `id`'s mesh *should* have been built from, if that is strictly
 /// better than the one it *was* built from — otherwise `None`.
 ///
-/// This is E2's staleness test, and it is deliberately the same predicate pair the
+/// This is the staleness test, and it is deliberately the same predicate pair the
 /// mesh builder itself runs: [`HeightTileManager::status_of`] for "is a build allowed
 /// at all" and [`HeightTileManager::resolve_source`] for "which tile would answer".
 /// Asking a different question here than [`HeightPatch::sample`] asks would let a
@@ -84,17 +84,17 @@ pub const MESH_REBUILD_BUDGET_PER_FRAME: usize = 32;
 /// raises `height_source.z`, which is bounded by
 /// [`TerrainConfig::max_level`](crate::globe::tiles::config::TerrainConfig::max_level),
 /// so a tile can be rebuilt at most that many times before no further rebuild can be
-/// offered. There is no oscillation to damp, which is why E2 needs no grace period of
+/// offered. There is no oscillation to damp, which is why rebuild logic needs no grace period of
 /// the kind `display_state`'s 200 ms serves: that timer exists to absorb a set that
 /// flips back and forth, and this one cannot flip back.
 ///
-/// # How rare this is, and why that is a Phase C result rather than an E2 gap
+/// # How rare this is, and why that is an earlier result rather than a gap
 ///
-/// Phase C made `status_of` answer `Ready` only once `source_tile_for(id)` has
+/// `status_of` answers `Ready` only once `source_tile_for(id)` has
 /// arrived **or failed**. So the ordinary mesh is built from the deepest tile the
 /// source will ever serve for it, and nothing can improve on it — a camera descending
 /// five levels creates *new* nodes with no mesh, which is the `missing_meshes` path,
-/// not this one. What is left is the case Phase C explicitly deferred to here: a tile
+/// not this one. What is left is the deferred case: a tile
 /// whose own height fetch **failed**, so the mesh was built from an ancestor, and
 /// whose retry — the negative cache expires after
 /// `TileEngineConfig::negative_cache_duration` — later succeeds. That, plus switching
@@ -156,12 +156,12 @@ pub fn select_mesh_rebuilds(
 pub struct TileSystem {
     pub config: TileEngineConfig,
     pub texture_manager: TileTextureManager,
-    /// Height tiles — `Some` **only** while `config.terrain.enabled`
-    /// (`docs/terrain-plan.md` §5). `None` is the flat path, and on it nothing in this
+    /// Height tiles — `Some` **only** while `config.terrain.enabled`.
+    /// `None` is the flat path, and on it nothing in this
     /// file does any extra work at all: no cache, no fetcher, no request.
     ///
-    /// Phase C's mesh builder is its first real consumer — see the `missing_meshes`
-    /// loop in [`Self::update`]. No *cull* reads it yet; that is Phase D.
+    /// The mesh builder is its first real consumer — see the `missing_meshes`
+    /// loop in [`Self::update`].
     pub height_manager: Option<HeightTileManager>,
     pub mesh_worker: MeshWorkerPool,
     last_camera_pos: Option<Vec3>,
@@ -175,7 +175,7 @@ pub struct TileSystem {
     /// [`Self::want_ground_at`].
     ground_points: Vec<glam::DVec3>,
     /// Drawn tiles whose mesh was built from an ancestor's heights; their own height
-    /// tile is fetched so E2 can refine them. See [`Self::want_better_heights`].
+    /// tile is fetched so rebuild logic can refine them. See [`Self::want_better_heights`].
     better_heights: Vec<TileId>,
 }
 
@@ -329,7 +329,7 @@ impl TileSystem {
                     ) {
                         Ok(patch) => MeshBuild::Terrain(Box::new(patch)),
                         // Nothing resident at all yet: retry next frame. The
-                        // alternative — a flat mesh now — is the failure §5 B2 exists
+                        // alternative — a flat mesh now — is the failure this logic exists
                         // to prevent, because nothing would later mark it stale.
                         Err(PatchStatus::Pending) => continue,
                         // The whole ancestor chain failed. No data is coming, so the
@@ -447,7 +447,7 @@ impl TileSystem {
     }
 
     /// This frame's height wish list: the source tile of every mesh that is missing or
-    /// was built from an ancestor's data (E2 rebuilds it once its own source lands), and
+    /// was built from an ancestor's data (rebuilt once its own source lands), and
     /// the detailed tiles under the ground points collision will test.
     ///
     /// The set is stable while the view is: a tile stays on it until its mesh has been
@@ -575,7 +575,7 @@ impl TileSystem {
     }
 
     /// Height at `(u, v)` of `id` in **megametres**, or `None` when terrain is off or
-    /// no ancestor's data has arrived. Phase B's single query entry point; Phase C's
+    /// no ancestor's data has arrived. The single query entry point; the
     /// mesh builder is its first real caller.
     pub fn height_at(&mut self, id: TileId, u: f64, v: f64) -> Option<f64> {
         self.height_manager.as_mut()?.height_at(id, u, v)
@@ -584,7 +584,7 @@ impl TileSystem {
     /// Height of the **drawn** surface in megametres under an ECEF position, or `None`
     /// when terrain is off or no height data covering it has arrived.
     ///
-    /// Phase E3's entry point for the parts of the engine that used to assume the
+    /// The entry point for the parts of the engine that used to assume the
     /// surface was the ellipsoid — camera clearance, the collision floor, label
     /// placement. Unlike [`Self::height_at`] it takes `&self`, promotes nothing and
     /// enqueues nothing, so it is safe to call once per frame from the render path.
@@ -638,7 +638,7 @@ impl TileSystem {
 
     /// Drawn tiles whose mesh came from an ancestor's heights (`built_from` shallower
     /// than the tile's own source): their own height tile is requested next `update`,
-    /// so E2 can rebuild them from it.
+    /// so rebuild logic can rebuild them from it.
     pub fn want_better_heights(&mut self, drawn: &[(TileId, Vec3, Option<TileId>)]) {
         let Some(h) = self.height_manager.as_ref() else {
             return;
@@ -712,7 +712,7 @@ impl TileSystem {
         self.drawn.replace(drawn.copied());
     }
 
-    /// **Phase E2** — the meshes among `drawn` that a better height tile has outdated,
+    /// The meshes among `drawn` that a better height tile has outdated,
     /// at most [`MESH_REBUILD_BUDGET_PER_FRAME`] of them, nearest first.
     ///
     /// `drawn` is `(tile, its mesh's world centre, the height source that mesh was
@@ -767,9 +767,10 @@ impl TileSystem {
     }
 }
 
-/// Phase E3.4: the label pass asks the tile system where the ground is.
+/// The label pass asks the tile system where the ground is.
 ///
-/// The whole implementation is [`TileSystem::ground_height_at`] with the argument
+/// The whole implementation is [`TileSystem::drawn_ground_height_at`] — the surface as
+/// drawn, so a label sits on the mesh it is seen against — with the argument
 /// widened to f64 and the answer narrowed to f32 — labels are placed in the f32 world
 /// frame, where a megametre-scale position has ~0.4 m of resolution and a height
 /// carried in f64 would be thrown away by the addition anyway.

@@ -26,8 +26,8 @@
 //! vertex at altitude ≤ 0, which is a fact about [`Ellipsoid`] and **only** about it.
 //! A surface model with relief dispatches [`TilePatch::is_occluded`] to
 //! [`sphere_is_occluded`] instead — the scaled-space cone test (§3.7, Theorem 3.7),
-//! added in Phase D2 of `docs/terrain-plan.md`. [`point_is_occluded`] is that test's
-//! `ρ = 0` special case, and `test_theorem_37_reduces_to_the_point_test_at_zero_radius`
+//! added for terrain. [`point_is_occluded`] is that test's
+//! `ρ = 0` special case, and `theorem_37_reduces_to_the_point_test_at_zero_radius`
 //! in `testing::terrain::test_terrain_visibility` pins the two against each other.
 //!
 //! # Invariant I-4
@@ -143,7 +143,7 @@ pub fn point_is_occluded(cam: &HorizonCamera, p: DVec3) -> bool {
 }
 
 /// Conservative slack added to a bounding sphere's **scaled-space** radius before
-/// [`sphere_is_occluded`] tests it — Phase D2.
+/// [`sphere_is_occluded`] tests it.
 ///
 /// The counterpart of [`HORIZON_EPS_BOUNDS_RAD`] for the cone test, and applied the
 /// same way (I-6): growing `ρ` makes the sphere harder to prove occluded, never
@@ -222,7 +222,7 @@ impl ScaledSphere {
 /// The sound replacement for the surface-point collapse `q·c ≤ 1` once geometry
 /// leaves the surface: an elevated point can satisfy `q·c < 1` and still be visible
 /// over the limb, so [`span_is_occluded`] is a false-negative source at non-zero
-/// relief (§3.2 of `docs/terrain-plan.md`) and this is not.
+/// relief and this is not.
 ///
 /// ```text
 /// w = m − c ,  s = C² − m·c ,  h² = C² − 1
@@ -302,7 +302,7 @@ impl<S: SurfaceModel> TilePatch<S> {
     /// The rectangle's eight trig constants, plus whatever the surface model wants to
     /// carry alongside them.
     ///
-    /// `extra` is passed in rather than derived here because Phase D2's payload is a
+    /// `extra` is passed in rather than derived here because the relief-aware horizon test's payload is a
     /// bounding **sphere**, which is a property of the node's fitted box — a thing
     /// this constructor has no access to and should not acquire. `QuadtreeNode` fits
     /// the box first and hands the result to [`SurfaceModel::patch_extra`]; flat mode

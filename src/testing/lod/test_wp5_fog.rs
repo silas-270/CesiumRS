@@ -1,5 +1,5 @@
-//! WP5 (`docs/pre-terrain-plan.md`): measures what fog does to the WP4 baselines,
-//! then re-runs WP4/C's 3a-at-equal-budget comparison post-fog.
+//! Measures what fog does to the baselines,
+//! then re-runs the 3a-at-equal-budget comparison post-fog.
 //!
 //! Every measurement here goes through [`super::fog_sweep`], never
 //! [`super::sweep::measure_pose_with_config`] — see `fog_sweep`'s module doc
@@ -15,7 +15,7 @@ use super::sweep::{bench_poses, bisect_target_for_tile_count, measure_poses, Lod
 
 /// `pitch_deg >= 85.0` — "0deg = nadir, 90deg = local horizon" (`ViewParams`'s own
 /// doc comment). These are `zoom_cliff_cells()`'s near-/at-horizon rungs, the
-/// population WP5's `p95` target (heavily foreshortened near-limb tiles) actually
+/// population the `p95` target (heavily foreshortened near-limb tiles) actually
 /// lives in.
 fn horizon_poses(poses: &[ViewParams]) -> Vec<ViewParams> {
     poses.iter().filter(|p| p.pitch_deg >= 85.0).cloned().collect()
@@ -83,9 +83,8 @@ fn print_comparison(c: &Comparison) {
     );
 }
 
-/// WP5/C: fog against the WP0-WP4 baseline — overall, at horizon poses, and at
-/// cruise altitude, per `docs/pre-terrain-plan.md`'s explicit weighting ("cruise
-/// altitude is the case this product actually lives in").
+/// Fog against the baseline — overall, at horizon poses, and at
+/// cruise altitude, since cruise altitude is the case this product actually lives in.
 #[test]
 fn test_wp5c_fog_vs_baseline() {
     let poses = bench_poses();
@@ -121,7 +120,7 @@ fn test_wp5c_fog_vs_baseline() {
         );
     }
 
-    // The p95 tail is what WP5 targets — it must shrink, and by more at horizon
+    // The p95 tail is what fog targets — it must shrink, and by more at horizon
     // poses (where the near-limb tail actually lives) than overall.
     assert!(
         all.fogged.p95() < all.baseline.p95(),
@@ -133,7 +132,7 @@ fn test_wp5c_fog_vs_baseline() {
     );
 }
 
-/// WP5/C, continued: the same comparison across every WP4/B viewport/mode rung —
+/// The same comparison across every viewport/mode rung —
 /// confirms fog's reduction holds outside the desktop default too, since fog
 /// density depends on altitude alone but tile geometry/count depends on viewport.
 #[test]
@@ -157,11 +156,11 @@ fn total_tiles_fogged(poses: &[ViewParams], cfg: LodConfig, fog_cfg: &FogConfig)
     measure_poses_with_fog(poses, cfg, fog_cfg).iter().map(|r| r.tile_count).sum()
 }
 
-/// WP5/D: the scheduled re-run of WP4/C's 3a-at-equal-tile-budget comparison, now
-/// with fog active for *both* variants. Not a retry — WP4/C's own finding
+/// The scheduled re-run of the 3a-at-equal-tile-budget comparison, now
+/// with fog active for *both* variants. Not a retry — the earlier finding
 /// predicted why this might come out differently: box-distance's budget at equal
 /// `N` was spent almost entirely on the near-limb tail (`p95` roughly doubled,
-/// `219 -> 376`), and fog is precisely what removes that tail. If WP4/C's p95
+/// `219 -> 376`), and fog is precisely what removes that tail. If the p95
 /// blowup was box-distance chasing tiles fog now culls or de-refines before LOD
 /// ever sees them, it should mostly evaporate here.
 #[test]
@@ -216,9 +215,9 @@ fn test_wp5d_3a_at_equal_budget_post_fog() {
     report::emit("wp5d_box_at_budget_fogged", &box_results);
 }
 
-/// WP5/B's specific ask: "pay specific attention to a camera climbing or
+/// Camera climbing or
 /// descending through `maxHeight = 800 km`, where fog switches off entirely and
-/// the tile density could step."
+/// the tile density could step.
 ///
 /// `fog_density_for` is a **hard** cutoff (`Fog.js`'s own `if (height > maxHeight)`
 /// — see `fog.rs`'s module doc comment), not a fade-out: density at `maxHeight`
@@ -239,8 +238,8 @@ fn test_wp5d_3a_at_equal_budget_post_fog() {
 /// (`src/testing/rendering/fog_capture.rs`) shows no perceptible visual pop
 /// despite that — at 800km the newly-kept tiles are coarse, peripheral, and
 /// mostly off the framed view — but the discontinuity in the underlying
-/// computation is real, not a measurement artifact, and is documented as such in
-/// `docs/culling-baseline.md`'s WP5/B section rather than hidden.
+/// computation is real, not a measurement artifact, and is documented as such
+/// here rather than hidden.
 #[test]
 fn test_wp5b_max_height_boundary_step() {
     let fog_cfg = FogConfig::default();
@@ -335,8 +334,7 @@ fn test_wp5b_max_height_boundary_step() {
 
     // Report, don't gate on a pass/fail number here — per the ground rules, only
     // fog's effect on the tree staying a relaxation is a hard requirement. This
-    // is instead a documented, quantified property: see docs/culling-baseline.md's
-    // WP5/B section for the reading, including why it is bounded in practice by
+    // is instead a documented, quantified property, bounded in practice by
     // 800km being far outside this product's 10-12km cruise envelope.
 }
 
@@ -367,15 +365,15 @@ fn test_wp5b_hysteresis_band_stays_proportional_under_fog() {
     }
 }
 
-// ── E1c: the stage that never ran ───────────────────────────────────────────────
+// ── The stage that never ran ───────────────────────────────────────────────────
 
-/// **E1c** (`docs/terrain-plan.md` §8) — the measurement that deleted `Stage::Fog`, kept
+/// The measurement that deleted `Stage::Fog`, kept
 /// re-runnable **without the code it refutes**.
 ///
 /// The stage was the fourth of four in `CullPipeline::DEFAULT_WITH_FOG`, behind
 /// `Stage::NodeFrustum` (which answers `Keep` outright for every node without a sub-grid)
 /// and `Stage::SubPatchGrid` (which answers `Keep` or `Cull` for every node with one), so
-/// `CullPipeline::keeps` returned before it — for every node, at every camera. §7b recorded
+/// `CullPipeline::keeps` returned before it — for every node, at every camera. Measurements recorded
 /// that and did not draw the consequence. Moved into slot 1, where a `Cull`/`Undecided`
 /// stage does run, it culled **zero** tiles over all 204 bench poses. So it was deleted
 /// rather than promoted: a stage that removes nothing still costs an

@@ -1,5 +1,4 @@
-//! Fetching, caching and querying height tiles — B1, B2 and B4 of
-//! `docs/terrain-plan.md` §5.
+//! Fetching, caching and querying height tiles.
 //!
 //! Nothing here renders. The manager below owns a [`TileFetcher`] pointed at the
 //! Terrarium source, a [`TileCacheManager`] of decoded [`HeightTile`]s, and the one
@@ -78,7 +77,7 @@ impl HeightTileManager {
         let (tx, rx) = mpsc::unbounded_channel();
         let (decoded_tx, decoded_rx) = std::sync::mpsc::channel();
 
-        // B4: entries derived from the *declared slice* of the tile budget, by the same
+        // Entries derived from the *declared slice* of the tile budget, by the same
         // arithmetic that sizes the imagery cache. Height tiles never change size, so
         // unlike imagery this is derived once and stays put.
         let capacity = tile_cache_entries_for(
@@ -123,8 +122,7 @@ impl HeightTileManager {
     /// [`max_level`](Self::max_level) when `id` is deeper than the source goes.
     ///
     /// Not an error path. The source stops at z15 and imagery refines to z19/z20, so
-    /// for a quarter of the level range this redirect is the *only* thing that happens
-    /// (`docs/terrain-plan.md` §2).
+    /// for a quarter of the level range this redirect is the *only* thing that happens.
     pub fn max_level(&self) -> u8 {
         self.max_level
     }
@@ -161,7 +159,7 @@ impl HeightTileManager {
     ///
     /// Decoding runs on the rayon pool, **not** here. It is ~1 ms per tile on a desktop
     /// core (`testing::tiles::test_stream_perf::decode_cost_per_height_tile` — five full
-    /// passes over 65 536 texels for the mip and F5's detail pyramid), and a fast camera
+    /// passes over 65 536 texels for the mip and the detail pyramid), and a fast camera
     /// move lands a few dozen tiles in one frame: that was a 30 ms stall on desktop and
     /// several times that on a phone, all inside `stream=`. The tile stays `Fetching`
     /// until its decode comes back, so nothing can build a mesh from it early and
@@ -234,9 +232,8 @@ impl HeightTileManager {
     ///
     /// # `None` is not zero
     ///
-    /// "Unknown" has to be distinguishable from "sea level" (`docs/terrain-plan.md` §5
-    /// B2): a caller that reads an unknown as `0.0` bakes a flat tile into a mesh and
-    /// then has no reason to rebuild it when the real data lands. Phase C must skip the
+    /// "Unknown" has to be distinguishable from "sea level": a caller that reads an unknown as `0.0` bakes a flat tile into a mesh and
+    /// then has no reason to rebuild it when the real data lands. Mesh building must skip the
     /// tile, not flatten it.
     ///
     /// # Ancestor upsampling is the normal path
@@ -311,12 +308,6 @@ impl HeightTileManager {
     /// answer to within the relief this query is used to resolve.
     ///
     /// [`tile_bounds`]: crate::globe::quadtree::tile_bounds
-    /// Raw unflattened DEM height at `(lon, lat)`.
-    pub fn peek_raw_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
-        let (id, u, v) = Self::tile_uv_at_lon_lat(lon_deg, lat_deg, self.max_level);
-        self.peek_height_at(id, u, v)
-    }
-
     pub fn peek_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
         let raw_mm = self.peek_raw_height_at_lon_lat(lon_deg, lat_deg)?;
         if self.runway_corridors.is_empty() {
@@ -327,6 +318,13 @@ impl HeightTileManager {
             h_m = corridor.filter_height(lon_deg, lat_deg, h_m);
         }
         Some(h_m * METRES_TO_MEGAMETRES)
+    }
+
+    /// Raw DEM height at `(lon, lat)`, without the runway flattening that
+    /// [`Self::peek_height_at_lon_lat`] applies.
+    pub fn peek_raw_height_at_lon_lat(&self, lon_deg: f64, lat_deg: f64) -> Option<f64> {
+        let (id, u, v) = Self::tile_uv_at_lon_lat(lon_deg, lat_deg, self.max_level);
+        self.peek_height_at(id, u, v)
     }
 
     /// Height in **megametres** of the **drawn triangle mesh** under a geodetic
@@ -369,7 +367,7 @@ impl HeightTileManager {
     /// curvature-sagitta order over one grid step — 3 mm at z12, `segments = 16` — and
     /// the quantity being fixed is 10⁵ times that.
     ///
-    /// A mesh that E2 has not yet rebuilt is the one case where the corners can come
+    /// A mesh that has not yet been rebuilt is the one case where the corners can come
     /// from a *deeper* source than the drawn vertices did. That window is a few frames
     /// wide and its residual is the difference between two DEM levels, not the
     /// grid-versus-field difference this removes.
@@ -485,7 +483,7 @@ impl HeightTileManager {
     /// Maps `(u, v)` in `child`'s tile space into `ancestor`'s.
     ///
     /// Split out from [`Self::height_at`] so the quadrant accumulation — the one piece
-    /// of B2 whose off-by-one is invisible except as a landscape displaced by hundreds
+    /// whose off-by-one is invisible except as a landscape displaced by hundreds
     /// of metres — is testable on its own.
     pub fn ancestor_uv(child: TileId, ancestor: TileId, u: f64, v: f64) -> (f64, f64) {
         Self::ancestor_uv_unclamped(child, ancestor, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
@@ -494,7 +492,7 @@ impl HeightTileManager {
     /// [`Self::ancestor_uv`] with the `[0,1]` clamp on its **input** left off.
     ///
     /// The map is affine, so it is perfectly well defined outside the child's own
-    /// rectangle, and Phase C's mesh patch needs exactly that: its gradient halo asks
+    /// rectangle, and the mesh patch needs exactly that: its gradient halo asks
     /// for the height one grid step *outside* the tile, which is inside the ancestor
     /// whenever the ancestor is a real ancestor. Clamping the input would collapse the
     /// halo onto the tile edge and turn every edge normal into a half-slope.
@@ -517,8 +515,8 @@ impl HeightTileManager {
 
     /// Whether `id`'s heights are usable yet, and if not, whether waiting will help.
     ///
-    /// The three-way answer is what lets Phase C's mesh builder honour §5 B2's
-    /// "unknown is not sea level": [`PatchStatus::Pending`] means retry next frame,
+    /// The three-way answer is what lets the mesh builder honour the
+    /// "unknown is not sea level" rule: [`PatchStatus::Pending`] means retry next frame,
     /// [`PatchStatus::Unavailable`] means the whole ancestor chain has failed and a
     /// flat mesh is the honest answer. Only the second is a terminating condition, so
     /// a stalled fetch can never be mistaken for flat ground.
@@ -528,9 +526,9 @@ impl HeightTileManager {
     ///
     /// Meshes no longer wait on it: `HeightPatch::sample` builds from the deepest data
     /// resident ([`Self::resolve_source`]) so a tile entering the view is drawn at once,
-    /// and E2 rebuilds it when better data lands. `Ready` here means "the best data
+    /// and rebuild logic rebuilds it when better data lands. `Ready` here means "the best data
     /// this tile will ever get is resident" — `source_tile_for(id)` has arrived, or has
-    /// **failed** and the best ancestor is final — which is what E2's staleness test
+    /// **failed** and the best ancestor is final — which is what the staleness test
     /// and the culling bounds (`height_bounds_for`) need: a rebuild or a bound taken
     /// while the tile's own data is still in flight would be taken from data that is
     /// about to be superseded.
@@ -552,7 +550,7 @@ impl HeightTileManager {
     }
 
     /// The altitude interval `id`'s bounding volumes must be fitted over — **Phase
-    /// D1's feed**, and the only thing the quadtree ever asks the height cache.
+    /// height-aware bounds feed**, and the only thing the quadtree ever asks the height cache.
     ///
     /// `None` means "nothing better than inheritance is known yet", and the node keeps
     /// the widened interval it got from its parent ([`Heightfield::child_extra`]).
@@ -575,7 +573,7 @@ impl HeightTileManager {
     /// Past the source's deepest level (z15 for Terrarium) `id` is answered by an
     /// ancestor and covers only a sub-rectangle of it, so the ancestor's whole-tile
     /// extrema would be wildly loose — a z20 tile is 1/32 768 of its z15 source by area.
-    /// B3's 16×16 min/max mip is exactly the structure for that, and rounding the
+    /// The 16×16 min/max mip is exactly the structure for that, and rounding the
     /// sub-rectangle *outward* to whole mip cells keeps the answer an upper bound on the
     /// samples the mesh will bilinearly interpolate, which is the direction I-6 needs.
     ///
@@ -613,16 +611,15 @@ impl HeightTileManager {
         let (u0, v0) = Self::ancestor_uv(id, src, 0.0, 0.0);
         let (u1, v1) = Self::ancestor_uv(id, src, 1.0, 1.0);
         let (h_min_m, h_max_m) = tile.mip_extrema_over(u0, v0, u1, v1);
-        // D1's follow-up: the skirt is an *edge* property, so it is bounded from the
-        // edges. See `HeightTile::edge_window_range` and the "The skirt is in the box"
-        // note in `docs/terrain-plan.md` §7 for the 1.53× this replaces.
+        // Height-aware bounds: the skirt is an *edge* property, so it is bounded from the
+        // edges. See `HeightTile::edge_window_range`.
         let edge_range_m = tile.edge_window_range(u0, v0, u1, v1) as f64;
 
         let exaggeration = exaggeration as f64;
         let lo_m = h_min_m as f64 * METRES_TO_MEGAMETRES * exaggeration;
         let hi_m = h_max_m as f64 * METRES_TO_MEGAMETRES * exaggeration;
         let edge_range = edge_range_m * METRES_TO_MEGAMETRES * exaggeration;
-        // D3's occluder, per sub-cell. Each entry is the minimum over its own
+        // Terrain occlusion occluder, per sub-cell. Each entry is the minimum over its own
         // sub-rectangle of the same mip, which is what keeps a ridge from being averaged
         // away against the ground on the far side of the tile — see
         // `HeightBounds::floor_grid` for the measurement that made this a grid.
@@ -643,20 +640,20 @@ impl HeightTileManager {
         Some(HeightBounds {
             lo: lo_m - skirt_allowance(id, segments, edge_range),
             hi: hi_m,
-            // D3's occluder: the ground's own minimum over this tile, *without* the
+            // Terrain occlusion occluder: the ground's own minimum over this tile, *without* the
             // skirt allowance. See [`HeightBounds::floor`].
             floor: lo_m,
             floor_grid,
-            // **E1, as F5 rewrote it** — the measured geometric error of *this node's own
+            // **The terrain LOD term** — the measured geometric error of *this node's own
             // mesh*, read off the tile that answers for `id`.
             //
-            // Until F5 this was `tile.detail()` unconditionally: the source's whole-tile
+            // Previously this was `tile.detail()` unconditionally: the source's whole-tile
             // 16:1 error, which is `id`'s own error only while `src == id`. Below the
             // source ceiling `src` is the z15 ancestor and the node draws its 17×17 lattice
             // over a `4^k`-times smaller window, so both the lattice and the window were
             // wrong — and `Heightfield::geometric_error` then threw the number away
             // entirely. `HeightTile::detail_below` is the same measurement at the right
-            // lattice over the right window, taken at decode; see §9 F5 for the table that
+            // lattice over the right window, taken at decode; see the deep-detail pyramid table that
             // rejects the two cheaper approximations.
             detail: (detail_metres(tile, id, src, detail_max_z) as f64
                 * METRES_TO_MEGAMETRES
@@ -667,7 +664,7 @@ impl HeightTileManager {
     /// The decoded tile that answers for `id`, together with its id, promoted in the
     /// LRU so the ancestor a mesh is being built from cannot be evicted by the build.
     ///
-    /// Phase C samples a whole `(segments+3)²` grid at once; resolving the source once
+    /// Sampling a whole `(segments+3)²` grid at once; resolving the source once
     /// and sampling the `Arc` directly is what keeps that from being 361 walks up the
     /// ancestor chain.
     pub fn source_for(&mut self, id: TileId) -> Option<(TileId, Arc<HeightTile>)> {
@@ -679,7 +676,7 @@ impl HeightTileManager {
     }
 
     /// Tiles currently held, and the byte-budget-derived ceiling on them. Reported
-    /// separately from imagery in the debug panel, per §5 B4.
+    /// separately from imagery in the debug panel.
     pub fn residency(&self) -> (usize, usize) {
         (self.cache.len(), self.capacity.get())
     }
@@ -706,7 +703,7 @@ impl HeightTileManager {
     }
 
     /// Marks a tile as having failed, bypassing the fetcher — [`Self::insert_ready`]'s
-    /// counterpart, and the seam **Phase E2** needs.
+    /// counterpart, and the seam the rebuild logic needs.
     ///
     /// A failed own-level fetch is the one state in which a mesh gets built from an
     /// ancestor and then wants rebuilding later (see
@@ -719,7 +716,7 @@ impl HeightTileManager {
     }
 }
 
-/// **F5** — the measured geometric error of the mesh drawn over `id`, in **metres**, read
+/// The measured geometric error of the mesh drawn over `id`, in **metres**, read
 /// out of `tile`, the decoded source that answers for `id`.
 ///
 /// `k = id.z − src.z` is how many levels the node sits below the data it is drawn from, and
@@ -730,7 +727,7 @@ impl HeightTileManager {
 /// `detail_max_z` is the LOD ceiling (`TerrainConfig::detail_max_z`): at and below it the
 /// term is switched off and this returns zero. It lives here rather than in
 /// `Heightfield::geometric_error` because that is a static dispatch with no access to the
-/// configuration, and because since F5 the number below the ceiling is a property of the
+/// configuration, and because the number below the ceiling is a property of the
 /// data — putting the two in one place keeps them from disagreeing.
 #[inline]
 fn detail_metres(tile: &HeightTile, id: TileId, src: TileId, detail_max_z: u8) -> i16 {

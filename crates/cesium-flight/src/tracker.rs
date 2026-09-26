@@ -1235,18 +1235,8 @@ impl GlobeExtension for FlightTrackerApp {
         let current_progress = *self.progress.lock().unwrap();
         let airplane_state = self.get_plane_state_at(current_progress);
 
-        // In cockpit mode we draw the cockpit interior.
-        if self.view_mode == CameraMode::Cockpit {
-            let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.cockpit_model");
-            self.render_cockpit(
-                render_pass,
-                camera_bind_group,
-                viewport_size,
-                camera_pos_f64,
-                airplane_state,
-            );
-        }
-
+        // The cockpit interior and the aircraft exterior are drawn in `render_foreground`,
+        // after the city labels; this pass only carries the route ribbons.
         let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.entities");
         // Hiding the route skips the ribbon entirely rather than drawing it transparent,
         // so it costs nothing. The aircraft below is drawn either way — it is the route

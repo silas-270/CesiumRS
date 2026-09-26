@@ -34,7 +34,7 @@ climatology), `airspace.rs` (regions civil traffic avoids).
 `geo.rs` works in unit vectors and never subtracts two longitudes. This is a rule, not
 a preference — a longitude delta is exactly what sends a route the wrong way around the
 world when it crosses the antimeridian, and there is no such quantity here to get wrong.
-389 routes in the bundled database cross 180°, including Melbourne–New York.
+389 routes in Blocktime's route database cross 180°, including Melbourne–New York.
 
 The one place a flat tangent plane is used is `LocalFrame`, and it is confined to
 geometry within a few kilometres: the arc of a single fly-by turn, and the runway
@@ -74,18 +74,18 @@ inventing one would put lateral structure into routes with no basis for it.
 
 **The search has to be allowed to win.** A tie-breaker discourages the route from
 chattering between adjacent offsets, charged as a fraction of each leg's time per node
-stepped. At 2% it was not a tie-breaker but a veto: an excursion out to the offset limit
-and back crosses forty nodes, which costs more than any tailwind reachable within that
-limit could ever save. The search therefore returned the great circle in *every* wind
-condition — calm, annual mean, January, July — and eastbound and westbound crossings came
-out on identical tracks, which is the one thing the wind model exists to prevent. At 0.2%
-a full excursion costs well under a minute against the two to three a North Atlantic
-crossing actually gains. JFK–LHR now bows 3.2° south into the jet core eastbound and 2.3°
-north out of it westbound.
+stepped (`TURN_PENALTY_FRACTION`, 0.2 %). It has to stay that small. At 2 % it stops being
+a tie-breaker and becomes a veto: an excursion out to the offset limit and back crosses
+forty nodes, which costs more than any tailwind reachable within that limit could save,
+so the search returns the great circle in *every* wind condition — calm, annual mean,
+January, July — and eastbound and westbound crossings come out on identical tracks, the
+one thing the wind model exists to prevent. At 0.2 % a full excursion costs well under a
+minute against the two to three a North Atlantic crossing actually gains. JFK–LHR bows
+3.2° south into the jet core eastbound and 2.3° north out of it westbound.
 
 Worth knowing when reading a track: the east/west *time* difference comes from the wind
-triangle, not from the lateral search. Flight times were already right while the tracks
-were still identical, so a plausible duration is not evidence the optimiser is working.
+triangle, not from the lateral search. Flight times come out right even when the tracks
+are identical, so a plausible duration is not evidence the optimiser is working.
 
 ### Closed airspace
 
@@ -101,9 +101,10 @@ Two details matter more than the outlines themselves:
   something anyone is permitted to do.
 - **The Pacific edge follows the seaward boundary, not the mainland coast.** Sakhalin,
   the Kuril chain, Kamchatka and the whole Sea of Okhotsk are Russian airspace, and an
-  outline drawn along the coast leaves a corridor through all of them. A polar re-route to
-  Japan will cut the corner through it — London–Tokyo did, passing over Kamchatka within a
-  few kilometres of Petropavlovsk while the containment test reported the route clear. The
+  outline drawn along the coast leaves a corridor through all of them, and a polar
+  re-route to Japan cuts the corner through it: London–Tokyo then passes over Kamchatka
+  within a few kilometres of Petropavlovsk while the containment test reports the route
+  clear. The
   southern end has to stay north of Hokkaido: Sōya and Nemuro sit within fifty miles of
   Russian territory, and swallowing either would close Japan's northern approaches.
 - **A region containing either endpoint is dropped.** The closure is against foreign
@@ -116,7 +117,7 @@ Because these encode a political situation rather than a physical one, they date
 The effect is large and correct: London–Tokyo comes out about 19% longer than its great
 circle, crossing the Arctic at 88°N — up the Greenwich meridian, over the pole and down
 the Alaskan side — then descending over open Pacific east of the Kurils. That is a real
-post-2022 routing, and it is why that flight gained roughly three hours. Note that the
+post-2022 routing, and it adds roughly three hours to that flight. Note that the
 polar crossing is legitimate: the Arctic sector polygon covers 30°E–180°E, and the western
 Arctic is Canadian and Danish airspace. The pole is therefore a permanently open gate for
 any Europe–Asia pair whose detour happens to favour it.
@@ -128,14 +129,13 @@ the organised track grid: whole degrees of latitude on every tenth meridian, whi
 tracks are published. A crossing therefore looks stepped and angular where the rest of a
 route looks smooth — a distinctive and recognisable shape.
 
-This is **on by default** (`FlightPlanConfig::oceanic_tracks`). Two things had to be right
-first:
+This is **on by default** (`FlightPlanConfig::oceanic_tracks`). Two details matter:
 
 - **Track points are ten degrees apart**, a thousand kilometres or more at these latitudes,
   against the two-hundred-odd of the enroute fixes either side. Handing that ratio to the
   spline that draws the enroute path makes it overshoot where the two meet — violently on a
-  route where only *part* of the crossing is gridded, which is how London–Tokyo reached 35
-  m/s² of lateral acceleration. The legs between track points are straight lines, so they
+  route where only *part* of the crossing is gridded: 35 m/s² of lateral acceleration on
+  London–Tokyo. The legs between track points are straight lines, so they
   are filled in at the route's own fix spacing: geometrically free, and the spline then has
   something it can resolve.
 - **A westbound crossing walks the meridians in descending order** within a densified
@@ -156,8 +156,7 @@ would otherwise be perfectly smooth.
 
 Corners are rounded by **fly-by turns**: the aircraft starts turning before the fix and
 rolls out after it, never passing over the fix itself. That is what a flight management
-computer does at almost every waypoint, and it replaced a Dubins solver that only ever
-applied to the two terminal corners.
+computer does at almost every waypoint.
 
 The radius is the thing to get right. A coordinated turn holds
 
@@ -166,11 +165,12 @@ r = v² / (g · tan φ)
 ```
 
 so fixing the radius does not fix the geometry — it fixes the *bank angle to whatever the
-speed implies*. The previous fixed 4 km radius implied 58° of bank at cruise speed.
+speed implies*. A fixed 4 km radius, for instance, would mean 58° of bank at cruise
+speed.
 Radius here follows from speed and a bank limit (25°, reduced to 20° above FL340 where
 the margin to buffet is thin), never the other way round.
 
-Three consequences worth knowing:
+Consequences worth knowing:
 
 - **Turn radius is per-corner.** The departure turn is sized for the speed at the *end*
   of the departure leg, not at the acceleration altitude — by the time the aircraft gets
@@ -190,9 +190,9 @@ Three consequences worth knowing:
 - **Split turns bulge onto the side that is free to move.** A split needs a leg between its
   two halves, taken out of one of the two the waypoint already joins. Either is fine at an
   enroute fix; it is not fine at the ends of the flight, where the departure leg and the
-  final approach *are* the runway centreline extended. Inserting it after the final
-  approach fix threw the approach 19° off the centreline and left the aircraft to swerve
-  onto the runway at the threshold.
+  final approach *are* the runway centreline extended. Inserted after the final approach fix,
+  the split leg throws the approach 19° off the centreline and leaves the aircraft to
+  swerve onto the runway at the threshold, so it is taken from the side that is free.
 - **Arcs are sampled by angle, not just by length.** They must stay finer than the
   telemetry sampler's own step, which gets down to about 100 m near the ground.
   Otherwise consecutive samples straddle facet junctions and read the turn as happening
@@ -207,8 +207,8 @@ descent is flown at the 3° that both an idle descent and an ILS glideslope sit 
 origin of the 3:1 rule, three nautical miles per thousand feet. Together they put the top
 of climb about 240 km out and the top of descent about 200 km before the runway.
 
-Those distances are *outputs*. Choosing them, as a fixed 30 km and 50 km, is what
-produced a 23° climb angle — steeper than a fighter leaves the runway at.
+Those distances are *outputs*. Choosing them instead — a fixed 30 km and 50 km, say —
+produces a 23° climb angle, steeper than a fighter leaves the runway at.
 
 If the pair does not fit the distance available, the planned level steps down until it
 does. On a sector too short for even the lowest usable level, the profile is compressed:
@@ -242,20 +242,19 @@ A long-haul altitude trace that is flat is wrong.
 - A **flare**: the sink rate is arrested over the last 15 m rather than the aircraft
   simply arriving at the ground still on the glideslope.
 - **Touchdown 300 m past the threshold**, on the aiming markers, followed by the rollout
-  along the runway. The previous profile put the aircraft at zero altitude three
-  kilometres *before* the runway and then taxied it to the threshold.
+  along the runway.
 
 ## Speeds, and fitting the session
 
 ### Cruise speed is not the free variable
 
 The session length is fixed by the timer and the route by the flight the pilot booked, so
-something has to give. It used to be the cruise speed: a binary search set it to whatever
-made the arithmetic work. Measured across the whole route database, that produced a
-median cruise of 595 km/h, a quarter of all flights below 490, and the shortest sectors
-down around 180 km/h — an A350 well below its stall speed, at altitude.
+something has to give. The obvious candidate is the cruise speed, solved for whatever
+makes the arithmetic work. Measured across Blocktime's whole route database, that gives a median
+cruise of 595 km/h, a quarter of all flights below 490, and the shortest sectors down
+around 180 km/h — an A350 well below its stall speed, at altitude.
 
-The mistake was treating the scheduled time as flying time. It is **block time**, gate to
+The error is treating the scheduled time as flying time. It is **block time**, gate to
 gate, and the difference is taxi, climb and descent. The route database shows this
 cleanly:
 
@@ -266,9 +265,9 @@ cleanly:
 | 8,000+ km | 794 km/h |
 
 That curve rises toward, but never reaches, a true cruise speed of roughly 900 km/h. The
-gap is exactly the overhead the old model ignored.
+gap is exactly that overhead.
 
-So the slack is now spent on the things that consume it in reality, in order:
+So the slack is spent on the things that consume it in reality, in order:
 
 1. **Taxi.** A fixed distance at each end, flown at whatever speed fills the time.
    Taxiing slowly in a queue is what actually happens.
@@ -290,8 +289,8 @@ short sectors: without it an aircraft levelling at FL040 cruises at nearly 400 k
 
 **Where two schedules meet, they hand over gradually.** The fitted cruise Mach can sit a
 long way either side of the 0.84 the climb ends at and the 0.82 the descent begins at, so
-reading straight across from one to the other stepped the commanded speed by ten or twenty
-knots at a stroke. Each handover is eased over a stretch of track instead — which is what
+reading straight across from one to the other would step the commanded speed by ten or
+twenty knots at a stroke. Each handover is eased over a stretch of track instead — which is what
 it physically is, an aircraft levelling off and letting the speed come up to its cruise
 number over half a minute.
 
@@ -308,9 +307,9 @@ on a chart is several g on screen.
 
 `src/testing/flight/test_multi_route_suite.rs` measures exactly that across fifteen routes
 — tangential, lateral and vertical acceleration taken from the spline itself — and holds
-them inside what a passenger would not call a jolt. Getting there meant removing every
-place the plan had a corner in it. Vertical acceleration ran to 19 m/s² before; it is now
-under 1.5.
+them inside what a passenger would not call a jolt. That means the plan has no corners
+anywhere: vertical acceleration stays under 1.5 m/s², where an unrounded rotation and top
+of climb reach 19.
 
 - **Rotation is an arc, not a join.** The runway is flat and the climb is not, so the
   flight path angle is brought up from zero along a smoothstep. The length falls straight
@@ -323,18 +322,19 @@ under 1.5.
   operation that cannot move the cruise level.
 - **The descent is stretched onto the distance actually left.** A minimum level band is
   held between top of climb and top of descent, and on a short sector that band pushes the
-  top of descent later. A descent then laid out at its own length ran past the flare and
-  folded the profile back on itself — the cause of a 9 m/s² spike a few hundred feet above
-  the runway.
-- **Wind is eased in and out over the first and last mile of flight.** A rolling aeroplane
-  is not carried along by the air; a flying one is. Switching between the two at the
-  instant of rotation stepped the ground speed by the entire headwind component — up to 19
-  m/s², twice per flight. The crab angle rides the same ramp.
+  top of descent later. A descent laid out at its own length would then run past the
+  flare and fold the profile back on itself — a 9 m/s² spike a few hundred feet above the
+  runway.
+- **Wind is eased in and out over the first and last 3 km of flight.** A rolling
+  aeroplane is not carried along by the air; a flying one is. Switching between the two
+  at the instant of rotation would step the ground speed by the entire headwind component
+  — up to 19 m/s², twice per flight. The crab angle rides the same ramp.
 
-One fix belongs to the interpolator rather than the plan. Off the ends of the sample list
-it duplicated the endpoint to stand in for the missing neighbour, which gives a zero secant
-and halves the tangent there — so every flight left its first knot and arrived at its last
-at half speed. It reflects the neighbour instead, which makes the end segments straight.
+One detail belongs to the interpolator rather than the plan (`property/sampled.rs`). Off
+the ends of the sample list the missing neighbour is the inner neighbour reflected through
+the endpoint, which makes the end segments straight. Duplicating the endpoint instead
+gives a zero secant and halves the tangent there, so every flight would leave its first
+knot and arrive at its last at half speed.
 
 ## Attitude
 
@@ -343,8 +343,8 @@ Derived from the path, never assumed.
 **Pitch is the flight path angle plus the angle of attack.** The angle of attack model is
 lift-equals-weight rearranged, with a flap term: extending flaps increases camber, so the
 same lift comes at a markedly lower body angle. That term is what puts an airliner on a
-3° glideslope *nose-up* rather than nose-down, and its absence is why deriving pitch from
-the altitude gradient alone had the aircraft pointing visibly the wrong way on approach.
+3° glideslope *nose-up* rather than nose-down; pitch taken from the altitude gradient
+alone points the nose visibly the wrong way on approach.
 
 **Bank comes from the geodesic curvature of the track, not from the rate of change of
 heading.** The distinction is not academic. Meridians converge, so an aircraft flying a
@@ -359,6 +359,16 @@ aircraft visibly crabs — most noticeably in a crosswind on approach.
 
 On the ground, bank is zero outright and pitch is zero until rotation, blended over a few
 hundred metres at each end.
+
+**These are the telemetry attitude**, the heading, pitch and roll in each
+`TelemetryPoint`, which the host app reads for its instruments
+(`nativeGetTelemetry`). The 3D aircraft and the cockpit camera are oriented differently:
+`math::trajectory::TrajectoryEvaluator` derives an orientation from the interpolated
+position alone — the nose along the spline tangent, and "up" opposing gravity minus the
+path's centripetal acceleration averaged over a 30 s window (three quarters of it ahead)
+and scaled by 2.5/3 — then smooths it over ±0.8 s. The drawn aircraft therefore banks
+with the curvature of the path and pitches with its gradient, without the angle of
+attack; on final approach it points along the 3° glideslope rather than nose-up.
 
 ## Runway selection
 
@@ -378,17 +388,26 @@ genuinely what happens — Heathrow lands to the west roughly seven days in ten.
 
 ## Field elevation
 
-**Off by default**, via `FlightPlanConfig::terrain_elevation`.
+**On by default** (`FlightPlanConfig::terrain_elevation`). When a departure or arrival
+elevation is supplied, the flight starts and ends on the ground at that height; when none
+is, it plans at sea level (`dep_elevation_m`/`arr_elevation_m` default to 0).
 
-Everything downstream already handles real elevations: the takeoff roll lengthens in thin
-air because rotation happens at a fixed *calibrated* airspeed, and cruise levels are
-checked against the ground beneath them. The switch is off only because the globe
-currently renders without terrain, so an aircraft sitting at Bogotá's 2,548 m would hang
-visibly above a sea-level surface.
+Everything downstream handles real elevations: the takeoff roll lengthens in thin air
+because rotation happens at a fixed *calibrated* airspeed, and cruise levels are checked
+against the field below them.
 
-To turn it on once terrain exists: call `nativeSetFieldElevations` before loading a
-flight (the export is present and unused), or `FlightHandle::set_plan_config` directly.
-Nothing else needs to change.
+Elevations come from three places, in order of precedence: an explicit value in the load
+command (`FlightRouteDef::dep_elevation_m`), `preset::lookup_airport_elevation` — a small
+table of airports (Frankfurt, Stuttgart, Bogotá, Mexico City, Innsbruck, Samedan, Lukla
+and others), matched within 0.5° — and on Android `nativeSetFieldElevations`, which
+`nativeLoadPendingFlight` passes on through `FlightHandle::set_plan_config`.
+
+The one caveat is a display caveat: with terrain off the globe is the sea-level
+ellipsoid, and an aircraft at a real field elevation floats above it — 2.5 km at Bogotá.
+The desktop binary therefore plans with `terrain_elevation = false` whenever it runs
+without terrain. Near the airports the flight is additionally fitted onto the drawn
+terrain, which differs from the published field elevation by tens of metres; see
+[models.md](models.md#height-and-ground-contact).
 
 ## Testing
 
@@ -396,7 +415,7 @@ Nothing else needs to change.
 constants, so retuning the aircraft model or the wind field does not mean rewriting the
 tests. Run them with `cargo test -p cesium-flight`.
 
-What they guard is, deliberately, the set of things that were once wrong:
+What they guard:
 
 - The route is a great circle, not a line on a flat map, and does not go the wrong way
   round the world.
@@ -437,11 +456,12 @@ does would silently break avoidance rather than fail loudly.
 - ETOPS is not modelled. For an A350-900, certified to ETOPS-370, it would bend almost
   nothing outside the South Pacific.
 - The semicircular rule uses true rather than magnetic track, as above.
-- The debug route presets pass **no runway data**, so both terminal areas are synthetic:
-  `runway::select` falls back to the route's own bearing and invents a centreline. Narita
-  comes out on 31° against a real 160/340°. Production is unaffected — `tracker.rs` takes
-  runways from the Android database — but no conclusion about approach or departure
-  geometry should be drawn from a preset.
+- Outside the host app, runway data comes only from `preset::KNOWN_RUNWAYS`, which covers
+  Stuttgart and Frankfurt. Everywhere else a preset's terminal areas are synthetic:
+  `runway::select` falls back to the route's own bearing and invents a centreline, so
+  Narita comes out on 31° against a real 160/340°. The Android app passes runways from its
+  own database (`nativeSetRunways`), but no conclusion about approach or departure geometry
+  should be drawn from a desktop preset elsewhere.
 - The acceleration audit samples 3,000 points over the whole flight, which on a long route
   is a step of fourteen seconds. It can miss a spike that a finer sweep finds; when
   investigating one, sweep locally rather than trusting the summary.

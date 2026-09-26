@@ -1,7 +1,7 @@
-//! **The balance instrument** — what one frame costs with D3 on against the same frame
-//! with D3 off, at the same pose, through the real renderer.
+//! **The balance instrument** — what one frame costs with terrain occlusion on against the same frame
+//! with terrain occlusion off, at the same pose, through the real renderer.
 //!
-//! `docs/terrain-plan.md` §7b–§7e report two numbers side by side and never add them up:
+//! The occlusion measurements report two numbers side by side and never add them up:
 //! *tiles removed* and *march microseconds*. Neither answers the only question a culling
 //! stage has to answer, which is whether the frame got cheaper. A tile that stops being
 //! drawn stops costing a draw call, 289 vertices, 512 triangles, a texture bind, its
@@ -33,7 +33,7 @@
 //! There is no GPU on this machine — `vulkaninfo` reports
 //! `PHYSICAL_DEVICE_TYPE_CPU / llvmpipe`. Vertex and fragment work is therefore done on
 //! the same cores as everything else, which makes a drawn tile **more** expensive than it
-//! would be on the S23 §9 F3 targets, and makes the fragment half of a hidden tile
+//! would be on the phone targets, and makes the fragment half of a hidden tile
 //! (which a real depth buffer discards early) count for more than it should. Every
 //! frame-time number here is read with that in mind, and the per-tile cost model in
 //! [`terrain_balance_cost_per_tile`] is the cross-check that does not depend on it.
@@ -55,7 +55,7 @@ struct Sample {
     frame_us: Vec<f64>,
     /// `FrameTimings::update_logic_us`.
     update_us: Vec<f64>,
-    /// `SubsystemTimings::quadtree_us` — D1's bounds refresh, D3's march, and `update`.
+    /// `SubsystemTimings::quadtree_us` — height-aware bounds refresh, terrain occlusion march, and `update`.
     quadtree_us: Vec<f64>,
     /// `SubsystemTimings::terrain_draw_us` — the tile draw pass's own encode time.
     draw_us: Vec<f64>,
@@ -111,12 +111,12 @@ fn config(occlusion: bool, texel_ratio: f32) -> TileEngineConfig {
     }
 }
 
-/// The pose families §7's verdict has to hold over.
+/// The pose families the verdict has to hold over.
 ///
-/// Two terrain steps (§7d's own poses, the shape D3 was specified for), one Alpine near
+/// Two terrain steps (the shape terrain occlusion was specified for), one Alpine near
 /// field, one approach, one cockpit-height traverse and one cruise. The two step poses
 /// are built with [`bearing_pose`] because their headings are not due north and
-/// `ViewParams::yaw_deg` is not a compass bearing — §7d's first pose trap.
+/// `ViewParams::yaw_deg` is not a compass bearing.
 fn poses() -> Vec<Pose> {
     vec![
         bearing_pose(
@@ -160,8 +160,8 @@ fn poses() -> Vec<Pose> {
         // **Measured, not assumed, and it is not what it was named for.** The DEM puts
         // 1 998 m of Tuxer Alpen at 11.20 E / 47.05 N, so a camera at 2 000 m here is
         // standing *on* the massif at 2 m AGL, not flying 2 km over the Zillertal — the
-        // same trap §7c lost three poses to. It is kept because a camera on a mountainside
-        // looking along a ridge is a real regime and a hard one for D3 (it removes
+        // same trap earlier runs lost three poses to. It is kept because a camera on a mountainside
+        // looking along a ridge is a real regime and a hard one for terrain occlusion (it removes
         // nothing there), and the name is left alone so the numbers stay comparable; the
         // cockpit altitude band is covered by `terrain_balance_altitude_ladder`'s
         // 1 217 m rung instead.
@@ -294,7 +294,7 @@ fn interleave<'a>(
     (sa, sb)
 }
 
-/// **The balance table.** D3 on against D3 off, same pose, same clock.
+/// **The balance table.** Terrain occlusion on against terrain occlusion off, same pose, same clock.
 #[test]
 #[ignore = "measurement: needs the network for imagery and heights, takes minutes"]
 fn terrain_balance_d3_on_vs_off() {
@@ -319,7 +319,7 @@ fn terrain_balance_d3_on_vs_off() {
         let mut on = pollster::block_on(settled(1280, 720, config(true, 1.0), &p));
         // The gate reads this, so the table has to report it: at `alps_approach` the
         // camera is 3 km over ground that is itself 2.1 km up, and calling that "3 km"
-        // is the mistake §7f.4 is about.
+        // is the mistake the altitude analysis is about.
         let agl = on.camera.altitude_agl() as f64 * 1.0e6;
         let (s_off, s_on) = interleave(&mut off, &mut on, n);
 
@@ -380,7 +380,7 @@ fn terrain_balance_d3_on_vs_off() {
 /// many tiles the imagery LOD asks for **at a fixed camera** — so the pose, the frustum
 /// and the fragment coverage are identical and only the tile count moves. The slope of
 /// frame time against tile count is the marginal cost of a tile, and multiplying it by
-/// the tiles D3 removes is the saving the balance table's noise has to be judged against.
+/// the tiles terrain occlusion removes is the saving the balance table's noise has to be judged against.
 ///
 /// Every sweep point is measured **interleaved against the same reference arm**
 /// (`target_texel_ratio = 1.0`, which is what the balance table renders at), for the
@@ -399,7 +399,7 @@ fn terrain_balance_cost_per_tile() {
         println!("  {} — {}", p.name, p.what);
         let mut pts: Vec<(f64, f64)> = Vec::new();
         for r in [0.6f32, 1.4, 2.0] {
-            // D3 off on both sides of the sweep: the question here is what a tile costs,
+            // Terrain occlusion off on both sides of the sweep: the question here is what a tile costs,
             // not what removing one buys.
             let mut a = pollster::block_on(settled(1280, 720, config(false, r), &p));
             let mut b = pollster::block_on(settled(1280, 720, config(false, 1.0), &p));
@@ -441,7 +441,7 @@ fn terrain_balance_cost_per_tile() {
 
 /// **The altitude ladder, on real terrain and through the renderer.**
 ///
-/// §7b's `d3_altitude_gate_is_where_the_benefit_stops` walks a synthetic ridge world up in
+/// The earlier test `d3_altitude_gate_is_where_the_benefit_stops` walks a synthetic ridge world up in
 /// altitude and reads the reduction off the tile count; `max_camera_altitude_m = 12 000`
 /// is the first altitude where that reads zero. Under the balance rule that is the wrong
 /// place to cut: the question is not where the benefit reaches zero but where it stops
@@ -450,7 +450,7 @@ fn terrain_balance_cost_per_tile() {
 ///
 /// This is the same ladder on the real DEM, at one horizontal pose, through the engine
 /// the phone runs — tiles off, tiles on, and the march's own cost, at every rung. The
-/// altitude reported alongside each rung is **above ground**, because that is what D3's
+/// altitude reported alongside each rung is **above ground**, because that is what terrain occlusion's
 /// geometry actually depends on and what the gate is now written in.
 #[test]
 #[ignore = "measurement: needs the network for imagery and heights, takes minutes"]

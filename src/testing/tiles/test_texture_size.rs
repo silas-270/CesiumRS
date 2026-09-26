@@ -1,6 +1,6 @@
-//! GPU-free check on `ObservedTextureSize` — the live feed WP4/A wires into
-//! `lod_factor_for` in place of the frozen `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`
-//! (`docs/pre-terrain-plan.md`). Deliberately does not construct a `TileTextureManager`
+//! GPU-free check on `ObservedTextureSize` — the live feed wired into
+//! `lod_factor_for` in place of the frozen `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`.
+//! Deliberately does not construct a `TileTextureManager`
 //! (needs a `wgpu::Device`); `ObservedTextureSize` was split out specifically so this
 //! tracking logic is testable without one.
 
@@ -10,7 +10,7 @@ mod tests {
     use cesium_engine::globe::tiles::texture_manager::ObservedTextureSize;
 
     /// Before any tile has decoded, the live feed must fall back to the same
-    /// constant `wgpu_state::update_logic` used unconditionally pre-WP4/A — not
+    /// constant `wgpu_state::update_logic` used unconditionally before — not
     /// zero, not `NaN`, not silently wrong.
     #[test]
     fn defaults_to_the_frozen_fallback_before_any_decode() {
@@ -18,7 +18,7 @@ mod tests {
         assert_eq!(observed.current_px(), DEFAULT_IMAGERY_TEXTURE_SIZE_PX);
     }
 
-    /// The core claim of WP4/A: this is a *live* feed, not a second frozen constant.
+    /// The core claim: this is a *live* feed, not a second frozen constant.
     /// Checked away from the bootstrap value in both directions — a decode smaller
     /// than the default (matching `satellite_imagery_url()`'s 256px tiles) and one
     /// larger than it — so a wiring bug that only ever reported the default, or that

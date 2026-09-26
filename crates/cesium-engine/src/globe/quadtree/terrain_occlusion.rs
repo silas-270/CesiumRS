@@ -1,9 +1,9 @@
-//! **D3** — culling tiles that are hidden *behind mountains*, not merely behind the
-//! Earth's limb. `docs/terrain-plan.md` §3.3 and §7.
+//! Culling tiles that are hidden *behind mountains*, not merely behind the
+//! Earth's limb.
 //!
 //! This is constraint 2 of the terrain plan and the one piece of it with no prior art:
 //! Cesium culls against the ellipsoid limb, the frustum and fog, never against terrain
-//! itself. D1 gave nodes height-aware boxes and D2 gave them a relief-safe limb test;
+//! itself. Height-aware bounds gave nodes height-aware boxes and the relief-aware horizon test gave them a relief-safe limb test;
 //! both throw away what is behind the *planet*. A valley behind a ridge is in front of
 //! the planet and was still drawn in full.
 //!
@@ -22,13 +22,13 @@
 //! # Where the guaranteed ridge comes from, and why it is not the height cache
 //!
 //! The occluder needs a **lower bound on the terrain surface** over a whole footprint.
-//! The quadtree already maintains exactly that, per node, and has since D1:
+//! The quadtree already maintains exactly that, per node:
 //! [`HeightBounds::floor`] is the minimum of the node's own height field over its own
-//! ground, taken from B3's 16×16 min/max mip with the cell range rounded *outward*, and
+//! ground, taken from the 16×16 min/max mip with the cell range rounded *outward*, and
 //! widened downward by the measured per-level margin whenever the node is still on an
 //! inherited interval. Nothing else in the engine is a sound floor for a node's ground,
 //! and building a second, parallel query path into the height cache would have meant
-//! measuring a second margin (§7's table, in the other direction) for a quantity D1
+//! measuring a second margin (§7's table, in the other direction) for a quantity height-aware bounds
 //! already bounds.
 //!
 //! So the march reads the **tree**, not the cache: `QuadtreeManager::refresh_terrain_horizon`
@@ -40,8 +40,7 @@
 //!
 //! # The direction of every bound, which is the only way this goes wrong
 //!
-//! `docs/terrain-plan.md` §3.3 states the rule and states that it is easy to get
-//! backwards. Written out for this implementation:
+//! The rule is easy to get backwards. Written out for this implementation:
 //!
 //! | quantity | bound | why |
 //! |---|---|---|
@@ -78,12 +77,9 @@
 //!
 //! # Unlike fog, this stage is sound — and that difference is the point
 //!
-//! [`super::fog`]'s module doc says the opposite about [`super::quadtree::Stage::Fog`],
-//! and the two sitting next to each other in the same `enum` is confusing unless the
-//! difference is written down. Fog **deliberately discards geometry that is genuinely
-//! visible**; that is what fog is for, and it is why `Stage::Fog` is fenced out of
-//! [`super::quadtree::CullPipeline::DEFAULT`] and would turn every sweep in the culling
-//! harness red if it were let in. [`super::quadtree::Stage::TerrainOcclusion`] discards
+//! A fog culling stage would **discard geometry that is genuinely visible**, which is why
+//! [`super::fog`] only relaxes refinement and is not a stage at all: it would turn every
+//! sweep in the culling harness red. [`super::quadtree::Stage::TerrainOcclusion`] discards
 //! only geometry it has *proved* invisible, exactly like the limb and frustum stages. It
 //! therefore lives in the terrain-mode default pipeline
 //! ([`super::quadtree::CullPipeline::TERRAIN_DEFAULT`]) and is verified at FN = 0 by
@@ -117,7 +113,7 @@ use crate::globe::geometry::{EARTH_RADIUS_A_F64, EARTH_RADIUS_B_F64};
 /// levers, behind the safety constant, on the strength of how far it moved the *ridge
 /// ceiling* — a necessary condition, not a sufficient one. Measured on what actually
 /// matters instead, at `rendering::terrain_balance`'s Inn-valley pose (900 m, 114 tiles
-/// drawn without D3), the two axes are not comparable at all:
+/// drawn without terrain occlusion), the two axes are not comparable at all:
 ///
 /// | sectors × rings | tiles removed | march | net at 146 µs a tile |
 /// |---|--:|--:|--:|
@@ -205,7 +201,7 @@ pub const MIN_RANGE_M: f64 = 500.0;
 ///
 /// * **Through the curvature drop.** An offset `κ·s` under the drop rate `s/R` is
 ///   `κ·s²/R` of altitude — the term that grows with range, and the one
-///   `docs/terrain-plan.md` §7d predicted.
+///   that was predicted.
 /// * **Through the tilt of a sightline that stands off the floor.** With the eye `Δalt`
 ///   above (or below) the cell floor, an along-track offset `δ` at horizontal distance `s`
 ///   moves the elevation angle by `δ·Δalt/(s²+Δalt²)`, and the metres of wall that buys
@@ -272,7 +268,7 @@ pub const MIN_RANGE_M: f64 = 500.0;
 /// # What it buys
 ///
 /// The old constant was a flat 100 m at every range and every stand-off. §7d measured what
-/// that cost where D3 was specified to pay: **0.55° of occluder at Reutlingen and 2.23° at
+/// that cost where terrain occlusion was specified to pay: **0.55° of occluder at Reutlingen and 2.23° at
 /// Stuttgart**, thrown away before a single candidate was tested. At those two poses this
 /// law reads **8 m and 6 m**.
 pub const RIDGE_SAFETY_RATE: f64 = 2.0e-2;
@@ -296,6 +292,7 @@ pub const RIDGE_SAFETY_FLOOR_M: f64 = 1.0;
 /// add and a multiply are left per cell — 1 152 of them a frame, which is why
 /// `bench_terrain_occlusion_cost` cannot see it.
 #[inline]
+#[cfg_attr(not(feature = "testing"), allow(dead_code))]
 pub fn ridge_safety_m(range_m: f64, alt_diff_m: f64) -> f64 {
     const R_M: f64 = EARTH_RADIUS_A_F64 * 1.0e6;
     RIDGE_SAFETY_FLOOR_M + RIDGE_SAFETY_RATE * (alt_diff_m.abs() + range_m * range_m / R_M)
@@ -304,22 +301,22 @@ pub fn ridge_safety_m(range_m: f64, alt_diff_m: f64) -> f64 {
 /// Sectors of slop added on each side of the view cone before the march decides a sector
 /// is dead — see [`TerrainHorizon::live`].
 ///
-/// Two, i.e. 30°. Not for soundness (a dead sector is `−∞` and culls nothing) but for the
+/// Eight sectors. Not for soundness (a dead sector is `−∞` and culls nothing) but for the
 /// culls at the edge of the frame: [`TerrainHorizon::occludes`] takes the **minimum** over
 /// every sector a candidate spans, so a tile straddling the frustum edge would lose its
-/// cull to a neighbouring dead sector. A coarse candidate spans several sectors, and 30°
-/// is what keeps the ones just inside the frame whole.
+/// cull to a neighbouring dead sector. A coarse candidate spans several sectors, and the
+/// margin is what keeps the ones just inside the frame whole.
 pub const LIVE_SECTOR_MARGIN: usize = 8;
 
 /// Fractional slack applied to every angular extent — see
 /// [`TerrainHorizon::extent_of`].
 pub const EXTENT_SLACK: f64 = 0.10;
 
-/// The knobs D3 is gated by. Lives on
+/// The knobs terrain occlusion is gated by. Lives on
 /// [`TerrainConfig`](crate::globe::tiles::config::TerrainConfig) as `occlusion`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainOcclusionConfig {
-    /// Master switch for the stage. `false` leaves the terrain pipeline at D1+D2.
+    /// Master switch for the stage. `false` leaves the terrain pipeline at height-aware bounds and the relief-aware horizon test.
     pub enabled: bool,
     /// Camera altitude above the ellipsoid, in **metres**, above which the march is not
     /// built at all and [`super::quadtree::Stage::TerrainOcclusion`] answers `Undecided`
@@ -327,8 +324,8 @@ pub struct TerrainOcclusionConfig {
     ///
     /// Measured, not guessed — see
     /// `testing::terrain::test_terrain_occlusion::d3_altitude_gate_is_where_the_benefit_stops`,
-    /// which sweeps the reduction against altitude at two crest heights and prints the
-    /// table `docs/terrain-plan.md` §7 quotes. It has three regimes: **−28 %** at 800 m and
+    /// which sweeps the reduction against altitude at two crest heights and prints a
+    /// table. It has three regimes: **−28 %** at 800 m and
     /// **−17 %** at 1.5 km — the valley, which is what this feature exists for — a **−4 %**
     /// plateau from 3 km to 8 km, and **exactly zero** from 12 km up, on an Alpine and a
     /// Himalayan crest alike.
@@ -363,7 +360,7 @@ pub struct TerrainOcclusionConfig {
     /// through the real renderer at one horizontal pose and reads both halves at once —
     /// at the shipped `96 × 48` grid, and with the frame time the two arms actually took:
     ///
-    /// | AGL | tiles without D3 | with | removed | march | frame |
+    /// | AGL | tiles without occlusion | with | removed | march | frame |
     /// |--:|--:|--:|--:|--:|--:|
     /// | 67 m | 126 | 104 | **22** | 539 µs | **−1 877 µs** |
     /// | 317 m | 114 | 94 | **20** | 546 µs | **−1 734 µs** |
@@ -377,7 +374,7 @@ pub struct TerrainOcclusionConfig {
     /// while the march keeps costing half a millisecond, so **1 000 m** is where the
     /// threshold goes. The three rungs under it are also the only ones whose frame-time
     /// column clears the machine's noise floor (±1.5 ms, calibrated on the cruise pose,
-    /// where D3 removes nothing and the frame time still moves by that much); above the
+    /// where terrain occlusion removes nothing and the frame time still moves by that much); above the
     /// cliff the column is noise around zero, which is exactly what one tile against half
     /// a millisecond should look like.
     ///
@@ -386,13 +383,10 @@ pub struct TerrainOcclusionConfig {
     /// sample exists, so on the first frames of a cold start, or with the height cache
     /// empty, AGL reads as ellipsoid altitude and the 12 km ceiling is what shuts the
     /// march off over an ocean at 400 km.
-    ///
-    /// See `docs/terrain-plan.md` §7f for what a drawn tile was measured to be worth and
-    /// how the two halves were put on the same clock.
     pub max_camera_agl_m: f32,
     /// How far out the march looks, **metres** — where *occluders* are looked for, not how
     /// far an occludee may be. A tile 500 km out behind a ridge 11 km out is exactly what
-    /// D3 is for, and it is tested against the ridge, not skipped.
+    /// terrain occlusion is for, and it is tested against the ridge, not skipped.
     ///
     /// Beyond this the cells grow deep enough that a ridge's crest is averaged with the
     /// ground in front of it and the floor stops being a ridge at all (see
@@ -412,16 +406,16 @@ pub struct TerrainOcclusionConfig {
     ///
     /// The statistic is
     /// [`ReliefProbe`](super::terrain_relief::ReliefProbe)'s: the largest elevation angle,
-    /// taken at each visible leaf's **nearest** point, of the highest altitude D1
+    /// taken at each visible leaf's **nearest** point, of the highest altitude height-aware bounds
     /// *guarantees* over it. Measured over 34 poses in six families (`terrain::
     /// test_terrain_relief::terrain_relief_statistic_separates_the_family`) it tracks the
-    /// removal closely — the nine poses where D3 removes nine tiles or more all read
+    /// removal closely — the nine poses where terrain occlusion removes nine tiles or more all read
     /// **8.79° or above**, they carry 158 of the family's 168 removed tiles between the
     /// seventeen poses above the threshold, and every plain, every coast and every
     /// above-the-relief pose reads under 5°.
     ///
     /// **8.0° is where the threshold goes**, and it is a keep-side choice inside a band
-    /// the data says nobody can split: the lowest-reading pose at which D3 still removes
+    /// the data says nobody can split: the lowest-reading pose at which terrain occlusion still removes
     /// a paying number of tiles is the Inn valley at 700 m AGL — §7f's own ladder rung,
     /// **11 tiles** — at 8.79°, and the two non-paying poses just above it read 9.37° and
     /// 9.72°. Anything from 8° to 10° is worth the same to within a hundred microseconds
@@ -542,7 +536,7 @@ pub struct TerrainHorizon {
     /// alternative — rejecting candidates beyond the march's range — is **wrong**, and
     /// measurably so. Beyond that range is exactly where a ridge's shadow lands: the
     /// march limits where occluders are looked for, not how far an occludee may be, and a
-    /// tile 500 km out behind a ridge 11 km out is precisely the case D3 exists for. A
+    /// tile 500 km out behind a ridge 11 km out is precisely the case terrain occlusion exists for. A
     /// far-field cut-off cost the ridge world's valley pose its entire 20 % reduction.
     ridge_ceiling: f32,
 }
@@ -725,7 +719,7 @@ impl TerrainHorizon {
     /// were culled, or it is the first frame) stamps its whole-quadrant minimum over the
     /// entire march. Sound — that minimum really is a lower bound on its ground — and
     /// completely useless: on the ridge world it flattened every cell to the 600 m plateau
-    /// and left D3 culling against nothing but the curvature horizon.
+    /// and left terrain occlusion culling against nothing but the curvature horizon.
     ///
     /// The rectangle answers the question that was actually being asked. `near` clamps the
     /// camera's own ground position into the tile's lon/lat span, so a root in the next
@@ -1007,8 +1001,8 @@ impl TerrainHorizon {
     ///
     /// # The underground guard
     ///
-    /// `enforce_bounds` keeps the camera 2 m above the **ellipsoid**, not above the
-    /// ground, so the camera can legitimately be inside a mountain. Every cell's ridge
+    /// The camera's ground collision only knows the terrain that has loaded under it, so
+    /// the camera can legitimately end up inside a mountain whose tile arrives later. Every cell's ridge
     /// then towers over the eye, the test culls the entire globe, and the screen goes
     /// black — a correct answer to the wrong question. When the nearest ring's floor is
     /// above the camera in *every* sector the camera is enclosed, and the march is
@@ -1181,7 +1175,7 @@ impl TerrainHorizon {
     /// own extent. `f32::NEG_INFINITY` when the march is inactive or nothing is guaranteed
     /// in that direction.
     ///
-    /// It exists because the claim `docs/terrain-plan.md` §3.3 makes about **lateral gaps**
+    /// It exists because the claim about **lateral gaps**
     /// — that a col in a ridge pulls its sector's floor down to the valley and stops the
     /// cull — is a statement about this grid, and checking it through tile counts instead
     /// confounds it with the LOD's own choices about where to refine.
@@ -1199,7 +1193,7 @@ impl TerrainHorizon {
     /// **The stage's whole question**: is every drawable point of this box provably
     /// behind guaranteed terrain?
     ///
-    /// The box is the node's D1 box, which by I-1′ contains its mesh and its skirts.
+    /// The box is the node's height-aware box, which by I-1′ contains its mesh and its skirts.
     ///
     /// # Why the occludee's elevation is bounded from the box and not from a sphere
     ///

@@ -3,7 +3,7 @@
 The aircraft models in this repository are third-party work, modified to fit the engine. They are
 not covered by the code's license; each keeps its own.
 
-## `A350-1000.glb`
+## `assets/A350-1000.glb`
 
 - **Source:** [Airbus A350-1000](https://sketchfab.com/3d-models/airbus-a350-1000-97577f60b81140e995d27dbb0ca36181)
   by [OUTPISTON](https://sketchfab.com/outpiston) on Sketchfab

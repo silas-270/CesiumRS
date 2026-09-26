@@ -7,9 +7,8 @@
 // docs/lighting.md.
 //
 // **Nothing here is raymarched per pixel or per vertex.** The model is evaluated only by
-// the sky LUT pass (`render/sky_lut/`), into a small texture that is re-rendered when the
-// sun or the camera height has moved enough to matter; the sky and the globe just sample
-// it. See the "Sky LUT" section at the bottom of this file.
+// the sky LUT pass (`render/sky_lut/`), into a small texture that is re-rendered once per
+// frame in a single pass; the sky and the globe just sample it. See the "Sky LUT" section at the bottom of this file.
 //
 // Single scattering by air (Rayleigh) and aerosol (Mie), with ozone absorption, along a
 // short non-uniform raymarch. The light reaching each sample is attenuated along its own
@@ -276,7 +275,7 @@ fn atmo_radiance(s: AtmoScatter, c: f32) -> vec3<f32> {
 fn atmo_exposure(sun_elevation: f32) -> f32 {
     // In stops: none with the sun up, ~5.5 by the end of civil twilight (-6 degrees,
     // when the sky is still clearly lit), ~7.0 at deeper night.
-    return exp2(7.0 * smoothstep(0.04, -0.22, sun_elevation));
+    return exp2(7.0 * (1.0 - smoothstep(-0.22, 0.04, sun_elevation)));
 }
 
 /// Saturation applied after the tone curve. The per-channel shoulder desaturates

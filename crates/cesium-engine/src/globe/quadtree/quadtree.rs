@@ -132,7 +132,7 @@ fn obb_grid_steps(z: u8) -> u32 {
 }
 
 /// Calibration constant, *not* a geometry constant, despite the name this constant
-/// had before the pre-WP4 fixes documented on [`lod_factor_for`] (`GROUND_PER_RADIUS`).
+/// had before the fixes documented on [`lod_factor_for`] (`GROUND_PER_RADIUS`).
 ///
 /// The quantity that name claimed — tile ground width over the sphere-fitted
 /// [`QuadtreeNode::unstretched_radius`] — is a real, level-independent geometric
@@ -142,7 +142,7 @@ fn obb_grid_steps(z: u8) -> u32 {
 /// `test_true_ground_per_radius_is_not_the_calibration_constant` in
 /// `src/testing/lod/test_lod_sweep.rs`, converging as the flat-chord approximation's
 /// curvature error shrinks; coarser tiles, z ≤ 5, read measurably lower for the same
-/// reason the WP1 harness's own 3×3-grid curvature note describes). `256.0 / 315.0 ≈
+/// reason the LOD harness's own 3×3-grid curvature note describes). `256.0 / 315.0 ≈
 /// 0.8127` is not that number — it is ~1.74× off — because it was reverse-engineered
 /// to reproduce the old hard-coded `lod_factor = 2.0` at one reference configuration,
 /// not derived from the tile geometry. It is kept as a residual, not replaced with
@@ -154,9 +154,7 @@ fn obb_grid_steps(z: u8) -> u32 {
 /// calibration can still be checked by hand — see [`lod_factor_for`].
 const LOD_CALIBRATION_CONSTANT: f32 = 256.0 / 315.0;
 
-/// The LOD constant, derived instead of hand-picked — WP3/3b of `docs/pre-terrain-plan.md`,
-/// with the direction/exponent/naming fixes from the follow-up pass documented in that
-/// file's WP3 section.
+/// The LOD constant, derived instead of hand-picked.
 ///
 /// `QuadtreeNode::apply_lod` refines while `dist < unstretched_radius · lod_factor`.
 /// That is Cesium's rule `d < G(z)·H / (maxSSE · 2·tan(fovy/2))` with every variable
@@ -170,7 +168,7 @@ const LOD_CALIBRATION_CONSTANT: f32 = 256.0 / 315.0;
 ///            / (2·tan(fovy/2))
 /// ```
 ///
-/// `target_texel_ratio` is texels of imagery demanded per screen pixel — the WP1 LOD
+/// `target_texel_ratio` is texels of imagery demanded per screen pixel — the LOD
 /// harness's own metric (`texels / screen_px`, an *area* ratio), whose natural target
 /// is `1.0` (one texel per pixel: neither blurry nor wasteful). **Higher means more
 /// texels demanded per pixel, i.e. sharper, more-subdivided tiles** — `target_texel_ratio`
@@ -214,7 +212,7 @@ const LOD_CALIBRATION_CONSTANT: f32 = 256.0 / 315.0;
 /// engine defines `fovy` *as* an `atan` of the rational `24/56`. If the default
 /// `focal_length` ever changes, `2·tan(fovy/2)` will generally no longer be a clean
 /// rational, [`LOD_CALIBRATION_CONSTANT`] will need re-deriving against the new default,
-/// and the "exactly `2.0`, bit-identical" claim breaks. Re-run the WP1 LOD harness if so.
+/// and the "exactly `2.0`, bit-identical" claim breaks. Re-run the LOD harness if so.
 ///
 /// # Away from the calibration point
 ///
@@ -222,15 +220,14 @@ const LOD_CALIBRATION_CONSTANT: f32 = 256.0 / 315.0;
 /// length. `test_lod_factor_scales_with_sqrt_target_not_inverse_linear` and
 /// `test_lod_harness_aggregate_ratio_scales_with_target` (in
 /// `src/testing/lod/test_lod_sweep.rs`) check the `sqrt` relationship — both in the
-/// isolated function and end-to-end through the real quadtree and the WP1 harness's
+/// isolated function and end-to-end through the real quadtree and the LOD harness's
 /// own `texels/screen_px` metric — at `target_texel_ratio = 4.0`, where a `/target`
 /// bug or a linear-in-`target` bug would both disagree with the measured result but
 /// agree with it at `target = 1.0`.
 ///
 /// Deliberately *not* frozen out of this: 3a (measuring `dist` to the nearest point of
-/// the node's OBB rather than to its centre) was specified alongside this in WP3 and
-/// was measured to be incompatible with a no-op — it is deferred to WP4. See the
-/// "Refuted, moved to WP4" note in `docs/pre-terrain-plan.md`.
+/// the node's OBB rather than to its centre) was specified alongside this and
+/// was measured to be incompatible with a no-op — it is deferred.
 pub fn lod_factor_for(
     target_texel_ratio: f32,
     texture_size_px: f32,
@@ -241,7 +238,7 @@ pub fn lod_factor_for(
         / (2.0 * (fovy_rad * 0.5).tan())
 }
 
-/// The **geometric** LOD constant — E1 of `docs/terrain-plan.md` §8, and the terrain
+/// The **geometric** LOD constant — the terrain
 /// half of what [`lod_factor_for`] is for imagery.
 ///
 /// `QuadtreeNode::apply_lod` refines while `dist < geometric_error · terrain_lod_factor`,
@@ -265,7 +262,7 @@ pub fn lod_factor_for(
 /// geometric ratio (see its doc comment) — the imagery tile size, and
 /// `target_texel_ratio`, whose units are texels per pixel. Deriving the geometric term
 /// from it would make the shape of the globe depend on which imagery style happened to be
-/// loaded, which is the one coupling E1 exists to break.
+/// loaded, which is the one coupling the terrain LOD term exists to break.
 ///
 /// # `max_geometric_error_px`
 ///
@@ -352,7 +349,7 @@ fn tangent_frame(center_lon_deg: f64, up: DVec3) -> (DVec3, DVec3) {
 ///
 /// `surface_center` stays on the ellipsoid whatever the span is: it is the origin
 /// the mesh's f32 vertex offsets are taken against (I-2), not a bound. Moving it
-/// with relief is a Phase C/D question, not a Phase A one.
+/// with relief is a question for later stages.
 fn fit_obb<S: SurfaceModel>(
     b: &TileBounds,
     steps: u32,
@@ -410,7 +407,7 @@ fn fit_obb<S: SurfaceModel>(
 ///
 /// One caller — `unstretched_radius`, whose job is to measure the *ground* extent of
 /// a tile for the LOD threshold, not the extent of the geometry drawn over it. See
-/// the comment at that call site for why Phase D1 keeps it flat.
+/// the comment at that call site for why height-aware bounds keeps it flat.
 fn fit_obb_flat(b: &TileBounds, steps: u32) -> (DVec3, f32, OrientedBoundingBox) {
     fit_obb::<Ellipsoid>(b, steps, &())
 }
@@ -468,8 +465,8 @@ struct SubPatch<S: SurfaceModel> {
 }
 
 /// The surface-model parameter selects which [`fit_obb`] the sub-boxes are built by
-/// (Phase D1 makes that sample a height interval) and what each sub-patch carries for
-/// the limb test (Phase D2: a scaled-space bounding sphere). Both are `()`-sized for
+/// (height-aware bounds makes that sample a height interval) and what each sub-patch carries for
+/// the limb test (a scaled-space bounding sphere). Both are `()`-sized for
 /// [`Ellipsoid`], so the struct's size and layout are unchanged.
 pub struct SubGrid<S: SurfaceModel = Ellipsoid> {
     k: u32,
@@ -647,10 +644,10 @@ impl<S: SurfaceModel> SubGrid<S> {
     /// stored increasing in φ. `lo = k − 1 − vi` is that conversion, and it leaves
     /// the span itself in the `[low, high]` order every `*_span_max` expects.
     ///
-    /// **Phase D2.** This used to call `span_is_occluded` directly; it now dispatches
-    /// to the surface model, for the same reason the node-level test does. Phase C
+    /// This used to call `span_is_occluded` directly; it now dispatches
+    /// to the surface model, for the same reason the node-level test does. Earlier code
     /// deliberately left it alone (`Heightfield`'s node-level test was still the flat
-    /// one, so a split here would have been half a change); with D2 the sub-patch test
+    /// one, so a split here would have been half a change); with the relief-aware horizon test the sub-patch test
     /// is the same unsound rectangle collapse, one level finer, and by I-7 a false
     /// negative here deletes the same subtree.
     #[inline]
@@ -718,9 +715,9 @@ pub enum Stage {
     /// case is unreachable — a grid-less node is always settled there — but the
     /// stage is still total, because a pipeline may list it alone.
     SubPatchGrid,
-    /// **D3** — the tile is behind a *mountain*, not behind the planet
-    /// ([`super::terrain_occlusion`], `docs/terrain-plan.md` §3.3). `Cull` when the
-    /// circumsphere of the node's D1 box lies entirely below the guaranteed ridge this
+    /// The tile is behind a *mountain*, not behind the planet
+    /// ([`super::terrain_occlusion`]). `Cull` when the
+    /// circumsphere of the node's height-aware box lies entirely below the guaranteed ridge this
     /// frame's occlusion march found in front of it; `Undecided` otherwise, including
     /// whenever the march is inactive (terrain off, camera above the altitude gate, or
     /// no `CullContext::terrain` at all — which is always, on the flat arm). Never
@@ -737,10 +734,9 @@ pub enum Stage {
     ///
     /// There used to be a `Stage::Fog` next to it whose contract was the opposite — it
     /// deliberately discarded geometry that is genuinely visible, and was fenced out of
-    /// [`CullPipeline::DEFAULT`] for exactly that reason. E1c measured what it removed
+    /// [`CullPipeline::DEFAULT`] for exactly that reason. evaluation measured what it removed
     /// and the answer was **nothing, at any camera**; it is gone, and the fog *relaxation*
-    /// in `apply_lod`, where every measured effect of WP5 always lived, is not. See
-    /// `docs/terrain-plan.md` §8.
+    /// in `apply_lod`, where every measured effect of fog always lived, is not.
     ///
     /// # Why it is placed second, right after [`Stage::Horizon`]
     ///
@@ -803,7 +799,7 @@ impl Stage {
                 let Some(horizon) = ctx.terrain else {
                     return StageVerdict::Undecided;
                 };
-                // The node's own D1 box, which by I-1' contains every drawable point of
+                // The node's own height-aware box, which by I-1' contains every drawable point of
                 // the tile, skirts included. The **box**, not `bounding_radius` and not
                 // a sphere around it: a tile's box is a flat slab tangent to the globe,
                 // and collapsing it to a sphere claims the tile could be overhead. See
@@ -821,7 +817,7 @@ impl Stage {
 
 /// The most stages a pipeline can hold — one of each [`Stage`].
 ///
-/// # 4 → 5 (D3) → 4 again (E1c), and what each move cost the flat path
+/// # Number of stages, and what each move cost the flat path
 ///
 /// [`CullPipeline::keeps`] loops over `0..MAX_STAGES` with a `break` at `len`
 /// deliberately, so the trip count is a constant and the three-way `match` in
@@ -830,8 +826,8 @@ impl Stage {
 /// therefore adds or removes one such copy, which `CullPipeline::DEFAULT` (three stages)
 /// breaks out of before reaching: the cost is code size, not frame time.
 ///
-/// D3 raised it to 5 for `TERRAIN_DEFAULT_WITH_FOG`, and `bench_update` read a mean
-/// `QuadtreeManager::update` unchanged inside run-to-run variance. E1c deleted
+/// Terrain occlusion raised it to 5 for `TERRAIN_DEFAULT_WITH_FOG`, and `bench_update` read a mean
+/// `QuadtreeManager::update` unchanged inside run-to-run variance. Evaluation deleted
 /// `Stage::Fog` — measured to cull nothing at any camera — and with it both `*_WITH_FOG`
 /// pipelines, so the longest list is `TERRAIN_DEFAULT`'s four and the constant comes back
 /// down. `bench_update` again: 9.3 µs before, 9.4 µs after, on a machine whose same-code
@@ -903,7 +899,7 @@ impl CullPipeline {
         CullPipeline::of(&[Stage::Horizon, Stage::NodeFrustum, Stage::SubPatchGrid]);
 
     /// **The terrain arm's default** — `DEFAULT` with [`Stage::TerrainOcclusion`]
-    /// inserted second, right behind the limb test. D3 of `docs/terrain-plan.md` §7.
+    /// inserted second, right behind the limb test.
     ///
     /// # This one *is* sound, and is measured as such
     ///
@@ -912,9 +908,9 @@ impl CullPipeline {
     /// `testing::terrain::test_terrain_occlusion` holds it to FN = 0 against the drawn
     /// mesh. Putting it here and then measuring something else would defeat the point.
     ///
-    /// Until E1c there was a `TERRAIN_DEFAULT_WITH_FOG` beside it, five stages long, and
+    /// Previously there was a `TERRAIN_DEFAULT_WITH_FOG` beside it, five stages long, and
     /// production ran that. `Stage::Fog` was measured to cull **nothing, at any camera**,
-    /// and was deleted — see `docs/terrain-plan.md` §8 E1c. This constant is now what the
+    /// and was deleted. This constant is now what the
     /// terrain arm runs as well as what its harness measures, which is the arrangement
     /// the section above was arguing for anyway.
     ///
@@ -1010,14 +1006,14 @@ impl Default for CullPipeline {
 /// state of its own, it indexes into this. Anything a new stage needs precomputed
 /// per frame belongs here, next to `horizon`.
 /// Which distance `QuadtreeNode::apply_lod` measures the camera against —
-/// WP4/C (`docs/pre-terrain-plan.md`), measurement only.
+/// Measurement only.
 ///
 /// `Centre` is the only mode production code ever selects: [`QuadtreeManager::new`]
 /// defaults to it and nothing in `wgpu_state.rs` sets anything else, so this enum
-/// existing changes no shipped behaviour. `Box` exists purely so the WP4/C harness
-/// comparison can measure 3a (box-distance, refuted as a no-op in WP3 — see the
+/// existing changes no shipped behaviour. `Box` exists purely so the harness
+/// comparison can measure 3a (box-distance, see the
 /// callout there) against an equal tile budget rather than an equal
-/// `target_texel_ratio`. Whether to adopt `Box` for real is WP4/D's decision, gated
+/// `target_texel_ratio`. Whether to adopt `Box` for real is a future decision, gated
 /// on the product trade C's report lays out — this switch does not make that
 /// decision, it only makes the comparison measurable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1027,35 +1023,33 @@ pub enum LodDistanceMode {
     #[default]
     Centre,
     /// Distance to the nearest point of the node's (stretched) `obb` —
-    /// [`OrientedBoundingBox::distance_to_point`], committed unused in `37d5f6f`
-    /// for exactly this. Can only ever be `<=` the centre distance, so it can only
-    /// trigger *more* subdivision, never less (WP3's refutation measured +70% tiles
-    /// at equal `target_texel_ratio`, which is why WP4/C compares at equal tile
-    /// budget instead).
+    /// [`OrientedBoundingBox::distance_to_point`]. Can only ever be `<=` the centre
+    /// distance, so it can only trigger *more* subdivision, never less (measured at +70%
+    /// tiles at equal `target_texel_ratio`, which is why the two are compared at equal
+    /// tile budget instead).
     Box,
 }
 
-/// How fog is allowed to relax the **geometric** half of `apply_lod`'s threshold —
-/// **E1b** of `docs/terrain-plan.md` §8.
+/// How fog is allowed to relax the **geometric** half of `apply_lod`'s threshold.
 ///
-/// WP5 tuned its relaxation on a globe with no relief, where coarsening the far field is
+/// Fog tuned its relaxation on a globe with no relief, where coarsening the far field is
 /// free because there is nothing out there but texture. With terrain it is not free: it is
 /// the difference between distant mountains having a shape and distant mountains being
 /// coarse bumps. §7c left the question open and named it the honest one; this enum is what
 /// made it a measurement rather than an argument, and §8 has the table.
 ///
-/// The imagery term is **not** affected by any of these — it keeps WP5's shipped
+/// The imagery term is **not** affected by any of these — it keeps the shipped
 /// `× (1 − fog)` unconditionally, because the argument for relaxing *imagery* in fog is
 /// exactly as good as it was: a texture you cannot see through does not need to be sharp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TerrainFogPolicy {
-    /// WP5's relaxation applied to the geometric term as well: `terrain_dist ×= 1 − fog`.
-    /// What E1a shipped, before E1b measured it.
+    /// Fog relaxation applied to the geometric term as well: `terrain_dist ×= 1 − fog`.
+    /// What was originally used before evaluation measured it.
     Relax,
     /// Fog does not touch the geometric term at all. The shape of the ground is refined on
     /// its own error and fog only decides how sharp the picture painted on it needs to be.
     ///
-    /// **What E1b measured and shipped.** At an equal tile budget over ten real-DEM
+    /// **What was measured and shipped.** At an equal tile budget over ten real-DEM
     /// poses it leaves 21 % less geometric error in the far field than [`Self::Relax`]
     /// — 84.3 px of summed far-field p95 against 106.3 — and moves a fifth more of the
     /// budget out there, which is exactly what §7c said was being lost. Fog's case for
@@ -1079,7 +1073,7 @@ pub enum TerrainFogPolicy {
     ///
     /// Bounded below by `1/(1 + sse/max_px)` however thick the fog gets, which is the
     /// structural difference from [`Self::Relax`]: Cesium's form can halve the distance,
-    /// WP5's can take it to zero.
+    /// simpler falloff can take it to zero.
     CesiumSse,
 }
 
@@ -1087,7 +1081,7 @@ pub enum TerrainFogPolicy {
 pub struct CullContext<'a> {
     pub frustum: Frustum,
     pub horizon: HorizonCamera,
-    /// This frame's terrain occlusion march — **D3**, and the only borrowed thing in
+    /// This frame's terrain occlusion march, and the only borrowed thing in
     /// this struct.
     ///
     /// A shared reference rather than a value on purpose. The march is a
@@ -1106,29 +1100,29 @@ pub struct CullContext<'a> {
     /// Copied by value from [`QuadtreeManager::pipeline`] — 4 bytes, so the context
     /// stays `Copy` and the stage list is not rebuilt per frame.
     pub pipeline: CullPipeline,
-    /// WP4/C measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`,
+    /// Measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`,
     /// production's only value.
     pub lod_distance_mode: LodDistanceMode,
-    /// This frame's atmospheric fog density (WP5) — `0.0` (the default) means "no
+    /// This frame's atmospheric fog density — `0.0` (the default) means "no
     /// fog effect", which is both the harness's only value and what a camera above
-    /// `FogConfig::max_height_m` computes. Since E1c deleted `Stage::Fog` there is
+    /// `FogConfig::max_height_m` computes. Since the deletion of `Stage::Fog` there is
     /// exactly one consumer left — `QuadtreeNode::apply_lod`'s relaxation, which is
-    /// where every measured effect of WP5 always came from. See [`super::fog`]'s
+    /// where every measured effect of fog always came from. See [`super::fog`]'s
     /// module doc comment.
     pub fog_density: f32,
-    /// **E1** — what one megametre of geometric error is worth in refinement distance
-    /// (`docs/terrain-plan.md` §8). See [`terrain_lod_factor_for`].
+    /// What one megametre of geometric error is worth in refinement distance.
+    /// See [`terrain_lod_factor_for`].
     ///
     /// `0.0` (the default) switches the terrain half of `apply_lod`'s threshold off
     /// completely — `max(imagery_dist, 0)` is `imagery_dist` for any non-negative
-    /// threshold, and every one of them is. That is what every caller that predates E1
+    /// threshold, and every one of them is. That is what every caller that predates terrain LOD
     /// gets, including the whole flat path, which does not read this field at all.
     pub terrain_lod_factor: f32,
-    /// **E1b** — how fog is allowed to touch the geometric term. See
+    /// How fog is allowed to touch the geometric term. See
     /// [`TerrainFogPolicy`]; the default is the measured winner and the flat path never
     /// reads it.
     pub terrain_fog_policy: TerrainFogPolicy,
-    /// **E1b**, and only [`TerrainFogPolicy::CesiumSse`] reads it: `FogConfig::sse`
+    /// Only [`TerrainFogPolicy::CesiumSse`] reads it: `FogConfig::sse`
     /// divided by `TerrainConfig::max_geometric_error_px`, the one ratio Cesium's form
     /// needs. Carried as a ratio rather than as the two numbers because that is all the
     /// formula uses, and computing it at the frame boundary keeps `apply_lod` free of a
@@ -1159,7 +1153,7 @@ impl<'a> CullContext<'a> {
         }
     }
 
-    /// D3 only — this frame's occlusion march. `None` (the default) is what every
+    /// Terrain occlusion only — this frame's occlusion march. `None` (the default) is what every
     /// existing caller and the whole flat path get, and it makes
     /// [`Stage::TerrainOcclusion`] a single null check.
     pub fn with_terrain_horizon(
@@ -1170,26 +1164,26 @@ impl<'a> CullContext<'a> {
         self
     }
 
-    /// WP4/C only — see [`LodDistanceMode`]. Not called anywhere in production.
+    /// Measurement only — see [`LodDistanceMode`]. Not called anywhere in production.
     pub fn with_lod_distance_mode(mut self, mode: LodDistanceMode) -> Self {
         self.lod_distance_mode = mode;
         self
     }
 
-    /// WP5 only — see [`super::fog::FogConfig`] and this struct's `fog_density` field.
+    /// Fog only — see [`super::fog::FogConfig`] and this struct's `fog_density` field.
     pub fn with_fog_density(mut self, fog_density: f32) -> Self {
         self.fog_density = fog_density;
         self
     }
 
-    /// **E1** only — see [`terrain_lod_factor_for`] and this struct's
-    /// `terrain_lod_factor` field. `0.0`, the default, is the pre-E1 threshold exactly.
+    /// See [`terrain_lod_factor_for`] and this struct's
+    /// `terrain_lod_factor` field. `0.0`, the default, is the pre-terrain-LOD threshold exactly.
     pub fn with_terrain_lod_factor(mut self, terrain_lod_factor: f32) -> Self {
         self.terrain_lod_factor = terrain_lod_factor;
         self
     }
 
-    /// **E1b** only — see [`TerrainFogPolicy`]. Unread on the flat arm.
+    /// See [`TerrainFogPolicy`]. Unread on the flat arm.
     pub fn with_terrain_fog(mut self, policy: TerrainFogPolicy, sse_ratio: f32) -> Self {
         self.terrain_fog_policy = policy;
         self.terrain_fog_sse_ratio = sse_ratio;
@@ -1253,7 +1247,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         Self::for_surface_with(id, <S::NodeExtra as Default>::default())
     }
 
-    /// A node whose surface payload is known at construction — Phase D1.
+    /// A node whose surface payload is known at construction.
     ///
     /// Everything derived from that payload (the two boxes, the bounding radii, the
     /// sub-grid and the patch) is fitted here, once. The flat path reaches this
@@ -1272,15 +1266,14 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         // of a geometric object, and the threshold derived from it is
         // `subdivide_dist`.
         //
-        // **Phase D1 deliberately keeps this on the zero-altitude span** — see
+        // **Deliberately keeps this on the zero-altitude span** — see
         // [`fit_obb_flat`]. Relief does grow the tile's true extent, and feeding that
         // growth in here would grow `subdivide_dist` with it and refine terrain mode
         // deeper than flat mode at the same camera distance. That is a real and
         // probably desirable effect, but it is an *LOD* change, it is `apply_lod`'s
-        // dispatch site in `docs/terrain-plan.md` §1's table, and that site is Phase
-        // E1 (`max(imagery_dist, terrain_dist)`, from the tile's measured deviation
-        // from its parent). D1 is a culling change; smuggling an LOD change in with
-        // it would make the tile-count delta in the D1 captures unreadable.
+        // dispatch site, and that site is the geometric LOD term (`max(imagery_dist, terrain_dist)`, from the tile's measured deviation
+        // from its parent). Height-aware bounds is a culling change; smuggling an LOD change in with
+        // it would make the tile-count delta in the captures unreadable.
         let raw = tile_bounds_unstretched(&id);
         let (_, unstretched_radius, _) = fit_obb_flat(&raw, 2);
 
@@ -1301,7 +1294,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         }
     }
 
-    /// Re-fits everything derived from the surface payload, in place — Phase D1.
+    /// Re-fits everything derived from the surface payload, in place.
     ///
     /// A node is created long before its height tile lands, so its interval is a
     /// conservative inheritance ([`SurfaceModel::child_extra`]) until real data
@@ -1346,7 +1339,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
     /// Inheritance is the **only** source a new child has: the quadtree runs before
     /// anything has been fetched for a tile it has just decided to look at, so a
     /// child's own height data cannot exist yet by construction. `child_extra` is
-    /// therefore where Phase D1's soundness lives, and why it widens rather than
+    /// therefore where height-aware bounds soundness lives, and why it widens rather than
     /// copies — see its doc comment. Real data replaces the inherited interval later,
     /// through [`Self::set_extra`].
     ///
@@ -1397,16 +1390,15 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
     /// `&mut self`.
     fn apply_lod(&mut self, ctx: &CullContext, lod_factor: f32) {
         // LOD distance, also from an f64 subtraction (§8.2): free, since the frame
-        // is camera-relative anyway. `Centre` (the default, and production's only
-        // value) is exactly the pre-WP4/C expression; `Box` is WP4/C's measurement
-        // switch — see `LodDistanceMode`. `OrientedBoundingBox::distance_to_point`
+        // is camera-relative anyway. `Centre` is the default and production's only
+        // value; `Box` is a measurement switch — see `LodDistanceMode`. `OrientedBoundingBox::distance_to_point`
         // keeps the same f64-subtraction discipline internally.
         let dist = match ctx.lod_distance_mode {
             LodDistanceMode::Centre => (self.center - ctx.frustum.eye).length() as f32,
             LodDistanceMode::Box => self.obb.distance_to_point(ctx.frustum.eye),
         };
 
-        // Fog relaxation — WP5. Cesium subtracts `fog(dist, density) * fog.sse`
+        // Fog relaxation. Cesium subtracts `fog(dist, density) * fog.sse`
         // from its screen-space-error term, so a partly-fogged tile's error sits
         // closer to (or under) the refine threshold and it refines less. This
         // engine has no error term to subtract from — it refines while `dist <
@@ -1417,13 +1409,13 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         //
         // At `fog = 0` (no fog, or this node outside it) the threshold is
         // unchanged. At `fog -> 1` the threshold shrinks to 0, so a heavily-fogged
-        // node stops accepting further refinement. (Until E1c there was a
+        // node stops accepting further refinement. (Previously there was a
         // `Stage::Fog` that culled such a node outright a little later; it was
         // measured to cull nothing at any camera and deleted, so this relaxation is
         // now the whole of what fog does to the tree.) `fog.sse` is deliberately
         // **not** used here: it is a pixel-space screen-space-error constant, and
         // this formula has no error term in those units to scale — see
-        // `FogConfig::sse`'s doc comment for what E1b measured it against instead. Distance is the node's own nearest-point
+        // `FogConfig::sse`'s doc comment for what evaluation measured it against instead. Distance is the node's own nearest-point
         // distance (`obb.distance_to_point`), independent of `LodDistanceMode` — fog
         // concealment is a property of the tile's own geometry, not of which
         // experimental LOD distance metric is active.
@@ -1445,7 +1437,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         let is_subdivided = self.children.is_some();
         let imagery_dist = self.unstretched_radius * lod_factor * fog_relaxation;
 
-        // **E1** — the geometric half of the threshold (`docs/terrain-plan.md` §8).
+        // The geometric half of the threshold.
         //
         // Until here this engine has refined on picture sharpness alone: a flat coastal
         // tile and a shattered massif of the same on-screen size got the same treatment,
@@ -1455,7 +1447,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         //   subdivide_dist = max(imagery_dist, terrain_dist)
         //
         // and whichever of the two still wants resolution at this distance gets it. The
-        // imagery half is untouched — every number WP3/WP4 measured into `lod_factor_for`
+        // imagery half is untouched — every number measured into `lod_factor_for`
         // still means what it meant.
         //
         // `terrain_dist = G · terrain_lod_factor` is Cesium's `d < G·H/(maxSSE·2·tan(fovy/2))`
@@ -1463,13 +1455,13 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
         // and the rest of the expression in `terrain_lod_factor_for`. The fog relaxation
         // multiplies it exactly as it multiplies the imagery term: with relief, whether
         // that is the right way to spend the far field is a question §7c leaves open and
-        // E1b answers with a measurement.
+        // Evaluation answers with a measurement.
         //
         // The whole block is behind a compile-time `S::HAS_GEOMETRIC_ERROR`, so
         // `QuadtreeNode<Ellipsoid>` emits the `imagery_dist` line and nothing else.
         let subdivide_dist = if S::HAS_GEOMETRIC_ERROR {
-            // **E1b**: which of the three answers to "what may fog do to the *shape*
-            // budget" this frame is running. `Relax` is WP5's, measured against a globe
+            // Which of the three answers to "what may fog do to the *shape*
+            // budget" this frame is running. `Relax` is measured against a globe
             // with nothing in the far field but texture; the default is what §8's table
             // picked once there was relief out there to lose.
             let geometric_fog = match ctx.terrain_fog_policy {
@@ -1512,8 +1504,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
     /// Reorders `self.children` in place so the quadrant nearest `eye` (measured
     /// in the tile's own east/north tangent frame) lands at index 0 and the
     /// diagonally-opposite quadrant lands at index 3 — a camera-relative,
-    /// near-to-far ordering, mirroring Cesium's `visitVisibleChildrenNearToFar`
-    /// (WP2b, `docs/pre-terrain-plan.md`).
+    /// near-to-far ordering, mirroring Cesium's `visitVisibleChildrenNearToFar`.
     ///
     /// # Why this reorders by quadrant *identity*, not by array position
     ///
@@ -1532,7 +1523,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
     /// its original creation order with **no visible reordering at all**. This
     /// was caught by comparing an order-sensitive traversal dump before and
     /// after the change and finding it byte-identical despite the reorder
-    /// firing thousands of times — see the WP2b report for the reproduction.
+    /// firing thousands of times.
     ///
     /// The fix: identify each child's quadrant from its own [`TileId`] (a
     /// child's `x`/`y` parity relative to `self.id * 2` is exactly its
@@ -1659,7 +1650,7 @@ impl<S: SurfaceModel> QuadtreeNode<S> {
     }
 }
 
-/// Where a node's surface payload comes from — Phase D1's feed, and the whole of it.
+/// Where a node's surface payload comes from — the height bounds feed, and the whole of it.
 ///
 /// # Why this is a trait and not a field on [`CullContext`]
 ///
@@ -1754,7 +1745,7 @@ fn probe_relief<S: SurfaceModel>(
     probe.consider(&tile_bounds(&node.id), top as f64)
 }
 
-/// One node of [`QuadtreeManager::refresh_terrain_horizon`]'s occluder walk — **D3**.
+/// One node of [`QuadtreeManager::refresh_terrain_horizon`]'s occluder walk — terrain occlusion.
 ///
 /// Three outcomes, and the middle one is what keeps the walk bounded:
 ///
@@ -1798,7 +1789,7 @@ fn stamp_occluders<S: SurfaceModel>(
     }
 }
 
-/// Stamps one node's `4 × 4` occluder grid, sub-cell by sub-cell — **D3**.
+/// Stamps one node's `4 × 4` occluder grid, sub-cell by sub-cell — terrain occlusion.
 ///
 /// # Why each sub-cell is placed by the box's own axes
 ///
@@ -2177,30 +2168,30 @@ pub struct QuadtreeManager<S: SurfaceModel = Ellipsoid> {
     /// per-frame context — because it survives frames and changes only when a mode
     /// does; the context takes a copy.
     pub pipeline: CullPipeline,
-    /// WP4/C measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`;
+    /// Measurement switch — see [`LodDistanceMode`]. Defaults to `Centre`;
     /// `wgpu_state.rs` never sets this, so production behaviour is unchanged by its
     /// existence.
     pub lod_distance_mode: LodDistanceMode,
-    /// This frame's fog density — WP5. `0.0` (the default) is a true no-op: every
-    /// caller that never sets this field gets exactly pre-WP5 behaviour, in both
-    /// `QuadtreeNode::apply_lod`'s relaxation (multiplies by `1.0`), which since E1c
+    /// This frame's fog density. `0.0` (the default) is a true no-op: every
+    /// caller that never sets this field gets default behaviour, in both
+    /// `QuadtreeNode::apply_lod`'s relaxation (multiplies by `1.0`), which since the
     /// is its only consumer. `wgpu_state.rs` is the only production
     /// caller that sets it, recomputed fresh every frame from camera altitude — see
     /// [`super::fog::fog_density_for`].
     pub fog_density: f32,
-    /// **E1** — this frame's geometric LOD constant. `0.0` (the default) is a true
+    /// This frame's geometric LOD constant. `0.0` (the default) is a true
     /// no-op, exactly as `fog_density = 0.0` is: the terrain half of `apply_lod`'s
-    /// threshold vanishes and every pre-E1 caller gets the threshold it always got.
+    /// threshold vanishes and every caller gets the threshold it always got.
     /// Only the terrain arm ever sets it — see [`terrain_lod_factor_for`].
     pub terrain_lod_factor: f32,
-    /// **E1b** — this frame's fog policy for the geometric term, and the `sse /
+    /// This frame's fog policy for the geometric term, and the `sse /
     /// max_geometric_error_px` ratio only [`TerrainFogPolicy::CesiumSse`] reads. Both are
     /// dead weight on the flat arm, which never reaches the branch that reads them.
     pub terrain_fog_policy: TerrainFogPolicy,
     pub terrain_fog_sse_ratio: f32,
     /// Maximum zoom level to refine down to. Defaults to [`MAX_ZOOM`].
     pub max_zoom: u8,
-    /// **D3** — this frame's occlusion march, or `None` when there is none.
+    /// This frame's occlusion march, or `None` when there is none.
     ///
     /// `None` on the flat arm always: [`Self::refresh_terrain_horizon`] is the only thing
     /// that sets it and nothing calls it for [`Ellipsoid`], whose
@@ -2246,7 +2237,7 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
         }
     }
 
-    /// Re-derives every node's surface payload from `src` — Phase D1.
+    /// Re-derives every node's surface payload from `src`.
     ///
     /// Call once per frame, **before** [`Self::update`]. See [`NodeExtraSource`] for
     /// why this is a separate pass rather than an argument threaded through the
@@ -2262,7 +2253,7 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
     }
 
     /// Rebuilds this frame's terrain occlusion march from the tree as it stands —
-    /// **D3**, `docs/terrain-plan.md` §3.3.
+    /// Terrain occlusion.
     ///
     /// Call after [`Self::refresh_extras`] and before [`Self::update`], with the camera
     /// this frame will cull against. Never called for [`Ellipsoid`].
@@ -2271,7 +2262,7 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
     ///
     /// Because the tree is the only place a *sound lower bound on the terrain surface*
     /// already exists. Every node carries one ([`SurfaceModel::occluder_floor`], which
-    /// for `Heightfield` is D1's `HeightBounds::floor`), it is derived from B3's min/max
+    /// for `Heightfield` is height-aware bounds `HeightBounds::floor`), it is derived from min/max
     /// mip with the cell range rounded outward, and where no data has arrived it is the
     /// parent's widened by the measured margin — loose, and loose downward, which
     /// occludes less rather than more. Querying the height cache again here would have
@@ -2309,8 +2300,8 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
         // first because they are two comparisons, then the relief probe walks the visible
         // leaves — the set the renderer is about to draw, not the tree.
         //
-        // A `false` here is exactly a shut gate: D3 answers `Undecided` and the frame
-        // runs on D1+D2. Nothing about it can hide a tile that should be drawn.
+        // A `false` here is exactly a shut gate: terrain occlusion answers `Undecided` and the frame
+        // runs on height-aware bounds and the relief-aware horizon test. Nothing about it can hide a tile that should be drawn.
         let mut horizon = if cfg.gate_shut(cam_alt, cam_agl) || self.relief_clears(frustum, cfg) {
             super::terrain_occlusion::TerrainHorizon::begin(frustum, cam_alt, cam_agl, cfg)
         } else {
@@ -2336,7 +2327,7 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
     /// The tree it reads is the previous frame's, exactly like the occluder walk below it
     /// and for the same reason: a node's provable ground does not go stale when the camera
     /// moves. On the very first frame nothing is marked visible yet, so this reads `false`
-    /// and D3 sits out one frame — which is also the frame on which no height tile has
+    /// and terrain occlusion sits out one frame — which is also the frame on which no height tile has
     /// landed and the march could not have culled anything.
     fn relief_clears(
         &self,
@@ -2360,7 +2351,7 @@ impl<S: SurfaceModel> QuadtreeManager<S> {
         probe.clears()
     }
 
-    /// Forgets this frame's march. The next [`Self::update`] runs D1+D2 only.
+    /// Forgets this frame's march. The next [`Self::update`] runs height-aware bounds and the relief-aware horizon test only.
     pub fn clear_terrain_horizon(&mut self) {
         self.terrain_horizon = None;
     }

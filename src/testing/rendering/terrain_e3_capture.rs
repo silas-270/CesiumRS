@@ -1,7 +1,7 @@
-//! Headless captures for Phase E3 of `docs/terrain-plan.md` §8 — the two parts of it
-//! that only a picture can settle.
+//! Headless captures for the terrain ground reference — the two parts of it that only
+//! a picture can settle.
 //!
-//! **E3.1, field elevation.** The flight planner now puts an aircraft at its departure
+//! **Field elevation.** The flight planner now puts an aircraft at its departure
 //! field's true elevation. Whether that is *right* is a question about two numbers
 //! agreeing: the elevation the planner was handed, and the elevation of the ground the
 //! globe draws under it. This module asks the planner for a real plan, puts the camera
@@ -13,7 +13,7 @@
 //! aircraft at sea level — 581 m underground at Innsbruck, 2 548 m underground at
 //! Bogotá.
 //!
-//! **E3.3, the collision floor.** A pose is placed *inside* the Nordkette, 1 400 m below
+//! **The collision floor.** A pose is placed *inside* the Nordkette, 1 400 m below
 //! the ridge line. `enforce_bounds` should lift it onto the ridge; the capture prints the
 //! altitude before and after so the lift is a number as well as a picture, and the
 //! picture says whether what comes out is a view from a summit or a view from inside
@@ -69,7 +69,7 @@ struct Pose {
     target: glam::Vec3,
     up: glam::Vec3,
     /// What the pose *asked* for, in metres above the ellipsoid. Printed alongside where
-    /// the camera actually ended up, because E3.3 may have moved it.
+    /// the camera actually ended up, because collision bounds enforcement may have moved it.
     requested_alt_m: f64,
     what: String,
 }
@@ -78,7 +78,7 @@ struct Pose {
 /// `pitch_deg` below the horizontal.
 ///
 /// Same construction as `rendering::terrain_capture::oblique`, with the bearing freed
-/// from due north — the E3 poses look along runways and across valleys, not only at
+/// from due north — the poses look along runways and across valleys, not only at
 /// the nearest wall.
 fn look(
     name: &'static str,
@@ -107,7 +107,7 @@ fn look(
     }
 }
 
-/// The same config the Phase C/D captures use, so the two sets are comparable.
+/// The same config the terrain captures use, so the two sets are comparable.
 fn config(terrain: bool) -> TileEngineConfig {
     TileEngineConfig {
         base_imagery_url: satellite_imagery_url(),
@@ -253,16 +253,16 @@ fn capture(pose: &Pose, suffix: &str, terrain: bool) {
     );
 }
 
-/// E3.1 at two mountain airports: Innsbruck (581 m, at the bottom of a 2 km trench) and
+/// Field elevation at two mountain airports: Innsbruck (581 m, at the bottom of a 2 km trench) and
 /// Bogotá (2 548 m, on a plateau).
 ///
 /// Three shots each, all from the same place, differing only in the altitude the planner
 /// hands over and whether the globe has terrain:
 ///
-/// - `on_ground` — the altitude E3.1 now produces, on a globe with terrain. The eye is
+/// - `on_ground` — the altitude field elevation now produces, on a globe with terrain. The eye is
 ///   300 m over the runway; the ground should be right there under it.
 /// - `sea_level` — the altitude the old default produced, on the same globe. That
-///   position is inside the mountainside, so E3.3 refuses it and the printed "asked" and
+///   position is inside the mountainside, so the collision floor refuses it and the printed "asked" and
 ///   "eye" differ by the field elevation. The gap *is* the error the flip removes.
 /// - `flat_globe` — the `on_ground` altitude with the globe's terrain switched off. The
 ///   documented caveat: a correct plan floating over a surface that is not there.
@@ -342,10 +342,10 @@ fn capture_field_elevation_at_mountain_airports() {
     }
 }
 
-/// E3.3: a pose 1 400 m inside the Nordkette.
+/// The collision floor: a pose 1 400 m inside the Nordkette.
 ///
 /// The ridge at (47.3167 N, 11.3833 E) is at 2 043 m in the Terrarium source. The pose
-/// asks for 600 m. Before E3.3 the camera stayed there, inside the rock; after it,
+/// asks for 600 m. Previously the camera stayed there, inside the rock; now,
 /// `enforce_bounds` lifts it to 2 045 m and the printed altitude says so. The
 /// `above_ridge` shot is the same place from 2 400 m, as a reference for what the ridge
 /// is supposed to look like from up there.

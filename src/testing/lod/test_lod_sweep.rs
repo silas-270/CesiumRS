@@ -1,7 +1,6 @@
 //! Harness self-checks, and the measurement run itself.
 //!
-//! Per `docs/pre-terrain-plan.md` WP1, this module **measures and does not assert**
-//! a target yet — there is no calibrated `target_texel_ratio` until WP4. What it
+//! This module **measures and does not assert** a target. What it
 //! does assert are properties of the *instrument*: that sampling is faithful to the
 //! shared tile-bounds definition, and that the measurement run itself behaves (no
 //! NaNs leaking into aggregates, every counted tile lands in exactly one bucket).
@@ -57,7 +56,7 @@ fn test_patch_grid_corners_match_tile_bounds() {
 /// Every visible tile lands in exactly one of "has screen area" / "offscreen or
 /// clipped away entirely", and every ratio that enters an aggregate is finite and
 /// positive. A harness that let a NaN or an infinity leak into `Summary::mean()`
-/// would make every later WP3/WP4 comparison meaningless.
+/// would make every later comparison meaningless.
 #[test]
 fn test_lod_sweep_produces_sane_aggregates() {
     let poses = bench_poses();
@@ -183,14 +182,13 @@ fn test_lod_factor_scales_with_sqrt_target_not_inverse_linear() {
     }
 }
 
-/// WP4/A's premise (`docs/pre-terrain-plan.md`): a smaller decoded texture size must
+/// A smaller decoded texture size must
 /// raise `lod_factor` proportionally — a 256px style needs the engine to refine
 /// further out than a 512px one to hold the same target texel/pixel ratio, since
 /// each texel then covers twice the ground per side at a given zoom level. This was
 /// already correct in `lod_factor_for` (only `target_texel_ratio`'s direction and
-/// exponent were bugs last round); this test exists because WP4/A is the first thing
-/// that actually *feeds* a non-default `texture_size_px` into it, so the relationship
-/// deserves its own explicit check rather than trusting it was never exercised.
+/// exponent were bugs last round); this test exists because non-default `texture_size_px`
+/// is fed into it, so the relationship deserves its own explicit check rather than trusting it was never exercised.
 /// Checked at a second target and a second viewport/focal length, same rationale as
 /// the sibling `sqrt(target)` test above.
 #[test]
@@ -229,8 +227,7 @@ fn test_lod_factor_scales_inversely_with_texture_size() {
 /// `sqrt(target)`) pushes the subdivision boundary out to roughly twice the
 /// distance — roughly one more quadtree level for the tiles it moves — and one more
 /// level doubles the linear texel/pixel resolution, hence *quadruples* the area
-/// ratio this harness reports. `docs/pre-terrain-plan.md`'s WP3 follow-up asks for
-/// exactly this: "set target to 4.0 ... confirm the measured aggregate_ratio moves
+/// ratio this harness reports. The check is exactly this: "set target to 4.0 ... confirm the measured aggregate_ratio moves
 /// to ~4x its target=1.0 value." The tolerance is wide because a discrete quadtree
 /// cannot land exactly on 4x — a wrong-direction or wrong-exponent bug would miss it
 /// by far more than this band, landing near 1x (no-op direction bug) or ~2x/16x
@@ -267,7 +264,7 @@ fn test_lod_harness_aggregate_ratio_scales_with_target() {
 ///
 /// Sampled at z = 8, 11, 14, 18 rather than from the root: a flat 3×3-corner sample
 /// (what `unstretched_radius` and this chord both are) under-states a coarse tile's
-/// true curved extent, exactly the effect the WP1 harness's own doc comment measures
+/// true curved extent, exactly the effect the harness's own doc comment measures
 /// for its patch grid — at z ≤ 5 this ratio reads measurably below `sqrt(2)` for that
 /// reason, not because the quantity stops being level-independent. z ≥ 8 is where it
 /// has converged to a stable value, which is the regime this test pins down.
@@ -325,8 +322,8 @@ fn test_true_ground_per_radius_is_not_the_calibration_constant() {
     }
 }
 
-/// WP4/A (`docs/pre-terrain-plan.md`): measures `satellite_imagery_url()`'s 256px
-/// style two ways and records both, per that package's instructions.
+/// Measures `satellite_imagery_url()`'s 256px
+/// style two ways and records both.
 ///
 /// **Compensated** (`LodConfig::new(1.0, 256.0)`) is what the engine actually does
 /// now: `lod_factor_for` is told the real 256px size, so it refines further out to
@@ -334,14 +331,14 @@ fn test_true_ground_per_radius_is_not_the_calibration_constant() {
 /// not a rescaling of it.
 ///
 /// **Uncompensated** (`LodConfig::uncompensated(1.0, 512.0, 256.0)`) reproduces the
-/// pre-WP4/A bug for comparison: `lod_factor_for` still told 512px (so *exactly* the
+/// historical bug for comparison: `lod_factor_for` still told 512px (so *exactly* the
 /// 512px baseline's `lod_factor`, hence *exactly* its tile set and `screen_px` per
 /// tile — nothing about subdivision depends on the texel-counting size), while the
 /// harness counts real 256px texels. Because the tile set and every `screen_px` are
 /// therefore identical to the 512px baseline, `texels` and hence `aggregate_ratio`
 /// must scale by *exactly* `(256/512)² = 0.25` — a provable-by-construction relation,
 /// not a measured coincidence, so this is checked to a tight tolerance rather than a
-/// wide band like the other WP4 checks.
+/// wide band like the other checks.
 #[test]
 fn test_wp4a_esri_texture_size_compensated_vs_uncompensated() {
     let poses = bench_poses();
@@ -391,19 +388,18 @@ fn test_wp4a_esri_texture_size_compensated_vs_uncompensated() {
     report::emit("wp4a_esri_uncompensated_256", &uncompensated_256);
 }
 
-/// **E1d** — the sentence this module's doc comment used to make in prose, as a value.
+/// The sentence this module's doc comment used to make in prose, as a value.
 ///
 /// `src/testing/lod/mod.rs` justified `texels / screen_px` as a complete description of
 /// LOD quality *because* with zero relief the only per-tile error is imagery resolution.
-/// E1 gave the engine a second error term, so the justification needs checking rather than
+/// The terrain LOD term gave the engine a second error term, so the justification needs checking rather than
 /// restating: over all 204 bench poses, every tile's projected geometric error must be
 /// **exactly** zero — not small, zero — because `Ellipsoid::HAS_GEOMETRIC_ERROR` is a
 /// compile-time `false` and `apply_lod` never reaches the term at all on this tree.
 ///
 /// If this ever reads non-zero, one of two things has happened and both matter: the flat
 /// globe has acquired relief (it must not), or this harness has stopped measuring the flat
-/// globe (in which case `docs/culling-baseline.md`'s cross-package comparisons are no
-/// longer like for like).
+/// globe (in which case its historical comparisons are no longer like for like).
 #[test]
 fn the_flat_globe_leaves_no_geometric_error_on_screen() {
     let poses = bench_poses();

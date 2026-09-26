@@ -1,7 +1,7 @@
-//! Headless captures for Phase E2 of `docs/terrain-plan.md` §8 — **does the ground
+//! Headless captures for mesh rebuilds — **does the ground
 //! jump when a mesh is rebuilt?**
 //!
-//! Two tests, because E2 has two questions and only one of them can be answered by
+//! Two tests, because there are two questions and only one of them can be answered by
 //! flying the aircraft.
 //!
 //! **1. `capture_an_approach_into_innsbruck`** flies the real thing: a descent down the
@@ -10,14 +10,14 @@
 //! next to each. It also measures the thing the section is about directly — how much of
 //! the frame changes on the *next* frame with the camera held perfectly still, which is
 //! precisely "the ground moving underneath you". This is the empirical answer to
-//! whether E2's case occurs in normal flight at all.
+//! whether this case occurs in normal flight at all.
 //!
 //! **2. `capture_a_staged_rebuild_burst`** forces it, because the answer to (1) is
 //! "almost never" and a mechanism nobody has seen work is a mechanism nobody should
 //! trust. It stages the worst case the engine can produce — every visible tile's height
 //! data failed, every mesh built from a z10 ancestor, and then all the real data
 //! arriving in a single frame — and renders the drain frame by frame. What that pair of
-//! pictures shows is the difference E2 makes; what the per-frame table shows is that
+//! pictures shows is the difference mesh rate limiting makes; what the per-frame table shows is that
 //! the difference is delivered in bounded instalments rather than all at once.
 //!
 //! Both are `#[ignore]`d: they need the network for imagery and heights, and they write
@@ -97,7 +97,7 @@ fn look(
     )
 }
 
-/// The same config the Phase C/D/E captures use, terrain on.
+/// The same config the terrain captures use, terrain on.
 fn config() -> TileEngineConfig {
     TileEngineConfig {
         base_imagery_url: satellite_imagery_url(),
@@ -167,7 +167,7 @@ fn differing_fraction(a: &[u8], b: &[u8]) -> f64 {
 async fn settle(state: &mut WgpuState<'_>, aspect: f32, view_proj: glam::Mat4, secs: u64) -> usize {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     let mut quiet = 0;
-    let mut visible = 0;
+    let mut visible;
     loop {
         state
             .tile_system
@@ -196,7 +196,7 @@ async fn settle(state: &mut WgpuState<'_>, aspect: f32, view_proj: glam::Mat4, s
 /// settled globe that number is zero, and a non-zero one is literally the ground moving
 /// while nobody moved the camera. It is measured after the settle rather than during
 /// it, because during a descent the near field is *supposed* to change — tiles are
-/// arriving — and E2's claim is about geometry that is already drawn.
+/// arriving — and the claim is about geometry that is already drawn.
 #[test]
 #[ignore = "visual verification: needs the network for imagery and heights, writes PNGs"]
 fn capture_an_approach_into_innsbruck() {
@@ -269,7 +269,7 @@ fn capture_an_approach_into_innsbruck() {
     );
 
     // A settled globe that is still rebuilding meshes under a stationary camera is
-    // exactly the failure E2's rate limit and no-downgrade rule exist to prevent.
+    // exactly the failure the rate limit and no-downgrade rule exist to prevent.
     assert!(
         worst_still < 0.01,
         "a settled, stationary frame changed by {:.3} % — the ground moved on its own",
@@ -330,7 +330,7 @@ fn poison(state: &mut WgpuState<'_>, ids: &[TileId]) {
 /// The worst burst the engine can produce, photographed: every visible mesh built from
 /// a z10 ancestor, then every real height tile arriving in one frame.
 ///
-/// What the two stills show is what E2 buys — a valley floor that is a smooth bowl
+/// What the two stills show is what mesh rate limiting buys — a valley floor that is a smooth bowl
 /// becoming a valley floor. What the per-frame table shows is that it arrives in
 /// instalments of at most [`MESH_REBUILD_BUDGET_PER_FRAME`], so no single frame carries
 /// the whole change.

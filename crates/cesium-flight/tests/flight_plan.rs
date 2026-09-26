@@ -844,7 +844,6 @@ fn the_longer_runway_wins_when_the_wind_does_not_care() {
 
 // ---------------------------------------------------------------------------
 // Terrain elevation, honoured by default since the globe can render it
-// (Phase E3, `docs/terrain-plan.md` §8)
 // ---------------------------------------------------------------------------
 
 /// The default config supplies no elevation, so a plan built from it still starts at
@@ -862,7 +861,7 @@ fn a_field_with_no_elevation_supplied_still_starts_at_sea_level() {
 }
 
 /// The flip itself: a caller that supplies elevations and touches nothing else gets
-/// them. Before Phase E3 this plan started and ended at sea level.
+/// them. Previously this plan started and ended at sea level.
 #[test]
 fn field_elevation_is_honoured_by_default() {
     assert!(

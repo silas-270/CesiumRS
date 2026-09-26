@@ -1,5 +1,5 @@
-//! WP4/B (`docs/pre-terrain-plan.md`): confirms `lod_factor_for`'s live viewport
-//! height and mode-dependent `fovy` — shipped in WP3/3b (commit `d866274`) on the
+//! Confirms `lod_factor_for`'s live viewport
+//! height and mode-dependent `fovy` — shipped (commit `d866274`) on the
 //! strength of one headless capture — actually behave as intended across a ladder of
 //! viewport/mode combinations, with the 204-pose distribution as the evidence rather
 //! than a screenshot.
@@ -17,7 +17,7 @@ fn fovy_for(mode: CameraMode) -> f32 {
     cam.fovy()
 }
 
-/// Pure-function check, away from the WP3 calibration point (1080p, `Free`): every
+/// Pure-function check, away from the calibration point (1080p, `Free`): every
 /// rung's `lod_factor_for` output must match hand-derived expectations from the
 /// formula alone — `lod_factor` scales *linearly* with viewport height (it is a bare
 /// multiplicative term, unlike `target_texel_ratio`'s `sqrt` or `texture_size_px`'s
@@ -87,9 +87,8 @@ fn test_lod_factor_matches_hand_derivation_at_every_rung() {
     );
 }
 
-/// The distribution-based confirmation WP4/B asks for: re-runs the 204 bench pose
-/// geometries at every ladder rung and reports `Summary` side by side, in the style
-/// `docs/culling-baseline.md`'s WP4/B section transcribes. Measures and records —
+/// The distribution-based confirmation: re-runs the 204 bench pose
+/// geometries at every ladder rung and reports `Summary` side by side. Measures and records —
 /// no pass/fail target here beyond the instrument behaving (handled by
 /// `test_lod_sweep_produces_sane_aggregates` already covering the degenerate/NaN
 /// cases at the default rung); the numbers themselves are the deliverable.

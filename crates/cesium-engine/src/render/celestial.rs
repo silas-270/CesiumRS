@@ -7,7 +7,7 @@
 //! | depth | altitude      | sky                                 |
 //! |-------|---------------|-------------------------------------|
 //! | 1.0   | on the ground | high sun, bright blue               |
-//! | ~0.35 | climb/descent | sun on the horizon, orange          |
+//! | ~0.55 | climb/descent | sun on the horizon, orange          |
 //! | 0.0   | cruise        | sun down, grey and dark, moon up    |
 //!
 //! This is a mood, not an ephemeris. An earlier version computed the real solar position

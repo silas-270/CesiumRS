@@ -1,4 +1,4 @@
-//! Phase E3.2 and E3.3 of `docs/terrain-plan.md` §8: the engine stops assuming the
+//! Ground reference: the engine stops assuming the
 //! surface is the ellipsoid — first the near plane, then the floor the camera stands on.
 //!
 //! Four things are checked here, and the third is the load-bearing one.
@@ -9,7 +9,7 @@
 //!    definition every tile boundary and every mesh row is derived from.
 //! 2. **It answers from whatever has landed**, deep tile or distant ancestor.
 //! 3. **With no ground known, nothing moved.** `altitude_agl` is `altitude` and both
-//!    projection matrices are bit-identical to the pre-E3 expression, recomputed here
+//!    projection matrices are bit-identical to the previous expression, recomputed here
 //!    from the old formula rather than recorded from a run. With terrain off
 //!    `TileSystem::ground_height_at` returns `None` on every frame, so case 3 *is* the
 //!    flat path.
@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use cesium_engine::camera::camera::{Camera, CameraMode};
 use cesium_engine::globe::geometry::{ecef_to_lon_lat_f64, lon_lat_to_ecef_f64};
-use cesium_engine::globe::quadtree::{web_mercator_y_to_lat_f64, TileId};
+use cesium_engine::globe::quadtree::web_mercator_y_to_lat_f64;
 use cesium_engine::globe::terrain::height_cache::HeightTileManager;
 use cesium_engine::globe::terrain::height_tile::{HEIGHT_TILE_DIM, HEIGHT_TILE_TEXELS};
 use cesium_engine::globe::terrain::HeightTile;
@@ -338,8 +338,8 @@ fn agl_is_bitwise_the_ellipsoid_altitude_when_no_ground_is_known() {
     }
 }
 
-/// The pre-E3 projection matrix, recomputed here from the formula the file carried
-/// before this phase — `alt = altitude()`, everything else untouched.
+/// The previous projection matrix, recomputed here from the formula the file carried
+/// before — `alt = altitude()`, everything else untouched.
 ///
 /// Written out rather than snapshotted, so it fails if the *shape* of the near/far
 /// derivation changes and not merely if a number does.
@@ -403,7 +403,7 @@ fn the_projection_matrix_is_bitwise_unchanged_when_no_ground_is_known() {
                 }
                 // The f64 matrix is what the culling frustum — and therefore the pinned
                 // visible-set digest — is built from. It is pinned separately, against
-                // the f64 form of the same pre-E3 expression. (It is *not* the f32
+                // the f64 form of the same previous expression. (It is *not* the f32
                 // matrix widened: `fovy_f64` has always computed its own `atan`, and the
                 // two differ in the last few digits by design.)
                 let got64 = cam.get_projection_matrix_f64(aspect as f64);
@@ -469,7 +469,7 @@ fn the_near_plane_follows_the_ground_not_the_ellipsoid() {
 
 /// A camera below the sampled ground must not ask for a negative near plane.
 ///
-/// E3.3's collision floor makes this hard to reach — `set_ground_height` pushes the
+/// The collision floor makes this hard to reach — `set_ground_height` pushes the
 /// camera out — but not impossible: `set_eye_with_up` deliberately does not enforce
 /// bounds, so a pose placed after the ground is known lands wherever it was told to.
 /// The clamp in `altitude_agl` is what stands behind that.
@@ -489,7 +489,7 @@ fn a_camera_below_the_sampled_ground_still_has_a_positive_near_plane() {
     );
 }
 
-// ── 4. E3.3: the ground is a floor, not a suggestion ─────────────────────────
+// ── 4. The collision floor: the ground is a floor, not a suggestion ──────────
 
 /// The distance from the Earth's centre to the ellipsoid along a given direction —
 /// `t` in `enforce_bounds`, recomputed here from the same expression so the floor
@@ -574,7 +574,7 @@ fn ground_below_the_camera_does_not_move_it() {
 
 /// The one this phase exists for: a camera inside the Nordkette comes out onto it.
 ///
-/// Before E3.3 `enforce_bounds` kept the camera 2 m off the *ellipsoid*, so a pose at
+/// Previously `enforce_bounds` kept the camera 2 m off the *ellipsoid*, so a pose at
 /// 600 m under a 2 000 m ridge sat 1 400 m inside solid rock and the globe was drawn
 /// from within the mountain.
 #[test]
@@ -649,7 +649,7 @@ fn ground_below_sea_level_never_lowers_the_floor() {
 }
 
 /// With terrain off, `enforce_bounds` keeps the 2 m ellipsoid clearance it always kept
-/// — checked by driving a camera into the surface and comparing against the pre-E3
+/// — checked by driving a camera into the surface and comparing against the previous
 /// expression, bit for bit.
 #[test]
 fn the_ellipsoid_floor_is_bitwise_unchanged_with_no_ground_known() {
@@ -659,7 +659,7 @@ fn the_ellipsoid_floor_is_bitwise_unchanged_with_no_ground_known() {
 
         // 5 km underground, placed through the setter that enforces bounds.
         let (sunk_v, sunk) = placed_at(lon, lat, -5_000.0);
-        // `t + 0.000002`, the pre-E3 expression, spelled out on the same operands.
+        // `t + 0.000002`, the previous expression, spelled out on the same operands.
         let want = clamped_local_pos_from(&cam, sunk, ellipsoid_radius_at(sunk) + 0.000002);
         let ori = cam.local_ori;
         cam.set_local_transform(sunk_v, ori);
@@ -692,7 +692,7 @@ fn feeding_none_every_frame_never_clamps_a_flat_camera() {
     );
 }
 
-// ── 5. E3.4: labels stand on the ground ──────────────────────────────────────
+// ── 5. Labels stand on the ground ───────────────────────────────────────────
 
 /// A stand-in height field: one answer everywhere, or nothing anywhere.
 ///

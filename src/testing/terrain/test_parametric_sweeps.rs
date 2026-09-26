@@ -3,7 +3,7 @@ use crate::testing::culling::geodesy::{dvec3_to_lat_lon, intersect_ellipsoid, ti
 use cesium_engine::camera::camera::Camera;
 use cesium_engine::globe::quadtree::{QuadtreeManager, TileId};
 use glam::Vec4;
-use glam::{EulerRot, Quat, Vec3};
+use glam::{Quat, Vec3};
 use rayon::prelude::*;
 use std::io::Write;
 
@@ -41,7 +41,7 @@ fn evaluate_camera(
     let mut quadtree = QuadtreeManager::new();
     let frustum_planes = cam.calculate_frustum_planes(aspect);
     let (global_pos_dvec, _) = cam.global_transform_f64();
-    let global_pos_f32 = glam::Vec3::new(
+    let _global_pos_f32 = glam::Vec3::new(
         global_pos_dvec.x as f32,
         global_pos_dvec.y as f32,
         global_pos_dvec.z as f32,

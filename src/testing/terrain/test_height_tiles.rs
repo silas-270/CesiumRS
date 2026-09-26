@@ -1,4 +1,4 @@
-//! Phase B acceptance for `docs/terrain-plan.md` §5: the Terrarium decoder, the
+//! Height tile acceptance: the Terrarium decoder, the
 //! min/max pyramid, and `height_at`'s ancestor upsampling.
 //!
 //! **These tests never touch the network.** Every elevation number below comes from a
@@ -39,7 +39,7 @@ fn fixture(name: &str, ocean: OceanPolicy) -> HeightTile {
         .unwrap_or_else(|e| panic!("terrarium decode of {path}: {e}"))
 }
 
-// ── B1: the decoder, pinned against committed tiles ──────────────────────────
+// ── The decoder, pinned against committed tiles ──────────────────────────────
 
 /// The five fixtures' full-tile extrema, `OceanPolicy::Raw`, in whole metres rounded
 /// **outward** (min down, max up) from the sub-metre decode — the Zugspitze summit texel
@@ -164,10 +164,9 @@ fn a_tile_that_is_not_256_square_is_rejected_rather_than_misread() {
     assert!(decode_terrarium(512, 512, &rgba, OceanPolicy::Raw).is_err());
 }
 
-// ── B1/B3: extrema over all 65 536 texels, not over a subgrid ────────────────
-
-/// The load-bearing half of B1. A summit that falls between the 17x17 points
-/// `TileMesh` samples must still reach `h_max`, because Phase D fits the node's
+// ── Extrema over all 65 536 texels, not over a subgrid ────────────────────────
+/// A summit that falls between the 17x17 points
+/// `TileMesh` samples must still reach `h_max`, because bounding box calculation fits the node's
 /// bounding box to `h_max` and a box that misses the summit is a false negative,
 /// which by I-7 kills the whole subtree.
 ///
@@ -194,11 +193,11 @@ fn a_summit_between_grid_lines_still_reaches_h_max() {
     );
 }
 
-/// B3, checked exhaustively against the samples rather than against itself: every
+/// Checked exhaustively against the samples rather than against itself: every
 /// mip cell's interval really does bound its 16x16 block, and the tile extrema are
 /// the extrema of the mip.
 ///
-/// Min and max are stored separately on purpose. In Phase D the occluder reads
+/// Min and max are stored separately on purpose. The occluder reads
 /// `mip_min` (a *lower* bound — only what is definitely there can definitely block)
 /// and the occludee reads `mip_max` (an *upper* bound). Swapping them over-occludes,
 /// which is exactly the false negative the culling work exists to prevent, so the two
@@ -233,7 +232,7 @@ fn the_min_max_pyramid_bounds_every_block_it_covers() {
     assert_eq!((tile.h_min, tile.h_max), (global_min, global_max));
 }
 
-// ── B2: bilinear sampling ────────────────────────────────────────────────────
+// ── Bilinear sampling ────────────────────────────────────────────────────────
 
 /// Texel centres sit at `(i + 0.5)/256`, so sampling one returns that texel exactly —
 /// no half-texel drift, which would shift every mountain by ~19 m of ground at z12.
@@ -256,7 +255,7 @@ fn the_tile_border_clamps_instead_of_extrapolating() {
     assert_eq!(tile.sample_bilinear(1.0, 1.0), tile.sample(255, 255) as f64);
 }
 
-// ── B2: the ancestor walk — the off-by-one this section exists to catch ───────
+// ── The ancestor walk — the off-by-one this section exists to catch ───────────
 
 /// A z20 tile, five levels below the source's z15 ceiling, built from a hand-chosen
 /// quadrant path so the sub-rectangle it occupies in its ancestor can be written down
@@ -343,7 +342,7 @@ fn a_tile_at_the_source_depth_is_its_own_ancestor() {
     );
 }
 
-// ── B2: the query, end to end ────────────────────────────────────────────────
+// ── The query, end to end ────────────────────────────────────────────────────
 
 fn terrain_config(enabled: bool, offline: bool) -> TileEngineConfig {
     TileEngineConfig {
@@ -380,7 +379,7 @@ fn y_ramp() -> Arc<HeightTile> {
     Arc::new(HeightTile::from_samples(data))
 }
 
-/// The whole of B2 in one assertion: a z20 query, answered from a z15 ancestor,
+/// A z20 query, answered from a z15 ancestor,
 /// returning megametres.
 ///
 /// With `h = x` the bilinear result at ancestor coordinate `su` is exactly
@@ -431,8 +430,8 @@ fn height_at_returns_megametres() {
     assert!(got < 0.01);
 }
 
-/// "Unknown" must be distinguishable from "sea level" (§5 B2). A `0.0` here would let
-/// Phase C bake a flat mesh for a tile whose data has not arrived and then never
+/// "Unknown" must be distinguishable from "sea level". A `0.0` here would let
+/// the engine bake a flat mesh for a tile whose data has not arrived and then never
 /// rebuild it.
 #[test]
 fn an_unloaded_tile_is_unknown_rather_than_sea_level() {
@@ -476,7 +475,7 @@ fn the_deepest_ready_ancestor_wins() {
     );
 }
 
-// ── B1/B4: source ceiling, offline mode, budget ──────────────────────────────
+// ── Source ceiling, offline mode, budget ──────────────────────────────────────
 
 /// z16 and below do not exist at the source (§2, probed live). Requests for them are
 /// redirected to the z15 ancestor rather than turned into 404s and a negative-cache
@@ -507,7 +506,7 @@ fn offline_mode_yields_a_flat_zero_field_without_the_network() {
     assert!(heights.is_loading_complete());
 }
 
-/// B4: the height cache reports its own residency, and its capacity comes from its
+/// The height cache reports its own residency, and its capacity comes from its
 /// declared slice of the tile byte budget.
 #[test]
 fn the_height_cache_reports_its_share_of_the_budget() {
@@ -518,7 +517,7 @@ fn the_height_cache_reports_its_share_of_the_budget() {
     assert_eq!(resident, 0);
     // The declared slice divided by the tile size, whatever the platform split makes that:
     // 96 MiB / 129 kB = 761 on desktop, 32 MiB / 129 kB = 253 on Android
-    // (129 kB, not 128: the mips and E1's and F5's error terms are all in the entry).
+    // (129 kB, not 128: the mips and the error terms are all in the entry).
     assert_eq!(
         capacity,
         config.terrain.height_cache_budget_bytes / 132_274,
@@ -529,7 +528,7 @@ fn the_height_cache_reports_its_share_of_the_budget() {
 
     heights.insert_ready(ANCESTOR_Z15, x_ramp());
     assert_eq!(heights.residency().0, 1);
-    // 256² u16 samples + the two 16² mips + E1's one-i16 measured geometric error + F5's
+    // 256² u16 samples + the two 16² mips + one-i16 measured geometric error + the
     // 84-entry pyramid of the same measurement for the descendants below this tile + the
     // 8-byte quantisation base and step.
     assert_eq!(heights.resident_bytes(), 132_274);

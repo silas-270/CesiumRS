@@ -131,19 +131,19 @@ fn test_update_iterations_reach_fixed_point() {
 
 /// Expected digest of `cells::nadir_ladder()`. See the test below before touching it.
 ///
-/// Updated for WP2b (`docs/pre-terrain-plan.md`): `QuadtreeNode::apply_lod` now
+/// `QuadtreeNode::apply_lod` now
 /// reorders `children` camera-relative, near-to-far, before recursing
 /// (`QuadtreeNode::reorder_children_near_to_far`), so `collect_visible_tiles`'s
 /// traversal order changed even though the visible tile *set* did not — see
 /// `test_visible_set_digest_is_stable`'s own doc comment for what a changed
 /// digest does and does not prove, and the independent order-insensitive
-/// set-equality check that was run before trusting this new value (WP2b report).
+/// set-equality check that was run before trusting this new value.
 /// Old value: `0x367e_7e83_3930_0930`.
 const NADIR_LADDER_DIGEST: u64 = 0xb84a_faa1_b2a3_87b3;
 
 /// Expected digest of `cells::zoom_cliff_cells()`. See the test below before touching it.
 ///
-/// Updated for WP2b, same reorder as [`NADIR_LADDER_DIGEST`] above.
+/// Same reorder as [`NADIR_LADDER_DIGEST`] above.
 /// Old value: `0x0f0f_8567_c98e_3382`.
 const ZOOM_CLIFF_DIGEST: u64 = 0x62a4_cc27_2440_437e;
 

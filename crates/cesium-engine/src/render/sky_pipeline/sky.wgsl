@@ -163,7 +163,7 @@ fn star_field(dir: vec3<f32>, cutoff: f32) -> vec3<f32> {
     let centre = clamp(jitter, vec2<f32>(0.25), vec2<f32>(0.75));
     let d = length(fract(g) - centre);
     let radius = STAR_PIXEL_RADIUS * footprint;
-    let disc = smoothstep(radius, radius * 0.25, d);
+    let disc = (1.0 - smoothstep(radius * 0.25, radius, d));
 
     // Real stars run blue-white through amber. Subtle, but a monochrome field looks
     // printed on.
@@ -186,7 +186,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
     let cos_sun = dot(view_dir, sun_dir);
 
     let day_amount = smoothstep(0.0, 0.10, sun_elevation);
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
+    let night_amount = 1.0 - smoothstep(-0.22, -0.02, sun_elevation);
 
     // ── The air ──────────────────────────────────────────────────────────────
     //
@@ -289,7 +289,7 @@ fn fs_sky(in: SkyOutput) -> @location(0) vec4<f32> {
         let disc = vec2<f32>(dot(view_dir, tangent), dot(view_dir, bitangent))
             / MOON_ANGULAR_RADIUS;
         let r = length(disc);
-        let edge = smoothstep(1.0, 0.97, r);
+        let edge = (1.0 - smoothstep(0.97, 1.0, r));
 
         if edge > 0.0 {
             // Maria: the big dark seas, smooth and low-contrast.

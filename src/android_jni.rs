@@ -134,10 +134,10 @@ pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBrid
 /// Turn terrain on or off at runtime — heights, relief, and the culling that goes with
 /// them.
 ///
-/// **This is the switch the §9 F3 soak's terrain-on arm uses.** Android ships with
+/// **This is the switch the soak's terrain-on arm uses.** Android ships with
 /// terrain off (`TERRAIN_ENABLED_BY_DEFAULT`) because that soak has not been run, so on
 /// device this call is the only way to get the terrain-on measurement without rebuilding
-/// the `.so`. It rebuilds the height manager in place, and E2 then rebuilds the flat
+/// the `.so`. It rebuilds the height manager in place, and rebuild logic then rebuilds the flat
 /// meshes already on the card, four per frame.
 #[no_mangle]
 pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBridge_nativeSetTerrainEnabled(
@@ -287,7 +287,7 @@ pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBrid
             let runways = RUNWAY_DATA.lock().unwrap().take().unwrap_or_default();
             let mut config = cesium_flight::telemetry::FlightPlanConfig::default();
             if let Some((dep_m, arr_m)) = FIELD_ELEVATIONS.lock().unwrap().take() {
-                // `terrain_elevation` is already `true` by default since Phase E3;
+                // `terrain_elevation` is already `true` by default;
                 // all that is left to do is hand over the two numbers.
                 config.dep_elevation_m = dep_m;
                 config.arr_elevation_m = arr_m;
@@ -308,7 +308,7 @@ pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBrid
     }
 }
 
-/// Debug-only hook for performance testing (see tools/run_perf_scenario.sh):
+/// Debug-only hook for performance testing (driven by Blocktime's tools/run_perf_scenario.sh):
 /// tags a captured Perfetto trace with `scenario_id` and switches camera mode
 /// for the steady-state scenarios. Only exported when built with
 /// `--features perf_trace`; never present in a shipped release `.so`.
@@ -327,7 +327,7 @@ pub extern "system" fn Java_com_silas270_blocktime_engine_live_CesiumLiveJniBrid
 /// Supplies the elevations of the two airports for the next flight.
 ///
 /// Optional: with nothing supplied the flight is planned at sea level, as it always
-/// was. Since Phase E3 the globe draws real relief and `FlightPlanConfig` honours a
+/// was. The globe draws real relief and `FlightPlanConfig` honours a
 /// supplied elevation by default, so the Kotlin side can now declare and call this and
 /// see the aircraft sit on the runway of a mountain field rather than above it.
 ///

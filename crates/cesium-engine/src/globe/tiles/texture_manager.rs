@@ -26,8 +26,7 @@ pub const TEXTURE_UPLOAD_BUDGET_PER_FRAME: usize = 30;
 pub const TEXTURE_UPLOAD_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Tracks the real decoded texel width of the current imagery style, live rather
-/// than the frozen [`DEFAULT_IMAGERY_TEXTURE_SIZE_PX`] this replaces (WP4/A,
-/// `docs/pre-terrain-plan.md`) — deliberately a small, GPU-free struct (no
+/// than the frozen [`DEFAULT_IMAGERY_TEXTURE_SIZE_PX`] this replaces — deliberately a small, GPU-free struct (no
 /// `wgpu::Device`/`Queue` in its API) so the tracking logic itself is unit-testable
 /// without a GPU, unlike the rest of [`TileTextureManager`].
 ///
@@ -78,7 +77,7 @@ pub struct TileTextureManager {
     /// uniform, so this settles after the first one; it's re-checked per tile
     /// only so a style whose tiles differ in size still converges.
     bytes_per_tile: Option<usize>,
-    /// Live texel width of the current imagery style — WP4/A. See
+    /// Live texel width of the current imagery style. See
     /// [`ObservedTextureSize`].
     texture_size: ObservedTextureSize,
 }
@@ -195,7 +194,7 @@ impl TileTextureManager {
 
     /// The live imagery texel width — [`crate::globe::quadtree::lod_factor_for`]'s
     /// `texture_size_px` input, fed fresh every frame from `wgpu_state::update_logic`
-    /// instead of the frozen `DEFAULT_IMAGERY_TEXTURE_SIZE_PX` (WP4/A). See
+    /// instead of the frozen `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`. See
     /// [`ObservedTextureSize`] for the bootstrapping behaviour before any tile of the
     /// current style has decoded.
     pub fn current_texture_size_px(&self) -> f32 {

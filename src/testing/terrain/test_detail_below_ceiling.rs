@@ -1,5 +1,5 @@
-//! **F5** — the four levels `DETAIL_MAX_Z` throws away, and what it would take to get them
-//! back (`docs/terrain-plan.md` §9 F5).
+//! **Deep detail acceptance** — the four levels `DETAIL_MAX_Z` throws away, and what it would take to get them
+//! back.
 //!
 //! `heightfield.rs`'s `DETAIL_MAX_Z = 15` makes `Heightfield::geometric_error` return zero
 //! at and below the source's deepest level, so the terrain LOD term stops refining there.
@@ -29,7 +29,7 @@
 //!    error (the windowed deviation at the lattice the mesh really lays down) and scores
 //!    three candidate terms against it, in the direction that matters: an error that is too
 //!    small costs shape, silently.
-//! 3. [`f5_the_cost_table`] — E1a's table, at the shipped knob, with the term switched off
+//! 3. [`f5_the_cost_table`] — the cost table, at the shipped knob, with the term switched off
 //!    and on below the ceiling.
 //!
 //! # Why `culling` is not in this path
@@ -60,23 +60,23 @@ use cesium_engine::camera::camera::CameraMode;
 /// z19 samples every texel, so z18 is the last level with anything to resolve.
 const LAST_LEVEL_WITH_DETAIL: u8 = 18;
 
-/// **Approach poses**, and why F5 needs its own set rather than §7b's ten.
+/// **Approach poses**, and why this evaluation needs its own set rather than the forward ten.
 ///
 /// The ten `real_poses` are all *forward* views: pitch 1-18° below the horizontal from
-/// 300 m to 400 km, chosen for D3, which is a question about the far field. At 1.5° below
+/// 300 m to 400 km, chosen for terrain occlusion, which is a question about the far field. At 1.5° below
 /// horizontal from 900 m the nearest ground in frame is kilometres away, so those trees
-/// bottom out around z16 and F5's four reserve levels are barely reached — [`f5_which…`]
+/// bottom out around z16 and the deep detail reserve levels are barely reached — [`f5_which…`]
 /// measured 88 nodes at z15 and **two** at z16 across all ten.
 ///
 /// A flight tracker on approach is the opposite view: a few hundred metres over the ground,
 /// looking down the slope at terrain 1-3 km ahead, which is where z17-z19 live. These four
 /// are that case, and they are **added here rather than to `real_poses`** on purpose: every
-/// table in §7b, §8 and §9 F1/F2 is measured on that list, and changing it would silently
+/// table in previous benchmarks is measured on that list, and changing it would silently
 /// move numbers this posting is not about.
 ///
 /// Each one is placed over ground whose height was looked up in the DEM first
 /// ([`the_approach_poses_are_above_their_own_ground`] is that check, in the gate), because
-/// §7b records what happens when they are not: the camera ends up inside a mountain and the
+/// earlier tests record what happens when they are not: the camera ends up inside a mountain and the
 /// measurement reports a flat zero for a reason that has nothing to do with the thing under
 /// test.
 ///
@@ -169,11 +169,11 @@ fn the_approach_poses_are_above_their_own_ground() {
     }
 }
 
-/// **The arithmetic behind F5, with no network and no DEM.**
+/// **The arithmetic behind deep detail below the ceiling, with no network and no DEM.**
 ///
 /// The engine's own [`mesh_step_on_source`] is what says how many texels the drawn mesh
 /// skips at each level below the ceiling. If this table ever reads `1` before z19 the source
-/// or the density has changed and F5's whole premise needs re-deriving.
+/// or the density has changed and the whole premise needs re-deriving.
 #[test]
 fn the_source_has_four_more_levels_of_lattice_below_the_ceiling() {
     let src = TileId {
@@ -235,8 +235,8 @@ fn true_drawn_error(tile: &HeightTile, id: TileId, src: TileId, segments: u32) -
 /// per level below the ceiling.
 ///
 /// Costs nothing: no new bytes, no new decode pass, one shift in `height_bounds_for`. It is
-/// the convergence C4 measured — RMS halves per doubling of the density — applied to a
-/// number C4 did not measure it on.
+/// the convergence grid density measurements showed — RMS halves per doubling of the density — applied to a
+/// number the earlier measurements did not measure it on.
 fn candidate_first_order(tile: &HeightTile, id: TileId, src: TileId) -> f64 {
     let k = id.z.saturating_sub(src.z) as u32;
     if k >= 4 {
@@ -317,7 +317,7 @@ impl Score {
 }
 
 /// A settled tree at one pose at the shipped config, plus a live manager to read heights
-/// from. `max_zoom` is the shipped 19, so the deep nodes F5 is about are in the tree.
+/// from. `max_zoom` is the shipped 19, so the deep nodes are in the tree.
 fn settled_shipped_tree(
     p: &ViewParams,
     world: &mut RealWorld,
@@ -339,7 +339,7 @@ fn settled_shipped_tree(
     (ids, heights, frustum)
 }
 
-/// **The F5 decision** — which stored error term tracks the drawn mesh below the ceiling.
+/// **Evaluating deep detail below the ceiling** — which stored error term tracks the drawn mesh below the ceiling.
 ///
 /// One row per level below the source ceiling, over every visible node at the ten real
 /// poses. The truth column is what the mesh really leaves on screen; the three candidates
@@ -366,7 +366,7 @@ fn f5_which_error_term_tracks_the_truth_below_the_ceiling() {
     let mut b: Vec<Score> = (0..6).map(|_| Score::default()).collect();
     let mut c: Vec<Score> = (0..6).map(|_| Score::default()).collect();
 
-    // The ten forward poses plus F5's four approaches: the first set says what the term
+    // The ten forward poses plus the four approaches: the first set says what the term
     // does to the globe as measured everywhere else, the second is where its reserve lives.
     let mut all: Vec<(&'static str, ViewParams)> = real_poses();
     all.extend(approach_poses().into_iter().map(|(n, p, _)| (n, p)));
@@ -516,10 +516,10 @@ fn f5_which_error_term_tracks_the_truth_below_the_ceiling() {
     );
 }
 
-/// **The E1a-form cost table for F5** — what carrying the error below the ceiling costs in
+/// **The cost table for detail below the ceiling** — what carrying the error below the ceiling costs in
 /// tiles, height-cache pressure and vertex bytes, and what it buys in p95 drawn error.
 ///
-/// Read exactly like E1a's: the marginal column, not the total. `terrain_max_z` is the level
+/// Read as the marginal column, not the total. `terrain_max_z` is the level
 /// the geometric term is allowed to demand refinement into, i.e. `DETAIL_MAX_Z`, swept from
 /// the shipped 15 up to 19.
 ///
@@ -535,8 +535,8 @@ fn f5_the_cost_table() {
 
     // Two pose sets, because they answer different halves of the question. The ten
     // forward poses of §7b/§8/§9 are the globe everything else in this document is
-    // measured on — what F5 does *there* is the regression column. The four approaches of
-    // `approach_poses` are the near field F5 exists for.
+    // measured on — what the deep detail term does *there* is the regression column. The four approaches of
+    // `approach_poses` are the near field it exists for.
     for (set_name, poses, at) in [
         (
             "the ten forward poses (§7b/§8/§9)",
@@ -726,9 +726,9 @@ fn f5_the_cost_table() {
     // the budget, not about the data — and the way to tell the two apart is to move the
     // budget and watch what each ceiling does with it.
     //
-    // This is the table F5 is actually decided on. With E1's ceiling the rows below z15 are
+    // This is the table the detail ceiling is actually decided on. With the earlier ceiling the rows below z15 are
     // flat by construction: no budget, however tight, can buy a level the clamp forbids.
-    // With F5's, the same budget keeps buying.
+    // With the deeper ceiling, the same budget keeps buying.
     println!("\n  [F5] the reserve against the budget — Σ tiles / deepest z / drawn p95 px");
     println!("    — the four approach poses —");
     println!(
@@ -795,7 +795,7 @@ fn f5_the_cost_table() {
 }
 
 /// The lattice the mesh lands on at z19 is 1:1 with the source, so the error there is
-/// **exactly** zero and F5's ceiling is a fact about the data rather than a choice.
+/// **exactly** zero and the ceiling at z19 is a fact about the data rather than a choice.
 ///
 /// Gate, not a measurement: it runs on a synthetic tile with no network.
 #[test]

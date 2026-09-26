@@ -1,13 +1,12 @@
 //! The **surface model**: what shape the globe's skin has, as a type parameter.
 //!
-//! Phase A of `docs/terrain-plan.md` §4. This module introduces the seam along
-//! which a second surface mode (terrain) will later be added, and nothing else:
+//! This module is the seam along which the second surface mode (terrain) plugs in:
 //! every line of [`Ellipsoid`]'s impl below is today's code, moved verbatim from
 //! `geometry.rs`, `quadtree.rs` and `horizon.rs`. **No behaviour changes here.**
 //!
 //! # Why a type parameter and not a runtime flag
 //!
-//! `docs/terrain-plan.md` §1. A `if terrain_enabled` in the per-node loop costs a
+//! A `if terrain_enabled` in the per-node loop costs a
 //! branch in the hottest code *and* grows the hot structs whether or not terrain is
 //! on — `test_horizon_hot_structs_have_not_grown` pins
 //! `size_of::<TilePatch>() == 64` (one cache line) and `QuadtreeNode` is 192 B,
@@ -46,7 +45,7 @@ pub struct VertexSample {
     /// This vertex's row in the `(segments+3)²` build grid, skirt ring included, so
     /// row 0 and row `segments+2` are the two skirt rows.
     ///
-    /// Phase C: a height-field model needs to find *this* vertex in its pre-sampled
+    /// A height-field model needs to find *this* vertex in its pre-sampled
     /// [`SurfaceModel::BuildCtx`] and to walk to its four neighbours for a central
     /// difference. Both are grid-index questions, not `(lon, lat)` questions, so the
     /// index is what the sample carries. [`Ellipsoid`] ignores it.
@@ -87,9 +86,7 @@ pub struct VertexSample {
 
 /// What shape the globe's skin has.
 ///
-/// The five dispatch sites of `docs/terrain-plan.md` §1 — four of them here, the
-/// fifth (`apply_lod`'s geometric error) deliberately left for Phase E, since
-/// there is nothing to dispatch on it yet and Phase A adds no dead code.
+/// The five dispatch sites between the flat and the terrain surface.
 ///
 /// `Copy + 'static` because the implementors are markers: a `SurfaceModel` value is
 /// never constructed at run time, the type is the whole content. `Debug` because
@@ -99,7 +96,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     ///
     /// Zero-sized in flat mode, which is what keeps `QuadtreeNode` at 192 B.
     ///
-    /// `PartialEq` because Phase D1's bounds arrive *after* the node does (see
+    /// `PartialEq` because height-aware bounds arrive *after* the node does (see
     /// [`Self::child_extra`]) and `QuadtreeNode::set_extra` must be able to ask
     /// "has this changed?" before paying to refit a box and a `k × k` sub-grid.
     /// `()` compares equal to itself, so the flat path's answer is a compile-time
@@ -123,7 +120,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// 1. The height cache is `&mut` (it promotes in an LRU) and lives on the update
     ///    thread. Reaching into it from the worker would need a lock in the middle of
     ///    a per-vertex loop.
-    /// 2. Phase E2 (`docs/terrain-plan.md` §8) makes the mesh *stale* when a better
+    /// 2. The rebuild logic makes the mesh *stale* when a better
     ///    height tile arrives — the mesh stops being a function of `TileId` alone. A
     ///    builder that sampled the cache itself would have no record of *which* data
     ///    it used; one that is handed a `BuildCtx` does, and
@@ -134,7 +131,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// The tile's skirt depth, in **megametres**, computed once per tile before the
     /// vertex loop and handed to every vertex as [`VertexSample::skirt_height`].
     ///
-    /// C3 of `docs/terrain-plan.md` §6: with relief the crack at an LOD boundary is a
+    /// With relief the crack at an LOD boundary is a
     /// property of the *content*, not of the level, so this is a dispatch site rather
     /// than the one formula it used to be.
     fn skirt_depth(id: &TileId, segments: u32, ctx: &Self::BuildCtx) -> f32;
@@ -143,17 +140,17 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// the finished mesh is promised to lie inside — skirts included, which is why it
     /// takes the skirt depth [`Self::skirt_depth`] just returned.
     ///
-    /// **Invariant I-1′** (`docs/terrain-plan.md` §6). This is the number Phase D's
+    /// **Invariant I-1′**. This is the number the nodes'
     /// bounding boxes are fitted over, and
-    /// `testing::culling::test_tile_bounds::test_generated_mesh_stays_within_declared_height_bounds`
+    /// `testing::terrain::test_heightfield::generated_meshes_stay_within_their_declared_height_bounds`
     /// is what makes the promise checkable for both models.
     fn declared_height_bounds(ctx: &Self::BuildCtx, skirt: f32) -> [f64; 2];
 
     /// The height tile this mesh was built from, or `None` when the model has no
     /// height data at all ([`Ellipsoid`], always).
     ///
-    /// Carried through into `TileMesh` so Phase E2 can key the mesh cache on it; it
-    /// costs one `Option<TileId>` per mesh and is the whole of what E2 needs from C.
+    /// Carried through into `TileMesh` so the rebuild logic can key the mesh cache on it; it
+    /// costs one `Option<TileId>` per mesh and is the whole of what is needed from the build context.
     fn height_source(ctx: &Self::BuildCtx) -> Option<TileId>;
 
     /// Altitude of one mesh vertex above the ellipsoid, in **megametres**.
@@ -164,8 +161,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
 
     /// Does this surface model have a geometric error for `apply_lod` to refine against?
     ///
-    /// **E1 of `docs/terrain-plan.md` §8, and the fifth dispatch site of §1** — the one
-    /// Phase A deliberately left out because there was nothing to dispatch on yet.
+    /// **The fifth dispatch site** — the geometric error `apply_lod` refines on.
     ///
     /// `false` for [`Ellipsoid`], and that is a *compile-time* false: `apply_lod` reads it
     /// as `if S::HAS_GEOMETRIC_ERROR`, so the flat arm monomorphises to the single
@@ -177,7 +173,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     const HAS_GEOMETRIC_ERROR: bool;
 
     /// How far the drawn surface of this node departs from the real one, in
-    /// **megametres** — E1's LOD term, and `0.0` wherever [`Self::HAS_GEOMETRIC_ERROR`]
+    /// **megametres** — the terrain LOD term, and `0.0` wherever [`Self::HAS_GEOMETRIC_ERROR`]
     /// is false.
     ///
     /// Read by `apply_lod` as `terrain_dist = geometric_error · terrain_lod_factor`,
@@ -199,7 +195,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
 
     /// The interval a **child** node starts life with, given its parent's.
     ///
-    /// # The one genuine soundness trap in Phase D1
+    /// # The one genuine soundness trap in height-aware bounds
     ///
     /// A node is culled long before its height tile arrives, and a parent's
     /// `[h_min, h_max]` is **not** a superset of its children's: a coarse DEM smooths
@@ -207,7 +203,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// *unmodified* is therefore a false-negative source, and by I-7 a false negative
     /// at one node costs the whole subtree.
     ///
-    /// `docs/terrain-plan.md` §7 lists three policies and this is the third: the
+    /// Of the three possible policies this is the third: the
     /// parent's interval widened by a **measured** per-level margin. The measurement
     /// lives with the implementation
     /// ([`Heightfield::child_extra`](crate::globe::terrain::Heightfield)) and is
@@ -218,7 +214,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     fn child_extra(parent: &Self::NodeExtra, child: &TileId) -> Self::NodeExtra;
 
     /// A **lower** bound on the terrain surface over each sub-cell of a
-    /// `4 × 4` division of this node's ground, in megametres — **D3**'s occluder, and
+    /// `4 × 4` division of this node's ground, in megametres — terrain occlusion's occluder, and
     /// the only thing the occlusion march reads off a node.
     ///
     /// Row-major, `u` along the row and `v` (Mercator y, north first) down the column,
@@ -227,7 +223,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// # Why a grid and not one number
     ///
     /// Measured, after shipping one number and finding it did nothing. A node's footprint
-    /// is sized by the *imagery* LOD, and at the stand-off where D3 matters that is a tile
+    /// is sized by the *imagery* LOD, and at the stand-off where terrain occlusion matters that is a tile
     /// several kilometres across — wider than the ridge it is supposed to represent. The
     /// minimum over the whole tile is then the valley on the far side of the crest, the
     /// ridge vanishes from the occluder, and what is left culls only against the curvature
@@ -239,15 +235,15 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     ///
     /// The box's lower end is the lowest point of the *drawn geometry*, skirts
     /// included, and a skirt hangs well below the ground it belongs to
-    /// ([`skirt_allowance`](crate::globe::terrain::skirt_allowance) bounds C3's
+    /// ([`skirt_allowance`](crate::globe::terrain::skirt_allowance) bounds the
     /// content-derived skirt by the tile's whole height range, which measures 1.53× the
     /// mesh interval). Using it here would sink every ridge by that much and quietly
-    /// throw most of D3's benefit away. What the march needs is the lowest point of the
+    /// throw most of terrain occlusion's benefit away. What the march needs is the lowest point of the
     /// *ground*, which is a separate, tighter number the node already carries.
     ///
     /// # It must be a lower bound, and getting that backwards is the failure mode
     ///
-    /// `docs/terrain-plan.md` §3.3: only terrain that is definitely there can definitely
+    /// Only terrain that is definitely there can definitely
     /// block. An occluder taken from `h_max` over-occludes and produces exactly the false
     /// negative this engine exists to prevent — and by I-7 it deletes the whole subtree
     /// behind the ridge, not one tile.
@@ -262,7 +258,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
 
     /// The per-patch payload, derived from the node's **already fitted** box.
     ///
-    /// Called once per node and once per sub-patch, at construction. Phase D2's
+    /// Called once per node and once per sub-patch, at construction. The relief-aware horizon test's
     /// payload is the scaled-space bounding sphere of `obb`, which is why this takes
     /// the box rather than the rectangle: `T(obb)` is a parallelepiped whose eight
     /// vertices bound the patch exactly, with no sampling argument (see
@@ -271,7 +267,7 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
 
     /// Is every drawable point of this patch hidden behind the limb?
     ///
-    /// **This site cannot be unified across models** (`docs/terrain-plan.md` §1):
+    /// **This site cannot be unified across models**:
     /// the flat test is the *exact* supremum of `q·c` over the spherical rectangle,
     /// the terrain test is a cone test on a bounding sphere, and setting that
     /// sphere's radius to zero does not recover the rectangle test. Unifying them
@@ -286,9 +282,9 @@ pub trait SurfaceModel: Copy + std::fmt::Debug + 'static {
     /// bytes against 64·k²), so the flat test is handed the φ span and the shared
     /// `A*` for the column instead of a struct.
     ///
-    /// Phase C left `SubGrid::sub_patch_is_occluded` calling `span_is_occluded`
+    /// Earlier code left `SubGrid::sub_patch_is_occluded` calling `span_is_occluded`
     /// directly, which was correct exactly as long as `Heightfield`'s node-level test
-    /// was also still the flat one. D2 closes it: with relief, the *sub*-patch test
+    /// was also still the flat one. The relief-aware horizon test closes it: with relief, the *sub*-patch test
     /// is the same false negative as the node-level one, one level finer.
     fn sub_patch_is_occluded(
         cam: &HorizonCamera,
@@ -314,10 +310,10 @@ impl SurfaceModel for Ellipsoid {
     /// `0.5 / 2^z` megametres — today's formula, moved here **as the same
     /// expression**, so the flat mesh is bit-for-bit what it was.
     ///
-    /// C3 replaces this for terrain with a measured edge mismatch. It deliberately
+    /// Terrain replaces this with a measured edge mismatch. It deliberately
     /// does **not** replace it here: with zero relief the crack at an LOD boundary is
     /// pure curvature sagitta, this constant has been chosen against exactly that, and
-    /// the flat path may not move (`docs/terrain-plan.md` §4 acceptance).
+    /// the flat path may not move.
     #[inline]
     fn skirt_depth(id: &TileId, _segments: u32, _ctx: &()) -> f32 {
         0.5 / 2.0_f32.powi(id.z as i32)
@@ -333,7 +329,7 @@ impl SurfaceModel for Ellipsoid {
         [-(skirt as f64), 0.0]
     }
 
-    /// No height data exists in flat mode, so there is nothing for Phase E2 to key on.
+    /// No height data exists in flat mode, so there is nothing for the rebuild logic to key on.
     #[inline]
     fn height_source(_ctx: &()) -> Option<TileId> {
         None
@@ -359,8 +355,8 @@ impl SurfaceModel for Ellipsoid {
     /// the same value, from the same expression, the mesh loop already computes as
     /// [`VertexSample::up`] to displace the vertex along.
     ///
-    /// Phase A had this expression here and the mesh used its result for both jobs.
-    /// Phase C splits the two jobs (displacement is radial for every model, shading is
+    /// Originally this expression was here and the mesh used its result for both jobs.
+    /// This splits the two jobs (displacement is radial for every model, shading is
     /// not) but not the arithmetic: flat mode still evaluates the gradient exactly
     /// once per vertex and still gets the identical bits out of it.
     #[inline]
@@ -368,7 +364,7 @@ impl SurfaceModel for Ellipsoid {
         sample.up
     }
 
-    /// Invariant I-1 restated for E1: the drawn surface **is** the ellipsoid, so the
+    /// Invariant I-1 restated for terrain LOD: the drawn surface **is** the ellipsoid, so the
     /// deviation between them is not small, it is identically zero — there is no
     /// geometric error here to bound and never was.
     ///
@@ -398,7 +394,7 @@ impl SurfaceModel for Ellipsoid {
     fn child_extra(_parent: &(), _child: &TileId) {}
 
     /// Zero relief: nothing on the flat globe occludes anything the limb test has not
-    /// already thrown away, so this node can never be a D3 occluder.
+    /// already thrown away, so this node can never be a terrain occluder.
     #[inline]
     fn occluder_floor(
         _extra: &(),

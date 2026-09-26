@@ -2,7 +2,7 @@ use cesium_engine::math::trajectory::TrajectoryEvaluator;
 use cesium_engine::property::sampled::{InterpolationAlgorithm, SampledPositionProperty};
 use cesium_engine::property::Property;
 use cesium_engine::time::SimulationTime;
-use glam::{DQuat, DVec3};
+use glam::DVec3;
 
 #[test]
 fn test_plane_tangent_alignment() {

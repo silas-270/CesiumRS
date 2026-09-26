@@ -1,13 +1,12 @@
 //! Pure-function checks on the fog port (`crates/cesium-engine/src/globe/quadtree/fog.rs`)
-//! — WP5 of `docs/pre-terrain-plan.md` — plus a guard on what is left of fog's reach into
+//! plus a guard on what is left of fog's reach into
 //! the tree.
 //!
 //! There used to be two guards here on `Stage::Fog`'s placement: that it never entered
 //! `CullPipeline::DEFAULT` (where it would void every FN = 0 guarantee in
 //! `docs/culling-math.md`), and that `DEFAULT_WITH_FOG` was `DEFAULT` plus exactly that
-//! stage. **E1c deleted the stage**, having measured that it culls nothing at any camera
-//! (`docs/terrain-plan.md` §8, and
-//! [`super::test_wp5_fog::the_fog_stage_never_ran_and_this_is_what_it_would_have_culled`]
+//! stage. **The stage was deleted**, having measured that it culls nothing at any camera
+//! (see [`super::test_wp5_fog::the_fog_stage_never_ran_and_this_is_what_it_would_have_culled`]
 //! for the reconstruction that still checks it). With no stage there is nothing to keep
 //! out of `DEFAULT`, and production now runs `DEFAULT` itself — so the constraint those
 //! two tests protected is satisfied structurally rather than by assertion, which is the
@@ -18,7 +17,7 @@ use cesium_engine::globe::quadtree::{cesium_fog, fog_density_for, CullPipeline, 
 /// What is left of the constraint: production's pipeline **is** the pipeline the culling
 /// gate proves FN = 0 against, on both arms.
 ///
-/// Before E1c the two differed by `Stage::Fog` and a paragraph explaining why that was
+/// Previously the two differed by `Stage::Fog` and a paragraph explaining why that was
 /// safe. Now they are the same constant, and this is the check that keeps them so — the
 /// failure it catches is someone reintroducing an unsound stage into the pipeline
 /// `wgpu_state` selects without noticing that the harness measures a different one.

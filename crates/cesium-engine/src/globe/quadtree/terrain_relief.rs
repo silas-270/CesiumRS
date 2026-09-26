@@ -1,11 +1,11 @@
-//! **The pre-check** — one number, read off the visible set, that decides whether D3's
-//! march is worth running at all. `docs/terrain-plan.md` §7g.
+//! **The pre-check** — one number, read off the visible set, that decides whether the terrain occlusion
+//! march is worth running at all.
 //!
 //! # Why there is a pre-check
 //!
-//! §7f put D3's two halves on one clock and found the shape of the answer: over six poses
+//! Profiling put terrain occlusion's two halves on one clock and found the shape of the answer: over six poses
 //! the stage removed twenty tiles at **one** of them and nothing at four others, while
-//! charging 300–500 µs of march at every pose the altitude gate let through. §7f also
+//! charging 300–500 µs of march at every pose the altitude gate let through. The analysis also
 //! named the discriminator it could not build — "the discriminator is not height, it is
 //! **relief in view**" — and recorded that the quantity is the one the march itself
 //! computes, "which is the shape of the problem and why it is recorded here rather than
@@ -37,7 +37,7 @@
 //! * **Off `floor_grid`, not off the box.** The box's top is `HeightBounds::hi`, which on
 //!   an inherited interval is kilometres of margin rather than terrain; at the
 //!   Jungfraujoch it reads **+36.7°** of relief where nothing at all stands above the eye.
-//!   The sixteen sub-cell floors are what D1 can *prove* is there, which is exactly what
+//!   The sixteen sub-cell floors are what height-aware bounds can *prove* is there, which is exactly what
 //!   the march would stamp, and the same pose reads **−1.8°** off them. Highest sub-cell,
 //!   because one sub-cell of guaranteed crest is a wall; the scalar `floor` is a minimum
 //!   over the whole tile and would average that crest away (`HeightBounds::floor_grid`'s
@@ -50,7 +50,7 @@
 //!
 //! # It cannot cost a tile, and that is the whole of its correctness
 //!
-//! Not marching is not culling. A pre-check that says "no" leaves D3 at D1+D2, which is
+//! Not marching is not culling. A pre-check that says "no" leaves occlusion culling at height-aware bounds and the relief-aware horizon test, which is
 //! the arm the flat globe has always run and which the culling gate proves sound
 //! independently. The only mistake this file can make is to leave a cull on the table —
 //! a **balance** error, not a correctness one — so nothing here is rounded outward, no
@@ -143,7 +143,7 @@ impl ReliefProbe {
     }
 
     /// Offers one visible leaf: its ground rectangle and the highest altitude, in
-    /// megametres, that D1 guarantees over any part of it.
+    /// megametres, that height-aware bounds guarantees over any part of it.
     ///
     /// Returns `true` once the threshold has been cleared, which is the walk's cue to
     /// stop — the poses that clear it are the ones about to pay for a march anyway, and

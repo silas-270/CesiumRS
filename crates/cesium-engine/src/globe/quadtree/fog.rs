@@ -1,15 +1,14 @@
 //! Atmospheric fog: the distance-based imagery falloff CesiumJS ships in
-//! `Scene/Fog.js` and `Core/Math.js`'s `CesiumMath.fog` — WP5 of
-//! `docs/pre-terrain-plan.md`.
+//! `Scene/Fog.js` and `Core/Math.js`'s `CesiumMath.fog`.
 //!
 //! # Where this is (and is not) wired in
 //!
 //! **One consumer, and it is not a culling stage.** `QuadtreeNode::apply_lod` relaxes
 //! `subdivide_dist` (shrinks the threshold a node refines within) as fog thickens, so a
 //! tile buried in fog stops demanding full resolution. Every tile-count and quality number
-//! WP5 ever measured came from that line.
+//! measured for fog came from that line.
 //!
-//! There was a second consumer until E1c of `docs/terrain-plan.md` §8: a
+//! There was a second consumer until terrain LOD landed: a
 //! `Stage::Fog` that culled a node outright once [`cesium_fog`] reached `1.0`, present only
 //! in a `CullPipeline::DEFAULT_WITH_FOG` that production ran and the culling harness was
 //! forbidden to touch. It was the fourth of four stages, behind two that settle every node
@@ -52,7 +51,7 @@
 //! *visual* fog density based on which way the camera happens to be pointed, not on
 //! any per-tile quantity, and plumbing a camera forward vector into
 //! [`super::quadtree::CullContext`] for it would add real surface area for a term
-//! orthogonal to what WP5 is scoped to (tile-count reduction from distance falloff,
+//! orthogonal to distance-based fog (tile-count reduction from distance falloff,
 //! not view-angle-dependent haze). Every tile-count and quality number this package
 //! reports is therefore a **worst case for a nadir-ish view** relative to real
 //! Cesium — a horizon-tilted camera would fog (and therefore cull/relax) somewhat
@@ -98,9 +97,9 @@ pub struct FogConfig {
     /// camera is above this height fog will be disabled."
     pub max_height_m: f32,
     /// `Fog.screenSpaceErrorFactor`. Ported for parity with the CesiumJS defaults, and
-    /// reserved since WP5 "once terrain gives this engine a real geometric error term".
+    /// reserved "once terrain gives this engine a real geometric error term".
     ///
-    /// **E1 gave it one, and E1b measured whether Cesium's form beats WP5's. It does
+    /// **Terrain LOD gave it one, and evaluation measured whether Cesium's form beats simpler falloff. It does
     /// not.** Cesium subtracts `fog(d) · sse` from the screen-space error *in pixels*
     /// before comparing against the budget, which in this engine's distance form is
     /// `terrain_dist /= 1 + fog · (sse / max_geometric_error_px)`; that is
@@ -110,14 +109,14 @@ pub struct FogConfig {
     /// geometric term at all. So the shipped policy is
     /// [`super::quadtree::TerrainFogPolicy::ImageryOnly`] and this field is still not
     /// consumed in production — now as a measured result rather than as a pending
-    /// question. `docs/terrain-plan.md` §8 has the table.
+    /// question.
     ///
     /// The structural reason, which is worth more than the seven pixels: Cesium's form is
     /// bounded below by `1/(1 + sse/max_px)` however thick the fog gets, so with this
     /// engine's shipped budget it can only ever shorten the geometric refinement distance
-    /// by a fifth. It is a nudge where WP5's `× (1 − fog)` is a switch, and the question
-    /// E1b was actually asking — may fog coarsen a *mountain* — is answered "no" by both
-    /// of them far better than by WP5's.
+    /// by a fifth. It is a nudge where `× (1 − fog)` is a switch, and the question
+    /// that was actually asked — may fog coarsen a *mountain* — is answered "no" by both
+    /// of them far better.
     pub sse: f32,
 }
 
@@ -137,7 +136,7 @@ impl Default for FogConfig {
 /// `CesiumMath.fog(distanceToCamera, density)`, verbatim: the fraction of a tile at
 /// `distance_m` that atmospheric fog obscures, given the frame's current `density`.
 /// `0.0` is clear air, `>= 1.0` is fully obscured. (`>= 1.0` used to be an
-/// outright-cull threshold; E1c measured that it is never reached inside the horizon and
+/// outright-cull threshold; evaluation measured that it is never reached inside the horizon and
 /// deleted the stage that tested it — see the module doc comment.)
 /// Monotonically increasing in both arguments; `0.0` at `distance_m == 0.0` or
 /// `density == 0.0` (including the `density == 0.0` [`fog_density_for`] returns

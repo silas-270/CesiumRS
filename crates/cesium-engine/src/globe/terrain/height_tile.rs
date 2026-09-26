@@ -1,5 +1,5 @@
-//! One decoded elevation tile: the Terrarium decoder (B1), the sample grid, and
-//! the 16x16 min/max mip (B3) of `docs/terrain-plan.md` §5.
+//! One decoded elevation tile: the Terrarium decoder, the sample grid, and
+//! the 16x16 min/max mip.
 //!
 //! # Units
 //!
@@ -14,7 +14,7 @@ use crate::globe::tiles::config::OceanPolicy;
 pub const HEIGHT_TILE_DIM: usize = 256;
 /// `256 * 256`.
 pub const HEIGHT_TILE_TEXELS: usize = HEIGHT_TILE_DIM * HEIGHT_TILE_DIM;
-/// Edge length of the min/max mip — `docs/terrain-plan.md` §3.3 and §5 B3.
+/// Edge length of the min/max mip.
 pub const HEIGHT_MIP_DIM: usize = 16;
 /// `16 * 16`.
 pub const HEIGHT_MIP_CELLS: usize = HEIGHT_MIP_DIM * HEIGHT_MIP_DIM;
@@ -23,7 +23,7 @@ pub const HEIGHT_MIP_BLOCK: usize = HEIGHT_TILE_DIM / HEIGHT_MIP_DIM;
 
 /// Texels between two consecutive samples of the **drawn mesh** across one tile —
 /// `256 / 16`, i.e. exactly one mip block — and therefore the decimation
-/// [`HeightTile::detail`] measures the field against. E1 of `docs/terrain-plan.md` §8.
+/// [`HeightTile::detail`] measures the field against.
 ///
 /// Not a coincidence worth leaving unstated: `TileEngineConfig::mesh_segments` ships at
 /// **16**, so `TileMesh::generate_on` lays 17 samples across a tile and the span between
@@ -39,7 +39,7 @@ pub const HEIGHT_MIP_BLOCK: usize = HEIGHT_TILE_DIM / HEIGHT_MIP_DIM;
 pub const HEIGHT_DETAIL_STEP: usize = HEIGHT_TILE_DIM / 16;
 
 /// Levels below this tile's own for which [`HeightTile::detail_below`] stores a measured
-/// error — **F5** of `docs/terrain-plan.md` §9.
+/// error.
 ///
 /// A descendant `k` levels below this tile draws the same 17×17 mesh lattice over
 /// `4^k`-times less ground, so it decimates this tile's texels `HEIGHT_DETAIL_STEP / 2^k`:1.
@@ -51,14 +51,14 @@ pub const HEIGHT_DETAIL_LEVELS: u32 = 3;
 /// Entries in [`HeightTile::detail_below`]'s pyramid: `4 + 16 + 64`.
 ///
 /// One per descendant at each stored level — `4^k` sub-tiles at level `k` — because a whole
-/// -tile maximum is the wrong window for a descendant. F5 measured that: scored against the
+/// -tile maximum is the wrong window for a descendant. Detail evaluation measured that: scored against the
 /// error the mesh really leaves, a whole-tile number at the right lattice over-states by a
 /// median 1.25× at z16 and **2.0×** at z17 and z18, and over-stating is what refines a level
 /// too deep across a whole near field.
 pub const HEIGHT_DETAIL_PYRAMID_CELLS: usize = 4 + 16 + 64;
 
 /// A decoded height tile: 256x256 samples in metres, plus the extrema and the
-/// min/max pyramid Phase D will cull with.
+/// min/max pyramid culling will use.
 ///
 /// # Precision
 ///
@@ -87,11 +87,9 @@ pub struct HeightTile {
     min_mip: Box<[i16; HEIGHT_MIP_CELLS]>,
     /// Per-16x16-block maxima, same indexing.
     max_mip: Box<[i16; HEIGHT_MIP_CELLS]>,
-    /// This tile's **measured geometric error**, metres — E1 of
-    /// `docs/terrain-plan.md` §8. See [`Self::detail`].
+    /// This tile's **measured geometric error**, metres. See [`Self::detail`].
     detail: i16,
-    /// The same measurement for each descendant one, two and three levels down — F5 of
-    /// `docs/terrain-plan.md` §9. See [`Self::detail_below`] for the layout.
+    /// The same measurement for each descendant one, two and three levels down. See [`Self::detail_below`] for the layout.
     detail_below: Box<[i16; HEIGHT_DETAIL_PYRAMID_CELLS]>,
 }
 
@@ -108,7 +106,7 @@ pub struct HeightTile {
 /// # Extrema
 ///
 /// Taken over **all 65 536 texels**, deliberately, not over the 17x17 grid
-/// `TileMesh` will sample. Phase D fits this tile's bounding box to `[h_min, h_max]`,
+/// `TileMesh` will sample. Culling fits this tile's bounding box to `[h_min, h_max]`,
 /// and a maximum computed on a subgrid misses summits between grid lines — which is
 /// an under-estimate of the box, which is a false negative, which by invariant I-7
 /// is a hole in the globe.
@@ -167,7 +165,7 @@ fn decode_texel(r: u8, g: u8, b: u8, ocean: OceanPolicy) -> f32 {
 /// property the whole measurement rests on, and the one an assumed-uniform spacing would
 /// quietly break in the last row and column.
 /// `step` is [`HEIGHT_DETAIL_STEP`] for the tile's own mesh and `HEIGHT_DETAIL_STEP / 2^k`
-/// for a descendant `k` levels down — F5. A descendant's window always starts on a multiple
+/// for a descendant `k` levels down. A descendant's window always starts on a multiple
 /// of its own `step` (the window is `i · 256/2^k` texels wide and `step` divides that), so
 /// the *global* lattice below **is** that descendant's own mesh lattice restricted to its
 /// window, and there is one lattice rather than one per sub-tile.
@@ -202,7 +200,7 @@ fn measure_detail(data: &[f32]) -> i16 {
 }
 
 /// [`measure_detail`] on a `lattice` already built, restricted to the texel window
-/// `[x0, x1) × [y0, y1)` — the shape F5's pyramid needs, and the shape
+/// `[x0, x1) × [y0, y1)` — the shape the detail pyramid needs, and the shape
 /// [`measure_detail`] is now one call of.
 fn measure_detail_over(
     data: &[f32],
@@ -230,13 +228,13 @@ fn measure_detail_over(
     worst.ceil().min(i16::MAX as f64) as i16
 }
 
-/// **F5** — [`HeightTile::detail_below`]'s pyramid, computed once over a finished grid.
+/// [`HeightTile::detail_below`]'s pyramid, computed once over a finished grid.
 ///
 /// Three passes over the 65 536 texels, one per stored level, each restricted to the
 /// `4^k` sub-tiles of that level in turn. The whole pyramid is the same arithmetic
 /// [`measure_detail`] already does, at three finer lattices and over smaller windows, so
 /// the number a descendant reads is the number its own mesh really leaves — not a scaled
-/// guess and not its ancestor's whole-tile maximum. F5's table scores both of those
+/// guess and not its ancestor's whole-tile maximum. The detail table scores both of those
 /// against this one.
 fn measure_detail_pyramid(
     data: &[f32],
@@ -351,8 +349,8 @@ impl HeightTile {
     }
 
     /// The tile's **measured geometric error** in metres: how far its own height field
-    /// departs from the surface a mesh laid across it actually draws — E1 of
-    /// `docs/terrain-plan.md` §8, and the whole content of the terrain LOD term.
+    /// departs from the surface a mesh laid across it actually draws — the whole
+    /// content of the terrain LOD term.
     ///
     /// # What is measured
     ///
@@ -376,7 +374,7 @@ impl HeightTile {
     /// One cliff in a corner gives the whole tile a large error and refines all of it.
     /// That is the direction a *bound* on the drawn surface's error has to round — and it
     /// is the opposite of [`Self::mip_min`]'s problem, where a minimum over a whole tile
-    /// averaged a ridge away (`docs/terrain-plan.md` §7b). An error that is too large
+    /// averaged a ridge away. An error that is too large
     /// costs tiles; an error that is too small costs shape, silently.
     ///
     /// # Units
@@ -389,7 +387,7 @@ impl HeightTile {
         self.detail
     }
 
-    /// **F5** — [`Self::detail`] for the descendant `k` levels below this tile whose share
+    /// [`Self::detail`] for the descendant `k` levels below this tile whose share
     /// of its texel grid is sub-tile `(ix, iy)` of the `2^k × 2^k` grid. Metres.
     ///
     /// `k = 0` is [`Self::detail`] itself. `k > `[`HEIGHT_DETAIL_LEVELS`] returns **exactly
@@ -403,8 +401,8 @@ impl HeightTile {
     /// The stored lattices are `8`, `4` and `2` texels, which are the descendant's mesh
     /// spacing only while the mesh lays 17 samples across a tile. At 32 the whole ladder
     /// shifts one level and every entry over-states; at 8 it under-states. Same situation
-    /// and same remedy as `HEIGHT_DETAIL_STEP`'s, and §9 F1's reason for leaving
-    /// `mesh_segments` at 16 is unchanged by F5.
+    /// and same remedy as `HEIGHT_DETAIL_STEP`'s, and the reason for leaving
+    /// `mesh_segments` at 16 is unchanged.
     #[inline]
     pub fn detail_below(&self, k: u32, ix: u32, iy: u32) -> i16 {
         if k == 0 {
@@ -421,7 +419,7 @@ impl HeightTile {
 
     /// A tile of exact zeros — sea level everywhere, no relief.
     ///
-    /// This is what `offline_mode` serves (`docs/terrain-plan.md` §5 acceptance), so
+    /// This is what `offline_mode` serves, so
     /// every headless test can run with terrain enabled and no network and see a globe
     /// geometrically identical to the flat one.
     pub fn flat_zero() -> Self {
@@ -465,7 +463,7 @@ impl HeightTile {
 
     /// Minimum height over one 16x16-texel mip cell, metres.
     ///
-    /// Phase D's occlusion march (§3.3) reads **this** side: the occluder must be a
+    /// The occlusion march (§3.3) reads **this** side: the occluder must be a
     /// *lower* bound on the terrain, because only something that is definitely there
     /// can definitely block. Reading [`Self::mip_max`] here instead over-occludes, and
     /// over-occlusion is precisely the false negative this engine exists to prevent.
@@ -484,7 +482,7 @@ impl HeightTile {
     }
 
     /// `(min, max)` in metres over every texel the `[u0,u1] × [v0,v1]` rectangle
-    /// touches — Phase D1's bounding-volume source.
+    /// touches — height-aware bounds source.
     ///
     /// The rectangle is rounded **outward** to whole mip cells, so the answer is an
     /// upper bound on the true extrema over it and never an under-estimate: an
@@ -508,12 +506,12 @@ impl HeightTile {
     /// The whole tile (`0,0 → 1,1`) returns exactly [`Self::h_min`] and [`Self::h_max`],
     /// which is what a tile at or above the source's deepest level asks for.
     /// The largest height **range** over any aligned quarter-window of any of the four
-    /// edges of the `[u0,u1] × [v0,v1]` rectangle, in metres — **D1's follow-up**, the
-    /// tight replacement for bounding C3's skirt by the whole tile's range.
+    /// edges of the `[u0,u1] × [v0,v1]` rectangle, in metres — the
+    /// tight replacement for bounding skirt depth by the whole tile's range.
     ///
     /// # What it bounds and why the windows are quarters
     ///
-    /// C3's crack is `max_i |h[i] − lerp(h[i₀], h[i₁])|` along one edge, where `i₀`/`i₁`
+    /// The crack is `max_i |h[i] − lerp(h[i₀], h[i₁])|` along one edge, where `i₀`/`i₁`
     /// are that edge's samples `k` grid steps apart and `k ∈ {2, 4}`
     /// (`SKIRT_COARSENINGS`). A linear interpolant of two samples never leaves their
     /// interval, so the deviation over one window cannot exceed the **range of the field
@@ -521,8 +519,8 @@ impl HeightTile {
     /// `k = 4` windows are the edge's four quarters and every `k = 2` window nests inside
     /// one of them. Four quarters per edge therefore cover both coarsenings exactly.
     ///
-    /// The old bound was the range over the **whole tile**, which is what
-    /// `docs/terrain-plan.md` §7 records as making a node's interval **1.53×** the mesh
+    /// The old bound was the range over the **whole tile**, which was
+    /// measured to make a node's interval **1.53×** the mesh
     /// interval it has to contain (Everest z12: a 741 m real skirt bounded by a 4 700 m
     /// span). A summit in the middle of a tile inflates that bound and cannot affect any
     /// edge's interpolation at all; this reads only the edges.
@@ -605,6 +603,8 @@ impl HeightTile {
         (lo, hi)
     }
 
+    /// `(min, max)` over every mip cell the rectangle `[u0, u1] × [v0, v1]` touches, plus a
+    /// one-cell halo on each side, so it bounds the bilinear field over the rectangle.
     pub fn mip_extrema_over(&self, u0: f64, v0: f64, u1: f64, v1: f64) -> (i16, i16) {
         self.mip_cell_extrema(u0.min(u1), v0.min(v1), u0.max(u1), v0.max(v1), 1)
     }

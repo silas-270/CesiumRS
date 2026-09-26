@@ -107,7 +107,7 @@ pub struct Camera {
     /// Height of the terrain directly below the camera, in megametres above the
     /// ellipsoid — `None` whenever there is no terrain to speak of.
     ///
-    /// Phase E3 (`docs/terrain-plan.md` §8). The camera cannot reach the height cache:
+    /// The camera cannot reach the height cache:
     /// it is constructed before the tile system, borrowed mutably by the extension, and
     /// used by tests that have no `WgpuState` at all. So the ground comes *to* it —
     /// `WgpuState::update_logic` samples it once per frame from
@@ -120,7 +120,7 @@ pub struct Camera {
     /// `TileSystem::ground_height_at` returns `None` whenever
     /// `TerrainConfig::enabled` is false, so with terrain off this field is `None` on
     /// every frame of every run, and every consumer below takes a branch that is
-    /// character-for-character the arithmetic it did before Phase E3. This is not "the
+    /// character-for-character the arithmetic it did previously. This is not "the
     /// same to within a rounding error"; it is the same expression on the same operands.
     ///
     /// Default `None`, so a `Camera` nobody feeds — the LOD harness, the culling tests,
@@ -654,9 +654,9 @@ impl Camera {
     ///
     /// Left exactly as it was, deliberately. Several things genuinely want the distance
     /// to the reference surface and not to the ground: the fog density (an atmospheric
-    /// depth, and its consumer in `apply_lod` is under review in §7b/§7c), the label
+    /// depth, and its consumer in `apply_lod`), the label
     /// zoom bucket (a map scale), and `TerrainHorizon::begin`'s own altitude gate, which
-    /// D3 calibrated against this quantity. What wanted the ground all along is
+    /// terrain occlusion calibrated against this quantity. What wanted the ground all along is
     /// [`altitude_agl`](Self::altitude_agl).
     pub fn altitude(&self) -> f32 {
         let (pos_dvec, _) = self.global_transform_f64();
@@ -705,15 +705,12 @@ impl Camera {
     ///
     /// Called once per frame by `WgpuState::update_logic` with
     /// `TileSystem::ground_height_at(camera_position)`, which is `None` whenever terrain
-    /// is off. Passing `None` restores the pre-Phase-E3 camera exactly, which is what
+    /// is off. Passing `None` leaves the camera with only the ellipsoid as its floor, which is what
     /// running flat does on every frame.
     ///
-    /// A *rising* floor is enforced immediately: a camera parked in a valley when the
-    /// z15 tile under it finally arrives, or panned into a hillside a frame ago, is
-    /// pushed out by [`enforce_bounds`] here rather than on the next input event. The
-    /// call is skipped entirely when the new value is `None`, so on the flat path this
-    /// setter is one field write per frame and `enforce_bounds` runs exactly where it
-    /// always ran.
+    /// Only stores the value: [`enforce_bounds`] reads it the next time it runs, so a
+    /// rising floor pushes the camera out on the next input or transform update, not
+    /// here. On the flat path this setter is one field write per frame.
     pub fn set_ground_height(&mut self, ground_height: Option<f32>) {
         self.ground_height = ground_height;
     }
@@ -748,7 +745,7 @@ impl Camera {
     }
 
     pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        // Phase E3.2: clearance over the *ground*, which is what the near plane was
+        // Clearance over the *ground*, which is what the near plane was
         // always trying to express. `altitude_agl()` is `altitude()` with terrain off.
         let alt = self.altitude_agl().max(0.000002);
         let znear = match self.mode {

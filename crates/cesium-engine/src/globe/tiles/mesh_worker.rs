@@ -8,7 +8,7 @@ use crate::globe::terrain::heightfield::{HeightPatch, Heightfield};
 
 /// Which surface model a queued mesh is built on, with its build input already in hand.
 ///
-/// This is where `docs/terrain-plan.md` §1's "monomorphise, don't branch" meets the
+/// This is where the rule "monomorphise, don't branch" meets the
 /// fact that the switch *is* a runtime config flag. The branch happens **once per
 /// mesh**, here, on the update thread — not once per vertex and never inside the
 /// quadtree's per-node loop, which is the thing constraint 1 protects. Each arm then
@@ -17,7 +17,7 @@ use crate::globe::terrain::heightfield::{HeightPatch, Heightfield};
 ///
 /// The height patch is sampled by the caller, not by the worker: see
 /// [`crate::globe::quadtree::surface::SurfaceModel::BuildCtx`] for why that matters to
-/// Phase E2.
+/// mesh rebuilds.
 pub enum MeshBuild {
     /// The flat globe. Zero-sized input, `generate_on::<Ellipsoid>`.
     Flat,
@@ -102,7 +102,7 @@ impl MeshWorkerPool {
     /// Whether a build for `id` is already queued or running.
     ///
     /// [`Self::request_mesh`] deduplicates on this already, so a repeat request is
-    /// harmless — but **Phase E2**'s rebuild budget is a budget of *slots*, and a slot
+    /// harmless — but the rebuild budget is a budget of *slots*, and a slot
     /// spent re-offering a tile that is already on a worker is a slot no other stale
     /// tile gets. Measured before it was exposed: the staged burst in
     /// `rendering::terrain_e2_capture` queued 90 "rebuilds" to finish 74 tiles, because

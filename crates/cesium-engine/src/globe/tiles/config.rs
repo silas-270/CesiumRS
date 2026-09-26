@@ -165,7 +165,7 @@ pub const TERRARIUM_URL: &str =
     "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
 
 /// Deepest level the Terrarium source actually serves. **Probed live, not assumed**
-/// (`docs/terrain-plan.md` §2, re-checked 2026-09-20): `z15` returns a tile, `z16`
+/// (re-checked 2026-09-20): `z15` returns a tile, `z16`
 /// returns `404`.
 ///
 /// Imagery refines to z19/z20 ([`TileEngineConfig::max_zoom`]), so for five of the
@@ -175,21 +175,19 @@ pub const TERRARIUM_URL: &str =
 pub const TERRARIUM_MAX_LEVEL: u8 = 15;
 
 /// Resident bytes one decoded [`crate::globe::terrain::height_tile::HeightTile`]
-/// costs: 256x256 `i16` samples, the 16x16 min and max mips, E1's one-`i16` measured
-/// geometric error ([`crate::globe::terrain::HeightTile::detail`]) and F5's 84-entry
+/// costs: 256x256 `i16` samples, the 16x16 min and max mips, the one-`i16` measured
+/// geometric error ([`crate::globe::terrain::HeightTile::detail`]) and the deep-detail pyramid's 84-entry
 /// pyramid of the same measurement for the descendants below it
 /// ([`crate::globe::terrain::HeightTile::detail_below`]).
 ///
-/// `docs/terrain-plan.md` §5 B4 rounds this to "128 kB per height tile; 256 resident
-/// = 32 MB". The real figure is 129 kB, because the mips are not free, so a 32 MiB
-/// slice derives **253** entries rather than 256 and §9 F2b's 48 MiB derives **380**.
-/// The budget is the promise; the entry count is derived from it, exactly as it is for
-/// imagery — see [`HEIGHT_CACHE_BUDGET_BYTES`].
+/// That comes to **132 274 bytes** a tile, so Android's 32 MiB slice derives **253**
+/// entries and the desktop's 96 MiB derives **761**. The budget is the promise; the entry
+/// count is derived from it, exactly as it is for imagery — see
+/// [`HEIGHT_CACHE_BUDGET_BYTES`].
 ///
-/// E1's error term costs two bytes a tile and F5's pyramid another 168 — together **0.13 %**
-/// of the entry, and one entry off the derived count: 50 331 648 / 132 266 is 380 where
-/// 50 331 648 / 132 098 was 381. That is what four levels of measured shape cost in memory,
-/// and it is the whole of it.
+/// The measured-error term and its pyramid cost 170 bytes a tile, about **0.13 %** of the
+/// entry: that is what four levels of measured shape cost in memory, and it is the whole of
+/// it.
 pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2
     + 2 * (16 * 16 * 2)
     + 2
@@ -199,8 +197,7 @@ pub const HEIGHT_TILE_BYTES: usize = 256 * 256 * 2
 /// What to do with the sub-sea-level samples the Terrarium source carries.
 ///
 /// The open ocean in Terrarium is **bathymetry**, not a flat sheet: a mid-Pacific z12
-/// tile measures −4324 … −2276 m (`docs/terrain-plan.md` §2, reproduced as a pinned
-/// fixture test). Rendered untreated, the sea floor *is* the sea surface and every
+/// tile measures −4324 … −2276 m (pinned by a fixture test). Rendered untreated, the sea floor *is* the sea surface and every
 /// coastline becomes a multi-kilometre cliff.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OceanPolicy {
@@ -218,7 +215,7 @@ pub enum OceanPolicy {
 }
 
 /// Whether [`TerrainConfig::enabled`] defaults to `true` on **this** target —
-/// `docs/terrain-plan.md` §9 F4, and the one line where the platform split lives.
+/// the one line where the platform split lives.
 ///
 /// **The desktop viewer does not go by this.** `CesiumViewer::builder()` in the root crate
 /// lets the map style decide: satellite-terrain with relief, standard on the flat globe
@@ -226,18 +223,18 @@ pub enum OceanPolicy {
 /// default is what a bare `TileEngineConfig::default()` gets: the tests, the harnesses and
 /// Android's `android_main`.
 ///
-/// **Desktop: `true`.** F1 and F2 cover it. The visible set over the ten real DEM poses
+/// **Desktop: `true`.** The visible set over the ten real DEM poses
 /// costs 702 tiles against 483 flat, the drawn geometric error sits inside the shipped
 /// 12 px budget at every pose but the Himalayan cliffs, and the memory split is measured
 /// (`testing::terrain::test_mesh_density::f2_where_the_bytes_go_at_the_real_poses`):
-/// 103 MiB of imagery against its share, 32 MiB of heights (48 MiB since §9 F2b), 1.6 MB
+/// 103 MiB of imagery against its share, 32 MiB of heights (48 MiB since resizing), 1.6 MB
 /// of vertex buffers at the heaviest pose.
 ///
 /// **Android: `false`, and this is a deliberate hole, not an oversight.** §9 binds the
 /// flip to an S23 soak with terrain on against terrain off, and that soak **has not been
-/// run** — the machine Phase F was written on has no `adb` and no phone attached. Nothing
+/// run** — the machine this was written on has no `adb` and no phone attached. Nothing
 /// here is a prediction that terrain is too expensive on device; it is the statement that
-/// nobody has looked. §9 F3 is the runbook that closes it, and this constant is what it
+/// nobody has looked. The soak runbook closes it, and this constant is what it
 /// flips.
 ///
 /// It is a constant rather than a per-entry-point assignment because Android reaches this
@@ -252,29 +249,29 @@ pub enum OceanPolicy {
 pub const TERRAIN_ENABLED_BY_DEFAULT: bool = !cfg!(target_os = "android");
 
 /// The height cache's declared slice of [`TileEngineConfig::tile_cache_budget_bytes`],
-/// **48 MiB on desktop and 32 MiB on Android** — `docs/terrain-plan.md` §9 F2b.
+/// **96 MiB on desktop and 32 MiB on Android**.
 ///
-/// # Why the number moved, and why not for the reason §9 F2 gave
+/// # Why the number moved
 ///
-/// F2 reported that three of the ten real poses want more distinct height sources than the
+/// Initial measurement reported that three of the ten real poses want more distinct height sources than the
 /// 32 MiB slice holds — `alps_inn_valley` 312 against 254 — and called the consequence
 /// churn. `terrain::test_height_residency` went to measure that churn against the real
-/// manager, a real `TileFetcher` and a real socket, and **did not find it**: F2's 312 is
+/// manager, a real `TileFetcher` and a real socket, and **did not find it**: the reported 312 is
 /// `collect_sources` over the *whole quadtree*, and production
 /// (`TileSystem::request_height_chain`) only ever asks for the visible set and its ancestor
 /// chains. That set is **220** tiles at the worst pose, at either shipped imagery style,
 /// and it fits in 254 with nothing evicted and nothing fetched twice.
 ///
 /// What the same measurement did show is how little margin 220 of 254 leaves — 87 % of the
-/// slice at 103 visible tiles — and the terrain LOD refinement of §9 F5 raises exactly that
-/// tile count. So the slice is raised to give F5 somewhere to land, on a measured working
-/// set rather than on F2's over-count, and the header above the number is the honest one:
+/// slice at 103 visible tiles — and terrain LOD refinement raises exactly that
+/// tile count. So the slice is raised to give the deep-detail pyramid somewhere to land, on a measured working
+/// set rather than on an over-count, and the header above the number is the honest one:
 /// it is headroom, not a fix.
 ///
 /// # Android keeps 32 MiB
 ///
 /// Not because 32 is right there — nobody knows — but because every Android memory decision
-/// in this file is held to the soak of §9 F3, which has not been run. Android also has
+/// in this file is held to the soak, which has not been run. Android also has
 /// terrain off by default ([`TERRAIN_ENABLED_BY_DEFAULT`]), so while that stands this
 /// constant does not describe any memory the device actually allocates; the split exists so
 /// that flipping the one constant does not silently flip this one too.
@@ -293,16 +290,16 @@ pub const HEIGHT_CACHE_BUDGET_BYTES: usize = if cfg!(target_os = "android") {
 /// later, i.e. the ground visibly re-loaded (`testing::rendering::revisit`).
 pub const MESH_CACHE_ENTRIES: usize = if cfg!(target_os = "android") { 1536 } else { 4096 };
 
-/// Terrain height data — `docs/terrain-plan.md` §4 A3, §5, §6 and §7.
+/// Terrain height data.
 ///
-/// **On by default since §9 F4 — on desktop.** See [`TERRAIN_ENABLED_BY_DEFAULT`] for the
+/// **On by default on desktop.** See [`TERRAIN_ENABLED_BY_DEFAULT`] for the
 /// platform split and for why Android is not in it.
 ///
-/// The unsoundness §10 warned about is **gone**: D1 fits the bounding volumes over each
-/// node's `[h_min, h_max]` and D2 runs the limb test on its scaled-space bounding sphere,
+/// The unsoundness §10 warned about is **gone**: height-aware bounds fits the bounding volumes over each
+/// node's `[h_min, h_max]` and the relief-aware horizon test runs the limb test on its scaled-space bounding sphere,
 /// so turning this on does not lose geometry — the sweep in
 /// `testing::terrain::test_terrain_visibility` measures FN = 0 and the headless captures
-/// over the Alps are gapless. **D3** — the occlusion march of §3.3, tiles hidden behind
+/// over the Alps are gapless. **Terrain occlusion** — the occlusion march of §3.3, tiles hidden behind
 /// mountains — landed too; see [`Self::occlusion`].
 #[derive(Clone, Debug)]
 pub struct TerrainConfig {
@@ -310,7 +307,7 @@ pub struct TerrainConfig {
     /// height fetcher, no height cache and no height request exists —
     /// [`crate::globe::tiles::system::TileSystem::height_manager`] is `None` — so the flat
     /// path is byte-for-byte what it was before terrain existed, which is what the 204-pose
-    /// LOD harness and the culling gate keep measuring after F4's flip.
+    /// LOD harness and the culling gate keep measuring.
     pub enabled: bool,
     /// XYZ template for the height source, `{z}`/`{x}`/`{y}` placeholders, same
     /// convention as [`TileEngineConfig::base_imagery_url`].
@@ -321,8 +318,8 @@ pub struct TerrainConfig {
     /// Vertical exaggeration.
     ///
     /// Applied in exactly one place — [`crate::globe::terrain::HeightPatch::sample`],
-    /// where a tile's heights are read out of the cache — and nowhere else
-    /// (`docs/terrain-plan.md` §6 C1: "here and nowhere else"). Because that is
+    /// where a tile's heights are read out of the cache — and nowhere else.
+    /// Because that is
     /// upstream of the patch's own `[h_min, h_max]`, §3.1's boxes and §3.2's spheres
     /// inherit it automatically instead of having to remember it.
     ///
@@ -338,7 +335,7 @@ pub struct TerrainConfig {
     /// [`TileEngineConfig::imagery_cache_budget_bytes`]. Terrain on must not silently
     /// raise the engine's total tile-memory ceiling.
     pub height_cache_budget_bytes: usize,
-    /// **D3** — culling tiles hidden behind mountains (`docs/terrain-plan.md` §3.3).
+    /// **Terrain occlusion** — culling tiles hidden behind mountains.
     ///
     /// Only consulted while [`Self::enabled`] is set: the occluders are the terrain
     /// quadtree's own node floors, and the flat quadtree has none.
@@ -348,8 +345,8 @@ pub struct TerrainConfig {
     /// measures — rather than being kept out of it. See
     /// [`crate::globe::quadtree::terrain_occlusion`].
     pub occlusion: crate::globe::quadtree::TerrainOcclusionConfig,
-    /// **E1** — how many pixels of geometric error the drawn surface may show before
-    /// the LOD refines it (`docs/terrain-plan.md` §8). Cesium's
+    /// **The terrain LOD term** — how many pixels of geometric error the drawn surface may show before
+    /// the LOD refines it. Cesium's
     /// `maximumScreenSpaceError` in all but name.
     ///
     /// **12, not Cesium's 2**, and the two numbers are not comparable. Cesium budgets a
@@ -363,7 +360,7 @@ pub struct TerrainConfig {
     /// node's measured error is the distance inside which that node subdivides for the
     /// sake of its *shape*. `0.0` switches the geometric term off entirely and leaves
     /// `apply_lod` refining on imagery sharpness alone, which is what every build before
-    /// E1 did.
+    /// earlier did.
     ///
     /// Only consulted while [`Self::enabled`] is set: with no relief there is no error
     /// (I-1), and `Ellipsoid::HAS_GEOMETRIC_ERROR` is a compile-time `false`.
@@ -400,16 +397,16 @@ pub struct TerrainConfig {
     /// term. Landscape is the flat case: the S23's landscape height *is* 1080, so in Free
     /// it is bit-identical to the desktop and in Cockpit it is 0.742× it.
     ///
-    /// **So the shipped 12 is not the same configuration on a phone**, and §9 F3's soak —
+    /// **So the shipped 12 is not the same configuration on a phone**, and the soak —
     /// which runs cockpit view — would not be measuring the desktop's calibration unless
     /// the value is re-chosen there. It is left at 12 deliberately: it is calibrated
     /// against the desktop measurement below, and dividing by a pixel ratio (or by
     /// `H / 720`) would demand a new calibration that cannot be done without the device.
-    /// §9 F3 carries the same table and the instruction to pick it on the phone.
+    /// The soak runbook carries the same table and the instruction to pick it on the phone.
     ///
     /// **[`lod_factor_for`] has the identical units question and must not be touched**: its
     /// `target_texel_ratio` default is calibrated against the hard-coded `2.0` that shipped
-    /// before WP3, on the same physical height, and the LOD harness's 204-pose CSVs are
+    /// before, on the same physical height, and the LOD harness's 204-pose CSVs are
     /// pinned to it byte for byte.
     ///
     /// [`terrain_lod_factor_for`]: crate::globe::quadtree::terrain_lod_factor_for
@@ -433,24 +430,24 @@ pub struct TerrainConfig {
     ///
     /// 12 is the knee, read off the *marginal* column rather than the total: 16 → 12 buys
     /// 4.2 px for 175 tiles, 12 → 10 buys 1.8 px for 160, and 10 → 8 buys 1.4 px for 343.
-    /// Phase F re-measures it on device, where the answer may well differ between desktop
+    /// Re-measurement on device may well differ between desktop
     /// and an S23 — the same split §9 already anticipates for `mesh_segments`.
     ///
-    /// The other half of the table is the half E1 exists for: at every budget above,
+    /// The other half of the table is the half the terrain LOD term exists for: at every budget above,
     /// `po_plain_to_alps` — flat ground, same screen area — moves by **0 to 3 tiles**
     /// while `alps_inn_valley` doubles. The knob costs what the ground is worth.
     pub max_geometric_error_px: f32,
-    /// **F5** — the deepest level the geometric term may demand refinement *into*
-    /// (`docs/terrain-plan.md` §9 F5). At and below it a node's stored error is zero and
+    /// **The deep-detail pyramid** — the deepest level the geometric term may demand refinement *into*.
+    /// At and below it a node's stored error is zero and
     /// `apply_lod` refines on imagery sharpness alone.
     ///
-    /// Defaults to [`DETAIL_MAX_Z`], which F5 raised from 15 to **19**: the source tile is
+    /// Defaults to [`DETAIL_MAX_Z`], which was raised from 15 to **19**: the source tile is
     /// 256² and the mesh is 17², so a z15 tile draws a 16:1 decimation of data it already
-    /// holds and four more levels of it are resolvable before the lattice reaches 1:1. E1's
+    /// holds and four more levels of it are resolvable before the lattice reaches 1:1. The
     /// 15 came from Cesium, where the heightmap *is* the mesh lattice and the argument
     /// holds; see `DETAIL_MAX_Z` for why it does not hold here.
     ///
-    /// A knob rather than a constant because it is the one column §9 F5's cost table sweeps,
+    /// A knob rather than a constant because it is the one column the cost table sweeps,
     /// and because it is the natural thing for a device measurement to lower: it trades
     /// near-field shape for tiles one level at a time.
     pub detail_max_z: u8,
@@ -459,21 +456,21 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            // §9 F4. Desktop on, Android still off — see `TERRAIN_ENABLED_BY_DEFAULT`.
+            // Desktop on, Android off — see `TERRAIN_ENABLED_BY_DEFAULT`.
             enabled: TERRAIN_ENABLED_BY_DEFAULT,
             source_url: TERRARIUM_URL.to_string(),
             max_level: TERRARIUM_MAX_LEVEL,
             exaggeration: 1.0,
             ocean: OceanPolicy::ClampToZero,
-            // §5 B4's slice, resized by §9 F2b's measurement of the working set it has to
-            // hold: 48 MiB on desktop (381 entries against a measured worst case of 220),
-            // 32 MiB on Android. See `HEIGHT_CACHE_BUDGET_BYTES`.
+            // A slice of the tile budget: 96 MiB on desktop (761 entries against a measured
+            // worst-case working set of 220), 32 MiB on Android. See `HEIGHT_CACHE_BUDGET_BYTES`.
             height_cache_budget_bytes: HEIGHT_CACHE_BUDGET_BYTES,
             occlusion: crate::globe::quadtree::TerrainOcclusionConfig::default(),
-            // E1. Cesium's own `maximumScreenSpaceError` default, kept until the cost
-            // table in `docs/terrain-plan.md` §8 gives a reason to move it.
+            // Twelve physical pixels of geometric error. Cesium's `maximumScreenSpaceError`
+            // defaults to 2, but in CSS pixels and for the whole tile — see docs/terrain.md's
+            // terrain LOD section for how the two compare.
             max_geometric_error_px: 12.0,
-            // F5. 19, not E1's 15 — `DETAIL_MAX_Z` carries the whole argument.
+            // 19, not 15 — `DETAIL_MAX_Z` carries the whole argument.
             detail_max_z: crate::globe::terrain::DETAIL_MAX_Z,
         }
     }
@@ -481,7 +478,7 @@ impl Default for TerrainConfig {
 
 /// Lower bound the byte budget may never push the imagery cache below, however
 /// large a single tile turns out to be. Well under any plausible working set
-/// (visible tiles plus `prefetch_radius`), so it only ever acts as a guard
+/// (visible tiles plus prefetch), so it only ever acts as a guard
 /// against a pathological tile size thrashing the cache down to nothing.
 pub const MIN_TILE_CACHE_ENTRIES: usize = 64;
 
@@ -489,13 +486,13 @@ pub const MIN_TILE_CACHE_ENTRIES: usize = 64;
 /// has any better information.
 ///
 /// Matches what [`standard_imagery_url`]'s `@2x` suffix actually serves (512x512).
-/// **No longer the value the LOD rule always runs at** — WP4/A
-/// (`docs/pre-terrain-plan.md`) feeds the real decoded tile size through live, via
+/// **No longer the value the LOD rule always runs at**
+/// feeds the real decoded tile size through live, via
 /// [`crate::globe::tiles::texture_manager::TileTextureManager::current_texture_size_px`],
 /// called fresh every frame from `wgpu_state::update_logic`. This constant is now
 /// only the *bootstrap* value: the texture manager doesn't know a style's real size
 /// until its first tile has decoded, and this is what `lod_factor_for` runs at until
-/// then (or if imagery is disabled). Before WP4/A this was the value used
+/// then (or if imagery is disabled). Previously this was the value used
 /// unconditionally, silently halving effective sharpness on any 256² style
 /// (`satellite_imagery_url()`) with no LOD compensation.
 ///
@@ -544,7 +541,7 @@ pub struct TileEngineConfig {
     /// memory ceiling by 4x.
     pub tile_cache_budget_bytes: usize,
     pub mesh_cache_size: NonZeroUsize,
-    /// Imagery texels demanded per screen pixel — the LOD target, and the WP1 LOD
+    /// Imagery texels demanded per screen pixel — the LOD target, and the LOD
     /// harness's own metric (`texels / screen_px`). `1.0` means "one texel per
     /// pixel": neither blurry nor wasteful. **Higher values demand more texels per
     /// pixel, so tiles stay sharper**: higher visual fidelity, worse performance.
@@ -554,7 +551,7 @@ pub struct TileEngineConfig {
     /// directly (the ratio above is an *area* ratio; `lod_factor` scales a *linear*
     /// distance). See [`lod_factor_for`](crate::globe::quadtree::lod_factor_for) for
     /// the formula and the exact calibration that makes the default reproduce the
-    /// old hard-coded `2.0`, and `docs/pre-terrain-plan.md` WP3 for why.
+    /// old hard-coded `2.0`.
     ///
     /// It is also **not** a screen-space error knob, and is not pretending to be one.
     /// Cesium's SSE bounds *geometric* error in pixels; with zero terrain relief this
@@ -563,15 +560,14 @@ pub struct TileEngineConfig {
     /// a genuine SSE metric becomes the right thing to expose — a separate knob, not a
     /// rename of this one.
     pub target_texel_ratio: f32,
-    /// Atmospheric fog — WP5 of `docs/pre-terrain-plan.md`, ported from CesiumJS's
+    /// Atmospheric fog, ported from CesiumJS's
     /// `Scene/Fog.js` defaults. Consumed by `wgpu_state::update_logic` to derive
     /// this frame's fog density (`crate::globe::quadtree::fog_density_for`) from
     /// camera altitude, which drives `QuadtreeNode::apply_lod`'s threshold relaxation —
-    /// since E1c deleted `Stage::Fog`, the only consumer there is. See
+    /// since the deletion of `Stage::Fog`, the only consumer there is. See
     /// `crate::globe::quadtree::fog`'s module doc comment for the full story, including
     /// what that stage was measured to remove (nothing) before it went.
     pub fog: crate::globe::quadtree::FogConfig,
-    pub prefetch_radius: u32,
     pub enable_prefetch: bool,
     pub negative_cache_duration: Duration,
     pub base_imagery_url: String,
@@ -621,7 +617,7 @@ impl TileEngineConfig {
     /// The part of [`tile_cache_budget_bytes`](Self::tile_cache_budget_bytes) left for
     /// decoded imagery textures once terrain's declared share is taken out.
     ///
-    /// `docs/terrain-plan.md` §5 B4: the height cache takes a **slice** of the existing
+    /// The height cache takes a **slice** of the existing
     /// byte budget rather than silently doubling the engine's tile-memory ceiling. With
     /// terrain off this returns `tile_cache_budget_bytes` unchanged, so
     /// `TileTextureManager` sizes itself exactly as it did before terrain existed.
@@ -649,7 +645,6 @@ impl Default for TileEngineConfig {
             mesh_cache_size: NonZeroUsize::new(MESH_CACHE_ENTRIES).unwrap(),
             target_texel_ratio: 1.0,
             fog: crate::globe::quadtree::FogConfig::default(),
-            prefetch_radius: 1, // Number of tiles to prefetch in velocity direction
             enable_prefetch: true,
             negative_cache_duration: Duration::from_secs(10),
             base_imagery_url: standard_imagery_url(),
@@ -784,7 +779,7 @@ mod tests {
     }
 
     /// Terrain off must leave the imagery budget literally untouched — the flat path may
-    /// not move. Since §9 F4 that is no longer the default on desktop, so the flag is set
+    /// not move. That is no longer the default on desktop, so the flag is set
     /// here rather than assumed; the property is about the flag, not about the default.
     #[test]
     fn terrain_off_leaves_the_imagery_budget_alone() {
@@ -796,11 +791,11 @@ mod tests {
         );
     }
 
-    /// **§9 F4** — the flip, and the hole in it, as one assertion each.
+    /// The flip, and the hole in it, as one assertion each.
     ///
-    /// Desktop ships terrain on; Android does not, because the soak §9 F3 specifies has
+    /// Desktop ships terrain on; Android does not, because the soak specified has
     /// not been run. If this test is what fails after someone runs it and flips the
-    /// constant, that is the test doing its job: the Android arm of F4 is a decision, and
+    /// constant, that is the test doing its job: the Android arm is a decision, and
     /// decisions are meant to be visible when they change.
     #[test]
     fn terrain_ships_on_everywhere_except_android() {
@@ -810,18 +805,15 @@ mod tests {
             "the default must come from the one constant that states the split"
         );
         #[cfg(not(target_os = "android"))]
-        assert!(
-            TERRAIN_ENABLED_BY_DEFAULT,
-            "desktop ships terrain on — `docs/terrain-plan.md` §9 F1/F2"
-        );
+        assert!(TERRAIN_ENABLED_BY_DEFAULT, "desktop ships terrain on");
         #[cfg(target_os = "android")]
         assert!(
             !TERRAIN_ENABLED_BY_DEFAULT,
-            "Android stays off until the S23 soak of `docs/terrain-plan.md` §9 F3 is run"
+            "Android stays off until terrain has been soak-tested on a device"
         );
     }
 
-    /// B4: a slice of the existing budget, not an addition to it.
+    /// A slice of the existing budget, not an addition to it.
     #[test]
     fn terrain_on_takes_its_share_out_of_the_imagery_budget() {
         let mut config = TileEngineConfig::default();
@@ -832,20 +824,20 @@ mod tests {
         );
     }
 
-    /// §5 B4's "resident = budget / tile size" line, at the budget §9 F2b resized it to.
+    /// "resident = budget / tile size" line, at the budget it was resized to.
     ///
-    /// The tile-size literal was `132_096` — the figure from **before** E1 added its
+    /// The tile-size literal was `132_096` — the figure from **before** adding its
     /// two-byte error term — and had been failing since, which nothing noticed because this
     /// crate's own unit tests are not in the `culling::` gate. `HEIGHT_TILE_BYTES`'s doc
     /// comment already quotes the right number, and so does
     /// `terrain::test_terrain_lod::the_error_term_costs_two_bytes_a_tile`.
     ///
-    /// The entry count is platform-split now, because the budget is: F2b measured the
-    /// desktop working set and Android's is still held to the unrun soak of §9 F3.
+    /// The entry count is platform-split now, because the budget is: desktop measured the
+    /// working set and Android's is still held to the unrun soak.
     #[test]
     fn the_default_height_budget_lands_on_the_measured_entry_count() {
         let terrain = TerrainConfig::default();
-        // E1's two bytes plus F5's 168-byte pyramid, on top of the samples and the mips.
+        // Two bytes plus the 168-byte pyramid, on top of the samples and the mips.
         assert_eq!(HEIGHT_TILE_BYTES, 132_274);
         assert_eq!(
             terrain.height_cache_budget_bytes, HEIGHT_CACHE_BUDGET_BYTES,

@@ -1,7 +1,7 @@
-//! **The ground query measures the surface that is drawn** — the correction to E3
-//! (`docs/terrain-plan.md` §8) that this file exists to hold.
+//! **The ground query measures the surface that is drawn** — the correction
+//! that this file exists to hold.
 //!
-//! E3 wired three things to the terrain: the camera's collision floor
+//! Three things are wired to the terrain: the camera's collision floor
 //! (`Camera::enforce_bounds`), its clearance (`Camera::altitude_agl`) and label
 //! placement. All three ask `TileSystem::ground_height_at`, and all three were being
 //! answered about the **wrong surface**: `HeightTileManager::peek_height_at_lon_lat`
@@ -38,7 +38,7 @@ use cesium_engine::globe::tiles::config::{OceanPolicy, TerrainConfig, TileEngine
 use cesium_engine::globe::tiles::system::DrawnMeshes;
 use glam::DVec3;
 
-/// The mesh density the engine ships (`TileEngineConfig::mesh_segments`, §9 F1).
+/// The mesh density the engine ships (`TileEngineConfig::mesh_segments`).
 const SEGMENTS: u32 = 16;
 
 /// Megametres to metres — every number this file reports is in metres.
@@ -117,7 +117,7 @@ fn field_and_net(heights: &HeightTileManager, lon: f64, lat: f64) -> (f64, f64) 
 
 // ── 1. the disagreement, measured ────────────────────────────────────────────────
 
-/// The size and the **sign** of what E3 was reading, over one real z12 tile.
+/// The size and the **sign** of what the query was reading, over one real z12 tile.
 ///
 /// Sampled on a lattice deliberately offset from the mesh's own: 16 segments means grid
 /// lines every 1/16, and this walks 1/160 steps, so five sixths of the samples fall

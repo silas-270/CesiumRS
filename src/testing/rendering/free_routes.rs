@@ -22,7 +22,7 @@ pub struct RouteShot {
 
 /// The flat globe this capture was recorded against.
 ///
-/// **Section 9 F4 flipped `TerrainConfig::enabled` on by default.** This instrument is
+/// **`TerrainConfig::enabled` is on by default.** This instrument is
 /// about route framing and the route mesh, and the ground under it moving would make every comparison with the committed shots two changes wide. So the config is stated here rather than
 /// inherited — the same rule the LOD harness and the culling gate already follow.
 fn flat_config() -> TileEngineConfig {

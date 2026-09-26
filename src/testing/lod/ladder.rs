@@ -1,4 +1,4 @@
-//! Viewport/mode ladder for the LOD harness — WP4/B (`docs/pre-terrain-plan.md`).
+//! Viewport/mode ladder for the LOD harness.
 //!
 //! [`super::sweep::bench_poses`] is frozen at one viewport (1920x1080, `Free`) baked
 //! into `src/testing/culling/cells.rs`, which is bit-stable by convention and out of
@@ -10,7 +10,7 @@
 //! a single camera; it only changes what each camera is asked to project through and
 //! which `fovy` it uses.
 //!
-//! This validates something WP3/3b shipped live but only ever checked with one
+//! This validates something shipped live but only ever checked with one
 //! headless capture (commit `d866274`): `lod_factor_for` now reads real viewport
 //! height and mode-dependent `fovy` every frame, but nothing had re-run the 204-pose
 //! distribution at anything other than the harness's own 1080p/Free default until
@@ -35,11 +35,11 @@ pub struct Rung {
     pub mode: CameraMode,
 }
 
-/// The ladder WP4/B asks for, plus the S23 in portrait alongside the requested
+/// The ladder of viewport rungs, plus the S23 in portrait alongside the requested
 /// landscape rungs: `lod_factor_for` depends on viewport *height* alone (not width,
 /// not physical DPI), and the S23's landscape height (1080) is identical to the
 /// desktop default's — so landscape alone cannot show whether "the S23 asks for more
-/// detail" (`docs/pre-terrain-plan.md` WP4's original text) actually holds. Portrait
+/// detail" actually holds. Portrait
 /// (height 2340) is the rung that tests it.
 pub fn rungs() -> Vec<Rung> {
     vec![

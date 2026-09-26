@@ -60,7 +60,7 @@ pub struct LabelGpu {
 impl LabelGpu {
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         atlas_texture: &wgpu::Texture,

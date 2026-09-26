@@ -2,20 +2,20 @@
 //! looking at it, with flat high ground behind it. Is that high ground removed, or is it
 //! fetched and drawn?
 //!
-//! `docs/terrain-plan.md` §7b's own statement of where D3 should pay is "a valley floor,
-//! a plain behind a range, water, **a plateau**", and §7c measured ten Alpine and
+//! Where terrain occlusion should pay is "a valley floor, a plain behind a range, water, **a
+//! plateau**", and the earlier measurements used ten Alpine and
 //! Himalayan poses — all of which have *more mountains* behind the first ridge, which is
-//! exactly the case §7b says D3 cannot fire on. The Swabian Jura is the other shape: one
+//! exactly the case where terrain occlusion cannot fire on. The Swabian Jura is the other shape: one
 //! 400 m step (the Albtrauf) and then 40 km of plateau that never rises back to the
 //! crest line. Same for the Stuttgart basin, whose rim stands 250 m over the city and
 //! whose Filder plateau behind it is flat to the horizon.
 //!
-//! So this is not a tenth Alpine pose. It is the geometry D3 was specified for, and it
-//! is the one shape §7c never measured.
+//! So this is not a tenth Alpine pose. It is the geometry terrain occlusion was specified for, and it
+//! is the one shape earlier measurements never addressed.
 //!
 //! # What is measured, and why each piece is here
 //!
-//! 1. **The pose is checked against the DEM before anything else.** §7c lost three
+//! 1. **The pose is checked against the DEM before anything else.** Earlier tests lost three
 //!    measurement poses to coordinates picked off a map that turned out to be inside a
 //!    mountain, where `TerrainHorizon::finish`'s enclosure guard switches the whole march
 //!    off and every reduction reads a flat zero for a reason that has nothing to do with
@@ -26,10 +26,10 @@
 //! 2. **Two height-fetch policies, not one.**
 //!    `test_terrain_occlusion::d3_on_real_terrain` fills the height cache for *every node
 //!    in the tree*, culled ones included. Production does not: `TileSystem::update` calls
-//!    `request_height_chain` over `visible_tiles` and `missing_meshes` only
-//!    (§9 F2b), so a node the culler removed asks for nothing. That difference is
+//!    `request_height_chain` over `visible_tiles` and `missing_meshes` only,
+//!    so a node the culler removed asks for nothing. That difference is
 //!    load-bearing for this question, because a node with no height tile of its own is on
-//!    D1's **inherited margin** — 6 000 m at z10, 1 500 m at z12 (§7's table) — and a box
+//!    the height-aware bounds **inherited margin** — 6 000 m at z10, 1 500 m at z12 — and a box
 //!    that tall is not hidden behind anything. [`Fill::Visible`] is the production
 //!    policy; [`Fill::Everything`] is the existing harness's, kept as the control that
 //!    isolates the inheritance from the rest.
@@ -327,7 +327,7 @@ pub(crate) enum Fill {
     /// The visible set and its height ancestor chain, which is exactly what
     /// `TileSystem::update` requests (`request_height_chain` over `visible_tiles`, then
     /// over `missing_meshes`). A node the culler removed asks for nothing, so it stays on
-    /// D1's inherited interval for as long as it stays culled.
+    /// the height-aware bounds inherited interval for as long as it stays culled.
     Visible,
 }
 
@@ -376,18 +376,18 @@ pub(crate) fn settle(
     let mut heights = HeightTileManager::new(&config);
     let mut qt = QuadtreeManager::<Heightfield>::for_surface();
     let cam = build_camera(p);
-    // The capture's LOD threshold, ceiling and fog relaxation — §7c's finding is that the
+    // The capture's LOD threshold, ceiling and fog relaxation — the finding is that the
     // last of the three decides most of the far field, so a harness without it measures a
     // globe the engine never draws.
     qt.lod_factor = lod_factor_for(1.0, 256.0, p.height as f32, cam.fovy());
     qt.max_zoom = config.max_zoom;
     qt.fog_density = cesium_engine::globe::quadtree::fog_density_for(p.alt_m as f32, &config.fog);
-    // **E1's half of the LOD threshold, which `d3_on_real_terrain` does not set.**
+    // **The geometric term half of the LOD threshold, which `d3_on_real_terrain` does not set.**
     // `wgpu_state::update_logic` calls `set_terrain_lod` right after `set_frame_params`,
     // and on the terrain arm `apply_lod` reads all three. Leaving them at their defaults
     // refines the near field considerably deeper than the renderer does — 72 tiles here
     // against the capture's 62 at `reutlingen_albtrauf` — which is a harness that has
-    // quietly stopped tracking the engine since §8 E1 landed after §7c was written.
+    // quietly stopped tracking the engine since the terrain LOD term landed.
     let mgep = config.terrain.max_geometric_error_px;
     qt.terrain_lod_factor = terrain_lod_factor_for(mgep, p.height as f32, cam.fovy());
     qt.terrain_fog_policy = TerrainFogPolicy::default();
@@ -468,7 +468,7 @@ struct Candidate {
     near_km: f64,
     /// The tile's true maximum height off the DEM, metres.
     true_top_m: f64,
-    /// The node's D1 interval, metres — what the box is actually fitted to.
+    /// The node's height-aware bounds interval, metres — what the box is actually fitted to.
     box_hi_m: f64,
     box_lo_m: f64,
     /// Does the node hold its **own** height tile, or is it on an inherited interval?
@@ -476,7 +476,7 @@ struct Candidate {
     /// Elevation angle of the tile's true surface, degrees — the largest over the
     /// sampled rectangle.
     theta_true_deg: f64,
-    /// Elevation angle of the top of the node's D1 **box**, degrees. This is the quantity
+    /// Elevation angle of the top of the node's bounding **box**, degrees. This is the quantity
     /// `TerrainHorizon::occludes` compares.
     theta_box_deg: f64,
     /// Is every sampled point of the tile behind real terrain?
@@ -826,7 +826,7 @@ fn collect_extras(
 
 /// **The pose check, and it comes first.**
 ///
-/// `docs/terrain-plan.md` §7c records three measurement poses lost to coordinates that
+/// Three earlier measurement poses were lost to coordinates that
 /// looked like a valley on a map and were a mountainside in the DEM. Nothing below is
 /// worth reading unless this passes: the camera is over the ground it claims, the horizon
 /// `√(2Rh)` reaches past the far end of the plateau, and the step is the maximum of the
@@ -917,9 +917,9 @@ fn terrain_step_pose_is_where_it_says_it_is() {
 
 /// **FN = 0 at the two step poses, against the DEM itself.**
 ///
-/// `test_terrain_occlusion::d3_never_hides_a_visible_vertex` is D3's acceptance and it
+/// `test_terrain_occlusion::d3_never_hides_a_visible_vertex` is the terrain occlusion acceptance and it
 /// runs on the synthetic ridge world: one Gaussian crest with a col in it. That world has
-/// no escarpment in it, and an escarpment is the shape §7d found D3 does nothing about —
+/// no escarpment in it, and an escarpment is the shape where occlusion previously did nothing about —
 /// so when `ridge_safety_m` stopped charging a 250 km headroom at 2 km and the stage
 /// started culling here, the sweep that proves it sound was the one sweep that does not
 /// visit this shape.
@@ -927,14 +927,14 @@ fn terrain_step_pose_is_where_it_says_it_is() {
 /// This is that proof, at these two poses, with the same criterion and none of the same
 /// machinery:
 ///
-/// > A node D3 culled is a false negative if any vertex of its own mesh is inside the
+/// > A node terrain occlusion culled is a false negative if any vertex of its own mesh is inside the
 /// > frustum (exact `f64`), off the ellipsoid limb (Theorem 3.1, exact), **and** not
 /// > blocked by the real DEM on the straight segment from the eye — [`dem_blocks`],
 /// > which marches the terrarium tiles at z14 and shaves [`ORACLE_SLACK_M`] off the
 /// > terrain first, so every approximation in it pushes toward calling a vertex *visible*.
 ///
 /// **Only nodes the stage itself removed are scored.** A node the frustum or the limb
-/// culled is not D3's answer and counting it would bury the signal; `TerrainHorizon::occludes`
+/// culled is not terrain occlusion's answer and counting it would bury the signal; `TerrainHorizon::occludes`
 /// is asked directly, which is the same attribution [`terrain_step_plateau_tiles`] makes.
 ///
 /// The fetch policy is `Fill::Visible` — the production one — because that is the arm

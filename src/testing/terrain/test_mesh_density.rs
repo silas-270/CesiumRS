@@ -1,11 +1,11 @@
-//! **F1 and F2 acceptance** — choosing `mesh_segments`, and saying where terrain's bytes
-//! actually go (`docs/terrain-plan.md` §9).
+//! **Mesh density and memory split acceptance** — choosing `mesh_segments`, and saying where terrain's bytes
+//! actually go.
 //!
-//! Phase C deliberately deferred the density decision: C4 measured max and RMS deviation
+//! The initial implementation deliberately deferred the density decision: grid density measurements showed max and RMS deviation
 //! at 16/32/64 against all 65 536 source samples of the committed fixtures and then said
-//! *"the default stays 16 and Phase F picks against device measurements"*. There are no
+//! *"the default stays 16 and device measurements pick the final value"*. There are no
 //! device measurements — `adb` is not installed on the machine this was written on and no
-//! phone is attached — so F1 decides on the data that does exist, and this file is that
+//! phone is attached — so this decides on the data that does exist, and this file is that
 //! data.
 //!
 //! # The three things measured here
@@ -16,11 +16,11 @@
 //!    `mesh_segments = 16`. At 32 or 64 the identity breaks, and the first test below is
 //!    what turns that doc-comment caveat into a number.
 //! 2. **Tiles and bytes at the real poses**, at all three densities, at the shipped
-//!    `max_geometric_error_px = 12`. This is the F1 table, read off its marginal column
-//!    the way E1a read off its own.
+//!    `max_geometric_error_px = 12`. This is the density table, read off its marginal column
+//!    the way the terrain LOD table read off its own.
 //! 3. **The memory split** — imagery bytes against height bytes against vertex bytes, at
 //!    the real poses and at the *shipped* budget rather than the measuring harness's
-//!    inflated one, which is the only way to see whether B4's declared slice holds.
+//!    inflated one, which is the only way to see whether the declared cache slice holds.
 //!
 //! # Why `culling` is not in this path
 //!
@@ -56,7 +56,7 @@ use super::test_terrain_occlusion::{
 use crate::testing::culling::cameras::{build_camera, ViewParams};
 use crate::testing::lod::sweep::geometric_error_px;
 
-/// The three densities C4 measured and F1 decides between.
+/// The three candidate densities evaluated.
 const DENSITIES: [u32; 3] = [16, 32, 64];
 
 /// Mesh cache entries — `TileEngineConfig::mesh_cache_size`'s shipped value, and the
@@ -187,7 +187,7 @@ fn fixture(name: &str) -> HeightTile {
         .unwrap()
 }
 
-/// **The coupling F1 had to check before it could argue about density at all.**
+/// **The coupling checked before arguing about density.**
 ///
 /// `HeightTile::detail` is documented as *the* geometric error of the drawn surface, and
 /// that is true at exactly one setting: `mesh_segments = 16`, where the mesh's 17×17
@@ -199,11 +199,11 @@ fn fixture(name: &str) -> HeightTile {
 /// exactly **on** the 8-lattice lines. A mesh at `mesh_segments = 32` samples every eighth
 /// texel, lands on every crest and draws the field exactly; `detail()` still reports the
 /// whole 800 m amplitude, because it is not looking at that mesh. So at 32 the error term
-/// E1 feeds into `apply_lod` is not this tile's error — it is the error of a mesh the
+/// that the terrain LOD term feeds into `apply_lod` is not this tile's error — it is the error of a mesh the
 /// engine is no longer building, and it is 800 m too large.
 ///
 /// That is a coupling between two knobs that are documented as independent, and it is the
-/// reason F1's decision is not simply "refine the mesh and keep everything else".
+/// reason the decision is not simply "refine the mesh and keep everything else".
 #[test]
 fn the_error_term_measures_a_sixteen_to_one_decimation_whatever_the_mesh_draws() {
     // First: this file's generalisation reproduces the engine's number at the engine's
@@ -278,8 +278,8 @@ pub(crate) fn mesh_bytes(segments: u32) -> (usize, usize, usize) {
 
 /// **The buffer cost of a density, with nothing measured over the network.**
 ///
-/// The C4 table in `docs/terrain-plan.md` §6 quotes these bytes; this is the assertion
-/// that they are still the bytes, since F1 argues from them.
+/// The mesh-density buffer sizes; this is the assertion that they are still the bytes
+/// the memory budget was derived from.
 #[test]
 fn the_vertex_cost_of_a_density_is_what_c4_quoted() {
     for (segments, verts, vbuf, ibuf) in [
@@ -290,8 +290,8 @@ fn the_vertex_cost_of_a_density_is_what_c4_quoted() {
         assert_eq!(
             mesh_bytes(segments),
             (verts, vbuf, ibuf),
-            "the C4 buffer columns moved at mesh_segments = {segments}; \
-             `docs/terrain-plan.md` §6 C4 and §9 F1 both need re-deriving"
+            "the buffer sizes moved at mesh_segments = {segments}; \
+             the terrain memory budget needs re-deriving"
         );
     }
 }
@@ -424,7 +424,7 @@ pub(crate) fn settled_at_density(
 ///
 /// Exposed for [`super::test_height_residency`], which needs the request sequence and not
 /// the tree, and which must not grow a second settle of its own: two settles that drift
-/// apart would make its churn numbers incomparable with F2's residency numbers.
+/// apart would make its churn numbers incomparable with the residency numbers.
 pub(crate) fn settled_shipped(
     p: &ViewParams,
     texture_size_px: f32,
@@ -475,7 +475,7 @@ pub(crate) fn p95(v: &mut Vec<f64>) -> f64 {
     }
 }
 
-/// **The F1 table** — what each mesh density costs and buys at the ten real poses.
+/// **The mesh density cost table** — what each mesh density costs and buys at the ten real poses.
 ///
 /// Four columns per density, and they do not all move together, which is the finding:
 ///
@@ -497,7 +497,7 @@ pub(crate) fn p95(v: &mut Vec<f64>) -> f64 {
 /// * **bytes** — vertex and index buffers, per tile and over the shipped 512-entry mesh
 ///   cache. This is the column that is 3.4× per doubling.
 ///
-/// Both error columns are a p95 over a per-tile **maximum**, so they inherit C4's
+/// Both error columns are a p95 over a per-tile **maximum**, so they inherit the grid-density measurement's
 /// non-monotonicity: a cliff deviates from its chord by roughly half its own height at
 /// *every* lattice spacing, so refining moves it hardly at all. `himalaya_everest` is that
 /// case in one row — 93.5 → 93.6 → 93.7 px across the three densities, while the smooth
@@ -649,7 +649,7 @@ fn f1_mesh_density_at_the_real_poses() {
 /// committed fixtures, with no network at all.
 ///
 /// One row per fixture: the deviation of the field from its own decimation at 16:1 (which
-/// is `detail()`, i.e. `mesh_segments = 16`), 8:1 (32) and 4:1 (64). The C4 table in §6
+/// is `detail()`, i.e. `mesh_segments = 16`), 8:1 (32) and 4:1 (64). The grid-density measurement table
 /// measures the drawn mesh's full error including the map projection; this measures the
 /// *same metric the engine stores*, so the three columns are directly comparable with
 /// each other and with what `apply_lod` reads.
@@ -685,10 +685,10 @@ fn f1_the_error_term_at_the_densities_it_was_not_built_for() {
     );
 }
 
-/// **The F2 split** — imagery bytes against height bytes against vertex bytes, at the ten
+/// **The memory split** — imagery bytes against height bytes against vertex bytes, at the ten
 /// real poses and at the **shipped** budget.
 ///
-/// §9 asks for the split and B4 makes a claim about it that a config listing cannot
+/// Settle the question that a config listing cannot
 /// settle: the height cache is a *declared slice* of `tile_cache_budget_bytes`, not an
 /// addition to it. The measurement that settles it is the resident set at a real camera,
 /// against the capacity that slice derives — so this runs `TileEngineConfig::default()`

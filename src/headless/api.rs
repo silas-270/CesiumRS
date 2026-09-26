@@ -37,7 +37,8 @@ fn headless_tile_config() -> Result<TileEngineConfig, String> {
     config.terrain.enabled = false;
     config.transparent_background = true;
 
-    // Lowered mesh subdivision to prevent massive VRAM over-allocation on mobile
+    // Sized for one still frame: mesh density, and caches big enough that the frame's
+    // tiles never evict each other before it is captured.
     config.target_texel_ratio = 1.0;
     config.mesh_segments = 32;
     config.max_cache_size = std::num::NonZeroUsize::new(2048).unwrap();
@@ -140,9 +141,7 @@ pub extern "C" fn render_routes_headless_custom(
         glam::Vec3::ZERO,
         None,
         &path_str,
-    ));
-
-    true
+    ))
 }
 
 #[no_mangle]
@@ -229,7 +228,5 @@ pub extern "C" fn render_routes_headless_horizon(
         target,
         Some(final_up),
         &path_str,
-    ));
-
-    true
+    ))
 }

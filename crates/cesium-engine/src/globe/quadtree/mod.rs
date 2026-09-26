@@ -1,4 +1,5 @@
 #![allow(clippy::module_inception)]
+#![cfg_attr(not(feature = "testing"), allow(unused_imports, dead_code))]
 pub mod any;
 pub mod bounding_volume;
 pub mod fog;

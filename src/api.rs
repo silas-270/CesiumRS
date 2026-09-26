@@ -25,7 +25,7 @@
 //!         // For example, from Frankfurt (FRA) to Stuttgart (STR)
 //!         flight_handle.load_flight("my_flight", 8.5706, 50.0333, 9.2219, 48.6899, 1_800_000, None, None, Vec::new());
 //!         flight_handle.play();
-//!         cam.camera_set_position(8.68, 50.11, 0.5); // Frankfurt, Germany
+//!         cam.camera_set_position(8.68, 50.11, 500_000.0); // 500 km above Frankfurt
 //!     });
 //!
 //!     viewer.run(); // Blocks. Takes over the main thread.
@@ -191,11 +191,9 @@ impl CesiumViewerBuilder {
     /// for performance — a higher ratio asks for fewer texels per pixel, so tiles stay
     /// coarser. Default is `1.0` (one texel per pixel).
     ///
-    /// This is a **texel-density** target, not a geometric screen-space error: with no
-    /// terrain relief there is no geometric error to bound, so texel density is the
-    /// only thing this engine can honestly measure. A true SSE knob (Cesium-style,
-    /// bounding actual geometric error in pixels) returns once terrain exists; this
-    /// knob is not a placeholder for it.
+    /// This is a **texel-density** target for imagery, not a geometric screen-space
+    /// error. The geometric term exists separately for terrain relief
+    /// (`TerrainConfig::max_geometric_error_px`); this knob is not a stand-in for it.
     pub fn target_texel_ratio(mut self, ratio: f32) -> Self {
         self.target_texel_ratio = ratio;
         self
@@ -257,8 +255,8 @@ impl CesiumViewerBuilder {
 
     /// Vertical exaggeration for terrain relief. `1.0` is true scale.
     ///
-    /// Stored now, applied in Phase C — deliberately in exactly one place, so the
-    /// bounding boxes and occlusion spheres of Phase D inherit it instead of having to
+    /// Applied once, when a tile's heights are sampled, so the bounding boxes and
+    /// occlusion spheres derived from them inherit it instead of having to
     /// be kept in step with it.
     pub fn terrain_exaggeration(mut self, factor: f32) -> Self {
         self.terrain_exaggeration = factor;
@@ -416,11 +414,15 @@ pub struct ViewerHandle {
 impl ViewerHandle {
     // ── Camera ──────────────────────────────────────────────────────────────
 
-    /// Move the camera to the given geographic position.
+    /// Move the camera to the given geographic position, looking at the Earth's centre.
     ///
     /// - `lon`: longitude in decimal degrees (−180 … +180)
     /// - `lat`: latitude in decimal degrees (−90 … +90)
-    /// - `alt`: altitude in kilometres above the WGS84 ellipsoid
+    /// - `alt`: altitude in **metres** above the WGS84 ellipsoid
+    ///
+    /// Sets the camera's local transform, so it is a world position in Free mode, where the
+    /// anchor is the Earth's centre. Tracking and Cockpit re-anchor the camera on the aircraft
+    /// every frame and take over from it.
     pub fn camera_set_position(&self, lon: f64, lat: f64, alt: f64) {
         let _ = self
             .tx
@@ -439,7 +441,7 @@ impl ViewerHandle {
 
     /// Programmatically set the camera's anchor transform.
     ///
-    /// - `position`: ECEF position in kilometres `[x, y, z]`
+    /// - `position`: ECEF position in megametres `[x, y, z]`, the engine's unit
     /// - `orientation`: unit quaternion `[x, y, z, w]`
     pub fn camera_set_anchor(&self, position: [f64; 3], orientation: [f64; 4]) {
         let _ = self.tx.try_send(ViewerCommand::CameraSetAnchor {
@@ -519,15 +521,13 @@ impl ViewerHandle {
         }
     }
 
-    /// Turn terrain height fetching on or off at runtime.
-    ///
-    /// Phase B: this starts and stops the height cache. It does not change the rendered
-    /// surface — the globe is still the bare ellipsoid either way.
+    /// Turn terrain relief on or off at runtime. Every tile is rebuilt, so the globe
+    /// switches between the bare ellipsoid and the relief surface within a few frames.
     pub fn terrain_set_enabled(&self, enabled: bool) {
         let _ = self.tx.try_send(ViewerCommand::TerrainSetEnabled(enabled));
     }
 
-    // ── Performance testing (debug-only; see tools/run_perf_scenario.sh) ──────
+    // ── Performance testing (debug-only; driven by Blocktime's tools/run_perf_scenario.sh) ──────
 
     /// Tags the current point in a captured Perfetto trace with a scenario id
     /// (via an ATrace instant marker) and, for the three steady-state

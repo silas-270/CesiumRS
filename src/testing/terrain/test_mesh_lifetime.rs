@@ -1,4 +1,4 @@
-//! Phase E2 acceptance for `docs/terrain-plan.md` §8 — **mesh lifetime**: a mesh is
+//! **Mesh lifetime**: a mesh is
 //! rebuilt when better height data arrives, without the ground visibly jumping and
 //! without thrashing.
 //!
@@ -9,18 +9,18 @@
 //! and so the number in [`MESH_REBUILD_BUDGET_PER_FRAME`] is something a test can hold
 //! rather than something a capture has to be squinted at to confirm.
 //!
-//! # What E2 is actually for, and how rare it is
+//! # What progressive mesh rebuilds are actually for, and how rare it is
 //!
-//! Phase C already removed the common case: `HeightTileManager::status_of` answers
+//! Terrain relief already removed the common case: `HeightTileManager::status_of` answers
 //! `Ready` only once the tile's *own* source tile has arrived or failed, so the
 //! ordinary mesh is built from the deepest data that will ever exist for it and cannot
 //! be improved on. A camera descending five levels creates *new* nodes with no mesh at
 //! all — that is the `missing_meshes` path, which predates terrain.
 //!
-//! What is left, and what this file drives, is the case Phase C wrote down and
+//! What is left, and what this file drives, is the case previously written down and
 //! deferred: a tile whose **own height fetch failed**, whose mesh therefore came from
 //! an ancestor, and whose retry later succeeds once the negative cache expires. Plus
-//! one case Phase C did not anticipate — switching terrain on at runtime, after which
+//! one case not anticipated originally — switching terrain on at runtime, after which
 //! every resident mesh is a flat one with no height source at all.
 
 use std::sync::Arc;
@@ -143,7 +143,7 @@ fn child_and_parent() -> (TileId, TileId) {
 
 // ── The rebuild itself ───────────────────────────────────────────────────────
 
-/// **E2's first acceptance**: build a mesh from a coarse source, let the better source
+/// **First rebuild acceptance**: build a mesh from a coarse source, let the better source
 /// arrive, and show that the engine notices and that what comes out is closer to the
 /// ground.
 ///
@@ -155,7 +155,7 @@ fn child_and_parent() -> (TileId, TileId) {
 /// difference.
 ///
 /// "Finer" is measured as the deviation of the drawn vertices from the DEM the source
-/// actually holds, which is the same quantity C4's grid-density table reports.
+/// actually holds, which is the same quantity the grid-density table reports.
 #[test]
 fn a_better_height_tile_rebuilds_the_mesh_and_the_ground_gets_finer() {
     let (child, parent) = child_and_parent();
@@ -264,7 +264,7 @@ fn a_better_height_tile_rebuilds_the_mesh_and_the_ground_gets_finer() {
 }
 
 /// The steady state, which is almost every mesh in almost every frame: a tile built
-/// from its **own** source tile can never be bettered, so it is never stale and the E2
+/// from its **own** source tile can never be bettered, so it is never stale and the rebuild
 /// pass costs it one `status_of` walk and nothing else.
 #[test]
 fn a_mesh_built_from_its_own_source_is_never_stale() {
@@ -332,7 +332,7 @@ fn a_source_still_in_flight_offers_no_rebuild() {
 }
 
 /// Switching terrain on at runtime (the debug panel, `ViewerCommand::TerrainSetEnabled`)
-/// leaves every resident mesh flat, with no height source at all. E2 is what makes that
+/// leaves every resident mesh flat, with no height source at all. Staleness detection is what makes that
 /// switch do something to the geometry already on the card.
 ///
 /// The reverse — switching terrain **off** — deliberately rebuilds nothing: with no
@@ -359,7 +359,7 @@ fn a_flat_mesh_becomes_stale_the_moment_terrain_is_switched_on() {
 /// engine can produce — and the rebuilds still come out at
 /// [`MESH_REBUILD_BUDGET_PER_FRAME`] per frame or fewer.
 ///
-/// This is E2's thrashing acceptance. The burst is staged rather than waited for
+/// This is the thrashing acceptance. The burst is staged rather than waited for
 /// because the thing under test is the *policy*, not the fetcher: what matters is that
 /// when 126 meshes go stale at once, no frame is asked to sample and upload more than a
 /// handful of them.

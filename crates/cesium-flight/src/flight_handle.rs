@@ -181,8 +181,7 @@ impl FlightHandle {
 
     /// Set the planning options used by subsequent `load_flight` calls. Non-blocking.
     ///
-    /// The main use is field elevation, which is honoured by default since Phase E3
-    /// of `docs/terrain-plan.md` — see `FlightPlanConfig::terrain_elevation`. Supply
+    /// The main use is field elevation, which is honoured by default — see `FlightPlanConfig::terrain_elevation`. Supply
     /// `dep_elevation_m` / `arr_elevation_m` and the plan starts and ends on the
     /// ground; supply nothing and it plans at sea level as before.
     pub fn set_plan_config(&self, config: crate::telemetry::FlightPlanConfig) {

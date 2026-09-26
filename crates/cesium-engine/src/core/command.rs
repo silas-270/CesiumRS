@@ -3,12 +3,14 @@
 #[derive(Debug)]
 pub enum ViewerCommand {
     // Camera
+    /// Degrees, degrees, metres above the ellipsoid.
     CameraSetPosition {
         lon: f64,
         lat: f64,
         alt: f64,
     },
     CameraSetMode(CameraCommandMode),
+    /// ECEF position in megametres and a unit quaternion `[x, y, z, w]`.
     CameraSetAnchor {
         position: [f64; 3],
         orientation: [f64; 4],
@@ -38,11 +40,9 @@ pub enum ViewerCommand {
         mode: crate::globe::tiles::config::TileSourceMode,
         max_level: u8,
     },
-    /// Turn terrain height data on or off (`docs/terrain-plan.md` §4 A3). Rebuilds the
-    /// height cache and its fetcher, or drops them entirely when turning off.
-    ///
-    /// Phase B: this controls whether heights are **fetched and cached**. It does not
-    /// change a single rendered vertex — that is Phase C.
+    /// Turn terrain on or off. Rebuilds the height cache and its fetcher (or drops them),
+    /// swaps the quadtree's surface model and culling pipeline, and clears the tile and
+    /// mesh caches so every tile is rebuilt with or without relief.
     TerrainSetEnabled(bool),
     /// Emits an ATrace instant marker ("cesium.scenario.<id>") on the engine
     /// thread, so a captured Perfetto trace can be auto-sliced by scenario.

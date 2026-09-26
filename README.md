@@ -1,89 +1,174 @@
+<div align="center">
+
 # CesiumRS
 
-CesiumRS is a high-performance, 3D globe rendering engine written in Rust. It utilizes `wgpu` for cross-platform graphics, rendering a full WGS84 ellipsoid based on the Web Mercator projection.
+**A 3D globe and flight renderer in Rust, built on wgpu.**
 
-This project implements a unified architecture designed to act as a robust back-end engine for GIS applications and flight trackers.
+A WGS84 globe with streamed imagery and terrain, a physically based sky, and an offline
+flight planner that turns two airports and a duration into the route an airline would fly.
+It runs on desktop and on Android.
+
+![CesiumRS over the Alps at sunset](docs/images/hero.png)
+
+</div>
+
+CesiumRS is the engine behind [**Blocktime**](https://github.com/silas-270/Blocktime), a
+focus timer in which every study session is a real flight. That shapes its priorities: it
+has to run for hours on a phone without draining it, look right at cruise altitude, and
+keep working with no network at all.
 
 ## Features
 
-- **WGS84 Ellipsoid Rendering**: Geographically accurate rendering of the Earth, accounting for equatorial bulging and precise coordinate transformations.
-- **High-Performance Tile System**: Quadtree-based tile streaming, speculative prefetching, and strict caching to maintain 60FPS at high zoom levels.
-- **Flight Tracking Module (`cesium-flight`)**: Includes advanced 6-DOF camera tracking modes, flight path interpolation via Catmull-Rom splines, and polyline BVH rendering for massive flight routes.
-- **Offline Flight Planning**: Builds a realistic route and vertical profile from two airports and a duration, with no navigation data and no network — great-circle routing, wind-optimised tracks against a jet stream climatology, closed-airspace avoidance, oceanic track grids, flight levels with step climbs, and attitude derived from the path. See [docs/flight-plan.md](docs/flight-plan.md).
-- **Unified Public API**: Provides a thread-safe, clean, non-blocking interface (`CesiumViewer` and `ViewerHandle`) ideal for FFI / JNI integration (e.g. Kotlin/Android).
+**Globe**
+- WGS84 ellipsoid with Web Mercator tiles, quadtree LOD and a speculative prefetcher
+- Three map styles: a dark vector basemap (CARTO), satellite imagery with 3D terrain
+  (Esri + Terrarium), and a **fully offline** Natural Earth map rasterised on the CPU
+- Terrain relief with crack-free LOD seams, height-aware culling and occlusion behind
+  mountains, and no slowdown for the flat globe when terrain is off
+  ([terrain.md](docs/terrain.md))
+- Visibility culling with written proofs behind it ([culling-math.md](docs/culling-math.md))
+- City labels, route polylines and glTF aircraft models
 
-## Architecture
+**Sky and light**
+- Rayleigh, Mie and ozone scattering baked into a small lookup texture: sunsets, the Belt
+  of Venus and Earth's shadow, without ray marching per pixel
+- Sun, moon and stars, with lighting driven by how far into the flight the aircraft is
 
-CesiumRS uses a Cargo Workspace divided into strict functional crates:
+**Flight**
+- Offline flight planning with no navigation data: great-circle routes, wind-optimised
+  tracks against a jet-stream climatology, closed-airspace avoidance, oceanic track grids,
+  flight levels with step climbs, runway selection and field elevation
+  ([flight-plan.md](docs/flight-plan.md))
+- Free, tracking and cockpit cameras, with a 787 flight deck for the cockpit view
+- A headless renderer that writes route maps to PNG, callable from Kotlin through a C ABI
 
-- `cesium_rs` (Root Crate): The front-end API boundary, test runners, and diagnostic harnesses.
-- `cesium-engine`: The standalone core rendering engine, handling all `wgpu` state, math, terrain, and quadtree rendering.
-- `cesium-flight`: The domain-specific plugin that implements flight data loading, camera tracking modes (Free, Tracking, Cockpit), and high-performance path rendering.
+## Getting started
 
-## Quickstart
+Requires a recent stable Rust toolchain and a GPU with Vulkan, Metal or DX12.
+
+```bash
+git clone https://github.com/silas-270/CesiumRS.git
+cd CesiumRS
+cargo run --release
+```
+
+This opens the viewer with a Frankfurt–Stuttgart flight. Some variations:
+
+```bash
+cargo run --release -- --route LHR-NRT --map-style satellite-terrain
+cargo run --release -- --route 1.36,103.99,51.47,-0.45     # lat,lon,lat,lon
+cargo run --release -- --map-style offline                  # no network at all
+cargo run --release -- --help
+```
+
+Presets: `FRA-STR`, `STR-FRA`, `LHR-CDG`, `ZRH-GVA`, `GRZ-FRA`, `JFK-LHR`, `SFO-HNL`,
+`LHR-NRT`, `DXB-SYD`, `DXB-JFK`, `SIN-LHR`.
+
+### API keys
+
+The online map styles read their keys **at compile time**, so they never end up in source:
+
+| Variable | Used by | Without it |
+|---|---|---|
+| `CARTO_API_KEY` | `standard` map style | Every tile is watermarked "API KEY REQUIRED" |
+| `ESRI_API_KEY` | `satellite-terrain` map style | Falls back to Esri's keyless, non-commercial service |
+
+```bash
+CARTO_API_KEY=… ESRI_API_KEY=… cargo run --release
+```
+
+The `offline` style and the headless renderer need neither.
+
+## Using it as a library
 
 ```rust
-use cesium_rs::{CesiumViewer, CameraMode};
+use cesium_flight::tracker::FlightTrackerApp;
+use cesium_rs::{CameraMode, CesiumViewer, MapStyle};
 
 fn main() {
-    // 1. Create a flight tracker application plugin
-    let (flight_app, flight_handle) = cesium_flight::tracker::FlightTrackerApp::with_handle();
+    let (flight_app, flight) = FlightTrackerApp::with_handle();
 
-    // 2. Build the CesiumViewer engine
     let viewer = CesiumViewer::builder()
-        .tile_cache_size(2048)
-        .target_texel_ratio(1.0)
-        .enable_prefetch(true)
+        .map_style(MapStyle::SatelliteTerrain)
         .with_extension(Box::new(flight_app))
         .build();
+    let camera = viewer.handle();
 
-    // 3. Obtain a thread-safe handle for runtime commands
-    let cam = viewer.handle();
-
-    // 4. Drive the engine from any thread
+    // Both handles are thread-safe and non-blocking.
     std::thread::spawn(move || {
-        flight_handle.load_flight("my_flight", include_str!("flight.json").to_string());
-        flight_handle.play();
-        
-        // ECEF or Lon/Lat/Alt
-        cam.camera_set_position(8.68, 50.11, 0.5); // Frankfurt, Germany
+        // Frankfurt → Tokyo Haneda, compressed into a 90-minute session.
+        flight.load_flight("demo", 8.57, 50.03, 139.78, 35.55, 90 * 60 * 1000, None, None, vec![]);
+        flight.play();
+        camera.camera_set_mode(CameraMode::Tracking);
     });
 
-    // 5. Take over the main thread (blocks forever)
-    viewer.run();
+    viewer.run(); // takes over the main thread
 }
 ```
 
-## Testing & Diagnostics
+For Android and Kotlin, see [kotlin-integration.md](docs/kotlin-integration.md).
 
-The project features a suite of visual debugging harnesses. These test tools are strictly separated from the engine source code.
+## Project layout
 
-Run specific diagnostic modes using the included CLI:
-
-```bash
-# General viewer
-cargo run --release
-
-# Regression Test (Sweeps across latitudes/longitudes)
-cargo run --release -- --regression
-
-# Stress Test (High velocity, aggressive cache clearing)
-cargo run --release -- --stress
-
-# Tile Monitor (Diagnostic view for tile fetching)
-cargo run --release -- --monitor
+```
+crates/
+  cesium-engine/   the renderer: wgpu state, globe, tiles, terrain, culling, sky, labels
+  cesium-flight/   flight planning, telemetry, cameras, aircraft and cockpit models
+src/
+  api.rs           CesiumViewer / ViewerHandle, the public entry point
+  headless/        C ABI for PNG route renders
+  android_jni.rs   JNI bridge for the Android app
+  testing/         visual harnesses, sweeps and benchmarks (behind the `testing` feature)
+assets/            models, the offline world map and terrain test fixtures
+docs/              one document per subsystem
+tools/             data generators and on-device profiling scripts
 ```
 
-Flight planning is pure computation with no GPU or device involved, so it is covered by
-ordinary unit tests rather than a visual harness:
+## Testing
+
+Flight planning is pure computation and is covered by ordinary unit tests:
 
 ```bash
 cargo test -p cesium-flight
 ```
 
-Those tests pin the shape of a flight plan — great-circle routing, airliner climb and
-bank angles, flight-level parity, physical cruise speeds. See
-[docs/flight-plan.md](docs/flight-plan.md#testing) for which of them are load-bearing.
+The engine's tests live in `src/testing/`. Many of them render headlessly on the GPU or
+fetch real tiles, so run them by area rather than all at once:
 
-## Naming & Style Conventions
-The codebase strictly adheres to standard Rust naming conventions (`snake_case` variables, `UpperCamelCase` types, `SCREAMING_SNAKE_CASE` constants). Ensure `cargo clippy` and `cargo fmt` are run before committing.
+```bash
+cargo test --release --lib culling:: -- --test-threads=1   # the culling gate
+cargo test --release --lib terrain::
+```
+
+Rendering changes are checked by eye: the capture harnesses in `src/testing/rendering/`
+write PNGs to look at.
+
+## Documentation
+
+Start with [docs/README.md](docs/README.md) and [docs/architecture.md](docs/architecture.md).
+Each subsystem has one document that explains what the code does and why:
+
+| Document | Covers |
+|---|---|
+| [architecture.md](docs/architecture.md) | Crates, threads, the frame loop, render passes, platforms, features |
+| [tiles-and-lod.md](docs/tiles-and-lod.md) | Map styles, fetching, caches, the LOD rule, fog, prefetch |
+| [terrain.md](docs/terrain.md) | Height tiles, relief meshes, height-aware culling, culling behind mountains, terrain LOD |
+| [culling-implementation.md](docs/culling-implementation.md), [culling-math.md](docs/culling-math.md) | Which tiles are drawn, and the proofs |
+| [camera.md](docs/camera.md) | Camera modes, near plane, input, ground collision |
+| [models.md](docs/models.md) | The aircraft and cockpit models |
+| [lighting.md](docs/lighting.md) | Sun, moon, sky, haze and object lighting |
+| [labels.md](docs/labels.md) | City labels |
+| [flight-plan.md](docs/flight-plan.md), [route-line.md](docs/route-line.md) | Flight planning and the route line |
+| [kotlin-integration.md](docs/kotlin-integration.md) | Using the engine from Android |
+| [testing.md](docs/testing.md) | Tests and harnesses |
+
+## License
+
+The code is released under the [MIT License](LICENSE).
+
+The aircraft and cockpit models are third-party work under Creative Commons licenses; see
+[MODEL_LICENSES.md](MODEL_LICENSES.md). Map data: offline map from
+[Natural Earth](https://www.naturalearthdata.com) (public domain); standard basemap ©
+[CARTO](https://carto.com/attribution/), © [OpenStreetMap](https://www.openstreetmap.org/copyright)
+contributors; satellite imagery by [Esri](https://www.esri.com); elevation from
+[Terrain Tiles](https://github.com/tilezen/joerd/blob/master/docs/attribution.md) on AWS.

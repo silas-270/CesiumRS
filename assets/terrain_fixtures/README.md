@@ -24,7 +24,7 @@ them silently.
 metres, before any [`OceanPolicy`] is applied, fetched from the same source on
 2026-09-20.
 
-It exists because `docs/terrain-plan.md` §7's D1 margin — how far a node's
+It exists because the D1 margin — how far a node's
 inherited height interval must be widened while its own height tile is still in
 flight — is a *measurement*, not an argument, and the measurement needs
 parent/child pairs across the whole level range rather than the five isolated z12

@@ -1,7 +1,6 @@
-//! **F2's follow-up** — what the height cache being too small actually costs
-//! (`docs/terrain-plan.md` §9 F2).
+//! **Height cache residency** — what the height cache being too small actually costs.
 //!
-//! F2 measured that at three of the ten real poses the tree wants more distinct height
+//! An earlier estimate measured that at three of the ten real poses the tree wants more distinct height
 //! sources than the 32 MiB slice can hold — `alps_inn_valley` 312 against 254 — and called
 //! the consequence "churn". It did not measure the churn, and it did not look at the one
 //! thing that makes churn more than a re-download: **whether a tile whose fetch is still in
@@ -41,12 +40,12 @@
 //!   `None → Fetching` whose cache entry is gone again before any result arrived.
 //! * **GETs vs distinct tiles** — counted on the wire by the server.
 //!
-//! # What it found: the churn is not there, and F2's 312 is not a production number
+//! # What it found: the churn is not there, and the 312 estimate is not a production number
 //!
-//! Neither number is ever above zero. F2's 312 comes from `collect_sources`, which recurses
+//! Neither number is ever above zero. The 312 estimate comes from `collect_sources`, which recurses
 //! the **whole quadtree**; production asks for heights only for the visible set and its
 //! ancestor chains, which is **220** tiles at the worst pose — inside 254. So the raise of
-//! the slice that followed this measurement is headroom for the deeper tree of §9 F5, not a
+//! the slice that followed this measurement is headroom for the deeper tree, not a
 //! repair of a fault. The two small tests at the bottom keep the *mechanism* written down,
 //! so that if a future working set does overflow the capacity the finding is a state check
 //! away rather than an investigation.
@@ -74,7 +73,7 @@ use super::test_mesh_density::settled_shipped;
 use super::test_terrain_occlusion::{real_poses, RealWorld};
 
 /// How many frames of a motionless camera to replay. At 16 ms a frame this is a third of
-/// a second — far less than the "settle" F2 described, and already enough.
+/// a second — far less than the "settle" previously described, and already enough.
 const FRAMES: usize = 24;
 
 /// Wall-clock between two replayed frames. The engine's own frame budget; it is what makes
@@ -88,17 +87,17 @@ const FRAME_MS: u64 = 16;
 /// source does.
 const SOURCE_LATENCY_MS: u64 = 60;
 
-/// The budgets compared: the 32 MiB slice B4 shipped, and the 48 MiB §9 F2 names.
+/// The budgets compared: the 32 MiB slice originally shipped, and the 48 MiB allocation.
 const BUDGETS_MIB: [usize; 2] = [32, 48];
 
 /// The largest set of distinct height tiles [`double_fetches_at_the_binding_poses`] saw
 /// production ask for at any of the ten real poses, at either shipped imagery style:
 /// `alps_inn_valley`, 220 — the visible set (103 tiles) plus every ancestor chain.
 ///
-/// **Not F2's 312.** That number is `collect_sources` over the whole quadtree, interior and
+/// **Not the earlier 312.** That number is `collect_sources` over the whole quadtree, interior and
 /// culled nodes included, and production never requests heights for those: their
-/// `HeightBounds` come from D1's inheritance margin instead. The gap between the two is the
-/// whole of §9 F2's "the height slice is the one that binds".
+/// `HeightBounds` come from height-aware bounds' inheritance margin instead. The gap between the two is the
+/// reason why the height slice was thought to bind.
 const WORST_MEASURED_WORKING_SET: usize = 220;
 
 // ── a local Terrarium source that counts ────────────────────────────────────────────
@@ -359,11 +358,10 @@ fn replay(frames_in: &[Vec<TileId>], src: &CountingSource, budget_mib: usize) ->
     }
 }
 
-/// **The measurement §9 F2 owed, and the one it did not know it owed.**
+/// **The working set measurement.**
 ///
 /// Three poses, two budgets, the real manager and a real socket. The first column pair is
-/// F2's own question — does the working set fit — and the last three are the question F2
-/// did not ask: what the overflow costs on the wire.
+/// whether the working set fits, and the last three are what the overflow costs on the wire.
 ///
 /// ```text
 /// cargo test --release --lib terrain::test_height_residency -- --ignored --nocapture
@@ -393,7 +391,7 @@ fn double_fetches_at_the_binding_poses() {
         "evict/rdy"
     );
 
-    // The three F2 found binding, plus one that fits, as the control: if the fitting pose
+    // The three poses found binding, plus one that fits, as the control: if the fitting pose
     // shows the same in-flight evictions then the finding is about the replay and not
     // about the budget.
     let interesting = [
@@ -404,7 +402,7 @@ fn double_fetches_at_the_binding_poses() {
     ];
     let mut any_in_flight_at_32 = false;
 
-    // Both shipped imagery styles: the default Carto `@2x` (512², the one F2's first
+    // Both shipped imagery styles: the default Carto `@2x` (512², the one the first
     // table is measured at) and the Esri 256² style, whose `lod_factor` is twice as eager
     // and which therefore draws roughly seven times the tiles — the heavier case for the
     // height cache, and the one that decides whether the slice binds at all.
@@ -457,8 +455,8 @@ fn double_fetches_at_the_binding_poses() {
 ///
 /// [`WORST_MEASURED_WORKING_SET`] is what the measurement above found production actually
 /// asks for at the worst of the ten real poses. The slice has to hold it with room for the
-/// terrain refinement of §9 F5 to grow into, and it has to stay a *slice* — B4's claim —
-/// leaving imagery well over the 103 MiB F2 measured it peaking at. All three are
+/// terrain refinement of the deep-detail pyramid to grow into, and it has to stay a *slice* —
+/// leaving imagery well over the 103 MiB measured as its peak. All three are
 /// arithmetic on shipped constants, so all three belong in the gate rather than behind
 /// `--ignored`.
 #[test]
@@ -472,24 +470,24 @@ fn the_raised_height_slice_covers_the_measured_working_set_and_still_leaves_imag
     };
     let entries = config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES;
 
-    // Desktop: the measured worst case, with half again as much room for F5's deeper tree.
+    // Desktop: the measured worst case, with half again as much room for the deeper tree.
     #[cfg(not(target_os = "android"))]
     assert!(
         entries >= 3 * WORST_MEASURED_WORKING_SET / 2,
         "the desktop height slice holds {entries} tiles against a measured worst case of \
          {WORST_MEASURED_WORKING_SET}; §9 F5 refines the tree and needs the margin"
     );
-    // Android is held to the unrun soak of §9 F3 and must still cover what is measured.
+    // Android must still cover what is measured.
     #[cfg(target_os = "android")]
     assert!(entries >= WORST_MEASURED_WORKING_SET);
 
-    // Still a slice, not an addition (B4).
+    // Still a slice, not an addition.
     assert_eq!(
         config.imagery_cache_budget_bytes() + config.terrain.height_cache_budget_bytes,
         config.tile_cache_budget_bytes,
     );
 
-    // And imagery keeps well over its measured peak: F2 measured 103 MiB at the worst
+    // And imagery keeps well over its measured peak: measured 103 MiB at the worst
     // pose against the 480 MiB it had, so the raised slice must still leave it 4x that.
     assert!(
         config.imagery_cache_budget_bytes() >= 4 * 103 * 1024 * 1024,

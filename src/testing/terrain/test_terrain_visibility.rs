@@ -1,7 +1,7 @@
-//! Phase D acceptance for `docs/terrain-plan.md` §7 — D1 (height-aware bounding
-//! volumes) and D2 (the horizon with relief). **D3, the occlusion march, lives in
+//! Terrain visibility acceptance — height-aware bounding
+//! volumes and the relief-aware horizon test. **Terrain occlusion, the occlusion march, lives in
 //! `test_terrain_occlusion`** — it needs a third term in the visibility oracle (occlusion
-//! by the drawn surface) that would make every correct D3 cull look like a false negative
+//! by the drawn surface) that would make every correct terrain occlusion cull look like a false negative
 //! here, so the two sweeps are deliberately separate instruments.
 //!
 //! **Nothing in this file touches the network.** The soundness sweep runs against a
@@ -10,9 +10,9 @@
 //!
 //! # Why this is not in `culling::`, and why it is not *called* `…culling` either
 //!
-//! The same reason Phase C's tests are not (`test_heightfield`'s module doc): the gate's
+//! The same reason as in `test_heightfield`: the gate's
 //! contract is that `cargo test --release --lib culling::` reports **32 passed, 0 failed,
-//! 1 ignored** unchanged across every phase of this plan, because that is how "flat mode
+//! 1 ignored** unchanged across tests, because that is how "flat mode
 //! must not regress, and must not be re-pinned" is enforced. Adding a test to it changes
 //! the number being held fixed. So `culling::` keeps saying exactly what it said about
 //! `Ellipsoid`, and everything terrain is checked here.
@@ -36,10 +36,10 @@
 //!
 //! That is strictly harder on the engine than the ellipsoid oracle would be — it counts
 //! the relief the oracle cannot see — and strictly easier than the truth, because a vertex
-//! hidden behind a *mountain* still counts as visible here. Closing that last gap is D3's
+//! hidden behind a *mountain* still counts as visible here. Closing that last gap is terrain occlusion's
 //! job; the gap can only make this test over-report, never under-, which is why the tree
-//! this file builds deliberately keeps running `CullPipeline::DEFAULT` (D1+D2) now that
-//! D3 exists. `test_terrain_occlusion` measures the pipeline that has it.
+//! this file builds deliberately keeps running `CullPipeline::DEFAULT` (height-aware bounds and relief-aware horizon test) now that
+//! terrain occlusion exists. `test_terrain_occlusion` measures the pipeline that has it.
 
 use std::sync::Arc;
 
@@ -61,10 +61,10 @@ use crate::testing::culling::cameras::{build_camera, ViewParams};
 use crate::testing::culling::oracle::{VisibilityOracle, NDC_MARGIN};
 
 /// Mesh density the sweep builds at — the shipped default, so the geometry being checked
-/// is the geometry that ships (`docs/terrain-plan.md` §6 C4 keeps 16).
+/// is the geometry that ships.
 const SEGMENTS: u32 = 16;
 
-/// `TerrainConfig::detail_max_z` as it ships — **19 since §9 F5**, where E1 had 15. The
+/// `TerrainConfig::detail_max_z` as it ships — **19**, raised from 15. The
 /// harnesses here measure the engine that ships, so they read it from the config rather
 /// than from a literal of their own.
 const SHIPPED_DETAIL_MAX_Z: u8 = cesium_engine::globe::terrain::DETAIL_MAX_Z;
@@ -73,7 +73,7 @@ const SHIPPED_DETAIL_MAX_Z: u8 = cesium_engine::globe::terrain::DETAIL_MAX_Z;
 ///
 /// The same count `culling::sweep` uses, and for the same reason: `apply_lod`'s 20 %
 /// hysteresis and `reorder_children_near_to_far` both need a few ticks to settle. Here it
-/// matters twice over, because D1's bounds refresh only tightens nodes that already exist
+/// matters twice over, because height-aware bounds refresh only tightens nodes that already exist
 /// — the first tick creates them with inherited intervals, the later ones re-derive them
 /// from data.
 const UPDATE_ITERATIONS: usize = 4;
@@ -122,7 +122,7 @@ fn sweep_config() -> TileEngineConfig {
 /// relation that is very nearly linear in the tile's width, capped where the Earth runs
 /// out of relief. A test field with a *constant* range at every level would be the wrong
 /// instrument entirely: it would put 9 km of relief inside a 600-m tile and report a
-/// false-positive rate that says more about the fixture than about D1.
+/// false-positive rate that says more about the fixture than about height-aware bounds.
 fn relief_range_m(id: TileId) -> f64 {
     let w_m = 40_075_017.0 / (1_u32 << id.z) as f64;
     (0.48 * w_m).min(9_000.0)
@@ -178,7 +178,7 @@ impl LevelFields {
 ///
 /// The inheritance path is deliberately *not* what this sweep measures — a node on an
 /// inherited interval has no mesh yet, so "the drawn mesh" has no referent for it. That
-/// half of D1 is [`d1_inherit_margin_covers_the_corpus`]'s job, on real data.
+/// half of height-aware bounds is [`d1_inherit_margin_covers_the_corpus`]'s job, on real data.
 fn fill_cache(node: &QuadtreeNode<Heightfield>, heights: &mut HeightTileManager, f: &LevelFields) {
     let src = heights.source_tile_for(node.id);
     if heights.status_of(node.id) != cesium_engine::globe::terrain::PatchStatus::Ready {
@@ -196,7 +196,7 @@ fn bounds_source<'a>(heights: &'a HeightTileManager) -> HeightBoundsSource<'a> {
         heights,
         segments: SEGMENTS,
         exaggeration: 1.0,
-        // The shipped ceiling — §9 F5's 19, not E1's 15.
+        // The shipped ceiling — 19, raised from 15.
         detail_max_z: SHIPPED_DETAIL_MAX_Z,
     }
 }
@@ -210,11 +210,11 @@ fn frustum_for(p: &ViewParams) -> (Frustum, VisibilityOracle) {
     (frustum, VisibilityOracle::new(&cam, aspect))
 }
 
-/// The poses the sweep runs, chosen around what Phase C's captures showed.
+/// The poses the sweep runs, chosen around what early captures showed.
 ///
 /// `alps_low`'s regime — a few kilometres up, looking along the ground — is where the
-/// Phase C hole was, and where a box fitted at `alt = 0` loses the near field. The high
-/// cells are where D2 has to matter instead: at 400 km and above the limb is in frame and
+/// issue was, and where a box fitted at `alt = 0` loses the near field. The high
+/// cells are where the relief-aware horizon test has to matter instead: at 400 km and above the limb is in frame and
 /// the question stops being the frustum and becomes the horizon.
 fn sweep_poses() -> Vec<ViewParams> {
     let mut out = Vec::new();
@@ -358,7 +358,7 @@ where
     }
 }
 
-// ── D2: the cone test itself ─────────────────────────────────────────────────────
+// ── The relief-aware horizon cone test ───────────────────────────────────────────────
 
 /// Theorem 3.7 at `ρ = 0` **is** Theorem 3.1 — `culling-math.md` §3.7 says so in one line
 /// of proof sketch, and this is that line as a test.
@@ -481,12 +481,12 @@ fn theorem_37_never_occludes_a_sphere_holding_a_visible_point() {
 
 // ── the flat model's pins, restated where they cannot move the gate ──────────────
 
-/// The pins of `docs/terrain-plan.md` §4, checked for **both** models.
+/// The flat-mode no-regression pins, checked for **both** models.
 ///
 /// `culling::test_stage_pipeline::test_horizon_hot_structs_have_not_grown` already pins
 /// `TilePatch<Ellipsoid>` and `HorizonCamera` and is not touched. What it cannot say —
 /// because saying it would mean adding an assertion to the gate — is that `QuadtreeNode`
-/// is still 192 B after Phase D put a height interval and a bounding sphere on the
+/// is still 192 B after bounding volume additions put a height interval and a bounding sphere on the
 /// *terrain* node, and that the terrain node is the only one that grew. That is the whole
 /// claim the zero-sized payload exists to make, so it is asserted here, and the terrain
 /// sizes are printed rather than pinned: they are allowed to move.
@@ -514,7 +514,7 @@ fn the_zero_sized_payload_still_costs_the_flat_node_nothing() {
     );
 }
 
-// ── D1: the margin ───────────────────────────────────────────────────────────────
+// ── Height-aware bounds margin ───────────────────────────────────────────────────────────
 
 /// Reproduces [`HeightTileManager::height_bounds_for`]'s box span from a corpus row, for a
 /// tile at or above the source's deepest level (where the mip covers the whole tile and
@@ -530,7 +530,7 @@ fn corpus_span(id: TileId, h_min_m: i32, h_max_m: i32, clamp: bool) -> HeightBou
     HeightBounds {
         lo: lo - skirt_allowance(id, SEGMENTS, hi - lo),
         hi,
-        // D3's occluder floor: the ground minimum, without the skirt allowance. Not
+        // Occluder floor: the ground minimum, without the skirt allowance. Not
         // what this test measures — the margin table is about `lo`/`hi`, the interval
         // the box is fitted over — but the struct carries it and `widened` moves it with
         // `lo`, so it is filled in from the same row.
@@ -538,15 +538,15 @@ fn corpus_span(id: TileId, h_min_m: i32, h_max_m: i32, clamp: bool) -> HeightBou
         // The corpus is whole-tile extrema; a sub-cell grid is not derivable from it, and
         // nothing this test measures reads one.
         floor_grid: [lo as f32; cesium_engine::globe::terrain::OCCLUDER_GRID_CELLS],
-        // E1's error term is not a bound and takes no part in the margin: the corpus
+        // The geometric error term is not a bound and takes no part in the margin: the corpus
         // rows are extrema, which say nothing about how rough the ground between them
         // is, and `widened` carries this field through unchanged.
         detail: 0.0,
     }
 }
 
-/// **D3's occluder floor has its own inheritance relation, and the corpus measures it
-/// directly** — `docs/terrain-plan.md` §7f.
+/// **Occluder floor has its own inheritance relation, and the corpus measures it
+/// directly**.
 ///
 /// `d1_inherit_margin_covers_the_corpus` next door measures the *interval*: `lo` with the
 /// skirt allowance already subtracted, and `hi`. `HeightBounds::floor` is neither. It is
@@ -673,7 +673,7 @@ fn d1_floor_inherit_margin_covers_the_corpus() {
     );
 }
 
-/// **The one genuine soundness trap in D1** (`docs/terrain-plan.md` §7), measured.
+/// **The one genuine soundness trap in height-aware bounds**, measured.
 ///
 /// For every parent/child pair in the committed corpus, the child's own interval must fit
 /// inside its parent's widened by `HEIGHT_INHERIT_MARGIN_M[child.z]`. If it does not, a
@@ -682,7 +682,7 @@ fn d1_floor_inherit_margin_covers_the_corpus() {
 ///
 /// Both ocean policies, because the constant cannot know which one is configured.
 ///
-/// Prints the table that `docs/terrain-plan.md` §7 and `HEIGHT_INHERIT_MARGIN_M` quote.
+/// Prints the table that `HEIGHT_INHERIT_MARGIN_M` quotes.
 #[test]
 fn d1_inherit_margin_covers_the_corpus() {
     let csv = std::fs::read_to_string("assets/terrain_fixtures/pyramid_extrema.csv")
@@ -792,7 +792,7 @@ fn d1_inherit_margin_covers_the_corpus() {
 /// was a function of the **whole tile's** range — which is monotone under refinement for
 /// exactly the same reason.
 ///
-/// D1's follow-up (`HeightTile::edge_window_range`) broke the monotonicity, and
+/// The edge-window range follow-up (`HeightTile::edge_window_range`) broke the monotonicity, and
 /// deliberately: a child's edges are *interior lines* of its parent, so a child edge can
 /// cross a ridge its parent's edges miss and the child's allowance can exceed its
 /// parent's. Measured on the real data path, the excess reaches ~350 m at z8. That is a
@@ -871,10 +871,10 @@ fn below_the_source_ceiling_a_child_interval_is_contained_by_what_it_inherits() 
     assert!(checked > 100, "the descent did not actually happen");
 }
 
-/// **I-1′ meets D1**: the interval a node's box is fitted over contains the interval the
+/// **I-1′ meets height-aware bounds**: the interval a node's box is fitted over contains the interval the
 /// mesh for that node declares.
 ///
-/// Phase C made `TileMesh::height_bounds` a promise
+/// Terrain mesh acceptance made `TileMesh::height_bounds` a promise
 /// (`test_heightfield::generated_meshes_stay_within_their_declared_height_bounds`); this
 /// is the other half of the join. Without it, the mesh could be inside its own claim and
 /// the box fitted to a different one, and every sweep below would be measuring the wrong
@@ -888,7 +888,7 @@ fn a_node_interval_contains_the_mesh_interval_it_is_fitted_against() {
     let mut checked = 0usize;
     let mut worst_slack_m = f64::INFINITY;
     // How much taller the node's box interval is than the mesh interval it must contain —
-    // the price of `skirt_allowance` bounding C3's content-derived skirt by the tile's
+    // the price of `skirt_allowance` bounding the content-derived skirt by the tile's
     // whole height range. Reported, not asserted: it is a cost, not a defect.
     let mut inflation = 0.0_f64;
     for z in 2..=SWEEP_MAX_ZOOM {
@@ -931,13 +931,12 @@ fn a_node_interval_contains_the_mesh_interval_it_is_fitted_against() {
     );
 }
 
-/// **D1's named follow-up, measured on real data** — the loose half of the box, and what
+/// **Height-aware bounds edge-window follow-up, measured on real data** — the loose half of the box, and what
 /// bounding the skirt from the *edges* instead of from the whole tile buys.
 ///
-/// `docs/terrain-plan.md` §7 left this with a number rather than as a surprise: the node
-/// interval measured **1.53×** the mesh interval it has to contain, and the range term was
-/// the loose half — on the Everest z12 fixture C3's real skirt is 741 m against a 4 700 m
-/// whole-tile span. The fix is [`HeightTile::edge_window_range`]: C3's crack is a property
+/// The node interval measured **1.53×** the mesh interval it has to contain, and the range term was
+/// the loose half — on the Everest z12 fixture the real skirt is 741 m against a 4 700 m
+/// whole-tile span. The fix is [`HeightTile::edge_window_range`]: the crack is a property
 /// of a tile's *edges*, over aligned quarter-windows of them, so a summit in the middle of
 /// a tile has no business inflating it.
 ///
@@ -1068,7 +1067,7 @@ fn d1_edge_window_skirt_allowance_against_the_fixtures() {
 
 // ── the sweep ────────────────────────────────────────────────────────────────────
 
-/// **The acceptance criterion for D1 and D2**: no node is culled while its own mesh has a
+/// **The acceptance criterion for height-aware bounds and relief-aware horizon test**: no node is culled while its own mesh has a
 /// vertex on screen and off the limb.
 ///
 /// Also the file's false-positive measurement. Both models are run over the same poses so

@@ -1,24 +1,24 @@
-//! Standalone fog-aware measurement path — WP5 of `docs/pre-terrain-plan.md`.
+//! Standalone fog-aware measurement path.
 //!
 //! Deliberately **does not** share code with [`super::sweep::measure_pose_with_config`]
 //! / [`super::sweep::measure_poses_with_config`], even though the bodies are almost
 //! identical. Every other LOD test in this crate trusts that
 //! `sweep::measure_pose_with_config` measures the un-fogged tree — that trust is exactly
-//! what makes it safe for `docs/culling-baseline.md`'s numbers to be compared against each
+//! what makes it safe for the harness's numbers to be compared against each
 //! other across packages. Branching that one shared function on a "use fog or not" flag
 //! would put the harness-safety property behind a conditional a future edit could flip by
 //! accident. Duplicating the handful of lines that differ keeps the fogged measurement in
 //! a file whose name says what it is, used from nowhere else.
 //!
-//! **What changed at E1c.** This module used to run `CullPipeline::DEFAULT_WITH_FOG`, and
+//! **What changed.** This module used to run `CullPipeline::DEFAULT_WITH_FOG`, and
 //! that constant's whole point was to keep an unsound stage out of the harness. The stage
-//! was measured to cull nothing at any camera and deleted (`docs/terrain-plan.md` §8), so
+//! was measured to cull nothing at any camera and deleted, so
 //! the pipeline here is now plain `DEFAULT` and the only difference from the baseline
 //! sweep is `fog_density` — which is the only difference that ever produced a number.
-//! Re-running WP5's whole suite across that deletion returned **byte-identical CSVs**,
+//! Re-running the whole fog suite across that deletion returned **byte-identical CSVs**,
 //! which is the measurement rather than the hope.
 //!
-//! **Never import this module from anything that is not itself a WP5 measurement.**
+//! **Never import this module from anything that is not itself a fog measurement.**
 
 use cesium_engine::camera::camera::Camera;
 use cesium_engine::globe::quadtree::{

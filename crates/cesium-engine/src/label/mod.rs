@@ -111,7 +111,7 @@ pub struct VisibleLabel {
 
 /// Where the ground is, for the labels that have to stand on it.
 ///
-/// Phase E3.4 of `docs/terrain-plan.md` §8. A one-method trait rather than a direct
+/// A one-method trait rather than a direct
 /// dependency on the tile system: this module knows about points and rectangles, and
 /// giving it a height cache would make the label pass depend on the terrain stack in
 /// both the flat and the terrain builds. `TileSystem` implements it; `None` is what the
@@ -234,11 +234,11 @@ impl LabelManager {
 
     /// Updates the visible label cache based on camera position, orientation, altitude, and frustum planes.
     ///
-    /// `ground` is Phase E3.4's terrain lift, and `None` on the flat path. It is
+    /// `ground` is the terrain lift, and `None` on the flat path. It is
     /// consulted **only** for the labels that have already survived culling, and only to
     /// move them: every rank, distance, horizon and frustum test below runs on the
     /// ellipsoid position exactly as it always did. That is deliberate rather than
-    /// merely convenient — the label set is unchanged by this phase, only where its
+    /// merely convenient — the label set is unchanged, only where its
     /// members are drawn, and it keeps the query off the hundreds of candidates that are
     /// about to be rejected anyway.
     pub fn update(

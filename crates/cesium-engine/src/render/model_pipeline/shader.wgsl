@@ -127,9 +127,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Cheap integer hash (wang-hash style), matching the one used to generate the model's
-// procedural grain texture on the Rust side (see cesium-flight/src/cockpit_texture.rs),
-// extended to a third argument so each triplanar projection plane gets a decorrelated
+// Cheap integer hash (wang-hash style), extended to a third argument so each triplanar projection plane gets a decorrelated
 // pattern instead of visibly repeating at object bounds where two planes meet.
 fn hash3(x: u32, y: u32, z: u32) -> u32 {
     var h = x * 374761393u + y * 668265263u + z * 2147483647u;
@@ -197,7 +195,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // aircraft swaps between one frame and the next. Summing both contributions is what a
     // pair of light sources actually does, and it has no edge to fall off. The weights run
     // on the same dusk-to-night ramp as the sky.
-    let night_key = smoothstep(-0.02, -0.22, camera.sun_dir.w);
+    let night_key = 1.0 - smoothstep(-0.22, -0.02, camera.sun_dir.w);
     let n_dot_l_sun = max(dot(normal, camera.sun_dir.xyz), 0.0);
     let n_dot_l_moon = max(dot(normal, camera.moon_dir.xyz), 0.0);
     let from_sun = n_dot_l_sun * (1.0 - night_key);

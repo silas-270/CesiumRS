@@ -100,22 +100,22 @@ pub struct TileMesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
     pub center_f64: [f64; 3],
-    /// **Invariant I-1′** (`docs/terrain-plan.md` §6): every vertex above lies at an
+    /// **Invariant I-1′**: every vertex above lies at an
     /// altitude inside this `[min, max]` interval, in **megametres**, skirts included.
     ///
     /// For `Ellipsoid` that is `[-skirt, 0]`, i.e. I-1 restated as an interval. For a
     /// height field it is the patch's own extrema, exaggeration already applied. This
-    /// is the number Phase D fits the node's bounding box over, and
-    /// `test_generated_mesh_stays_within_declared_height_bounds` is what makes it a
+    /// is the number the node's bounding box is fitted over, and
+    /// `test_heightfield::generated_meshes_stay_within_their_declared_height_bounds` makes it a
     /// promise rather than a comment.
     pub height_bounds: [f64; 2],
     /// The height tile this mesh's relief was sampled from, `None` in flat mode.
     ///
-    /// Carried for Phase E2 (`docs/terrain-plan.md` §8): once relief exists a mesh is
+    /// Once relief exists a mesh is
     /// no longer a pure function of its `TileId` — it also depends on *which* height
     /// tile had arrived when it was built, normally an ancestor. That makes the mesh
     /// cache key `(id, height_source)` and `missing_meshes` a staleness test. Recording
-    /// it now costs one `Option<TileId>` and saves E2 from re-deriving it.
+    /// it now costs one `Option<TileId>` and avoids re-deriving it.
     pub height_source: Option<TileId>,
 }
 
@@ -144,8 +144,8 @@ impl TileMesh {
         Self::generate_on::<Ellipsoid>(id, segments, &())
     }
 
-    /// `generate`, with the surface model spelled out — Phase A of
-    /// `docs/terrain-plan.md` §4, extended by Phase C's `ctx`.
+    /// `generate`, with the surface model spelled out, plus the relief context
+    /// `ctx`.
     ///
     /// Four dispatch sites live here: the tile's skirt depth and its declared height
     /// bounds, once per tile, and the vertex's altitude and normal, once per vertex.
@@ -154,7 +154,7 @@ impl TileMesh {
     /// here.
     ///
     /// **A pure function of `(id, segments, ctx)`.** It reads no cache and takes no
-    /// lock, which is what lets it run on a rayon worker and what lets Phase E2 decide
+    /// lock, which is what lets it run on a rayon worker and what lets the rebuild logic decide
     /// staleness by comparing `ctx`'s provenance rather than by re-running it. See
     /// [`SurfaceModel::BuildCtx`].
     pub fn generate_on<S: SurfaceModel>(id: &TileId, segments: u32, ctx: &S::BuildCtx) -> Self {
@@ -172,7 +172,7 @@ impl TileMesh {
 
         // Dispatch site 3 — the skirt depth, once per tile. `Ellipsoid` returns the
         // `0.5 / 2^z` megametres this line used to compute inline, as the same
-        // expression; a height field measures its own edge mismatch (C3).
+        // expression; a height field measures its own edge mismatch.
         let skirt_height = S::skirt_depth(id, segments, ctx);
 
         let grid_size = segments + 3; // +2 for skirts

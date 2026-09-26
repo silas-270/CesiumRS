@@ -1,6 +1,6 @@
 //! Choosing a surface model at **run time** without paying for it per node.
 //!
-//! `docs/terrain-plan.md` §1 makes the surface model a *type* parameter precisely so
+//! The engine makes the surface model a *type* parameter precisely so
 //! that no per-node branch exists: `QuadtreeNode<Ellipsoid>` is 192 B and its traversal
 //! compiles to the code it compiled to before terrain existed. But
 //! `TerrainConfig::enabled` is a run-time flag, and a program cannot hold a value whose
@@ -21,7 +21,7 @@
 //! `QuadtreeNode` whether or not terrain is on, which is what
 //! `test_horizon_hot_structs_have_not_grown` exists to prevent.
 //!
-//! §1 calls this the "fallback if the generics get ugly" and Phase A found the generics
+//! §1 calls this the "fallback if the generics get ugly" and the generics
 //! did **not** get ugly — the parameter reached `QuadtreeManager` cleanly. That is
 //! exactly what makes this enum cheap: because `S` reaches the top, the switch can sit
 //! at the top too, and the two instantiations meet nowhere else.
@@ -47,7 +47,7 @@ use crate::globe::terrain::{HeightBoundsSource, HeightTileManager, Heightfield};
 /// Construct with [`AnyQuadtree::for_terrain`] and then treat it as a
 /// [`QuadtreeManager`]: every method below forwards to the active arm and exists only
 /// because the two arms are different types.
-// D3 grew `QuadtreeNode<Heightfield>` by the 4x4 occluder floor grid, which pushes the
+// Terrain occlusion grew `QuadtreeNode<Heightfield>` by the 4x4 occluder floor grid, which pushes the
 // two arms' root arrays 480 B apart and past clippy's threshold. Boxing the terrain arm
 // to even them out would buy nothing and cost something: there is exactly **one** of
 // these in the process, it lives on `WgpuState` for the program's lifetime, and the
@@ -59,7 +59,7 @@ pub enum AnyQuadtree {
     /// `TerrainConfig::enabled == false` — the globe this engine has always drawn.
     Flat(QuadtreeManager<Ellipsoid>),
     /// `TerrainConfig::enabled == true` — bounding volumes fitted over each node's
-    /// height interval (D1) and the limb test on its scaled-space bounding sphere (D2).
+    /// height interval and the limb test on its scaled-space bounding sphere.
     Terrain(QuadtreeManager<Heightfield>),
 }
 
@@ -78,7 +78,8 @@ impl AnyQuadtree {
         }
     }
 
-    /// Which culling stages run. Set once, at construction.
+    /// Which culling stages run. Set at construction and again whenever terrain is
+    /// toggled, which builds a new manager.
     pub fn set_pipeline(&mut self, pipeline: CullPipeline) {
         match self {
             Self::Flat(q) => q.pipeline = pipeline,
@@ -87,7 +88,7 @@ impl AnyQuadtree {
     }
 
     /// The three per-frame knobs `wgpu_state` recomputes every frame, set together
-    /// because they are always set together. E1's geometric term is deliberately not
+    /// because they are always set together. The geometric term is deliberately not
     /// among them — see [`Self::set_terrain_lod`].
     pub fn set_frame_params(&mut self, lod_factor: f32, max_zoom: u8, fog_density: f32) {
         match self {
@@ -104,8 +105,7 @@ impl AnyQuadtree {
         }
     }
 
-    /// **E1** — this frame's geometric LOD constant and its fog policy
-    /// (`docs/terrain-plan.md` §8).
+    /// This frame's geometric LOD constant and its fog policy.
     ///
     /// A **no-op on the flat arm**, and deliberately not folded into
     /// [`Self::set_frame_params`]: `Ellipsoid::HAS_GEOMETRIC_ERROR` is a compile-time
@@ -126,7 +126,7 @@ impl AnyQuadtree {
         }
     }
 
-    /// Phase D1's per-frame bounds refresh. A no-op on the flat arm — and not merely
+    /// Per-frame bounds refresh. A no-op on the flat arm — and not merely
     /// cheap there, but *absent*: `Ellipsoid` has no `NodeExtraSource` implementation
     /// at all, so there is nothing for this to call.
     ///
@@ -148,7 +148,7 @@ impl AnyQuadtree {
         }
     }
 
-    /// **D3's per-frame march** — the occlusion horizon of `docs/terrain-plan.md` §3.3.
+    /// **Terrain occlusion per-frame march** — the terrain occlusion horizon.
     ///
     /// Absent on the flat arm, exactly like [`Self::refresh_height_bounds`]: `Ellipsoid`
     /// has no relief, so there is nothing for a terrain occluder to be made of.

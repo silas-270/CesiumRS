@@ -64,9 +64,6 @@ fn dump_vertical_transitions() {
     let mut fine_file = File::create(fine_csv_path).unwrap();
     writeln!(fine_file, "t_s,progress,alt_m,vz_ms,az_ms2").unwrap();
 
-    let mut prev_alt: Option<f64> = None;
-    let mut prev_vz: Option<f64> = None;
-
     for i in 0..=n_steps {
         let progress = i as f64 / n_steps as f64;
         let t = (start_t + progress * total_time).clamp(start_t + dt, stop_t - dt);

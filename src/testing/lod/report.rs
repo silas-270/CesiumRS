@@ -16,8 +16,7 @@ pub fn output_dir() -> PathBuf {
     dir
 }
 
-/// One row per pose: the cost side of the trade (`docs/pre-terrain-plan.md` WP1 —
-/// "also record the cost side").
+/// One row per pose: the cost side of the trade.
 pub fn write_poses_csv(name: &str, results: &[PoseResult]) -> PathBuf {
     let path = output_dir().join(format!("{name}_poses.csv"));
     let mut file = match std::fs::File::create(&path) {
@@ -188,8 +187,8 @@ impl Summary {
         percentile(&self.ratios, 0.05)
     }
 
-    /// WP4/C's own reading of the blurry tail — the general WP1 report already
-    /// carries p5/median/p95; p25 gives WP4/C's centre-vs-box comparison a fourth
+    /// Reading of the blurry tail — the general report already
+    /// carries p5/median/p95; p25 gives the centre-vs-box comparison a fourth
     /// point without redefining what the other three mean.
     pub fn p25(&self) -> f64 {
         percentile(&self.ratios, 0.25)
@@ -314,7 +313,7 @@ pub fn render_report(
     let mut out = String::new();
 
     // Read back from the results rather than the module's own default constant
-    // (WP4/A, `docs/pre-terrain-plan.md`) — a sweep may have run at
+    // — a sweep may have run at
     // `ESRI_TEXTURE_SIZE_PX` or any other `LodConfig::texture_size_px`, and a report
     // that always printed `TEXTURE_SIZE_PX` would silently mislabel it.
     let texture_size_label = match results.first() {

@@ -1,20 +1,20 @@
-//! Phase C acceptance for `docs/terrain-plan.md` §6: relief (C1), normals (C2),
-//! the derived skirt (C3), and the grid-density measurement (C4).
+//! Heightfield acceptance: relief, normals,
+//! the derived skirt, and the grid-density measurement.
 //!
 //! **Nothing here touches the network.** The relief and normal tests run on a
-//! synthetic field built in this file; the C4 measurement runs on the tiles committed
+//! synthetic field built in this file; the grid-density measurement runs on the tiles committed
 //! under `assets/terrain_fixtures/` (see the README there and
 //! [`super::test_height_tiles`]).
 //!
 //! # Why the I-1′ guard lives here and not in `culling::`
 //!
 //! `culling::` is the gate, and the gate's contract is that it reports **32 passed, 0
-//! failed, 1 ignored** unchanged across every phase of this plan — that is how "flat
+//! failed, 1 ignored** unchanged across tests — that is how "flat
 //! mode must not regress, and must not be re-pinned" is enforced. Adding a test to it
 //! changes the number that is being held fixed. So `test_generated_mesh_has_no_positive_altitude`
 //! stays exactly as it is, in the gate, saying the stronger and still-true thing about
 //! `Ellipsoid`; the weaker statement that survives relief is checked here, for both
-//! models, and is what Phase D will build its bounding volumes on.
+//! models, and is what culling will build its bounding volumes on.
 
 use std::sync::Arc;
 
@@ -131,13 +131,13 @@ fn both_meshes(
 
 // ── I-1′ ─────────────────────────────────────────────────────────────────────
 
-/// **Invariant I-1′** (`docs/terrain-plan.md` §6). Every vertex of a tile's mesh lies
+/// **Invariant I-1′**. Every vertex of a tile's mesh lies
 /// within the `[h_min, h_max]` interval that mesh declares — for **both** surface
 /// models.
 ///
-/// This is the bridge that makes Phase D provable at all. D1 fits a node's oriented
-/// box over the declared interval and D2 fits a bounding sphere over the same; both
-/// are sound only if the geometry actually drawn stays inside it. Until Phase C
+/// This is the bridge that makes culling provable at all. Height-aware bounds fits a node's oriented
+/// box over the declared interval and the relief-aware horizon test fits a bounding sphere over the same; both
+/// are sound only if the geometry actually drawn stays inside it. Until terrain meshes were introduced
 /// nothing could check it, because the interval was the constant `[−skirt, 0]` and
 /// I-1 was the whole statement.
 ///
@@ -309,9 +309,9 @@ fn relief_moves_vertices_only_radially() {
     );
 }
 
-// ── C1: relief, and the exaggeration applied exactly once ────────────────────
+// ── Relief, and the exaggeration applied exactly once ────────────────────
 
-/// The whole of C1 in one assertion: the mesh's vertices sit at the sampled height.
+/// Relief in one assertion: the mesh's vertices sit at the sampled height.
 #[test]
 fn a_relief_vertex_sits_at_the_sampled_height() {
     let mut heights = terrain_manager();
@@ -353,10 +353,10 @@ fn a_relief_vertex_sits_at_the_sampled_height() {
     assert_eq!(relief.height_bounds[1], patch.height_bounds()[1]);
 }
 
-/// §6 C1: "apply vertical exaggeration **here and nowhere else**".
+/// Vertical exaggeration: apply vertical exaggeration **here and nowhere else**.
 ///
 /// Doubling the exaggeration must double every height *and every bound derived from
-/// it*, exactly — which is the property that lets Phase D stay consistent with the
+/// it*, exactly — which is the property that lets bounding volumes stay consistent with the
 /// knob without knowing it exists. A factor applied twice (once in `height_at`, once
 /// in the model) would show as 4x here; one applied to the vertices but not to the
 /// bounds would break the equality on the second line.
@@ -378,7 +378,7 @@ fn exaggeration_scales_heights_and_bounds_exactly_once() {
         assert!((b - 2.0 * a).abs() < 1.0e-15, "{b} != 2 * {a}");
     }
 
-    // Phase B must not be exaggerating as well: `height_at` is the raw field.
+    // Height queries must not be exaggerating as well: `height_at` is the raw field.
     let raw = heights.peek_height_at(id, 0.5, 0.5).unwrap();
     let mesh = TileMesh::generate_on::<Heightfield>(&id, SEGMENTS, &two);
     let center = DVec3::from_array(mesh.center_f64);
@@ -439,7 +439,7 @@ fn skirts_hang_from_the_edge_height_and_poles_keep_none() {
     }
 }
 
-// ── C2: normals ──────────────────────────────────────────────────────────────
+// ── Normals ─────────────────────────────────────────────────────────────────
 
 /// A flat height field must give back exactly the ellipsoid normal — the central
 /// difference has to vanish, not merely be small.
@@ -526,7 +526,7 @@ fn the_east_gradient_matches_a_closed_form_slope() {
     );
 }
 
-/// C2's edge treatment, stated as a test.
+/// Normal edge treatment, stated as a test.
 ///
 /// The gradient stencil reaches one grid step outside the tile. When the height source
 /// is an **ancestor** — the normal case, and the only case below z15 — that halo is
@@ -590,7 +590,7 @@ fn edge_normals_agree_across_a_shared_tile_boundary() {
     );
 }
 
-// ── C3: the derived skirt ────────────────────────────────────────────────────
+// ── The derived skirt ────────────────────────────────────────────────────
 
 /// The flat model's skirt is untouched: `0.5 / 2^z`, bit for bit.
 #[test]
@@ -606,7 +606,7 @@ fn the_flat_skirt_formula_is_unchanged() {
     }
 }
 
-/// C3's claim: the skirt is at least as deep as the crack it has to hide.
+/// Skirt depth requirement: the skirt is at least as deep as the crack it has to hide.
 ///
 /// The crack at an LOD boundary is the gap between this tile's edge and the straight
 /// line a coarser neighbour draws across the same edge. Measured here independently of
@@ -730,9 +730,9 @@ fn an_ocean_tile_keeps_a_curvature_only_skirt() {
     }
 }
 
-// ── B2 x C1: unknown heights must defer, never flatten ───────────────────────
+// ── Unknown heights must defer, never flatten ───────────────────────
 
-/// §5 B2's "unknown is not sea level", enforced at the place it matters.
+/// "Unknown is not sea level", enforced at the place it matters.
 ///
 /// A tile whose heights have not arrived yields `Pending`, and the tile system's mesh
 /// loop skips it rather than building a flat mesh nothing would later rebuild. A tile
@@ -756,7 +756,7 @@ fn an_unloaded_tile_defers_the_mesh_instead_of_flattening_it() {
 }
 
 /// The mesh records which height tile it was built from, which is the whole of what
-/// Phase E2 needs out of Phase C: past z15 the answer is an ancestor, and the mesh is
+/// mesh invalidation needs: past z15 the answer is an ancestor, and the mesh is
 /// therefore *not* a pure function of its own `TileId`.
 #[test]
 fn a_relief_mesh_records_the_height_tile_it_was_built_from() {
@@ -781,7 +781,7 @@ fn a_relief_mesh_records_the_height_tile_it_was_built_from() {
     assert_eq!(TileMesh::generate(&deep, SEGMENTS).height_source, None);
 }
 
-// ── C4: grid density, measured ───────────────────────────────────────────────
+// ── Grid density, measured ───────────────────────────────────────────────
 
 /// The mesh's own interpolated height at tile-local `(u, v)`, in metres.
 ///
@@ -805,19 +805,19 @@ fn mesh_height_m(grid_h: &[f64], segments: u32, u: f64, v: f64) -> f64 {
     }
 }
 
-/// **C4** — how much geometric error `mesh_segments` actually costs, measured over
+/// **Grid density measurement** — how much geometric error `mesh_segments` actually costs, measured over
 /// the committed fixtures, against all 65 536 source samples of each tile.
 ///
-/// `docs/terrain-plan.md` §6 C4 asks for this and explicitly does **not** ask for a
-/// decision: the default stays 16 and the choice is made in Phase F against device
-/// measurements, not here. What this produces is the table that Phase F will argue
+/// A measurement, explicitly **not** a decision: the default stays 16 and the choice is
+/// made against device measurements, not here. What this produces is the table that
+/// decision argues
 /// from — max and RMS deviation in metres, with the vertex and index bytes each
 /// density costs.
 ///
 /// The one assertion is that **RMS** falls monotonically with refinement: if it did
 /// not, the mesh would not be converging to the height field and the whole table would
 /// be meaningless. The **max** is deliberately not asserted to fall, and the reason is
-/// itself a C4 finding: the mesh point-samples the field, so refining moves the sample
+/// itself an empirical finding: the mesh point-samples the field, so refining moves the sample
 /// points rather than averaging over them, and a summit that one grid straddles the
 /// next can straddle almost as badly. On the Monterey fixture the max goes 29.3 → 24.5
 /// → 25.4 m while the RMS goes 3.4 → 2.0 → 1.1 m.

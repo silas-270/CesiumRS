@@ -1,14 +1,14 @@
-//! Headless captures for Phase C of `docs/terrain-plan.md` §6 — relief, on and off —
-//! and, since D3, for §3.3's occlusion march as well.
+//! Headless captures for terrain relief, on and off — and for the terrain occlusion
+//! march as well.
 //!
-//! AGENTS.md requires that anything touching rendering or geometry be checked with
-//! the headless path and *looked at*. Phase C changes every vertex of every tile, so
+//! Anything touching rendering or geometry has to be checked with
+//! the headless path and *looked at*. Terrain relief changes every vertex of every tile, so
 //! it qualifies: the numbers in `terrain::test_heightfield` say the heights and the
 //! normals are right, and only a picture says whether the globe looks like a globe.
 //!
-//! Each pose is captured **three times** — terrain off, terrain on with D1+D2 only, and
-//! terrain on with D3 as well — with nothing else different, so the set is a controlled
-//! comparison rather than three screenshots. The third shot is where D3 is *looked at*
+//! Each pose is captured **three times** — terrain off, terrain on with height-aware bounds and the relief-aware horizon test only, and
+//! terrain on with terrain occlusion as well — with nothing else different, so the set is a controlled
+//! comparison rather than three screenshots. The third shot is where terrain occlusion is *looked at*
 //! rather than counted: a piece of ground that vanishes between the second and the third
 //! is a false negative, and no tile-count table can see it.
 //!
@@ -88,10 +88,10 @@ pub(crate) fn oblique(
 
 fn poses() -> Vec<Pose> {
     vec![
-        // **The D3 pose.** Down on the Inn valley floor at 900 m, looking north into the
-        // Karwendel wall 15 km away — the regime `docs/terrain-plan.md` §3.3 says the
+        // **The occlusion pose.** Down on the Inn valley floor at 900 m, looking north into the
+        // Karwendel wall 15 km away — the regime where the
         // occlusion march is the difference between drawing a mountain range and drawing
-        // everything behind it too. The other four are Phase C/D1 poses and are kept as
+        // everything behind it too. The other four are earlier poses and are kept as
         // they are, because their numbers are quoted.
         oblique(
             "alps_inn_valley",
@@ -133,7 +133,7 @@ fn poses() -> Vec<Pose> {
             0.30,
             "the Everest massif from 11 km, 70 km south",
         ),
-        // High and wide: where the limb enters the frame and Phase C's still-flat
+        // High and wide: where the limb enters the frame and still-flat
         // culling has to be looked at rather than measured.
         oblique(
             "himalaya_limb_400km",
@@ -150,12 +150,12 @@ fn poses() -> Vec<Pose> {
 fn config(terrain: bool, occlusion: bool) -> TileEngineConfig {
     TileEngineConfig {
         // Satellite imagery: relief against a dark vector basemap is legible only in
-        // silhouette, and half of what C2 changes is the shading.
+        // silhouette, and half of what normal generation changes is the shading.
         base_imagery_url: satellite_imagery_url(),
         offline_mode: false,
         transparent_background: true,
         target_texel_ratio: 1.0,
-        // The shipping default. C4 measures 32 and 64; it does not adopt them, and a
+        // The shipping default. Experiments measured 32 and 64; they did not adopt them, and a
         // capture at a density the engine does not ship would not show what ships.
         mesh_segments: 16,
         terrain: TerrainConfig {
@@ -178,7 +178,7 @@ fn config(terrain: bool, occlusion: bool) -> TileEngineConfig {
 /// the quadtree's *visible* set — not the fallback parents `get_renderable_tiles` also
 /// draws, and not the height fetches still in flight behind a deferred mesh. With
 /// terrain on it therefore captured a frame whose whole near field had no geometry yet.
-/// The fix belongs here rather than in the shared helper, which the Phase A capture
+/// The fix belongs here rather than in the shared helper, which the initial capture
 /// poses are pinned against.
 ///
 /// Settles on three conditions at once — no missing meshes, nothing loading anywhere
@@ -211,7 +211,8 @@ pub(crate) async fn render_settled(
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let mut quiet = 0;
-    let mut visible = state.update_logic(aspect, view_proj).len();
+    state.update_logic(aspect, view_proj);
+    let mut visible;
     loop {
         state
             .tile_system

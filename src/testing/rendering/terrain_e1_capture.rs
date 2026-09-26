@@ -1,17 +1,17 @@
-//! **E1's picture** — the geometric LOD term, photographed (`docs/terrain-plan.md` §8).
+//! **The geometric LOD term**, photographed.
 //!
-//! E1a's claim is one sentence: *at the same on-screen size, rugged ground refines and
+//! The claim is one sentence: *at the same on-screen size, rugged ground refines and
 //! flat ground does not.* `testing::terrain::test_terrain_lod` asserts it on synthetic
 //! fields and counts it on real ones, and neither of those is a picture. This is the
 //! picture.
 //!
 //! Three poses, each rendered **twice** with nothing different but
-//! `TerrainConfig::max_geometric_error_px` — `0.0` is the pre-E1 engine, refining on
+//! `TerrainConfig::max_geometric_error_px` — `0.0` refines on
 //! imagery sharpness alone; the shipped `12.0` adds the geometric half of the threshold:
 //!
 //! | pose | what it has to show |
 //! |---|---|
-//! | `e1_po_plain_to_alps` | **the controlled pair, in one frame.** The Po plain fills the foreground and the Alps stand on the horizon behind it, at the same altitude, in the same shot, under the same camera. If E1a works, the extra tiles land on the mountains and not on the plain. |
+//! | `e1_po_plain_to_alps` | **the controlled pair, in one frame.** The Po plain fills the foreground and the Alps stand on the horizon behind it, at the same altitude, in the same shot, under the same camera. If the geometric term works, the extra tiles land on the mountains and not on the plain. |
 //! | `e1_alps_inn_valley` | rugged ground alone: the Karwendel wall, before and after. |
 //! | `e1_bengal_flat` | the control: a flat delta coast at the same altitude and pitch, where the term must cost close to nothing. |
 //!
@@ -54,7 +54,7 @@ fn poses() -> Vec<Pose> {
             1.2,
             "flat plain in front, Alps behind — the extra tiles must land on the Alps",
         ),
-        // Rugged ground on its own, at the pose §7b and §7c both quote.
+        // Rugged ground on its own, at the quoted Alpine pose.
         oblique(
             "e1_alps_inn_valley",
             11.40,
@@ -67,7 +67,7 @@ fn poses() -> Vec<Pose> {
         // The control. The Ganges delta at the same altitude and pitch as the Po pose:
         // `test_terrain_lod`'s level table measures this region at **0 m** of error at
         // every level from z7 down, so the term has nothing to ask for and the shot must
-        // cost what the pre-E1 one cost.
+        // cost what the flat one cost.
         oblique(
             "e1_bengal_flat",
             88.50,
@@ -80,9 +80,9 @@ fn poses() -> Vec<Pose> {
     ]
 }
 
-/// `terrain_capture::config`'s terrain-on configuration with E1's knob as the variable.
+/// `terrain_capture::config`'s terrain-on configuration with the geometric LOD knob as the variable.
 ///
-/// D3 is left **on** throughout, unlike `terrain_capture`'s three-shot ladder: this
+/// Terrain occlusion is left **on** throughout, unlike `terrain_capture`'s three-shot ladder: this
 /// comparison is about `apply_lod`, and holding every culling stage fixed is what makes
 /// the tile-count delta readable as refinement rather than as culling.
 fn config(max_geometric_error_px: f32) -> TileEngineConfig {

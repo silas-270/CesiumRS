@@ -1,7 +1,7 @@
 //! Headless captures for visual verification of the culling rework.
 //!
-//! AGENTS.md requires that anything touching rendering, geometry or camera
-//! positioning be checked with the headless path and *looked at*. Culling decides
+//! Anything touching rendering, geometry or camera
+//! positioning has to be checked with the headless path and *looked at*. Culling decides
 //! which tiles exist, so it qualifies twice over: a false negative is a hole in the
 //! globe and a false positive is over-draw, and neither shows up in a number.
 //!

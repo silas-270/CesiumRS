@@ -1,5 +1,5 @@
 //! Headless visual check for the terrain's aerial haze across the whole zoom
-//! range — per `AGENTS.md`, anything touching rendering gets a headless capture
+//! range — anything touching rendering gets a headless capture
 //! before it is called done. Not an assertion — it writes PNGs for a human (or a
 //! model) to look at, same idiom as `light_audit.rs` and `fog_capture.rs`.
 //!
@@ -20,7 +20,7 @@ use crate::testing::culling::cameras::{build_camera, ViewParams};
 
 /// The flat globe these captures were recorded against.
 ///
-/// **Section 9 F4 flipped `TerrainConfig::enabled` on by default**, and this is an
+/// **`TerrainConfig::enabled` is on by default**, and this is an
 /// instrument whose committed baseline predates it: it measures atmospheric haze against a known globe, not relief, and a
 /// surface that moved under it would make every future comparison two changes wide. The
 /// config is therefore stated rather than inherited — the same rule the LOD harness and

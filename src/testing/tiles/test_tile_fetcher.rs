@@ -3,8 +3,6 @@ mod tests {
     use cesium_engine::globe::quadtree::TileId;
     use cesium_engine::globe::tiles::config::standard_imagery_url;
     use cesium_engine::globe::tiles::tile_fetcher::{TileFetcher, TilePriority};
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     #[test]
     fn test_priority_ordering() {

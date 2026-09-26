@@ -12,7 +12,6 @@ fn test_all_altitudes() {
         let mut cam = Camera::new(Vec3::new(0.0, 0.0, z), Vec3::ZERO);
         cam.set_local_transform(Vec3::new(0.0, 0.0, z), Quat::IDENTITY);
 
-        let aspect_ratio = 16.0 / 9.0;
         let aspect = 1920.0 / 1080.0;
         let frustum_planes = cam.calculate_frustum_planes(aspect);
         let (global_pos_dvec, _) = cam.global_transform_f64();

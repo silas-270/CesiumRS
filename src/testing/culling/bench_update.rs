@@ -22,7 +22,7 @@ use super::cells;
 /// latitudes) plus the zoom-cliff ladder (deepest zoom 11 through 20).
 ///
 /// `pub(crate)` so `testing::lod` can measure the same 204 poses instead of
-/// inventing its own — see `docs/pre-terrain-plan.md` WP1.
+/// inventing its own.
 pub(crate) fn bench_cells() -> Vec<ViewParams> {
     let mut v = cells::nadir_ladder();
     v.extend(cells::zoom_cliff_cells());

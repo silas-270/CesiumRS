@@ -5,7 +5,7 @@
 //! sweep of camera angles, positions, altitudes and zoom levels. Where the engine
 //! is genuinely wrong, the harness records the number; it never works around it.
 //!
-//! Layout (one concern per file, per `AGENTS.md`):
+//! Layout (one concern per file):
 //!
 //! | file | concern |
 //! |------|---------|

@@ -1,44 +1,38 @@
 # Culling mathematics
 
-*Derivation document for the visibility-culling rework. No production code is
-changed by this document; it is the specification an implementer works from.*
+*The derivations and proofs behind the globe's visibility culling.
+[culling-implementation.md](culling-implementation.md) describes what the code does, in
+execution order; this document proves why each test is sound, how tight it is, and where
+each tolerance comes from.*
 
-For what the code ultimately *does* — the frames, the per-node test sequence in
-execution order, the invariants as operational rules — see the companion
-`docs/culling-implementation.md`. This document is the derivation; that one is
-the implementation reference.
-
-Every claim below is either proved here or marked explicitly as an estimate.
-Numbers quoted as "measured" come either from the harness in
-`src/testing/culling/` (commit `da6573a`) or from throwaway numerical
-experiments run while writing this; the latter are reproduced as formulas so
-they can be re-derived rather than trusted.
+Every claim below is either proved here or marked explicitly as an estimate. Numbers quoted
+as "measured" come from the culling harness in `src/testing/culling/` or from numerical
+experiments reproduced here as formulas, so they can be re-derived rather than trusted.
+Several sections analyse a natural design the engine does **not** use — six frustum planes,
+an absolute-frame evaluation, a per-box back-face test, a cross-product tangent frame, a
+spherical-cap horizon point — because the reason each is wrong is the reason the engine's
+test has the shape it has.
 
 ---
 
-## 0. Executive summary — what held, what did not
+## 0. Summary
 
-| Hypothesis (from the brief) | Verdict |
+| Result | Where |
 |---|---|
-| Plane index 5 is really near, index 4 is degenerate, far is never enforced | **Confirmed, exactly.** Index 4's plane sits `fn/(f−2n)` *behind* the eye; predicted clearance 2.8557 Mm, measured 2.8557 Mm. |
-| Culling in a camera-relative frame is the central precision fix | **Confirmed.** Side planes get `d = 0` identically; f32 error drops from a distance-independent ~3 m floor to `1.5·10⁻⁷·D`, i.e. a *constant* 6·10⁻⁷ of a tile at every zoom. |
-| The 8.07° limb false negatives come from `compute_horizon_culling_point` (4-corner reduction) | **REFUTED.** The 4-corner reduction is provably sound (§3.4). The 8.07° band comes from the **sub-OBB back-face heuristic** `normal·cam_to_center > −max_extent` at `quadtree.rs:333`. Its margin is short by a factor `h = √(‖c‖²−1)`, making it unsound above **2 642 km** altitude. Simulating that one line reproduces **8.0760°** at 12 000 km against the harness's measured **8.0715°**. |
-| Back-face culling is subsumed by a correct horizon test | **Confirmed and proved** (§4): for a point on the ellipsoid, `n̂(p)·(cam−p)` and `q·c − 1` are the *same expression* up to a positive factor. |
-| Tracking-at-5 m returning 0 tiles is a znear/zfar conditioning failure | **Confirmed and localised.** The real near plane rejects the z=17 ancestor (signed distance −0.48 m against a projected radius 0.30 m) purely from f32 cancellation; killing z17 kills z18–20 and the branch returns nothing. |
-| The plane-only SAT over-reports | Confirmed; measured 10.1 % here on the reference frustum. A 3-axis box-slab test cuts it to **2.1 %**. |
-| The `east = Y × n` basis guard is dead | **Confirmed for near-polar, refuted for exactly-polar** — and the exactly-polar fallback is the *unsound* branch, not the dead one (§6). |
-| 8×8 sub-OBBs for z ≤ 16 | **Refuted as a criterion.** Derived requirement: subdivision is needed only for **z ≤ 4**, with k(z) = 8, 4, 2, 1. For 5 ≤ z ≤ 16 the 64 boxes per node are pure waste. |
+| Under wgpu's clip volume and reverse-Z, an OpenGL-style six-plane extraction gets both depth planes wrong: its "near" plane lies `fn/(f−2n)` *behind* the eye, and the real far plane is missing. Predicted clearance on the reference camera 2.8557 Mm; measured 2.8557 Mm. | §2.2 |
+| Tile culling needs only the four side planes. Far is vacuous for the globe; near is vacuous above a few metres and harmful below. | §2.6 |
+| In a frame centred on the eye the side planes have `d = 0` exactly, and the f32 plane error falls from a distance-independent ~3 m floor to `1.5·10⁻⁷·D`, a constant 6·10⁻⁷ of a tile at every zoom. | §2.5 |
+| For a point on the ellipsoid, occlusion collapses to the linear inequality `q·c ≤ 1` in scaled space, whose supremum over a tile has a ~25-flop closed form: the horizon test is **exact** (zero FN and zero FP) on zero relief. | §3.3–§3.5 |
+| With relief the collapse is unsound; the cone test on a scaled-space bounding sphere is exact for the sphere. | §3.7 |
+| Back-face culling is the same inequality up to a positive factor, so it adds nothing. The margin-based per-box form of it is unsound above 2 642 km, and reproduces a measured 8.07° band of limb false negatives to four digits. | §4 |
+| The four planes are an incomplete separating-axis set. With near and far dropped, the frustum is a four-edged pyramid and the complete set is 19 axes; with a vertex witness in front, the exact test costs about +1.6 µs per update. | §5, §13 |
+| A tangent frame built as `Y × n` has an unsound branch at the pole; the analytic frame has none. | §6 |
+| The sagitta argument says sub-boxes are needed only for z ≤ 4; the measured need is a taper to z = 7, because sub-boxes buy the gap between patch and box, not the sagitta. | §7, §12.2, §13 |
 
-Headline consequences:
-
-* **Delete** `compute_horizon_culling_point`, `horizon_culling_point`, the
-  sub-OBB back-face test, the far plane, the near plane, and `tight_obbs` for
-  z ≥ 5.
-* **Replace** the horizon test with a 25-flop closed form that is *exact*
-  (zero FN **and** zero FP for the horizon stage on zero-relief terrain).
-* **Translate** the whole frustum stage into the camera-relative frame.
-* Net per-tile cost for a z ≤ 16 node drops by roughly **40×** (the 64-box loop
-  disappears), and per-node memory by roughly **30×**.
+With all of it in place the culling harness measures **zero** false negatives over every
+sweep (1.08·10⁹ visible samples in the 100 000-cell fuzz sweep alone) and 2.05 % false
+positives, against 5.39 % false positives and 286 176 false negatives for a culler built
+from the rejected alternatives (§13.4).
 
 ---
 
@@ -59,9 +53,10 @@ ECEF is **Y-up with negated Z**:
 p(λ, φ) = ( a·cos φ·cos λ ,  b·sin φ ,  −a·cos φ·sin λ )
 ```
 
-with λ longitude and φ geodetic latitude. Note `b` appears as `6.356_752_4_f32`
-in `bounding_volume.rs` — an f32 literal that differs from the f64 constant by
-8.6·10⁻⁸ Mm = 8.6 cm. Harmless, but see invariant **I-5**.
+with λ longitude and φ the engine's tiling latitude (the angle that names a Web
+Mercator row; see [architecture.md](architecture.md#units-and-frames)). The f32 twin
+`EARTH_RADIUS_B_F32 = 6.356_752_4` differs from the f64 constant by 8.6·10⁻⁸ Mm = 8.6 cm;
+the culling path reads only the f64 constants (invariant **I-5**).
 
 The outward ellipsoid normal at any `p` (on or off the surface) is the
 normalised gradient of the implicit form:
@@ -103,8 +98,8 @@ Three facts about `T` that the whole of §3 rests on:
   rectangle `[λ₀,λ₁] × [φ₀,φ₁]`. This is the single most useful fact in the
   document.
 * **The third axis scales by `a`, not `b`.** Because the engine's ECEF is Y-up,
-  it is the *Y* component that carries `b`. `transform_to_scaled_space`
-  already does this correctly.
+  it is the *Y* component that carries `b`, and `transform_to_scaled_space` divides it by
+`b`.
 
 ### 1.3 The camera-relative frame
 
@@ -119,18 +114,16 @@ expressed in `Δ`. §2.3 proves why.
 
 ### 1.4 What the renderer actually draws
 
-`TileMesh::generate` (`globe/geometry.rs:90`) places every non-skirt vertex at
-**altitude exactly 0** on the ellipsoid, and every skirt vertex at altitude
-`−0.5/2^z` (radially *inward*). Terrain relief is parsed
-(`globe/terrain_parser.rs`) but is not applied to geometry. Therefore:
+For the flat surface model, `TileMesh::generate_on::<Ellipsoid>` (`globe/geometry.rs`)
+places every non-skirt vertex at **altitude exactly 0** on the ellipsoid, and every skirt
+vertex at altitude `−0.5/2^z` (radially *inward*). Therefore:
 
-> **Fact R.** Today the drawable surface of a tile is exactly the ellipsoid
-> patch `[λ₀,λ₁] × [φ₀,φ₁]`, plus a skirt that lies strictly *inside* the
-> ellipsoid.
+> **Fact R.** On the flat globe the drawable surface of a tile is exactly the ellipsoid
+> patch `[λ₀,λ₁] × [φ₀,φ₁]`, plus a skirt that lies strictly *inside* the ellipsoid.
 
-This licenses the strongest (and cheapest) form of the horizon test. §3.7 gives
-the general form to switch to the moment relief is turned on. This is
-invariant **I-1**.
+This licenses the strongest (and cheapest) form of the horizon test. It is invariant
+**I-1**. The terrain surface model (`Heightfield`) displaces vertices radially by the
+sampled relief and breaks Fact R; it uses the general form of §3.7 instead.
 
 ### 1.5 Tile bounds
 
@@ -143,10 +136,9 @@ if y == 0     : φ₁ = +90     (pole stretch)
 if y == n − 1 : φ₀ = −90     (pole stretch)
 ```
 
-`mercator_lat(y) = atan(sinh(π(1 − 2y/n)))`. The pole stretch is applied
-identically by `compute_bounding_volume` (`quadtree.rs:139-144`),
-`compute_geographic_corners` (`:260-265`) and `TileMesh::generate`
-(`geometry.rs:103-108`), so the culling patch and the drawn patch agree. That
+`mercator_lat(y) = atan(sinh(π(1 − 2y/n)))`. These four numbers, pole stretch included,
+come from one function, `tile_bounds` (`quadtree/tile_id.rs`), which both the culler and
+the mesh builder call, so the culling patch and the drawn patch agree bit for bit. That
 agreement is invariant **I-5**.
 
 Note that the mesh interpolates *in Mercator y*, not in latitude, and
@@ -168,7 +160,7 @@ provably invisible. Every section states the soundness argument in one line as
 
 `Camera::get_projection_matrix_f64` builds `P_rz = R · P` where
 `P = glam::DMat4::perspective_rh(fovy, aspect, n, f)` and `R` is the reverse-Z
-remap at `camera.rs:501-503`.
+remap in `Camera::get_projection_matrix_f64`.
 
 glam's `perspective_rh` is the **wgpu** convention (`z_ndc ∈ [0,1]`). Written as
 rows, with `r = f/(n−f) < 0`:
@@ -224,8 +216,9 @@ Each inequality rearranged to `π·p̃ ≥ 0` gives an **inward-pointing** plane
 | **Near**  | `r3 − r2` | `z_ndc ≤ 1` (reverse-Z: 1 **is** near) |
 | **Far**   | `r2`      | `z_ndc ≥ 0` (reverse-Z: 0 **is** far)  |
 
-`calculate_frustum_planes` (`camera.rs:519-526`) currently emits
-`[r3+r0, r3−r0, r3+r1, r3−r1, r3+r2, r3−r2]` labelled `[L,R,B,T,N,F]`. So:
+An extraction written for OpenGL's clip volume emits
+`[r3+r0, r3−r0, r3+r1, r3−r1, r3+r2, r3−r2]` labelled `[L,R,B,T,N,F]`. Under wgpu's
+clip volume with the reverse-Z remap:
 
 * index 5 (`r3 − r2`), labelled "Far", **is the near plane**;
 * index 4 (`r3 + r2`), labelled "Near", **is not a frustum plane at all**;
@@ -260,14 +253,13 @@ Write a plane as `(n, d)` with `n` not necessarily unit. Two tests appear later:
   against an absolute length, and the rounding tolerance of §2.5, which is
   expressed in metres. **Normalisation is required.**
 
-Recommendation: normalise once per frame anyway. It is 4 reciprocal square roots
-per frame, it makes the error analysis expressible in metres, and it keeps the
-label path correct. But do *not* let an implementer believe the OBB test needs
-it.
+The engine normalises once per frame anyway: it is 4 reciprocal square roots per frame,
+it makes the error analysis expressible in metres, and the label path needs it. The OBB
+test on its own would not.
 
 ### 2.4 Precision: the absolute frame is the disease
 
-The current path evaluates, in f32,
+Evaluated in the absolute frame, in f32,
 
 ```
 s = n·m + d ,      d = −n·cam
@@ -339,22 +331,22 @@ z = 20 near the ground: `3.0 m / 20 m ≈ 15 %` of the tile (the harness measure
 improvement of degree; it changes the error from scale-dependent to scale-free.
 
 **Prerequisite.** `Δ = m − cam` must be an f64 subtraction. That requires the
-tile's OBB centre to be stored in f64. This is invariant **I-2**. Today
-`QuadtreeNode::center` and `OrientedBoundingBox::center` are `Vec3`; the centre
-alone already carries ~0.5 m of construction error (see §2.7), which
-camera-relative arithmetic cannot undo.
+tile's OBB centre to be stored in f64. This is invariant **I-2**, and both
+`QuadtreeNode::center` and `OrientedBoundingBox::center` are `DVec3`: an f32 centre alone
+would already carry ~0.5 m of construction error (see §2.7), which camera-relative
+arithmetic cannot undo.
 
-**A caveat the implementer must know.** `Camera::local_pos` is `Vec3` (f32) and
+**A caveat.** `Camera::local_pos` is `Vec3` (f32) and
 in Free mode `anchor_pos = 0`, so the camera's *absolute* position is quantised
 to 0.48 m. This does **not** break camera-relative culling — the frustum and the
 tiles are both referred to the same f64 value returned by
 `global_transform_f64()`, so the culling problem is internally consistent, and
 the harness's oracle uses that same value. It does mean "5 m altitude in Free
-mode" is a position known only to ±0.48 m. Out of scope here; listed in §11.
+mode" is a position known only to ±0.48 m (§11.3).
 
 ### 2.6 Should tile culling use near and far at all? — No.
 
-**Far plane.** `zfar = ‖cam‖ + 10` (`camera.rs:464, 491`). For any point `p` on
+**Far plane.** `zfar = ‖cam‖ + 10` (`Camera::get_projection_matrix`). For any point `p` on
 the ellipsoid, `‖p − cam‖ ≤ ‖cam‖ + ‖p‖ ≤ ‖cam‖ + a = ‖cam‖ + 6.378 < zfar`.
 So **no ellipsoid point is ever beyond the far plane**, and the far plane can
 never reject a tile. Adding it back is exactly neutral: 0 FN change, 0 FP
@@ -368,7 +360,8 @@ points. Therefore:
 
 > If `znear < alt`, the near plane provably rejects nothing.
 
-* **Free**: `znear = clamp(0.1·alt, 10⁻⁷, 10)`. For `alt > 10⁻⁶ Mm = 1 m`,
+* **Free**: `znear = clamp(0.1·alt, 10⁻⁷, 10)`, with `alt` the height above the ground
+  under the eye (the ellipsoid when terrain is off). For `alt > 10⁻⁶ Mm = 1 m`,
   `znear = 0.1·alt < alt`. Vacuous.
 * **Cockpit**: `znear = 5·10⁻⁸ Mm = 5 cm`. Vacuous for any aircraft.
 * **Tracking**: `znear = clamp(0.05·‖local_pos‖, 10⁻⁸, 5·10⁻⁶)`, i.e. **≤ 5 m**,
@@ -396,10 +389,10 @@ For the far plane the addition is provably zero; for the near plane it is at
 most the set of tiles entirely within `znear` of the eye, which are exactly the
 tiles that near clipping discards anyway.
 
-### 2.7 The Tracking-at-5 m failure, localised
+### 2.7 What the near plane does at 5 m
 
-Reproduced numerically (f32 arithmetic throughout, engine algorithms
-transcribed) for the harness cell `lat −12.7, lon 147.564, alt 5 m, nadir,
+Evaluated numerically for a six-plane culler in the absolute frame (f32 arithmetic
+throughout) at the harness cell `lat −12.7, lon 147.564, alt 5 m, nadir,
 Tracking`, walking the ancestor chain of the tile under the camera:
 
 ```
@@ -415,14 +408,14 @@ signed distance is 0.058 m: eleven orders of magnitude below the 6.378 Mm
 operands it is computed from. The f32 result is noise at the ±0.5 m level, and
 here the noise lands at −0.48 m against a projected radius of 0.30 m.
 
-`QuadtreeNode::update` sets `children = None` on a cull, so killing z = 17 kills
-z = 18–20. The branch contributes nothing and `collect_visible_tiles` returns
-zero (or, for a different roll, one surviving stale tile). This is exactly the
-harness's "0–1 tiles for a screen full of ground", and the roll dependence
+`QuadtreeNode::update` sets `children = None` on a cull, so killing z = 17 kills z = 18–20.
+The branch contributes nothing and `collect_visible_tiles` returns zero (or, for a different
+roll, one surviving stale tile): 0–1 tiles for a screen full of ground, which is what the
+harness measures for such a culler, and the roll dependence
 follows from the roll changing which of the four z17 children is tested first
 against which plane.
 
-The two fixes are independent and either one suffices:
+Two remedies, independent, either one sufficient:
 
 1. **Camera-relative** (§2.5). The same quantity computed as `n·Δ − znear` with
    `Δ` from an f64 subtraction gives `−0.2686 m` exactly (the residual −0.27 m
@@ -432,8 +425,8 @@ The two fixes are independent and either one suffices:
 
 Note that even the exact answer at z = 17 is `−0.27 m` against `r = 0.30 m` —
 a 10 % margin, and `r` here is itself f32 noise in the box's normal extent.
-Being 10 % from a cliff edge is not a design; **fix 2 is the robust answer and
-fix 1 is needed anyway** for the side planes.
+Being 10 % from a cliff edge is not a design; **remedy 2 is the robust answer and remedy
+1 is needed anyway** for the side planes. The engine does both.
 
 ### 2.8 Statement of the frustum test
 
@@ -445,8 +438,8 @@ M   = P_rz · V                              (f64)
 for each: n = normalize(π.xyz)  (f64), then downcast n to f32, set d := 0
 ```
 
-Per node, for each candidate box `(m, h₀, h₁, h₂)` (the node's OBB, or its
-sub-boxes for z ≤ 4):
+Per node, for each candidate box `(m, h₀, h₁, h₂)` (the node's OBB, or its sub-boxes;
+§7, §12, §13):
 
 ```
 Δ  = f32( m_f64 − cam_f64 )                 (f64 subtract, then downcast)
@@ -462,11 +455,11 @@ with the **derived** tolerance from (2.2)
 ε = 8u·( ‖Δ‖ + ‖h₀‖ + ‖h₁‖ + ‖h₂‖ ) ,   u = 2⁻²⁴                          (2.4)
 ```
 
-In practice `‖Δ‖ ≤ 4r₁` at any leaf (§2.5), so
-`ε ≈ 2.4·10⁻⁶ · r₁` — a *relative* widening of the box by 2.4 ppm. An
-implementer may hard-code `ε = 2⁻¹⁸ · (‖Δ‖₁ + Σ‖h_j‖₁)`; that is 4× (2.4) and
-still invisible. This is a derived tolerance, not a fudge: it is the f32
-rounding bound of the expression being evaluated.
+In practice `‖Δ‖ ≤ 4r₁` at any leaf (§2.5), so `ε ≈ 2.4·10⁻⁶ · r₁` — a *relative*
+widening of the box by 2.4 ppm. The implementation evaluates (2.4) with L1 norms in place
+of L2 (`8u · (‖Δ‖₁ + Σ‖h_j‖₁)`, `bounding_volume.rs`), which is larger and therefore still
+conservative. This is a derived tolerance, not a fudge: it is the f32 rounding bound of the
+expression being evaluated.
 
 **Soundness.** The box `B` is rejected only when
 `sup_{p∈B} (n·(p − cam)) < 0`, i.e. `B` lies strictly in the open half-space
@@ -475,8 +468,7 @@ outside one frustum plane, which is disjoint from the frustum. Hence
 
 **Cost.** Per plane: 3 mul + 2 add (`n·Δ`), 9 mul + 6 add (`n·h_j`), 3 abs,
 3 add ⇒ 12 mul, 11 add. Four planes with early-out: worst case **48 mul, 44
-add ≈ 92 flops** per box. Current 6-plane version: 138 flops. Paid per frame per
-node.
+add ≈ 92 flops** per box, against 138 for six planes. Paid per frame per node.
 
 ---
 
@@ -519,20 +511,21 @@ the forward shadow. ∎
 
 `s > h² ≥ 0` makes `s > 0`, so squaring in condition 2 is safe and no division
 is needed. (Cesium's `EllipsoidalOccluder` is (3.1) with the division left in;
-the port in `bounding_volume.rs:76` and `label/culling.rs:6` is faithful to it.)
+`horizon::point_is_occluded` is (3.1) without it.)
 
 **Branch `C ≤ 1` (camera at or below the surface).** Then `h² ≤ 0` and (3.1)
 degenerates: `s² > h²·‖v‖²` is vacuously true for `h² < 0`, so *everything* is
-reported occluded. This is the bug behind `vh_mag_sq > -0.1`: the guard band
-`h² > −0.1` corresponds to `C > 0.9487`, i.e. the camera up to
-`0.0513 · 6378 km ≈ 327 km` **below** the surface — and inside that band the
-test is applied and is garbage.
+reported occluded. A guard band such as `h² > −0.1` (`vh_mag_sq > −0.1` in a port of
+the division form) corresponds to `C > 0.9487`, i.e. the camera up to
+`0.0513 · 6378 km ≈ 327 km` **below** the surface — and inside that band the test is
+applied and is garbage.
 
 The geometrically correct answer for `C ≤ 1` is that the horizon test must be
 **skipped** (cull nothing). From a point on or inside the sphere there is no
 useful polar plane; the limit `C → 1⁺` shrinks the visible cap to a point, which
 is correct but useless and numerically unusable. The branch must be
-`if C² > 1 { … } else { keep }`, with no band.
+`if C² > 1 { … } else { keep }`, with no band. (For points **on** the surface there is a
+stronger statement: §13.3.)
 
 ### 3.2 Exact occlusion of a convex set
 
@@ -652,7 +645,7 @@ direction `(c_x, −c_z)` lies in the wedge spanned by `(cos λ₀, sin λ₀)` 
 tests. (All tiles at z ≥ 1 have arc width ≤ 180°.)
 
 **Cost.** ≈ 25 flops, one `sqrt` in the interior branch, **no transcendentals**,
-per node per frame. Storage: 8 f64 (or 8 f32; see §3.6) per node = 64 B.
+per node per frame. Storage: 8 f64 per node = 64 B (f64 by I-4).
 
 ### 3.5 Statement, soundness, tightness
 
@@ -660,6 +653,8 @@ per node per frame. Storage: 8 f64 (or 8 f32; see §3.6) per node = 64 B.
 per frame:   c = T(cam_f64) ;  C2 = c·c
              horizon_active = (C2 > 1)
 per node:    if horizon_active and S(tile) ≤ 1 − ε_h :  cull
+             (the tile test drops `horizon_active`, §13.3, and adds 10⁻⁹ of
+              bounds slack to ε_h, I-5)
 ```
 
 **Soundness.** If `S ≤ 1` then every point `p` of the drawn patch satisfies
@@ -681,8 +676,8 @@ magnitude ≤ `C`; its rounding error is `≤ 8u₆₄·C` with `u₆₄ = 1.11�
 ```
 
 Converted to a limb angle: a point with `q·c = 1 + δ` has
-`facing_cos ≈ δ/h`, so the angular uncertainty is `ε_h/h`. At the engine's
-2 mm surface clamp (`h = 2.5·10⁻⁵`) that is `3.6·10⁻¹¹ rad ≈ 0.23 µm` of ground.
+`facing_cos ≈ δ/h`, so the angular uncertainty is `ε_h/h`. Even 2 mm above the surface
+(`h = 2.5·10⁻⁵`) that is `3.6·10⁻¹¹ rad ≈ 0.23 µm` of ground.
 The test is well-conditioned everywhere `C > 1`.
 
 **Do not do this in f32.** In f32 the error in `S` is `≈ 1.2·10⁻⁷`, giving an
@@ -691,11 +686,11 @@ angular uncertainty `1.2·10⁻⁷/h`: at 400 km altitude that is 2 m of ground
 **26 km of ground**. Since the whole test is 25 flops, run it in f64
 unconditionally. This is invariant **I-4**.
 
-### 3.6 Why the current `compute_horizon_culling_point` is *not* the bug
+### 3.6 The spherical-cap reduction is sound but loose
 
-The 4-corner reduction was the brief's prime suspect. It is sound, and this
-matters because deleting it for the wrong reason would leave the real defect in
-place.
+Cesium reduces a tile to a single horizon-culling point built from its four corners. The
+reduction is sound, which matters because an unsound horizon test is the obvious suspect
+for limb false negatives, and the real cause lies elsewhere (§4.1).
 
 Cesium's construction replaces the tile by the **spherical cap** of angular
 radius `α_max = max over the corners of angle(q_i, d̂)`, where `d̂` is the
@@ -728,11 +723,11 @@ of all exactly-occluded tiles):
 | 8 700 km  | 15.4 % | 1.0 % | 0.3 % |
 | 20 000 km | 22.7 % | 2.0 % | 0.4 % |
 
-Replacing it with §3.4 removes all of that, at lower arithmetic cost
+The closed form of §3.4 removes all of that, at lower arithmetic cost
 (25 flops vs ~20 flops for the test plus the construction-time cap fit) and
 with 8 scalars stored instead of a `Option<Vec3>` plus a 4-corner array.
 
-### 3.7 When terrain relief arrives
+### 3.7 Terrain relief: the cone test
 
 Fact R fails the moment geometry leaves the surface, and with it Theorem 3.5(b):
 an elevated point can have `q·c < 1` and still be visible over the limb. The
@@ -768,21 +763,18 @@ Alternatively, use Corollary 3.3 on the 8 vertices of the scaled-space
 parallelepiped `T(OBB)` (note `T(OBB)` is a parallelepiped, not a box, but the
 vertex test does not care). That is exact for the box and costs ≈ 100 flops.
 
-**Recommendation:** implement §3.4 now; put Theorem 3.7 behind the same
-interface so that turning terrain on is a one-function change. Record invariant
-**I-1** loudly.
+Both forms sit behind one interface, `SurfaceModel::is_occluded`: `Ellipsoid` runs §3.4's
+exact rectangle supremum and `Heightfield` runs Theorem 3.7 (`horizon::sphere_is_occluded`).
+Invariant **I-1** is what decides which a surface model may use.
 
-#### Implemented — Phase D2, and three notes from doing it
-
-`horizon::sphere_is_occluded`, dispatched through `SurfaceModel::is_occluded`;
-`Ellipsoid` still runs §3.4's exact rectangle supremum and is untouched.
+#### Implementation notes
 
 1. **The sphere is fitted from the node's OBB, not from a sampled patch.** `T` is
    linear, so `T(obb)` is the parallelepiped spanned by the three transformed
    half-axes and its convex hull is the eight sign combinations of them. A sphere
    about `T(centre)` through the farthest of those eight contains `T(obb)`
    exactly, with no sampling argument to get wrong — and since `fit_obb` already
-   spans the node's `[h_min, h_max]` (D1), it contains the relief too. This also
+   spans the node's `[h_min, h_max]`, it contains the relief too. This also
    sidesteps the `ρ_real / b` conversion this section offers as the alternative,
    which is correct only because `b < a` and is the obvious thing for a later
    reader to "simplify" into `ρ_real / a`, i.e. into a sphere that does not
@@ -794,8 +786,8 @@ interface so that turning terrain on is a one-function change. Record invariant
    `span_is_occluded`, which deliberately has no such guard. The surface-point
    form `q·c ≤ 1` stays exact for an eye at or inside the surface (see that
    function's comment); the cone form does not — `h² < 0` makes the third line
-   vacuously true and reports the whole globe occluded, which is §3.1's
-   `vh_mag_sq > -0.1` bug in a new place.
+   vacuously true and reports the whole globe occluded — §3.1's guard-band failure in
+another form.
 
 Checked by `testing::terrain::test_terrain_visibility`: 72 000 points confirm the
 `ρ = 0` reduction to Theorem 3.1, and 11 017 spheres that the test culls contain
@@ -803,7 +795,8 @@ no point the exact point test calls visible.
 
 ### 3.8 The exact point test, for labels
 
-`label/culling.rs::is_behind_horizon` should become, for a label at ECEF `p`:
+`label/culling.rs::is_behind_horizon` is, through `horizon::point_is_occluded`, for a
+label at ECEF `p`:
 
 ```
 q = T(p) ;  s = C² − q·c ;  v = q − c
@@ -817,9 +810,9 @@ the full two-condition test is required; the §3.4 collapse does not apply.
 
 ---
 
-## 4. Back-face culling — delete it
+## 4. Back-face culling is subsumed
 
-**Claim (hypothesis 4).** On a convex ellipsoid, a surface patch is back-facing
+**Claim.** On a convex ellipsoid, a surface patch is back-facing
 iff it is below the horizon, so a correct horizon test subsumes back-face
 culling.
 
@@ -827,24 +820,16 @@ culling.
 positive factor `1/‖g(p)‖`, so they have the same sign, pointwise. A patch is
 entirely back-facing iff `max q·c ≤ 1` iff it is entirely below the horizon. ∎
 
-**So the back-face test at `quadtree.rs:326-336` can be deleted outright.**
-And it must be, because it is the engine's dominant false-negative source.
+**So a separate back-face test adds nothing.** The margin-based per-box form of it that an
+implementation reaches for is worse than redundant: it is unsound (§4.1).
 
-### 4.0 The claim above depends on Fact R, and Phase C ended Fact R
+### 4.0 The claim above depends on Fact R, and terrain relief ended Fact R
 
-*(Corrected in Phase D2 of `docs/terrain-plan.md`. The paragraph this replaces
-asserted that elevation breaks the equivalence "in exactly one direction", that
-with relief "below the horizon ⊊ back-facing", and offered as evidence that an
-elevated point "can be front-facing relative to its own base normal and still
-visible over the limb" — which is not a failure of anything, front-facing and
-visible being perfectly consistent. The deletion stays correct; its reason does
-not, and the reason is what the next reader will build on.)*
-
-Hypothesis 4 is a statement about points **on** the ellipsoid, because Theorem
-3.4 is. Once `TileMesh` displaces vertices radially (Phase C) it stops applying,
+The claim is a statement about points **on** the ellipsoid, because Theorem
+3.4 is. Once `TileMesh` displaces vertices radially (terrain relief) it stops applying,
 and it fails in **both** directions, not one.
 
-**Direction 1 — the base normal, which is what the deleted code used.** For a
+**Direction 1 — the base normal, which is what a node-level test uses.** For a
 point `p = p₀ + a·n̂(p₀)` at altitude `a`,
 
 ```
@@ -869,17 +854,16 @@ back-facing  ⊆  occluded            for any watertight surface             (4.
 
 The inclusion is strict once there is relief — a front-facing slope behind a
 ridge is occluded and not back-facing — and collapses to equality exactly under
-Fact R, which is Hypothesis 4. So even in the favourable direction, back-face
+Fact R, which is the claim above. So even in the favourable direction, back-face
 culling can never prove anything a correct occlusion test would not: it is a
 subset of occlusion, never an addition to it. And a node-level test has one
 normal for a whole tile rather than one per facet, so it cannot evaluate (4.0′)
 in any case.
 
-**What survives.** The deletion, for three reasons that are each independently
-sufficient, and none of which is "relief makes it redundant":
+**Why the engine has no back-face test**, for three reasons that are each independently
+sufficient, none of which is "relief makes it redundant":
 
-1. At zero relief it is subsumed by the horizon test — Hypothesis 4, proved
-   above.
+1. At zero relief it is subsumed by the horizon test — the claim above, proved.
 2. Its margin is wrong by a factor of `h`, making it **unsound above 2 642 km**
    even at zero relief — §4.1.
 3. Its normal is f32 noise above z ≈ 13 — §4.2.
@@ -891,7 +875,7 @@ bounding sphere, and nothing in this document replaces that.
 
 ### 4.1 The sub-OBB back-face heuristic is unsound above 2 642 km
 
-The code is
+The heuristic is
 
 ```rust
 let normal = obb.half_axes[2].normalize_or_zero();
@@ -905,7 +889,7 @@ By (3.2), with `q_m = T(obb.center_on_surface)`,
 normal·(cam − centre)  =  ( q_m·c − 1 ) / ‖g‖ ≈ a·( q_m·c − 1 )
 ```
 
-so the code culls a sub-box iff
+so it culls a sub-box iff
 
 ```
 q_m·c  ≤  1 − max_extent / a  =  1 − θ                                    (4.1)
@@ -921,13 +905,13 @@ The **correct** condition is `max over the sub-patch of q·c ≤ 1`. Near the li
 Δ(q·c) ≈ C·sin ψ·θ = C·(h/C)·θ = h·θ ,        h = √(C² − 1)               (4.2)
 ```
 
-So the sound margin is `h·θ`, and the code uses `θ`. The heuristic is
+So the sound margin is `h·θ`, and the heuristic uses `θ`. The heuristic is
 
 ```
 sound   ⟺   h ≤ 1   ⟺   C ≤ √2   ⟺   altitude ≤ (√2 − 1)·a ≈ 2 642 km    (4.3)
 ```
 
-Above that, the code culls sub-boxes whose patch still has visible points, and
+Above that, it culls sub-boxes whose patch still has visible points, and
 the width of the wrongly-culled band, in limb angle, is
 
 ```
@@ -949,7 +933,8 @@ assumed to accept) over the harness's own limb-band camera set:
 | 20 000 km | 2.3297° | 10 | 4.013 | 0.751 |
 | 30 000 km | 1.5619° | 15 | 5.615 | 0.822 |
 
-The harness measures the band reaching **8.0715°**, at 12 000 km, widening with
+The culling harness, run on an implementation that used this heuristic, measures the band
+reaching **8.0715°**, at 12 000 km, widening with
 altitude, and viewport-shape independent. This model gives **8.0760°**, at
 12 000 km, widening with altitude, and it is viewport-independent by
 construction. The residual 0.5 % is f32 vs f64 and the frustum stage the model
@@ -972,9 +957,8 @@ and `ext_z` is the sub-patch's sagitta — 0.23 mm for a z = 16 sub-box (§7). I
 is computed as a difference of f32 quantities of magnitude 6.378 Mm, whose ulp
 is 0.477 m. So `ext_z` at high zoom is **pure f32 noise**, and when it rounds to
 exactly 0 the normal becomes `Vec3::ZERO`, `normal.dot(...) = 0 > −max_extent`
-is trivially true, and the test silently becomes a no-op. That failure mode is
-*conservative*, so it is not a hole — but it means the test's behaviour above
-z ≈ 13 is undefined in the literal sense. Deleting the test removes this too.
+is trivially true, and the test silently becomes a no-op. That failure mode is *conservative*, so it is not a hole — but it means the test's behaviour above z ≈ 13
+is undefined in the literal sense. Leaving the test out removes this too.
 
 ---
 
@@ -1011,8 +995,8 @@ bisectors of each corner and edge at 7 scales × 16 offsets):
 | test | over-reports | share |
 |---|---|---|
 | exact 27-axis SAT | 0 | 0 % |
-| 6 planes (current) | 62 | **10.1 %** |
-| 4 side planes only (proposed §2.6) | 76 | 12.4 % |
+| 6 planes | 62 | **10.1 %** |
+| 4 side planes only (§2.6) | 76 | 12.4 % |
 | 4 side planes + 3 box-axis slab test | 13 | **2.1 %** |
 | 6 planes + 3 box-axis slab test | 11 | 1.8 % |
 
@@ -1041,12 +1025,10 @@ a bonus, more than compensates for dropping the near and far planes.
 two hulls onto `u_j` are disjoint, the hulls are disjoint. Adding axes can only
 reject more, and every rejection is provable. FN stays 0. ∎
 
-**Recommendation.** Ship the 4 side planes first (it is the FN fix). Add the
-box-slab test as a second, independently-togglable stage once FN = 0 is
-confirmed, and measure the FP delta on `test_false_positive_rate_within_budget`
-and `test_fuzz_sweep_has_no_false_negatives`. It is ~170 flops for ~10 points of
-FP; whether that trade is worth it depends on how expensive a wasted tile is,
-which the profiler, not this document, should decide.
+On synthetic boxes this is ~170 flops for ~10 points of FP. On real tiles it is worth far
+less: tile boxes are tiny next to the frustum, and once the vertex witness and the
+edge-cross axes are in place (§13) it adds 0.01 points for 0.5 µs, so the engine keeps it
+compiled out (`slab::BOX_AXES_ENABLED`, §12.2).
 
 ### 5.3 A tighter bounding volume for the patch
 
@@ -1087,18 +1069,14 @@ span from one pole to the other). Hence the extrema are among the **four**
 combinations `φ ∈ {φ₀, φ₁} × cos Δλ ∈ {1, cos Δ}` — all of which are grid points
 of a 3×3 sample.
 
-**Consequence for the existing code.** A 3×3 sample grid over
+**Consequence.** A 3×3 sample grid over
 `{λ₀, λ_c, λ₁} × {φ₀, φ_c, φ₁}` captures *all three* extrema exactly:
 east from `(λ₀ or λ₁, φ endpoint)`, up-min from a corner, up-max from the
-centre, north from the four combinations above. So `compute_bounding_volume`'s
-`steps = 2` (a 3×3 grid) is **already mathematically sound**; its problems are
-f32 and, at z ≤ 4, looseness — not under-coverage. `steps = 8` for z < 5 adds
-nothing to soundness. This is worth stating because "the OBB does not contain
-the tile" would have been a far worse bug than the one that is actually there.
-
-**Recommendation:** keep the 3×3 sampling if that is simpler, but compute it in
-**f64** and store the centre in f64. Or use the closed forms above (cheaper and
-exact). Either is sound. Do **not** reduce to fewer than the 3×3 grid.
+centre, north from the four combinations above. So `fit_obb`'s 3×3 grid (`steps = 2`) is
+**exactly sound** on the sphere. The 9×9 grid it uses for z < 5 covers the ellipsoid's
+perturbation of the `up` axis at coarse zoom and adds nothing on the sphere. A box that
+did not contain its tile would be a hole; this one provably does. The sampling runs in
+**f64** and the centre is stored in f64 (I-2); fewer than 3×3 samples would be unsound.
 
 ### 5.4 The residual false-positive floor
 
@@ -1113,7 +1091,7 @@ is deliberately out of scope here.
 
 ## 6. The tangent-frame construction near the poles
 
-### 6.1 What the current code does
+### 6.1 The cross-product construction
 
 ```rust
 let mut east = Vec3::new(0.0, 1.0, 0.0).cross(normal).normalize_or_zero();
@@ -1124,8 +1102,7 @@ let north = normal.cross(east).normalize();
 `Y × n = (n_z, 0, −n_x)`, whose length is `√(n_x² + n_z²) = cos φ'` (with `φ'`
 the geocentric latitude of the normal). After `normalize_or_zero` the result has
 length **exactly 1 or exactly 0**, so `east.length_squared() < 0.1` can only be
-true in the `0` case — the guard is dead for every near-polar tile, exactly as
-the brief says.
+true in the `0` case — the guard is dead for every near-polar tile.
 
 Two distinct problems, with opposite severities:
 
@@ -1142,10 +1119,9 @@ Two distinct problems, with opposite severities:
   `(rel·east, rel·north, rel·up)` are *oblique*. Reconstructing
   `centre + east·off_x + north·off_y + up·off_z` and
   `half_axes = [east·ext_x, …]` is then **not** a bounding box of the samples:
-  the reconstructed box can fail to contain them. **That branch is unsound.**
-  It does not currently fire (no tile or sub-tile centre is exactly at ±90°,
-  because centres are midpoints of `[85.05°, 90°]`-type intervals), but it is a
-  loaded gun.
+  the reconstructed box can fail to contain them. **That branch is unsound.** It would not
+fire for a real tile (no tile or sub-tile centre is exactly at ±90°, because centres are
+midpoints of `[85.05°, 90°]`-type intervals), but it is a loaded gun.
 
 ### 6.2 The robust construction
 
@@ -1171,36 +1147,40 @@ north = normalize( up × east )
 
 At a pole `east` is an arbitrary but well-defined unit direction — which is
 exactly right, since "east" is genuinely undefined there and any orthonormal
-frame is an acceptable box frame.
+frame is an acceptable box frame. The engine uses (6.1) (`quadtree::tangent_frame`).
 
 **On Duff et al.'s branchless ONB** (`b1, b2` from `copysign`): it is
 numerically excellent and would also remove the degeneracy, but it produces a
 frame with no relation to the tile's lon/lat directions, so the resulting box is
-substantially looser for a lon/lat rectangle. Use (6.1) as the primary. Duff is
-the right tool only if a frame is needed from an arbitrary normal with no
+substantially looser for a lon/lat rectangle. Duff is the right tool only if a frame is needed from an arbitrary normal with no
 parametrisation available — which is not the case here.
 
 ### 6.3 The pole stretch
 
-`quadtree.rs:139-144` forces `lat_max = 90` for row `y = 0` and
-`lat_min = −90` for the bottom row. `TileMesh::generate` does the same
-(`geometry.rs:103-108`), so the culling patch and the drawn patch agree. Folding
-it into the above:
+`tile_bounds` forces `lat_max = 90` for row `y = 0` and `lat_min = −90` for the bottom
+row, and the mesh builder uses `tile_bounds`, so the culling patch and the drawn patch
+agree. Folding it into the above:
 
 * §3.4 handles `φ₁ = π/2` with no special case: `cos φ₁ = 0, sin φ₁ = 1`, so
   `g(φ₁) = c_y`. Correct — at the pole `q·c` is independent of longitude.
 * §5.3's `c_max` is unaffected (`cos φ` is still maximised at a row endpoint).
 * Lemma 3.6 holds (the "corners" of a polar row include the two collapsed
   pole points).
-* `lod_radius` is deliberately computed from the *un*-stretched bounds
-  (`quadtree.rs:171-183`). That makes polar rows subdivide *later* than their
-  true extent warrants (smaller `lod_radius` ⇒ smaller `subdivide_dist`), so the
-  polar caps stay coarse and their boxes stay loose. It is an FP source, not an
-  FN source, and it is a LOD decision — flagged in §8, not changed here.
+* `unstretched_radius`, the LOD radius, is deliberately computed from the *un*-stretched
+  bounds (`tile_bounds_unstretched`). That makes polar rows subdivide *later* than their
+  drawn extent would suggest (smaller radius ⇒ smaller `subdivide_dist`), so the polar caps
+  stay coarse and their boxes stay loose. It is an FP source, not an FN source, and it is a
+  LOD decision (§8).
 
 ---
 
-## 7. The z ≤ 16 cliff — deriving the subdivision criterion
+## 7. Sub-box subdivision: the sagitta criterion
+
+This section derives how finely a node's box must be subdivided from the box's
+**sagitta** — how far the box overhangs the curved patch. §12.2 shows that the sagitta is
+not what sub-boxes buy in practice, and the engine's per-zoom table is measured (§13); the
+derivation is kept because its numbers bound the question and its conclusion about deep
+zoom holds.
 
 ### 7.1 Sagitta as a function of zoom
 
@@ -1272,11 +1252,12 @@ k(z) = ceil( θ_max(z) / θ* )                                              (7.5
 | **0.16** | 14 | 7 | 4 | 2 | 1 | 1 |
 | 0.08 | 28 | 14 | 7 | 4 | 2 | 1 |
 
-**Therefore: sub-boxes are needed only for z ≤ 4.** For 5 ≤ z ≤ 16 the engine
-currently allocates 64 boxes per node to bound a patch whose sagitta is between
-61 km (z = 5) and 1.5 cm (z = 16) — and at z = 16 the sub-patch sagitta is
-0.23 mm, which is a factor 2000 *below* the f32 resolution of the quantities it
-is computed from (§4.2). It is not merely wasted; it is not even computable.
+**By this criterion, sub-boxes are needed only for z ≤ 4.** A flat 8×8 grid of sub-boxes
+on every node down to z16 would bound patches whose sagitta is between 61 km (z = 5) and
+1.5 cm (z = 16) — and at z = 16 the sub-patch sagitta is 0.23 mm, a factor 2000 *below* the
+f32 resolution of the quantities it is computed from (§4.2). It is not merely wasted; it is
+not even computable. (The measured table does use sub-boxes to z = 7 for a different reason,
+§12.2; below that it agrees with this conclusion.)
 
 Conversely, at z = 1 even 8×8 is not enough: `θ_max = 2.22 rad` is a patch
 covering most of a hemisphere, for which no box is a useful proxy.
@@ -1295,69 +1276,63 @@ mathematical one.
 
 **Option B — keep z = 1 roots, use the derived k(z).** Sub-boxes for z ≤ 4 only,
 with `k = 8, 4, 2, 1` (θ* = 0.30) or `14, 7, 4, 2` (θ* = 0.16). Globally that is
-`4·64 + 16·16 + 64·4 + 256·1 = 1024` sub-boxes (θ* = 0.30), allocated once at
-tree construction and never again. Compare today: **every** node with z ≤ 16
-allocates 64 boxes.
+`4·64 + 16·16 + 64·4 + 256·1 = 1024` sub-boxes (θ* = 0.30), allocated once at tree
+construction, against 64 for **every** node to z16 in a flat grid.
 
-**Recommendation: Option B**, because it changes nothing about draw counts and
-still deletes the z ≥ 5 machinery entirely. Option A is the cleaner code and
-should be revisited if high-altitude draw counts turn out not to matter.
+The engine takes **Option B**'s shape — roots stay at z = 1 and draw counts are unchanged —
+with the per-zoom counts measured rather than derived (§13).
 
 ### 7.4 Memory and cost delta
 
-Per node, today, for z ≤ 16: `Box<Vec<OrientedBoundingBox>>` with 64 entries ×
-48 B = 3 072 B plus `Vec` and `Box` overhead (the brief's ~4.6 kB).
+A flat 8×8 grid costs, per node to z16, a `Box<Vec<OrientedBoundingBox>>` of 64 × 48 B =
+3 072 B plus `Vec` and `Box` overhead, about 4.6 kB.
 
-Per node, proposed: OBB 48 B + f64 centre 24 B + 8 horizon scalars 64 B ≈
-**136 B**, with sub-boxes only at z ≤ 4.
+The derived design: OBB 48 B + f64 centre 24 B + 8 horizon scalars 64 B ≈ **136 B**, with
+sub-boxes only at z ≤ 4.
 
-Per-node per-frame flops, today (z ≤ 16, worst case):
-`20 (HCP) + 138 (6-plane on the loose OBB) + 64 × (138 + 10) ≈ 9 630`.
-Proposed: `25 (horizon) + 92 (4 planes) + 10 (LOD) ≈ 130`, plus 170 if the
-box-slab test is enabled. **≈ 40× cheaper** for the z ≤ 16 population, which is
-most of the tree.
+Per-node per-frame flops, worst case, for the flat grid with a cap-point horizon test:
+`20 (HCP) + 138 (6-plane on the loose OBB) + 64 × (138 + 10) ≈ 9 630`. For the derived
+design: `25 (horizon) + 92 (4 planes) + 10 (LOD) ≈ 130`, plus 170 if the box-slab test is
+enabled — **≈ 40× cheaper** for the z ≤ 16 population, which is most of the tree. The
+measured implementation, with its sub-box table and the exact separating axes, averages
+1 919 B per node and 6.7 µs per update over the 204 bench poses (§13.4).
 
 ---
 
-## 8. LOD couplings (flagged, not redesigned)
+## 8. LOD couplings
 
 1. **Cull-kills-subtree.** `QuadtreeNode::update` sets `children = None` on a
    cull, and `collect_visible_tiles` emits **leaves only**. So a wrong cull at
-   *any* ancestor removes an entire subtree. This is why the sub-OBB back-face
-   defect (§4.1) at z ≤ 16 produced holes at every zoom below it, and it is why
-   every test in the pipeline must be sound at every level, not just at the
-   leaves. The proposed tests are exact (§3) or provably conservative (§2.8,
-   §5.2) at every level, so soundness follows by induction over the tree.
+   *any* ancestor removes an entire subtree. That is why an unsound per-box test (§4.1)
+produces holes at every zoom below the node it fails at, and why every test in the
+pipeline must be sound at every level, not just at the leaves. The engine's tests are exact
+(§3) or provably conservative (§2.8, §5.2, §13) at every level, so soundness follows by
+induction over the tree.
 
-2. **`dist` in the absolute frame.** `dist = (self.center − camera_pos).length()`
-   with both operands f32 at 6.378 Mm has ~0.8 m of error. At z = 20
-   (`lod_radius ≈ 26 m`) that is 3 % of the subdivision threshold — swamped by
-   the 1.20 hysteresis band, so not a bug today, but it should be moved to the
-   camera-relative f64 subtraction with the rest (free, since `Δ` is computed
-   anyway).
+2. **`dist` is an f64 subtraction.** Computed from two f32 operands at 6.378 Mm it would
+   carry ~0.8 m of error — at z = 20 (`lod_radius ≈ 26 m`) 3 % of the subdivision
+   threshold, inside the 1.20 hysteresis band. `apply_lod` subtracts in f64, which is free
+   since the frame is camera-relative anyway.
 
 3. **Roots at z = 1, MAX_ZOOM = 20.** Option A in §7.3 changes the root level;
    nothing else here depends on it.
 
 4. **`lod_radius` uses un-stretched bounds** while the bounding volume uses
-   stretched ones (§6.3). Polar caps therefore stay coarse and loose: an FP
-   contribution, not an FN one. Leave it; note it.
+   stretched ones (§6.3). Polar caps therefore stay coarse and loose: an FP contribution,
+not an FN one. It is kept deliberately.
 
-5. **Still no screen-space error; the constant is now derived.** The LOD metric
-   remains **distance-based** — WP3 landed only its part 3b, and genuine
-   screen-space error is explicitly deferred (see the WP3 amendment in
-   `docs/pre-terrain-plan.md`). What changed is that the per-level threshold's
-   constant is no longer hand-picked: `lod_factor` is now
-   `quadtree::lod_factor_for(target_texel_ratio, texture_size, viewport_height,
-   fovy)`, calibrated to reproduce the old `2.0` exactly at the default config.
-   Nothing in this document depends on the LOD metric being distance-based, so
-   nothing here moves. If a real screen-space-error metric is introduced later,
-   §7.2's budget `θ*` should be re-derived against *its* target error rather
-   than against 5 % of screen height.
+5. **The LOD metric.** On the flat globe the metric is distance-based with a derived
+   constant, `lod_factor_for(target_texel_ratio, texture_size, viewport_height, fovy)`,
+   calibrated to exactly `2.0` at the default configuration: an imagery texel-density
+   target, because with zero relief there is no geometric error. With terrain the threshold
+   is the larger of that and a measured geometric screen-space error
+   ([tiles-and-lod.md](tiles-and-lod.md), [terrain.md](terrain.md)). Nothing in this
+   document depends on which metric is used; §7.2's budget `θ*` is expressed against 5 % of
+   screen height, and the sub-box table that replaced it is measured (§13).
 
 ---
 
-## 9. Consolidated proposed algorithm
+## 9. The algorithm
 
 ### 9.1 Per frame, once
 
@@ -1368,245 +1343,201 @@ r0..r3 = rows of M
 
 // four side planes, camera-relative: d ≡ 0 by construction
 for (raw) in [ r3+r0, r3−r0, r3+r1, r3−r1 ]:
-    n_f64 = normalize(raw.xyz)
-    plane[i] = Vec3::from(n_f64)                                 // f32, no offset
+    plane[i] = f32( normalize(raw.xyz) )                         // no offset
 
 // horizon constants, f64
 c   = ( cam.x/a , cam.y/b , cam.z/a )
-C2  = c·c
-horizon_active = C2 > 1.0
-rho = hypot(c.x, c.z)
+C2  = c·c ;  rho = hypot(c.x, c.z)
+eps = (8.9e-16 + 1e-9) · max(sqrt(C2), 1)
+active = C2 > 1.0                                                // point and sphere tests only
 
-// optional: 8 frustum corners for the box-slab test, camera-relative f32
-corners[k] = Vec3::from( unproject(ndc_k) − cam )                // f64 subtract
+// frustum corners, camera-relative (f64 subtract, then f32), and the four far-quad
+// directions as unit edge rays (f64)
 ```
 
-Deliberately **absent**: `znear`, `zfar`, plane indices 4 and 5.
+Deliberately **absent**: `znear`, `zfar`, and any depth plane.
 
 ### 9.2 Per node, in order
 
 ```
-1. HORIZON  (exact, f64, ~25 flops)                         [strongest, cheapest]
-   if horizon_active:
-       A* = (λ_c inside arc) ? rho : max( c.x·cosλ₀ − c.z·sinλ₀ ,
-                                          c.x·cosλ₁ − c.z·sinλ₁ )
-       S  = max over φ ∈ {φ₀, φ₁} of ( A*·cosφ + c_y·sinφ )
-       if g'(φ₀) > 0 and g'(φ₁) < 0 :  S = max(S, sqrt(A*² + c_y²))
-       if S ≤ 1 − 8.9e−16·sqrt(C2) :  cull, return
+1. HORIZON (exact, f64)
+   flat:    S = max over the rectangle of q·c   (§3.4, λ half then φ half)
+            if S ≤ 1 − eps : cull                // no `active` guard, §13.3
+   terrain: if active and sphere_in_shadow(T(box) sphere) : cull     // §3.7
 
-2. Δ = Vec3::from( node.center_f64 − cam )                  // f64 subtract, downcast
+1b. TERRAIN OCCLUSION (terrain only): cull if the box is below the frame's guaranteed ridge
 
-3. FRUSTUM  (4 side planes, camera-relative, ~92 flops)
-   candidates = (z ≤ 4) ? node.sub_boxes : [ node.obb ]
-   if no candidate passes all 4 planes :  cull, return
-       // per candidate, per plane:
-       //   s = n·(Δ + box_offset) ;  r = Σ|n·h_j|
-       //   reject if s + r < −ε      with ε from (2.4)
+2. Δ = f32( centre_f64 − cam )
 
-4. BOX-SLAB  (optional, ~170 flops, only for survivors)
-   for each box axis u_j:
-       project the 8 camera-relative frustum corners onto u_j
-       if the interval misses [−‖h_j‖, +‖h_j‖] :  cull, return
+3. FRUSTUM on the node's own box
+   circumsphere outside a plane           → cull
+   circumsphere inside all four            → keep
+   box outside a plane (s + Σ|n·h| < −ε)   → cull
+   box inside all four                     → keep
+   node has a sub-grid                     → go to 4 (straddling)
+   a box vertex inside all four            → keep
+   separated on an edge-cross axis (§13.2) → cull
+   otherwise                               → keep
 
-5. visible = true
-   dist = ‖Δ‖
-   … existing LOD / hysteresis, unchanged …
+4. SUB-GRID (k × k, k from the measured table)
+   pass 1: for each sub-patch not behind the limb, four planes:
+           any Inside → keep ; none straddling → cull
+   pass 2: for each sub-patch not behind the limb, the full test of 3 → first survivor keeps
+   none survives → cull
+
+5. visible = true ; LOD (distance to the f64 centre, hysteresis 1.2) ; recurse
 ```
 
-**Ordering rationale.** The horizon test goes first because it is both the
-cheapest (25 flops vs 92) and the most selective (roughly half the globe is
-below the horizon at any time, and the whole back hemisphere is rejected by one
-comparison at the coarsest level). The frustum test second. The box-slab test
-last, because it is the most expensive and only tightens FP.
+**Ordering rationale.** The horizon test goes first because it is both the cheapest
+(25 flops against 92) and the most selective (roughly half the globe is below the horizon
+at any time, and the whole back hemisphere is rejected by one comparison at the coarsest
+level). The frustum test comes second, cheap verdicts before expensive ones, and the exact
+separating axes only for the roughly one box in a hundred wedged against a frustum edge or
+corner.
 
 ### 9.3 Node construction (amortised, once per node)
 
 ```
-λ₀, λ₁, φ₀, φ₁  (f64, with the pole stretch, from the SHARED bounds function)
+λ₀, λ₁, φ₀, φ₁  (f64, with the pole stretch, from tile_bounds)
 cos/sin of all four                                          → 8 f64 (64 B)
 centre_f64 = p(λ_c, φ_c)                                     → DVec3 (24 B)
-east = (−sin λ_c, 0, −cos λ_c) ;  up = n̂(centre) ;  north = normalize(up × east)
-OBB from the closed forms of §5.3, or a 3×3 grid in f64
-sub-boxes only if z ≤ 4, k(z) from (7.5)
+east = (−sin λ_c, 0, −cos λ_c) ;  up = n̂(centre) ;  north = up × east
+OBB from a 3×3 grid in f64 (9×9 for z < 5), swept over the node's altitude span
+sub-grid of k × k boxes (k from the table), each fitted on a 5×5 grid
+terrain: scaled-space sphere around T(OBB), per node and per sub-patch
 ```
 
 ---
 
-## 10. Implementation notes
+## 10. The design, stated as properties
 
-### 10.1 Replaced
+### 10.1 Components
 
-| existing | becomes |
-|---|---|
-| `Camera::calculate_frustum_planes` (`camera.rs:512`) | returns **4** side planes (`r3±r0`, `r3±r1`) with `d = 0`, plus the camera position; the depth planes are gone. If the 6-plane signature must stay for the god camera, fix the depth entries to `r3 − r2` (near) and `r2` (far) and document the order. |
-| `Frustum` / `Frustum::from_planes` (`bounding_volume.rs:9,14`) | `Frustum { normals: [Vec3; 4] }`, built from f64 normals; no offsets. |
-| `Frustum::intersects_obb` (`:38`) | takes `Δ = centre − cam` (already camera-relative) and applies (2.4). |
-| `Frustum::contains_point` (`:29`) | takes a camera-relative point. |
-| `compute_horizon_culling_point` (`:76`) | **deleted**; replaced by the 8 per-tile sin/cos scalars and the §3.4 evaluation. |
-| `QuadtreeNode::horizon_culling_point` field | **deleted**; replaced by `cos_lon: [f64;2], sin_lon: [f64;2], cos_lat: [f64;2], sin_lat: [f64;2]`. |
-| the horizon block at `quadtree.rs:293-314` | §3.4/§3.5, in f64, with the branch `C² > 1` and **no** `-0.1` band. |
-| the sub-OBB loop at `quadtree.rs:322-344` | frustum-only, and only for `z ≤ 4`. |
-| basis construction at `quadtree.rs:83-86` and `:195-198` | (6.1). |
-| `QuadtreeNode::center`, `OrientedBoundingBox::center` | `DVec3` (f64). Half-axes stay `Vec3`. |
-| `label/culling.rs::is_behind_horizon` | Theorem 3.1 verbatim (§3.8), f64, no guard band. |
-| `get_tile_corner` (`bounding_volume.rs:51`) | f64. |
+| component | derived in | code |
+|---|---|---|
+| four side planes, camera-relative, `d = 0` | §2.2, §2.5 | `Camera::calculate_frustum_planes`, `Frustum` |
+| f64 OBB centre, f32 half-axes, L1 tolerance | §2.5, §2.8 | `OrientedBoundingBox` |
+| exact tile horizon test | §3.4, §3.5, §13.3 | `TilePatch::max_dot`, `span_is_occluded` |
+| cone test on a scaled sphere (relief) | §3.7 | `sphere_is_occluded`, `ScaledSphere` |
+| exact point test (labels) | §3.1, §3.8 | `point_is_occluded` |
+| analytic tangent frame | §6.2 | `tangent_frame` |
+| edge-cross separating axes | §13.2 | `slab::separated_on_edge_cross_axes` |
+| sub-patch grid with exact limb test per sub-patch | §13.3 | `SubGrid` |
 
-### 10.2 Deleted outright
+### 10.2 Deliberately absent
 
-* `compute_horizon_culling_point` and its call site.
-* The sub-OBB **back-face** test (`quadtree.rs:326-336`) — §4.
-* `tight_obbs` for `z ≥ 5` — §7.
-* Frustum plane indices 4 and 5 as currently defined — §2.2, §2.6.
-* The `vh_mag_sq > -0.1` band — §3.1.
-* The dead `east.length_squared() < 0.1` guard — §6.1.
+* The near and far planes (§2.6).
+* A guard band on the horizon test (§3.1), and any `active` guard on the flat tile test (§13.3).
+* A per-box back-face test (§4).
+* A spherical-cap horizon-culling point (§3.6).
+* A degenerate-basis fallback in the tangent frame (§6.1).
+* The box-axis slab stage, compiled out behind `slab::BOX_AXES_ENABLED` (§12.2, §13.5).
 
-### 10.3 Invariants the implementer must preserve
+### 10.3 Invariants
 
-* **I-1 — Zero relief.** §3.4's collapse to a single plane test is licensed by
-  Fact R (all non-skirt geometry is at altitude 0, all skirts are inward). If
-  terrain heights are ever applied to the mesh, §3.4 becomes **unsound** and
-  must be replaced by Theorem 3.7. Put this in a comment on the function and in
-  a test that asserts `TileMesh::generate` produces no vertex with positive
-  altitude.
-* **I-2 — f64 tile centres.** `Δ = centre − cam` must be an f64 subtraction
-  followed by a downcast. Storing the centre in f32 reintroduces ~0.5 m of error
-  that camera-relative arithmetic cannot remove.
-* **I-3 — `zfar ≥ ‖cam‖ + a`.** The far plane is omitted because it is provably
-  vacuous under the current `zfar = ‖cam‖ + 10`. Any tightening of `zfar`
-  requires reinstating `π_far = r2`.
-* **I-4 — Horizon in f64.** The horizon test's conditioning near the surface
-  scales as `1/h`; f32 gives 0.23° of angular slop at 3 m altitude. It is 25
-  flops; keep it in f64.
-* **I-5 — One source of tile bounds.** The `(λ₀, λ₁, φ₀, φ₁)` used for culling
-  must be bit-identical to those used by `TileMesh::generate`, including the
-  pole stretch and including whether `web_mercator_y_to_lat` runs in f32 or f64.
-  Extract one shared function and call it from both. A mismatch is a
-  metre-scale sliver at every tile edge, i.e. a false negative.
-* **I-6 — Conservative direction.** Every test must reject only on a *strict*
-  proof of invisibility, with the rounding tolerance widening the kept set, not
-  the culled set: `reject iff  value < −ε`, never `value < +ε`.
-* **I-7 — Soundness at every level.** Because a cull discards the subtree, an
-  ancestor's test must be sound, not merely "sound at leaf granularity".
+* **I-1 — Zero relief licenses the flat horizon test.** §3.4's collapse to a single plane
+  test is licensed by Fact R (all non-skirt geometry at altitude 0, all skirts inward).
+  Geometry with relief must use Theorem 3.7, as the `Heightfield` surface model does.
+  `test_generated_mesh_has_no_positive_altitude` holds the flat mesh to it.
+* **I-1′ — Declared height bounds.** Every mesh vertex lies inside the altitude interval its
+  surface model declares, and a node's box is fitted over at least that interval. Relief
+  above the box is a false negative exactly like a summit outside it.
+* **I-2 — f64 tile centres.** `Δ = centre − cam` is an f64 subtraction followed by a
+  downcast. An f32 centre reintroduces ~0.5 m of error that camera-relative arithmetic
+  cannot remove.
+* **I-3 — `zfar ≥ ‖cam‖ + a`.** The far plane is omitted because it is provably vacuous under
+  `zfar = ‖cam‖ + 10`. Any tightening of `zfar` requires reinstating `π_far = r2`.
+* **I-4 — Horizon in f64.** The horizon test's conditioning near the surface scales as `1/h`;
+  f32 gives 0.23° of angular slop at 3 m altitude. It is 25 flops.
+* **I-5 — One source of tile bounds.** The `(λ₀, λ₁, φ₀, φ₁)` used for culling are
+  bit-identical to those used by the mesh builder, including the pole stretch, from one f64
+  function. A mismatch is a metre-scale sliver at every tile edge, i.e. a false negative.
+* **I-6 — Conservative direction.** Every test rejects only on a *strict* proof of
+  invisibility, with the rounding tolerance widening the kept set, not the culled set:
+  `reject iff value < −ε`, never `value < +ε`.
+* **I-7 — Soundness at every level.** Because a cull discards the subtree, an ancestor's
+  test must be sound, not merely "sound at leaf granularity".
 
-### 10.4 How to verify against the existing harness
+### 10.4 Verification
 
-The harness already encodes the right contract. In order:
+The harness encodes the contract directly:
 
-1. `test_analytic_planes::test_far_plane_is_enforced` — un-`#[ignore]` it. With
-   §2.2 the plane set has no redundant entry. If the 4-plane version is adopted,
-   the test's `PLANE_NAMES` and `redundant` check need updating to the new
-   4-entry contract; the "point at 2× zfar" assertion should become a
-   documented `assert!(true_by_I-3)` or be dropped with a comment pointing at
-   I-3.
-2. `test_limb_band_has_no_false_negatives` — should go to **0** and the band to
-   **0.0000°**. This is the single most informative check; run it first after
-   §4's deletion, before anything else, because §4 alone should close it.
-3. `test_near_ground_high_zoom_has_no_false_negatives` — should go to **0**,
-   driven by §2.5 + §2.6.
-4. `test_fuzz_sweep_has_no_false_negatives` (100 000 cells) — should go to
-   **0**.
-5. `test_false_positive_rate_within_budget` and the per-cell FP rates in
-   `test_zoom_cliff_probe` / `test_axis_sweep_has_no_false_negatives` — expected
-   to *improve*; tighten the thresholds only after measuring.
-6. `test_update_iterations_reach_fixed_point` must keep passing: none of the
-   proposed changes alters the recursion structure.
-
-Add one new analytic test that the document makes cheap: assert the closed form
-(3.3) against a brute-force maximisation over a dense grid, for a few thousand
-random (tile, camera) pairs. That pins the one piece of nontrivial trigonometry.
+1. `test_analytic_planes` pins the plane set, including that it has no dead entry and that
+   the far plane is vacuous for the globe.
+2. `test_limb_band_has_no_false_negatives` — the band measures **0.0000°**; it is the single
+   most informative check of the horizon stage.
+3. `test_near_ground_high_zoom_has_no_false_negatives` — the 5 m regime of §2.7.
+4. `test_fuzz_sweep_has_no_false_negatives` — 100 000 random cells.
+5. `test_false_positive_rate_within_budget` and the per-cell FP rates of the other sweeps.
+6. `test_update_iterations_reach_fixed_point` — the recursion structure.
+7. `test_horizon_closed_form_matches_brute_force` — the closed form (3.3) against a
+   brute-force maximisation over a dense grid, for thousands of random (tile, camera) pairs.
 
 ---
 
-## 11. Expected outcome, open questions, risks
+## 11. Soundness, and what remains open
 
-### 11.1 Expected FN
+### 11.1 False negatives
 
 **Zero**, and for a reason rather than by measurement:
 
-* The horizon stage is *exact* (§3.5), with a rounding tolerance derived from
-  the f64 bound (3.4) applied in the conservative direction.
-* The frustum stage rejects only on a strict separating half-space, with a
-  rounding tolerance derived from (2.2) applied in the conservative direction.
-* Both are sound at every tree level, so §8.1's subtree-discard cannot
-  manufacture holes.
+* The horizon stage is *exact* (§3.5), with a rounding tolerance derived from the f64 bound
+  (3.4) applied in the conservative direction.
+* The frustum stage rejects only on a strict separating axis, with a rounding tolerance
+  derived from (2.2) applied in the conservative direction.
+* Both are sound at every tree level, so §8's subtree-discard cannot manufacture holes.
 
-The two measured defect families both vanish by construction: the 8.07° limb
-band is §4's deleted heuristic (305 448 misses), and the Tracking-5 m blackout
-is §2.6's deleted near plane plus §2.5's camera-relative arithmetic (223 592
-misses).
+The two failure families the rejected designs show both vanish by construction: the 8.07°
+limb band is §4's per-box back-face heuristic (305 448 misses), and the empty view at 5 m is
+§2.6's near plane plus the absolute frame of §2.4 (223 592 misses).
 
-### 11.2 Expected FP
+### 11.2 False positives
 
-An estimate, not a proof. Current whole-sweep FP is **5.44 %**. Contributions
-and expected movement:
+What remains is not a defect of the frustum stage, which is exact: it is the gap between a
+patch and the box around it, which the sub-grid trades against cost, and the configuration
+of §5.4 — part of a tile off screen and the rest behind the limb, without either being
+total. Measured totals are in §13.4.
 
-| source | today | after |
-|---|---|---|
-| horizon stage (cap ⊋ rectangle) | 0.3 %–23 % of occluded tiles, worst at coarse z | **0** (exact) |
-| plane-only SAT over-report | 10–15 % of near-miss boxes | 12.4 % with 4 planes; **2.1 %** with the box-slab test |
-| OBB ⊋ patch, z ≥ 5 | small (`sagitta/side ≤ 5·10⁻²`) | unchanged |
-| OBB ⊋ patch, z ≤ 4 | large | reduced by the derived `k(z)` |
-| partly-off-screen ∧ partly-back-facing | — | unchanged (the §5.4 floor) |
+### 11.3 Residual risks and settled questions
 
-Estimate: **5.44 % → ~2 %** with the box-slab test, **→ ~3 %** without it. Both
-are guesses with the right sign; the harness will give the real number in one
-run.
-
-### 11.3 Open questions and risks
-
-1. **Option A vs B in §7.3** is a rendering-budget question I cannot settle from
-   the mathematics. *Conservative fallback:* Option B, which changes no draw
-   counts.
-2. **Is the box-slab test worth 170 flops?** It recovers 83 % of the plane-only
-   over-reporting. Whether that beats the cost of the wasted tiles depends on
-   the tile pipeline's marginal cost, which the profiler knows and I do not.
-   *Conservative fallback:* ship without it, measure, add it if FP matters.
-3. **`Camera::local_pos` is f32** (§2.5). In Free mode the camera's absolute
-   position is quantised to 0.48 m. Culling stays self-consistent, but "5 m
-   altitude" is only meaningful to ±0.48 m. If sub-metre free-flight ever
-   matters, `local_pos` must become `DVec3`. Out of scope; flagged because the
-   harness's near-ground cells live entirely inside that quantum.
-4. **`b` as an f32 literal.** `6.356_752_4_f32` vs the f64
-   `6.3567523142` differ by 8.6 cm. Once the culling path is f64 it should use
-   the f64 constant — but then I-5 requires `TileMesh::generate` to use the same
-   one. It already uses `EARTH_RADIUS_B_F64 = 6.3567523142`. So moving culling to
-   f64 *fixes* a latent 8.6 cm inconsistency rather than creating one.
-5. **`web_mercator_y_to_lat` is f32** (`tile_id.rs:3`) and is used by both the
-   mesh and the quadtree. Promoting it to f64 is correct but changes tile bounds
-   by ~1 m; both call sites must move together (I-5). *Conservative fallback:*
-   leave it f32 and have the culling code consume its f32 output promoted to
-   f64, so the two agree exactly.
-6. **`b` vs `a` in the third scaled axis.** `T` divides `z` by `a`, not `b`,
-   because ECEF is Y-up. Every existing scaled-space site already does this; a
-   future refactor to a Z-up convention would silently invert it. Worth a unit
-   test asserting `‖T(p(λ,φ))‖ = 1` for random λ, φ.
-7. **`h²` as an interface.** I have deliberately removed `h²` from the tile
-   path; it survives only in the *label* path (§3.8, Theorem 3.1), where points
-   can be off the surface. If someone reintroduces it into tile culling to
-   "share the constant", the `C ≤ 1` branch and the 1/h conditioning come back
-   with it.
-8. **The sub-box count `k(z)` rests on the empirical budget (7.4)** — 5 % of
-   screen height. That is the one surviving free parameter in this document.
-   It is calibrated by: rendering at a fixed pose, measuring the FP rate as a
-   function of `θ*`, and picking the knee. `θ* = 0.30` and `θ* = 0.16` both give
-   `k = 1` for `z ≥ 5`, so the choice only affects z ≤ 4, where the cost is 1024
-   boxes allocated once either way. A safe default is `θ* = 0.16`.
+1. **Root level (Option A vs B, §7.3).** Settled: roots stay at z = 1.
+2. **The box-slab test.** Settled by measurement: worth 0.01 points of FP for 0.5 µs on real
+   tiles once the edge-cross axes exist; compiled out (§12.2).
+3. **`Camera::local_pos` is f32** (§2.5). In Free mode the camera's absolute position is
+   quantised to 0.48 m. Culling stays self-consistent — frustum, tiles and oracle all refer
+   to the same f64 value — but "5 m altitude" is only meaningful to ±0.48 m, and the
+   harness's near-ground cells live inside that quantum. Sub-metre free flight would need
+   `local_pos` in f64.
+4. **`b` as an f32 literal.** The f32 constant differs from the f64 one by 8.6 cm. The culling
+   path uses only the f64 constants and so does the mesh builder's geometry (I-5).
+5. **The Mercator inverse must be f64.** An f32 `web_mercator_y_to_lat` keeps the tiling a
+   partition (both sides of an edge evaluate the same expression) but displaces every edge
+   by up to 1.7 m, a real fraction of a z = 19–20 tile, and was the last false-negative
+   source (§12.3). Only the f64 function exists.
+6. **`b` vs `a` in the third scaled axis.** `T` divides `z` by `a`, not `b`, because ECEF is
+   Y-up. A refactor to a Z-up convention would silently invert it;
+   `test_scaled_space_maps_surface_to_unit_sphere` asserts `‖T(p(λ,φ))‖ = 1` for random λ, φ
+   (measured 3.3·10⁻¹⁶ over 20 000 points).
+7. **`h²` stays out of the tile path.** It survives only in the point and sphere tests
+   (§3.1, §3.7), where points can be off the surface. Reintroducing it into the flat tile
+   test to "share the constant" would bring back the `C ≤ 1` branch and the `1/h`
+   conditioning with it.
+8. **The sub-box budget.** §7.2's `θ*` was the one free parameter of the derivation. It is
+   replaced by a table measured against all nine sweeps and the bench (§13); the table, not
+   the budget, is what the code uses.
 
 ---
 
-## 12. Implementation findings
+## 12. Measured results
 
-*Added by the implementation pass. §0–§11 above are the original derivation and are
-left as written; this section records where measurement agreed with it, where it did
-not, and what was changed as a result. Numbers are from the harness in
-`src/testing/culling/` unless stated otherwise.*
+Numbers are from the harness in `src/testing/culling/` unless stated otherwise.
 
-### 12.1 Confirmed
+### 12.1 Predictions confirmed
 
 | claim | predicted | measured |
 |---|---|---|
-| FN → 0 by construction (§11.1) | 0 | **0**, over 1 079 616 535 visible samples in the 100 000-cell fuzz sweep, and 664 097 246 in the limb band |
-| the 8.07° limb band is §4's back-face heuristic | band → 0.0000° | **0.0000°** — deleting those three lines closed it, exactly as predicted |
+| FN = 0 by construction (§11.1) | 0 | **0**, over 1 079 616 535 visible samples in the 100 000-cell fuzz sweep, and 664 097 246 in the limb band |
+| the 8.07° limb band is §4's back-face heuristic | band → 0.0000° without it | **0.0000°** |
 | the closed form (3.3) never under-estimates | ≤ 8.88·10⁻¹⁶ | **8.882·10⁻¹⁶**, from an independent 257×257 brute force over 3 120 (tile, camera) pairs |
 | camera-relative error is scale-free (2.3) | ≈ 6·10⁻⁷ of a tile at every zoom | **1.23·10⁻⁶**, flat from z = 4 to z = 20 |
 | plane-only SAT over-reports (§5.2) | 12.4 % | **13.8 %** on the 658-box corner probe |
@@ -1614,170 +1545,157 @@ not, and what was changed as a result. Numbers are from the harness in
 | `‖T(p)‖ = 1` (§11.3 item 6) | — | 3.3·10⁻¹⁶ over 20 000 surface points |
 | all four side planes pass through the eye | `d ≡ 0` | `max |n·eye + d| = 0` exactly |
 
-### 12.2 Refuted
+### 12.2 Where the derivation was wrong
 
-**§7.2's subdivision criterion is derived from the wrong quantity.** It bounds the
-box's *sagitta* overhang and concludes `k = 1` for `z ≥ 5`. That conclusion costs
-**3.1 points of false positives**. The sagitta is not what the sub-boxes buy: they buy
-a fix for §5.2's corner over-report, and *that* does not decay with zoom, because
-distance LOD keeps every leaf at roughly the same angular size (≈26° half-diagonal, so
-a screen holds ~17 tiles) and "straddling a frustum corner" is as common at z = 20 as
-at z = 5. Measured FP against `k` for `z ≥ 5`, FN = 0 throughout:
+**§7.2's subdivision criterion bounds the wrong quantity.** It bounds the box's *sagitta*
+overhang and concludes `k = 1` for `z ≥ 5`. That costs **3.1 points of false positives**.
+Sub-boxes buy a fix for §5.2's corner over-report, and *that* does not decay with zoom:
+distance LOD keeps every leaf at roughly the same angular size (≈26° half-diagonal, so a
+screen holds ~17 tiles), and "straddling a frustum corner" is as common at z = 20 as at
+z = 5. Measured against a flat floor for `z ≥ 5`, FN = 0 throughout:
 
 | k | 1 (derived) | 2 | 3 | **4** | 5 | 8 |
 |---|---|---|---|---|---|---|
 | FP | 7.30 % | 5.92 % | 4.67 % | **4.18 %** | 4.06 % | 4.39 % |
 | mean update | 2.5 µs | 3.2 µs | 3.7 µs | **4.3 µs** | 4.9 µs | 7.8 µs |
 
-`k(z)` is now `max(4, ceil(θ_max(z)/θ*))`. This is the calibration §11.3 item 8 asks
-for, done against the harness rather than the screen-height estimate.
+A flat floor calibrated this way on the fuzz sweep alone is still the wrong shape: it
+improves three sweeps and worsens five others (§13.1). The corner over-report is closed
+exactly by completing the separating-axis set (§13.2), after which the sub-boxes buy only
+the patch/box gap, which *does* decay with zoom — hence the taper of §13.
 
-**§11.2's FP forecast (5.44 % → ~2 %) was optimistic, and in the wrong direction at
-first.** The old 5.58 % was bought with 62 573 false negatives; removing unsound
-culling necessarily raises FP. The four-plane, exact-horizon, no-sub-box configuration
-lands at 7.30 %. The sub-box calibration above brings it to **4.18 %**, below the
-baseline, but the route there is not the one §11.2 predicted: the box-slab test
-contributes 0.2 points, not the bulk.
+**§11.2's false-positive forecast (~2 %) was right in the end but for the wrong reason.**
+Removing unsound culling necessarily raises FP (the four-plane, exact-horizon, no-sub-box
+configuration measures 7.30 %); the sub-box calibration above brings it to 4.18 %; the box-slab
+test contributes only 0.2 points of the rest; the edge-cross axes of §13 bring it to 2.05 %.
 
-**The box-slab test is not worth its cost on real tiles** (§11.3 item 2, answered).
-4.18 % → 3.98 % for 4.3 → 7.0 µs — about 65 µs of CPU per tile avoided. Tile OBBs are
-tiny next to a frustum reaching `‖cam‖ + 10 Mm`, so their own axes rarely separate
-anything the four planes did not already reject. Implemented, measured, and compiled
-out behind `slab::ENABLED`.
+**The box-slab test is not worth its cost on real tiles.** 4.18 % → 3.98 % for 4.3 → 7.0 µs.
+Tile OBBs are tiny next to a frustum reaching `‖cam‖ + 10 Mm`, so their own axes rarely
+separate anything the four planes did not already reject. It is implemented, measured, and
+compiled out behind `slab::BOX_AXES_ENABLED`.
 
 ### 12.3 One thing the derivation did not reach
 
-`web_mercator_y_to_lat` in f32 (§11.3 item 5, where "leave it f32" is offered as the
-conservative fallback) was **the last false-negative source**, and had to go. The f32
-longitude bound `-180 + x·360/2^z` has an ulp of 1.53·10⁻⁵° ≈ **1.7 m of ground**. The
-tiling stays a partition under that — both sides of an edge evaluate the same
-expression — but every tile edge sits up to 1.7 m from its true Web-Mercator position,
-which at z = 19–20 (76 m and 38 m tiles) is a real fraction of a tile. Every one of the
-7 177 residual fuzz misses and all 4 near-ground misses had that signature.
-
-The fallback was offered because the mesh and the quadtree had separate call sites that
-would have to move together. After the I-5 extraction they have one, so the reason for
-it is gone. §11.3 item 5's own words — "promoting it to f64 is correct" — hold.
+An f32 `web_mercator_y_to_lat` was **the last false-negative source**. The f32 longitude bound
+`−180 + x·360/2^z` has an ulp of 1.53·10⁻⁵° ≈ **1.7 m of ground**. The tiling stays a partition
+— both sides of an edge evaluate the same expression — but every tile edge sits up to 1.7 m
+from its true Web-Mercator position, which at z = 19–20 (76 m and 38 m tiles) is a real
+fraction of a tile. Every one of 7 177 residual fuzz misses and all 4 near-ground misses had
+that signature. With one shared bounds function (I-5) there is a single call site, and the
+f64 form costs nothing.
 
 ---
 
-## 13. Recalibration — the corner over-report, solved
+## 13. Completing the separating-axis set
 
-*Added by the false-positive pass that followed §12. §12 is left as written; where a
-number below contradicts one there, this section supersedes it. Everything is
-measured over all nine sweeps of `src/testing/culling/`, aggregated from the raw
-per-cell CSV columns with no exclusions, and against `bench_update`'s 204 poses.*
+*Everything here is measured over all nine sweeps of `src/testing/culling/`, aggregated from
+the raw per-cell CSV columns with no exclusions, and against `bench_update`'s 204 poses.*
 
-### 13.1 What §12 got wrong about its own fix
+### 13.1 Why subdivision alone cannot close the corner over-report
 
-§12.2 replaced §7.2's `k(z)` with a flat floor of `k ≥ 4` at every zoom, calibrated
-against `fuzz_sweep` alone. That sweep improved. So did `near_ground_high_zoom` and
-`zoom_cliff`. **Five other sweeps got worse than the code being replaced** —
-`horizon_pitch` 1.24 % → 1.62 %, `axis_sweep` 1.56 % → 4.16 %, `aspect_extremes`
-1.76 % → 6.70 %, `nadir_ladder` and `fp_budget` 0.94 % → 3.05 % — and all five were
-sweeps where the old code already had FN = 0, so "the old number was bought with
-false negatives" does not explain them.
+A flat sub-box floor of `k ≥ 4` at every zoom, calibrated against `fuzz_sweep` alone,
+improves `fuzz_sweep`, `near_ground_high_zoom` and `zoom_cliff`, and makes five other sweeps
+worse than the rejected baseline culler — `horizon_pitch` 1.24 % → 1.62 %, `axis_sweep`
+1.56 % → 4.16 %, `aspect_extremes` 1.76 % → 6.70 %, `nadir_ladder` and `fp_budget`
+0.94 % → 3.05 % — all sweeps where the baseline already had FN = 0, so "its number was bought
+with false negatives" does not explain them.
 
-Their regressions all sit at ~1 000 km and ~5 000 km altitude, at z = 3..6, and they
-are all the same defect: a tile that grazes a frustum **corner**. §12.2 is right that
-this over-report does not decay with zoom, and right that subdivision attacks it.
-What it missed is that subdivision never *closes* it. Refining the grid refines the
-box, but every sub-box near the corner still straddles the corner; `camera_modes`'
-single false positive — one z = 5 tile whose nearest point is 0.012 of half-screen
-outside the frustum — survives a 16 × 16 grid unchanged. §7.2 fixed `k` by a
-derivation from the wrong quantity; §12.2 fixed it by a measurement on the wrong
-sample. Neither was the shape of the answer.
+The regressions sit at ~1 000 km and ~5 000 km altitude, at z = 3..6, and are all the same
+defect: a tile that grazes a frustum **corner**. Subdivision attacks it but never *closes*
+it. Refining the grid refines the box, but every sub-box near the corner still straddles the
+corner; `camera_modes`' single false positive — one z = 5 tile whose nearest point is 0.012
+of half-screen outside the frustum — survives a 16 × 16 grid unchanged. §7.2 fixed `k` by a
+derivation from the wrong quantity, and a flat floor fixes it by a measurement on the wrong
+sample; neither is the shape of the answer.
 
-### 13.2 The answer: the axis set was incomplete, and completing it is cheap
+### 13.2 The complete axis set is cheap
 
-§5.2 says the four side planes are an incomplete separating-axis set and prices the
-complete one at "27 axes, about 1 900 flops, out of budget". Both halves of that are
-wrong now.
+§5.2 prices the complete set at "27 axes, about 1 900 flops, out of budget". Both halves of
+that change once the depth planes are gone.
 
-**It is 19 axes, not 27.** With near and far dropped (I-3), the volume the test
-models is not a box-shaped frustum but the infinite pyramid `P = cone(r₀..r₃)` with
-apex at the eye. `P` has four faces and **four edges**, so the complete set is 4 face
-normals of `P`, 3 face normals of the box, and 4 × 3 = 12 edge crosses.
+**It is 19 axes, not 27.** With near and far dropped (I-3), the volume the test models is not
+a box-shaped frustum but the infinite pyramid `P = cone(r₀..r₃)` with apex at the eye. `P`
+has four faces and **four edges**, so the complete set is 4 face normals of `P`, 3 face
+normals of the box, and 4 × 3 = 12 edge crosses.
 
-**The cost is not what it costs when you always pay it.** Three witnesses settle a
-box before any of that, in the order they are cheap:
+**The cost is not what it costs when you always pay it.** Three witnesses settle a box before
+any of that, in the order they are cheap:
 
 1. the box's circumsphere is outside a plane, or inside all four — 20 flops;
 2. the box is outside a plane, or inside all four — one pass, ~92 flops;
 3. **a box vertex is inside all four** — the vertex's distance to plane `p` is
-   `s_p ± r_{p,0} ± r_{p,1} ± r_{p,2}` in quantities pass 2 already computed, so all
-   eight vertices cost ~96 adds, and a witness of intersection ends the question.
+   `s_p ± r_{p,0} ± r_{p,1} ± r_{p,2}` in quantities pass 2 already computed, so all eight
+   vertices cost ~96 adds, and a witness of intersection ends the question.
 
-Only a box wedged against an edge or a corner — no vertex inside, no plane
-separating — reaches the 12 crosses. Measured over the bench poses, that is about one
-box in a hundred. The exact test therefore costs **+1.6 µs of a 7.8 µs budget**, not
-the tenfold blowup §5.2 assumed, and it is affordable per node *and* per sub-box.
+Only a box wedged against an edge or a corner — no vertex inside, no plane separating —
+reaches the 12 crosses. Measured over the bench poses, that is about one box in a hundred.
+The exact test therefore costs **+1.6 µs of a 7.8 µs budget**, not a tenfold blowup, and it
+is affordable per node *and* per sub-box.
 
-Because `P` is a cone with its apex at the origin of the camera-relative frame, its
-support along an axis `a` is `0` when every `a·rₘ ≤ 0` and `+∞` otherwise, which is
-what makes each cross-product axis ~50 flops rather than a projection of a polytope.
-`a = r_i × h_j ⊥ r_i`, so only the other three rays are tested. Implementation:
+Because `P` is a cone with its apex at the origin of the camera-relative frame, its support
+along an axis `a` is `0` when every `a·rₘ ≤ 0` and `+∞` otherwise, which makes each
+cross-product axis ~50 flops rather than a projection of a polytope. `a = r_i × h_j ⊥ r_i`,
+so only the other three rays are tested. Implementation:
 `slab::separated_on_edge_cross_axes`.
 
 ### 13.3 Two more places where an exact test was already available
 
-**Per-sub-patch occlusion.** The old code tested the limb per *sub-box*, with the
-unsound back-face heuristic §4 deleted. The tile-level limb test that replaced it is
-exact but coarser: a tile whose in-frustum part is behind the limb and whose visible
-part is off-screen passes both stages and is scheduled. `SubGrid` restores the
-granularity soundly — a cell is discarded if its own spherical rectangle is entirely
-below the limb (3.4, exact) *or* its box misses the frustum, and discarding every
+**Per-sub-patch occlusion.** A per-box back-face test tests the limb per *sub-box*, unsoundly
+(§4). The tile-level limb test is exact but coarser: a tile whose in-frustum part is behind
+the limb and whose visible part is off-screen passes both stages and is scheduled. `SubGrid`
+restores the granularity soundly — a cell is discarded if its own spherical rectangle is
+entirely below the limb (3.4, exact) *or* its box misses the frustum, and discarding every
 cell proves the tile invisible because the cells tile the patch. The rectangles cost
-`32·(k+1)` bytes, not `64·k²`, because λ and φ separate: `lon_span_max` is hoisted
-out of the row loop. Worth 1.2 points of FP on the fuzz sweep on its own.
+`32·(k+1)` bytes, not `64·k²`, because λ and φ separate: `lon_span_max` is hoisted out of the
+row loop. Worth 1.2 points of FP on the fuzz sweep on its own.
 
-**The eye at or below the surface.** §3.1 argues that from inside the sphere there is
-no useful polar plane and the only correct answer is to cull nothing. That is true of
-the *cone* form (`point_is_occluded`) and false of the **surface-point** form. For
-`q` on the unit sphere, `q·c ≤ 1` decides occlusion in all three regimes:
-`C² > 1` is Theorem 3.5; at `C² = 1` the open chord `(c, q)` lies strictly inside the
-ball for every `q ≠ c`, and `q·c < 1` exactly there; at `C² < 1` every chord starts
-inside, and `q·c ≤ C < 1` for every `q`. So `TilePatch::is_occluded` drops the
-`cam.active` guard. It is not a special case bolted on — it is one inequality doing
-the work of three, and the guard was a hole: with it, a camera at altitude 0 scheduled
-15 tiles of which the oracle calls 14 invisible, and a camera 50 m *under* the ground
-scheduled 14 of 14. The footpoint tile is still kept (`S ≥ C² = 1 > 1 − eps`), so
-there is no cliff at zero altitude — which matters, because `enforce_bounds` parks the
-camera at +2 mm, where the limb is 160 m away and the kept set is already just the
-ground underfoot. The harness's own `CellResult::is_degenerate` documents the same
-geometry from the oracle's side.
+**The eye at or below the surface.** §3.1 argues that from inside the sphere there is no
+useful polar plane and the only correct answer is to cull nothing. That is true of the
+*cone* form (`point_is_occluded`, `sphere_is_occluded`) and false of the **surface-point**
+form. For `q` on the unit sphere, `q·c ≤ 1` decides occlusion in all three regimes:
+`C² > 1` is Theorem 3.5; at `C² = 1` the open chord `(c, q)` lies strictly inside the ball
+for every `q ≠ c`, and `q·c < 1` exactly there; at `C² < 1` every chord starts inside, and
+`q·c ≤ C < 1` for every `q`. So `TilePatch::is_occluded` has no `active` guard. It is not a
+special case bolted on — it is one inequality doing the work of three, and a guard would be a
+hole: with one, a camera at altitude 0 schedules 15 tiles of which the oracle calls 14
+invisible, and a camera 50 m *under* the ground schedules 14 of 14. The footpoint tile is
+still kept (`S ≥ C² = 1 > 1 − eps`), so there is no cliff at zero altitude — which matters,
+because the camera's collision floor holds it 2 m above the surface, where the limb is about
+5 km away and the kept set is little more than the ground underfoot. The harness's own
+`CellResult::is_degenerate` documents the same geometry from the oracle's side.
 
 ### 13.4 Result
 
-Same suite, same cells, same oracle, raw aggregation, FN **0** everywhere:
+Same suite, same cells, same oracle, raw aggregation, FN **0** everywhere. The baseline is a
+culler built from the rejected alternatives of §2.4, §3.6 and §4 (six planes in the absolute
+frame, the spherical-cap horizon point, the per-box back-face heuristic):
 
-| sweep | FP before (`main`) | FP after | |
-|---|---|---|---|
-| `fuzz_sweep` | 5.440 % (73 640) | 2.078 % (26 855) | |
-| `near_ground_high_zoom` | 12.407 % (603) | 3.572 % (154) | |
-| `zoom_cliff` | 0.540 % (18) | 0.061 % (2) | |
-| `camera_modes` | 0.568 % (1) | 0.000 % (0) | |
-| `horizon_pitch` | 1.245 % (207) | 0.463 % (76) | |
-| `axis_sweep` | 1.564 % (23) | 0.958 % (14) | |
-| `aspect_extremes` | 1.765 % (3) | 1.183 % (2) | |
-| `fp_budget` / `nadir_ladder` | 0.938 % (6) | 0.000 % (0) | |
-| **total** | **5.393 % (74 507)** | **2.054 % (27 103)** | |
+| sweep | FP, baseline | FP, engine |
+|---|---|---|
+| `fuzz_sweep` | 5.440 % (73 640) | 2.078 % (26 855) |
+| `near_ground_high_zoom` | 12.407 % (603) | 3.572 % (154) |
+| `zoom_cliff` | 0.540 % (18) | 0.061 % (2) |
+| `camera_modes` | 0.568 % (1) | 0.000 % (0) |
+| `horizon_pitch` | 1.245 % (207) | 0.463 % (76) |
+| `axis_sweep` | 1.564 % (23) | 0.958 % (14) |
+| `aspect_extremes` | 1.765 % (3) | 1.183 % (2) |
+| `fp_budget` / `nadir_ladder` | 0.938 % (6) | 0.000 % (0) |
+| **total** | **5.393 % (74 507)** | **2.054 % (27 103)** |
 
-`main` also carried 286 176 false negatives (0.0251 % of visible samples); those are
-0. Mean `QuadtreeManager::update` 7.8 → 6.7 µs, worst 12.8 → 16.8 µs, footprint
+The baseline also carries 286 176 false negatives (0.0251 % of visible samples); the engine
+has none. Mean `QuadtreeManager::update` 7.8 → 6.7 µs, worst 12.8 → 16.8 µs, footprint
 2 966 → 1 919 B/node.
 
 ### 13.5 What this leaves open
 
-* The **worst-case** update is now 2.5× the mean and 1.3× the old worst. It is a
-  nadir view at 1 000 km, where z = 3..5 nodes with the widest `k` all straddle at
-  once. A per-frame budget on the sub-grid, or a hierarchy over the cells rather than
-  a flat `k × k`, would cap it; neither is needed at 17 µs.
-* `slab::ENABLED` (the box's own three axes) is now worth 0.01 points of FP for
-  0.5 µs and is off. It is the stage to revisit first if bounding volumes ever grow
-  relative to the frustum.
-* Remaining false positives are no longer a culling defect in the frustum stage,
-  which is exact. They are the gap between a **patch and the box around it**, which
-  is what `SUB_BOXES_PER_AXIS` trades against cost, and the harness's own 5 × 5
-  per-tile sampling, which calls a tile invisible when its visible sliver misses
-  every sample.
+* The **worst-case** update is 2.5× the mean. It is a nadir view at 1 000 km, where z = 3..5
+  nodes with the widest `k` all straddle at once. A per-frame budget on the sub-grid, or a
+  hierarchy over the cells rather than a flat `k × k`, would cap it; neither is needed at
+  17 µs.
+* `slab::BOX_AXES_ENABLED` (the box's own three axes) is worth 0.01 points of FP for 0.5 µs
+  and is off. It is the stage to revisit first if bounding volumes ever grow relative to the
+  frustum.
+* Remaining false positives are not a culling defect in the frustum stage, which is exact.
+  They are the gap between a **patch and the box around it**, which `SUB_BOXES_PER_AXIS`
+  trades against cost, and the harness's own finite per-tile sampling, which calls a tile
+  invisible when its visible sliver misses every sample.

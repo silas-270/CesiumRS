@@ -57,7 +57,7 @@ pub enum WindModel {
 pub struct FlightPlanConfig {
     /// Whether runways sit at their true elevation.
     ///
-    /// **On by default since Phase E3** (`docs/terrain-plan.md` §8). It was held off
+    /// **On by default**. It was held off
     /// while the globe rendered a sea-level sphere, because an aircraft starting at
     /// Bogotá's 2,548 m would have hung visibly above the surface. The globe now draws
     /// real relief, so the aircraft sits on the ground it is standing on.

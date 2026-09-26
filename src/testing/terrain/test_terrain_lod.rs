@@ -1,13 +1,13 @@
-//! **E1 acceptance** — the LOD term that refines on *shape* rather than on picture
-//! sharpness (`docs/terrain-plan.md` §8).
+//! **Terrain LOD acceptance** — the LOD term that refines on *shape* rather than on picture
+//! sharpness.
 //!
-//! Until E1 this engine refined a tile while `dist < unstretched_radius · lod_factor`,
+//! Originally this engine refined a tile while `dist < unstretched_radius · lod_factor`,
 //! i.e. on imagery resolution alone, and that was the right rule for the globe it had:
 //! with zero relief (I-1) imagery resolution is the *only* per-tile error. With terrain
 //! it is not. A flat coastal tile and a shattered massif of the same on-screen size got —
 //! and, on the imagery term alone, still get — identical treatment.
 //!
-//! E1 adds the second half: `subdivide_dist = max(imagery_dist, terrain_dist)`, with
+//! The terrain LOD term adds the second half: `subdivide_dist = max(imagery_dist, terrain_dist)`, with
 //! `terrain_dist` built from the tile's **measured** deviation from the surface its own
 //! mesh draws ([`HeightTile::detail`]). This file is what says the two halves do what
 //! they claim.
@@ -24,8 +24,8 @@
 //! *claims* — a measured error rather than a level-based one, rugged ground refining
 //! before flat ground at equal screen size, the term stopping at the data ceiling, and
 //! the flat path not moving. The `#[ignore]`d measurements below them run against the
-//! real DEM over `curl`, like `test_terrain_occlusion`'s, and are what the tables in
-//! `docs/terrain-plan.md` §8 are made of.
+//! real DEM over `curl`, like `test_terrain_occlusion`'s, and are what the terrain LOD
+//! was tuned against.
 //!
 //! [`HeightTile::detail`]: cesium_engine::globe::terrain::HeightTile::detail
 
@@ -153,7 +153,7 @@ fn subdivides(
     node.children.is_some()
 }
 
-/// **The E1a claim, as one assertion**: at the same level, the same on-screen size and
+/// **The geometric LOD claim, as one assertion**: at the same level, the same on-screen size and
 /// the same camera distance, rugged ground refines and flat ground does not.
 ///
 /// Two z11 tiles of near-identical geometry — neighbours, so their `unstretched_radius`
@@ -166,8 +166,8 @@ fn subdivides(
 /// sample every 1.2 km, and 300 m is what an Alpine massif hides between two of them
 /// while a coastal plain hides single metres.
 ///
-/// This is the tile-count half of the picture in `docs/terrain-plan.md` §8's capture,
-/// which is the same statement with pixels instead of a boolean.
+/// This is the tile-count half of what `rendering::terrain_e1_capture` shows with
+/// pixels instead of a boolean.
 #[test]
 fn rugged_ground_refines_before_flat_ground_at_the_same_screen_size() {
     let alpine = TileId {
@@ -213,7 +213,7 @@ fn rugged_ground_refines_before_flat_ground_at_the_same_screen_size() {
 
 /// **The term stops where the mesh becomes exact — z19, not z15.**
 ///
-/// This test used to assert the opposite, and §9 F5 is why it changed. E1 read Cesium's
+/// This test used to assert the opposite, and deep detail is why it changed. The earlier implementation read Cesium's
 /// rule across: past the source's deepest level a node's mesh is an interpolation of its
 /// ancestor and buys no shape. In Cesium that is true, because a heightmap tile's
 /// `width × height` **is** its mesh lattice. Here the source is 256² and the mesh is 17²,
@@ -289,7 +289,7 @@ fn the_geometric_term_stops_where_the_mesh_becomes_exact() {
         }
     }
 
-    // And the ceiling is a knob: set it to E1's 15 and every level from z15 down reads
+    // And the ceiling is a knob: set it to 15 and every level from z15 down reads
     // zero again, which is the behaviour this test used to assert.
     for (z, _) in &ladder {
         let id = {
@@ -322,7 +322,7 @@ fn the_geometric_term_stops_where_the_mesh_becomes_exact() {
 /// mechanical statement of that: byte-identical tile ids, in order.
 ///
 /// The stronger statement — the 204-pose LOD harness producing byte-identical CSVs — is
-/// in `docs/culling-baseline.md`; this is the cheap version that lives in the gate.
+/// too slow for the gate; this is the cheap version that lives in the gate.
 #[test]
 fn the_flat_globe_has_no_geometric_term_to_set() {
     let p = ViewParams {
@@ -376,7 +376,7 @@ fn the_flat_globe_has_no_geometric_term_to_set() {
 // numbers and the flat ones to stop being comparable.
 use crate::testing::lod::sweep::geometric_error_px;
 
-/// `TerrainConfig::detail_max_z` as it ships — **19 since §9 F5**, where E1 had 15.
+/// `TerrainConfig::detail_max_z` as it ships — **19**, raised from 15.
 const SHIPPED_DETAIL_MAX_Z: u8 = cesium_engine::globe::terrain::DETAIL_MAX_Z;
 
 /// What one settled tree costs and how wrong its surface is.
@@ -388,7 +388,7 @@ struct LodResult {
     /// `max_geometric_error_px` is a budget for.
     p95_error_px: f64,
     /// The same, and the deepest level, restricted to tiles more than [`FAR_FIELD_MM`]
-    /// away. **This is the column E1b is actually about**: fog is negligible in the near
+    /// away. **This is the column fog interaction is actually about**: fog is negligible in the near
     /// field by construction, so a policy's whole effect lives out here, and §7c's
     /// complaint — "at 900 m the far field never refines past z10/z11" — is a statement
     /// about exactly this pair of numbers.
@@ -405,8 +405,8 @@ struct LodResult {
 /// disagree at all.
 const FAR_FIELD_MM: f64 = 0.020;
 
-/// A settled terrain quadtree over the real DEM at `p`, with E1's geometric term at
-/// `max_geometric_error_px` (`0.0` = off, i.e. the pre-E1 engine).
+/// A settled terrain quadtree over the real DEM at `p`, with the geometric term at
+/// `max_geometric_error_px` (`0.0` = off, i.e. imagery alone).
 ///
 /// Deliberately the same shape as `test_terrain_occlusion::settled_real_tree`, including
 /// its two non-obvious knobs: the capture's own `lod_factor` (at the 256 px satellite
@@ -565,10 +565,10 @@ fn e1_measured_error_against_the_level_based_fallback() {
     }
 }
 
-/// **The E1a cost table**: visible tiles, texture bytes and the projected geometric error
+/// **The geometric LOD cost table**: visible tiles, texture bytes and the projected geometric error
 /// they leave on screen, against `TerrainConfig::max_geometric_error_px`.
 ///
-/// `off` is the pre-E1 engine — imagery alone — and every other column is the same ten
+/// `off` is imagery alone — and every other column is the same ten
 /// poses with the geometric term switched on at that budget. Lower budget, sharper
 /// surface, more tiles; the table is what picks the default.
 #[test]
@@ -623,8 +623,8 @@ fn e1_cost_of_the_geometric_term_on_real_terrain() {
     );
 }
 
-/// The residency cost of the error term, stated rather than assumed: E1's two bytes per
-/// resident height tile, and F5's 168 on top of them, and nothing else.
+/// The residency cost of the error term, stated rather than assumed: two bytes per
+/// resident height tile, and the deep-detail pyramid's 168 on top of them, and nothing else.
 #[test]
 fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight() {
     use cesium_engine::globe::tiles::config::HEIGHT_TILE_BYTES;
@@ -635,8 +635,8 @@ fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight()
          of base and step; if this moved, the cache entry count needs re-deriving"
     );
     // The derived entry count must follow from the one constant that states the budget and
-    // nothing else. It is 381 on desktop since §9 F2b resized the slice to 48 MiB; Android
-    // keeps 253 until the soak of §9 F3 is run.
+    // nothing else. It is 381 on desktop since the slice was resized to 48 MiB; Android
+    // keeps 253.
     let config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
     assert_eq!(
         config.terrain.height_cache_budget_bytes / HEIGHT_TILE_BYTES,
@@ -658,18 +658,18 @@ fn the_error_term_costs_two_bytes_a_tile_and_f5_adds_a_hundred_and_sixty_eight()
     }
 }
 
-/// **E1b** (`docs/terrain-plan.md` §8) — what fog is allowed to do to the *shape* budget.
+/// **Fog interaction** — what fog is allowed to do to the *shape* budget.
 ///
 /// `apply_lod` multiplies `subdivide_dist` by `1 − fog(d)`, and §7c measured what that
 /// does: at 900 m, where fog is thickest, it stops the far field refining past z10/z11 in
-/// the first place — the same pose reads 100 tiles and −36 % D3 reduction with fog off,
+/// the first place — the same pose reads 100 tiles and −36 % terrain occlusion reduction with fog off,
 /// and 50 tiles and −4 % with it on. That was tuned for a globe with **no relief**, where
 /// far-field coarsening is free because there is nothing out there but texture. With
 /// terrain it is not free: it is distant mountains staying coarse bumps.
 ///
 /// Three policies, same poses, same budget ([`TerrainFogPolicy`]):
 ///
-/// * `Relax` — WP5's, extended to the geometric term. What E1a shipped.
+/// * `Relax` — fog relaxation extended to the geometric term.
 /// * `ImageryOnly` — fog relaxes the picture and leaves the shape alone.
 /// * `CesiumSse` — Cesium's own: fog widens the *pixel* budget by `fog · sse`, which
 ///   finally gives `FogConfig::sse` units in this engine.
@@ -739,7 +739,7 @@ fn e1b_what_fog_may_do_to_the_geometric_term() {
 }
 
 /// The three policies' relaxation factors side by side, as numbers rather than as
-/// formulas — the structural half of E1b's answer, and it needs no network.
+/// formulas — the structural half of the fog policy comparison, and it needs no network.
 ///
 /// `Relax` goes to **zero**: past the distance where fog saturates, the geometric term is
 /// switched off completely and the ground out there refines on imagery alone. `CesiumSse`
@@ -767,11 +767,11 @@ fn the_three_fog_policies_are_not_settings_of_one_knob() {
     }
 }
 
-/// **E1b, at an equal tile budget** — the comparison that actually decides it.
+/// **Fog policy at an equal tile budget** — the comparison that actually decides it.
 ///
 /// Reading `Relax` at 897 tiles against `ImageryOnly` at 1 210 says only that refining
-/// more refines more. WP4/C settled this repo's methodology for exactly this situation
-/// (`docs/pre-terrain-plan.md`: "equal tile budget, not equal `target_texel_ratio`"), so
+/// more refines more. This repo's methodology for exactly this situation is "equal tile
+/// budget, not equal `target_texel_ratio`", so
 /// the honest question is: **given the same number of tiles, which policy spends them on
 /// less error?**
 ///
@@ -852,7 +852,7 @@ fn e1b_the_three_policies_at_an_equal_tile_budget() {
 }
 
 /// **Where the extra tiles land** — the numeric twin of
-/// `rendering::terrain_e1_capture`'s middle shot, and the sharpest statement of E1a that
+/// `rendering::terrain_e1_capture`'s middle shot, and the sharpest statement of the geometric LOD term that
 /// does not need a GPU.
 ///
 /// One pose, `po_plain_to_alps`: 300 m over the Po plain looking north, with 60 km of dead
@@ -861,7 +861,7 @@ fn e1b_the_three_policies_at_an_equal_tile_budget() {
 /// Every visible tile is bucketed by its **own** measured error: "flat" under 10 m, "rugged"
 /// over 100 m, and the middle left unlabelled.
 ///
-/// The geometric term is then switched on and the buckets are compared. If E1a does what it
+/// The geometric term is then switched on and the buckets are compared. If the geometric term does what it
 /// says, essentially every tile it adds is in the rugged bucket.
 #[test]
 #[ignore = "measurement, needs the network for real height tiles"]

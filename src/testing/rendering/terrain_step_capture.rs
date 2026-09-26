@@ -1,19 +1,19 @@
-//! Headless captures for the **terrain-step** question of `docs/terrain-plan.md` §7d —
+//! Headless captures for the **terrain-step** question —
 //! a camera at eye height at the foot of an escarpment, looking at it, with flat high
 //! ground behind.
 //!
 //! `terrain::test_terrain_step` counts the tiles; this draws them. Two shots per pose,
-//! D1+D2 and +D3, with nothing else different, because a tile count cannot see a hole
-//! and two pictures can — the same contract `terrain_capture` has had since D3.
+//! without and with terrain occlusion, with nothing else different, because a tile count cannot see a hole
+//! and two pictures can — the same contract `terrain_capture` has had since terrain occlusion was introduced.
 //!
-//! **The capture poses of `terrain_capture` are not touched.** §7c pins those five, all
+//! **The capture poses of `terrain_capture` are not touched.** Previous runs pin those five, all
 //! three shots each, as byte-identical across the optimisation pass; adding a pose to
 //! that list would invalidate a comparison that is quoted. These are their own poses in
 //! their own module, with their own shot names.
 //!
 //! The eye altitude is **not typed into this file**. It is read from the real DEM at the
 //! pose's own coordinates through `TileSystem::ground_height_at`'s own source, because
-//! §7c lost three measurement poses to coordinates that looked like a valley floor on a
+//! earlier runs lost three measurement poses to coordinates that looked like a valley floor on a
 //! map and were a mountainside in the data.
 //!
 //! ```text

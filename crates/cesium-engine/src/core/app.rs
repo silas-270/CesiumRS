@@ -3,7 +3,7 @@ use glam::Vec3;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 pub static RENDERING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -226,7 +226,7 @@ impl<'a> App<'a> {
                 ui.collapsing("Terrain (height data)", |ui| {
                     // The map style above sets this (satellite on, standard off); the box
                     // overrides it for the style in use, e.g. relief under the dark map.
-                    // The switch rebuilds the height manager, and E2 rebuilds the meshes
+                    // The switch rebuilds the height manager, and rebuilds the meshes
                     // that were flat when it was off.
                     let mut on = state.tile_system.config.terrain.enabled;
                     if ui
@@ -243,8 +243,8 @@ impl<'a> App<'a> {
                         terrain.ocean, terrain.exaggeration
                     ));
 
-                    // Height residency is reported separately from imagery on purpose
-                    // (§5 B4): the height cache takes a declared slice of the tile byte
+                    // Height residency is reported separately from imagery on purpose:
+                    // the height cache takes a declared slice of the tile byte
                     // budget, and the only way to see that it is a slice and not an
                     // addition is to show both halves.
                     let imagery_mb =

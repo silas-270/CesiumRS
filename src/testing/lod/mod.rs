@@ -2,16 +2,14 @@
 //!
 //! `QuadtreeNode::apply_lod` decides *which zoom level a tile refines to*, using
 //! `lod_factor` — Cesium's `d < G(z)·H / (maxSSE · 2·tan(fovy/2))` collapsed
-//! to one constant (`docs/culling-math.md` §8.5, `docs/pre-terrain-plan.md`
-//! §Context). That constant was the literal `2.0` when this harness was written;
-//! WP3/3b unfroze it into [`cesium_engine::globe::quadtree::lod_factor_for`], which
+//! to one constant (`docs/culling-math.md` §8.5). That constant was the literal `2.0` when this harness was written;
+//! the engine dynamically evaluates it via [`cesium_engine::globe::quadtree::lod_factor_for`], which
 //! [`sweep::measure_pose`] now calls with the same inputs the renderer uses, so the
 //! two cannot drift apart. At these 204 poses (all `height = 1080`, `mode = Free`)
 //! it still evaluates to exactly `2.0`. The culling harness in [`super::culling`] can prove the visibility
 //! *decision* is right because it has an independent oracle to check against; the
 //! LOD decision has no equivalent, so this module is that instrument. It is a
-//! **measuring device, not a fix**: it reports numbers, it does not assert targets,
-//! until `docs/pre-terrain-plan.md` WP4 picks them.
+//! **measuring device, not a fix**: it reports numbers, it does not assert targets.
 //!
 //! # The metrics — there are two of them now
 //!
@@ -26,15 +24,15 @@
 //! `ratio < 1` is blurry (under-refined: too few texels for the screen area);
 //! `ratio > 1` is wasted bandwidth and memory (over-refined). `texture_size` is
 //! hard-coded to the engine's current default (512, `standard_imagery_url()`'s `@2x`
-//! tiles) — WP4 is what makes it a real, per-style input; here it is still frozen.
+//! tiles) — here it is still frozen.
 //! (`lod_factor` no longer is: see above.)
 //!
 //! ## 2. Projected geometric error, in pixels — and why there had to be a second one
 //!
 //! This module used to say, in this position, that `texels / screen_px` was the whole
 //! story *because* with zero relief the only per-tile error is imagery resolution. That
-//! sentence was true when it was written and **E1 of `docs/terrain-plan.md` §8 expired
-//! it**: `apply_lod`'s threshold is now `max(imagery_dist, terrain_dist)`, and the second
+//! sentence was true when it was written and **the terrain LOD term
+//! expired it**: `apply_lod`'s threshold is now `max(imagery_dist, terrain_dist)`, and the second
 //! half is driven by a quantity the first metric cannot see — the deviation of the drawn
 //! mesh from the real ground. A globe can be perfectly sharp and the wrong shape.
 //!
@@ -54,8 +52,8 @@
 //! function — see §8's tables.
 //!
 //! Neither metric is written to the CSVs as a new column, deliberately: those files are
-//! the byte-for-byte statement that the flat path has not moved across every package since
-//! WP0, and an instrument that rewrites its own output format cannot make that statement.
+//! the byte-for-byte statement that the flat path has not moved across packages,
+//! and an instrument that rewrites its own output format cannot make that statement.
 //!
 //! ## Known limit: flat 3×3 grid under-states curvature at coarse zoom
 //!
@@ -88,7 +86,7 @@
 //! aggregates in [`report`] are built from — 52 of 3922 sampled tiles (1.3 %) in
 //! the full 204-pose bench run at the time of this measurement — so it does not
 //! materially move `Summary::aggregate_ratio`, the mean/median/percentiles, or the
-//! per-zoom-band aggregates for z ≥ 3 that WP4 will lean on most. A future reader
+//! per-zoom-band aggregates for z ≥ 3. A future reader
 //! tuning `target_texel_ratio` specifically from the z=1/z=2 `ZoomBand` rows,
 //! rather than the pooled aggregate, should treat those two rows' `screen_px` (and
 //! therefore `aggregate_ratio`) as **~15-20 % too low** — i.e. those bands' true
@@ -101,7 +99,7 @@
 //! |------|---------|
 //! | [`sweep`]  | per-pose measurement: project the patch, clip to the viewport, score every visible tile |
 //! | [`report`] | CSV (into the temp dir) and the human-readable summary |
-//! | [`ladder`] | WP4/B: re-labels the 204 bench pose geometries at other viewport/mode combinations |
+//! | [`ladder`] | Re-labels the 204 bench pose geometries at other viewport/mode combinations |
 //!
 //! Test cases live in `test_*.rs` and contain no measurement logic of their own.
 //!

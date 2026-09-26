@@ -23,9 +23,8 @@ struct Shot {
 
 /// Renders one frame of the FRA→STR flight, from the cockpit seat, at `shot`'s size.
 /// The flat globe this capture was recorded against.
-///
-/// **Section 9 F4 flipped `TerrainConfig::enabled` on by default.** This instrument is
-/// about the cockpit interior at the S23's own pixel size, and the S23 is exactly the target that still ships terrain off — `TERRAIN_ENABLED_BY_DEFAULT`, until the soak of Section 9 F3 has been run. A terrain-on shot here would be a picture of a build nobody has on a phone. So the config is stated here rather than
+/// **`TerrainConfig::enabled` is on by default.** This instrument is
+/// about the cockpit interior at the S23's own pixel size, and the S23 is exactly the target that still ships terrain off — `TERRAIN_ENABLED_BY_DEFAULT`. A terrain-on shot here would be a picture of a build nobody has on a phone. So the config is stated here rather than
 /// inherited — the same rule the LOD harness and the culling gate already follow.
 fn flat_config() -> TileEngineConfig {
     TileEngineConfig {

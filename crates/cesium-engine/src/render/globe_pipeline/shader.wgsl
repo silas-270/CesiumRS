@@ -201,11 +201,11 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let sun_elevation = camera.sun_dir.w;
     let day_amount = smoothstep(0.0, 0.10, sun_elevation);
-    let night_amount = smoothstep(-0.02, -0.22, sun_elevation);
+    let night_amount = 1.0 - smoothstep(-0.22, -0.02, sun_elevation);
     // The eye keeps colour well into civil twilight; the grey, moonlit look only takes
     // over once it is properly dark. Starting it at sunset (with `night_amount`) is what
     // used to drain the ground to grey while the sky was still on fire.
-    let scotopic = smoothstep(-0.08, -0.25, sun_elevation);
+    let scotopic = 1.0 - smoothstep(-0.25, -0.08, sun_elevation);
 
     // ── Light arriving at the ground ──────────────────────────────────────────
     //
@@ -234,7 +234,7 @@ fn fs_solid(in: VertexOutput) -> @location(0) vec4<f32> {
     // The ground darkens with the light, from just before sunset to the end of civil
     // twilight — not on `night_amount`, which kept it at full daylight brightness under
     // a dusk sky.
-    let dusk = smoothstep(0.04, -0.18, sun_elevation);
+    let dusk = 1.0 - smoothstep(-0.18, 0.04, sun_elevation);
     let base_ambient = mix(day_ambient, night_ambient, dusk) * mix(0.9, 1.0, day_amount);
     let moon_tint = vec3<f32>(0.80, 0.86, 0.98);
     let ambient_tint = mix(light_tint, moon_tint, scotopic);

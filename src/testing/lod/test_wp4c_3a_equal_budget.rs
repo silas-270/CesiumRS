@@ -1,12 +1,12 @@
-//! WP4/C (`docs/pre-terrain-plan.md`): the 3a evaluation, reframed per WP3's
-//! refutation as the deliberate trade it actually is — *"Is box-distance at a
+//! The 3a evaluation, reframed per the refutation
+//! as the deliberate trade it actually is — *"Is box-distance at a
 //! higher `target_texel_ratio` better than centre-distance at a lower one, at a
-//! fixed tile/texture budget?"* — rather than the no-op WP3 originally hoped for.
+//! fixed tile/texture budget?"* — rather than the no-op originally hoped for.
 //!
 //! **Measurement only.** Nothing here is adopted: `wgpu_state.rs` never sets
 //! `LodDistanceMode::Box`, `QuadtreeManager::new()` still defaults to `Centre`, and
-//! this file changes no shipped behaviour. It exists to produce the report WP4/C
-//! asks for and then stop — whether to spend the finding is WP4/D's call, gated on
+//! this file changes no shipped behaviour. It exists to produce the report
+//! and then stop — whether to spend the finding is gated on
 //! a product decision this file does not make.
 
 use super::report::{self, Summary};
@@ -23,11 +23,10 @@ fn total_tiles(poses: &[ViewParams], cfg: LodConfig) -> usize {
 }
 
 /// Sanity check on the `LodDistanceMode` plumbing itself, before trusting anything
-/// downstream of it: WP3's refutation (`docs/pre-terrain-plan.md`, "Refuted, moved
-/// to WP4") measured box-distance alone, at equal `target_texel_ratio = 1.0`,
+/// downstream of it: an earlier refutation measured box-distance alone, at equal `target_texel_ratio = 1.0`,
 /// moving tile count from 3 922 to 6 685 — a +70.5% change. If this harness's `Box`
 /// mode were wired to the wrong field, gave the same answer as `Centre`, or used a
-/// different box than the one WP3 measured, this would catch it before the equal-
+/// different box than the one previously measured, this would catch it before the equal-
 /// budget search (which depends on `Box` actually being more aggressive than
 /// `Centre`, never less) runs on top of a silently broken switch.
 #[test]
@@ -76,7 +75,7 @@ fn tune_target_for_tile_count(
     })
 }
 
-/// One row of the WP4/C comparison table.
+/// One row of the comparison table.
 struct Row {
     label: &'static str,
     target_texel_ratio: f32,
@@ -113,10 +112,9 @@ fn measure_row(
 /// The real work: compares centre-distance (today, at its own `target=1.0`, which
 /// already defines the reference tile budget `N`) against box-distance tuned to the
 /// *same* `N` — not to the same `target_texel_ratio`, which is exactly what made
-/// WP3's "no-op" framing wrong (§ "Refuted, moved to WP4"). Ends in a printed report
+/// the earlier "no-op" framing wrong ("Refuted, moved to follow-up"). Ends in a printed report
 /// (and this doc comment / the assertions below pin the qualitative finding); no
-/// production code is changed by this test, and none of its numbers are adopted —
-/// that is WP4/D's decision.
+/// production code is changed by this test, and none of its numbers are adopted.
 #[test]
 fn test_wp4c_box_distance_vs_centre_distance_at_equal_tile_budget() {
     let poses = bench_poses();
@@ -155,9 +153,9 @@ fn test_wp4c_box_distance_vs_centre_distance_at_equal_tile_budget() {
         );
     }
 
-    // The tails, which is what this comparison is actually about (WP4's addendum:
+    // The tails, which is what this comparison is actually about:
     // "does box-distance lift the worst under-refined tiles at a given budget more
-    // than simply lowering the ratio uniformly does?").
+    // than simply lowering the ratio uniformly does?".
     let worst_n = 20;
     let mut centre_worst: Vec<f64> = centre_results
         .iter()
@@ -200,13 +198,13 @@ fn test_wp4c_box_distance_vs_centre_distance_at_equal_tile_budget() {
     // would otherwise spend there gets redirected elsewhere by the lower
     // target_texel_ratio needed to hold the budget. A future change to the bench
     // poses, MAX_ZOOM, or the LOD rule could legitimately flip this; if it does,
-    // the finding below and in `docs/culling-baseline.md`'s WP4/C section needs
+    // the finding below needs
     // re-deriving, not just re-pinning.
     assert!(
         box_summary.p5() <= centre_summary.p5(),
         "measured finding: box-distance's p5 should not improve on centre-distance's \
          at equal tile budget — centre_p5={:.4} box_p5={:.4}. If this now fails, the \
-         qualitative conclusion in docs/culling-baseline.md's WP4/C section needs \
+         qualitative conclusion needs \
          re-checking, not just this assertion re-pinning.",
         centre_summary.p5(),
         box_summary.p5()

@@ -1,10 +1,9 @@
-//! **D3 acceptance** — culling tiles hidden *behind mountains*
-//! (`docs/terrain-plan.md` §3.3, §7b and §7c).
+//! **Terrain occlusion acceptance** — culling tiles hidden *behind mountains*.
 //!
 //! **Nothing in the gate touches the network.** The three `#[ignore]`d measurements at the
-//! bottom of this file do: they run the stage against the **real** DEM, because §7b's
-//! central finding is that the synthetic ridge world and real terrain disagree by an order
-//! of magnitude about what D3 is worth, and a harness that cannot be run in a loop over
+//! bottom of this file do: they run the stage against the **real** DEM, because earlier
+//! findings showed that the synthetic ridge world and real terrain disagree by an order
+//! of magnitude about what terrain occlusion is worth, and a harness that cannot be run in a loop over
 //! real data cannot settle that. They cache the terrarium tiles under
 //! `CESIUM_HEIGHT_CACHE` and fetch with `curl`, so the root crate acquires no HTTP
 //! dependency for a measurement.
@@ -21,8 +20,8 @@
 //!
 //! `test_terrain_visibility` calls a vertex visible when it is on screen and off the
 //! limb, and says so explicitly: *"a vertex hidden behind a mountain still counts as
-//! visible here. Closing that last gap is D3's job."* That criterion cannot score D3 —
-//! every tile D3 correctly culls would register as a false negative under it.
+//! visible here. Closing that last gap is terrain occlusion's job."* That criterion cannot score terrain occlusion —
+//! every tile terrain occlusion correctly culls would register as a false negative under it.
 //!
 //! So the oracle here adds the third term, and it is deliberately built out of something
 //! **other** than the machinery under test:
@@ -31,7 +30,7 @@
 //! > inside the frustum (exact f64), not occluded by the ellipsoid (exact, Theorem 3.1),
 //! > **and** not occluded by the drawn surface — determined by marching the segment from
 //! > the eye to that vertex in 128 steps and asking, at each step, whether the segment is
-//! > below a *lower bound on the mesh that the reference (D1+D2-only) tree actually
+//! > below a *lower bound on the mesh that the reference (height-aware bounds and relief-aware horizon-only) tree actually
 //! > draws* at that point.
 //!
 //! The engine's own answer comes from a 32 × 16 polar grid of node floors; the oracle's
@@ -51,7 +50,7 @@
 //! # The world
 //!
 //! A single continuous east–west ridge with one deliberate **col** in it
-//! ([`LON_GAP`]). The col is not decoration: `docs/terrain-plan.md` §3.3's claim that
+//! ([`LON_GAP`]). The col is not decoration: the claim that
 //! lateral gaps are handled automatically — because a cell's floor is the minimum over
 //! its whole footprint — is exactly the claim a col tests, and
 //! [`d3_does_not_cull_through_the_col`] is that test.
@@ -82,12 +81,12 @@ pub(crate) const SEGMENTS: u32 = 16;
 
 /// Deepest level the sweep's quadtree refines to, and the depth the synthetic source
 /// "serves" to. Deep enough that a valley tile is a kilometre across (which is the scale
-/// D3 operates at) and shallow enough that a pose does not spend its budget building
+/// terrain occlusion operates at) and shallow enough that a pose does not spend its budget building
 /// meshes for tiles a metre wide.
 const SWEEP_MAX_ZOOM: u8 = 14;
 
 /// Update ticks per pose, matching every other sweep in the repo: `apply_lod`'s 20 %
-/// hysteresis, `reorder_children_near_to_far` and D1's bounds refresh all need a few.
+/// hysteresis, `reorder_children_near_to_far` and height-aware bounds refresh all need a few.
 pub(crate) const UPDATE_ITERATIONS: usize = 4;
 
 /// Limb band, in scaled-space units — `test_terrain_visibility`'s constant, same role.
@@ -130,7 +129,7 @@ const SIG_GAP: f64 = 0.065;
 /// through the ridge.
 ///
 /// Smooth and closed-form on purpose. The engine reads it only through 256² `HeightTile`
-/// texels (so it exercises B3's mip and D1's bounds exactly as real data would), and the
+/// texels (so it exercises mip and height-aware bounds exactly as real data would), and the
 /// oracle reads it directly, so the two never share an approximation.
 fn height_m(lon: f64, lat: f64, ridge_m: f64) -> f64 {
     let g = ((lat - LAT_RIDGE) / SIG_RIDGE).powi(2);
@@ -216,8 +215,8 @@ pub(crate) fn bounds_source(heights: &HeightTileManager) -> HeightBoundsSource<'
         heights,
         segments: SEGMENTS,
         exaggeration: 1.0,
-        // The shipped ceiling, so §7b/§7c keep measuring the engine that ships — §9 F5
-        // raised it from 15 to 19 and the D3 numbers move with it, which is the point.
+        // The shipped ceiling, so measurements keep measuring the engine that ships — the deep-detail pyramid
+        // raised it from 15 to 19 and the occlusion numbers move with it, which is the point.
         detail_max_z: TerrainConfig::default().detail_max_z,
     }
 }
@@ -233,7 +232,7 @@ fn frustum_for(p: &ViewParams) -> (Frustum, VisibilityOracle) {
 
 /// Builds a settled terrain quadtree over the ridge world.
 ///
-/// `occlusion` decides whether D3 runs: `None` gives the D1+D2 reference tree — what the
+/// `occlusion` decides whether terrain occlusion runs: `None` gives the height-aware bounds and relief-aware horizon reference tree — what the
 /// engine drew before this change — and `Some(cfg)` gives the tree under test. Everything
 /// else about the two is identical, which is what makes the tile counts a controlled
 /// delta rather than two unrelated numbers.
@@ -381,7 +380,7 @@ fn mesh_floor(id: TileId, lon: f64, lat: f64, ridge_m: f64) -> f64 {
 
 /// Does the drawn surface block the segment from `eye` to `p`?
 ///
-/// The oracle's half of D3, and deliberately nothing like the engine's: a dense march
+/// The oracle's occlusion check, and deliberately nothing like the engine's: a dense march
 /// against a closed-form field, with the drawn level read off the reference tree.
 fn truth_occluded(
     roots: &[QuadtreeNode<Heightfield>; 4],
@@ -417,7 +416,7 @@ fn scaled_point_is_occluded(cam: &HorizonCamera, q: DVec3) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Verdict {
     /// On screen, off the limb and **not behind terrain**. A culled node holding one of
-    /// these is a false negative for D3.
+    /// these is a false negative for terrain occlusion.
     Visible,
     /// In the viewport or limb numeric band. Neither scored nor ignored — counted.
     Marginal,
@@ -513,11 +512,11 @@ fn pose(sweep: &'static str, lat: f64, lon: f64, alt_m: f64, pitch: f64) -> View
     }
 }
 
-/// The four regimes `docs/terrain-plan.md` §3.3 says D3 pays off unevenly across, plus
-/// the cruise control it says it should *not* pay off at.
+/// The four regimes terrain occlusion pays off unevenly across, plus the cruise control it should
+/// *not* pay off at.
 ///
 /// All look due north into the ridge from the south side, differing only in how far back
-/// and how high the camera is — which is precisely the variable D3's benefit depends on.
+/// and how high the camera is — which is precisely the variable terrain occlusion's benefit depends on.
 fn reduction_poses() -> Vec<(&'static str, ViewParams)> {
     vec![
         ("valley", pose("d3", LAT_RIDGE - 0.10, 11.0, 1_200.0, 88.0)),
@@ -719,7 +718,7 @@ fn placement_need(
 ///
 /// 85° is the Web-Mercator limit, so it is the whole of the latitude range that has tiles
 /// at all. The floor list spans far more than the DEM's own range on purpose: a node on an
-/// **inherited** interval carries D1's level margin — 20 km at z0–z4, compounding down a
+/// **inherited** interval carries height-aware bounds level margin — 20 km at z0–z4, compounding down a
 /// cold chain — so a cell floor tens of kilometres under the ellipsoid is something
 /// `finish` really is handed. The ranges span `MIN_RANGE_M` to the config's
 /// `max_range_m`, which is the whole of what `ring_far` can hold.
@@ -1101,13 +1100,13 @@ fn d3_ridge_safety_never_falls_below_the_constant_it_replaced() {
     );
 }
 
-// ── D3's acceptance: FN = 0 ──────────────────────────────────────────────────────
+// ── Terrain occlusion acceptance: FN = 0 ──────────────────────────────────────────────────────
 
-/// **The acceptance criterion for D3**: nothing D3 culls has a mesh vertex that is on
+/// **The acceptance criterion for terrain occlusion**: nothing terrain occlusion culls has a mesh vertex that is on
 /// screen, off the limb *and* not behind the drawn surface.
 ///
 /// This is the test the whole feature exists to pass, and the failure mode it guards is
-/// the one `docs/terrain-plan.md` §3.3 warns about in bold: taking `h_max` for the
+/// the one that matters most: taking `h_max` for the
 /// occluder instead of `h_min` over-occludes, and by I-7 that deletes an entire subtree.
 /// Flipping [`SurfaceModel::occluder_floor`](cesium_engine::globe::quadtree::SurfaceModel)
 /// to `hi` was tried by hand against this test and it goes red immediately.
@@ -1134,7 +1133,7 @@ fn d3_never_hides_a_visible_vertex() {
         let (frustum, oracle) = frustum_for(p);
         let cam = HorizonCamera::new(frustum.eye);
 
-        // The reference tree is what the engine draws without D3 — the surface the
+        // The reference tree is what the engine draws without terrain occlusion — the surface the
         // oracle marches against — and the tree under test is the same thing with the
         // stage switched on.
         let (reference, _, _) = settled_tree(p, &frustum, None, RIDGE_M);
@@ -1244,9 +1243,9 @@ fn d3_does_not_cull_through_the_col() {
     );
 }
 
-/// The reduction table `docs/terrain-plan.md` §7 quotes, and the counter-check at cruise.
+/// The reduction table, and the counter-check at cruise.
 ///
-/// Measurement, not a gate — but it asserts the two things that would mean D3 is not
+/// Measurement, not a gate — but it asserts the two things that would mean terrain occlusion is not
 /// wired up at all: that it removes something in a valley, and that the cruise pose is
 /// not where the benefit is.
 #[test]
@@ -1274,7 +1273,7 @@ fn d3_reduces_tiles_where_it_matters() {
         let after = qt.get_visible_tiles().len();
         let delta = 100.0 * (after as f64 / before.max(1) as f64 - 1.0);
         // The control: the same pose over the same world with the ridge flattened out.
-        // Whatever D3 removes there is the *curvature* horizon, not a mountain.
+        // Whatever terrain occlusion removes there is the *curvature* horizon, not a mountain.
         let (fref, _, _) = settled_tree(&p, &frustum, None, 0.0);
         let (fqt, _, _) = settled_tree(&p, &frustum, Some(cfg), 0.0);
         let fb = fref.get_visible_tiles().len();
@@ -1306,8 +1305,7 @@ fn d3_reduces_tiles_where_it_matters() {
 
 /// **The measurement behind [`TerrainOcclusionConfig::max_camera_altitude_m`].**
 ///
-/// `docs/terrain-plan.md` §3.3 says the threshold must come from a measurement rather than
-/// a feeling, so this is the measurement: the same stand-off geometry walked up in
+/// The threshold must come from a measurement rather than a feeling, so this is the measurement: the same stand-off geometry walked up in
 /// altitude, with the gate held wide open so what is read is the *benefit* and not the
 /// gate's own effect.
 ///
@@ -1447,7 +1445,7 @@ fn bench_terrain_occlusion_cost() {
 
 // Everything above this line is the synthetic ridge world. What follows measures the same
 // stage on the **real** DEM at the poses `rendering::terrain_capture` photographs, because
-// `docs/terrain-plan.md` §7b's finding is that the two disagree — and the disagreement,
+// the two were found to disagree — and the disagreement,
 // not the agreement, is what decides whether this stage is worth its march.
 
 /// Where the terrarium PNGs are cached between runs. Set `CESIUM_HEIGHT_CACHE` to keep
@@ -1589,7 +1587,7 @@ pub(crate) fn fill_cache_real(
 /// That harness takes a pitch *below the horizontal*; `ViewParams::pitch_deg` measures
 /// from nadir, so the two differ by 90°. Everything else — longitude, latitude, altitude
 /// and the due-north bearing — is copied from `terrain_capture::poses` verbatim, which is
-/// what makes the numbers here comparable to the table in `docs/terrain-plan.md` §7b.
+/// what makes the numbers here comparable to the captures.
 pub(crate) fn real_poses() -> Vec<(&'static str, ViewParams)> {
     let p = |name: &'static str, lon: f64, lat: f64, alt_m: f64, below: f64, yaw: f64| {
         (
@@ -1614,8 +1612,8 @@ pub(crate) fn real_poses() -> Vec<(&'static str, ViewParams)> {
         p("alps_zugspitze", 10.985, 46.79, 9_000.0, 12.0, 0.0),
         p("himalaya_everest", 86.925, 27.35, 11_000.0, 11.0, 0.0),
         p("himalaya_limb_400km", 86.925, 23.0, 400_000.0, 18.0, 0.0),
-        // Five more low poses, added here rather than to the capture set. §7b's own
-        // statement of where D3 should pay is "a valley floor, a plain behind a range,
+        // Five more low poses, added here rather than to the capture set. Earlier analysis's own
+        // statement of where terrain occlusion should pay is "a valley floor, a plain behind a range,
         // water, a plateau", and one Alpine valley is a thin basis for either verdict.
         //
         // **Every one of these is placed a few hundred metres over ground whose height
@@ -1635,12 +1633,12 @@ pub(crate) fn real_poses() -> Vec<(&'static str, ViewParams)> {
     ]
 }
 
-/// A settled terrain quadtree over the real DEM at `p`, with D3 on or off.
+/// A settled terrain quadtree over the real DEM at `p`, with terrain occlusion on or off.
 ///
 /// `lod_factor` is the capture's, not `QuadtreeManager`'s default 2.0: the tile counts
 /// this prints are meant to be read next to `rendering::terrain_capture`'s, and the LOD
-/// threshold is what decides how coarse the far field is — which is half of §7b's
-/// explanation for why D3 finds nothing out there.
+/// threshold is what decides how coarse the far field is — which is half of the
+/// explanation for why terrain occlusion finds nothing out there.
 fn settled_real_tree(
     p: &ViewParams,
     frustum: &Frustum,
@@ -1652,18 +1650,18 @@ fn settled_real_tree(
     let mut qt = QuadtreeManager::<Heightfield>::for_surface();
     let cam = build_camera(p);
     // Both of these are the capture's, not the harness defaults: `lod_factor` decides how
-    // coarse the far field is (half of §7b's explanation for why D3 finds nothing out
+    // coarse the far field is (half of the explanation for why terrain occlusion finds nothing out
     // there) and `max_zoom` decides how fine the near field is. `QuadtreeManager` defaults
     // to `MAX_ZOOM = 20`; `TileEngineConfig` — which is what `wgpu_state` actually feeds it
     // — defaults to **19**, and one level of near-field refinement doubles the tile count.
     qt.lod_factor = lod_factor_for(1.0, 256.0, p.height as f32, cam.fovy());
     qt.max_zoom = config.max_zoom;
-    // **And the fog density, which is not cosmetic here.** WP5's `apply_lod` relaxation
+    // **And the fog density, which is not cosmetic here.** Fog `apply_lod` relaxation
     // multiplies `subdivide_dist` by `1 − fog(distance)`, so at 900 m — where fog is
     // thickest — the far field never refines past z10/z11 in the first place. Leaving it
     // at 0, as the ridge-world sweep does, doubles the visible set (100 tiles against the
-    // capture's 49 at `alps_inn_valley`) and hands D3 a far field production never draws.
-    // That difference is most of the gap between the synthetic reduction and §7b's
+    // capture's 49 at `alps_inn_valley`) and hands terrain occlusion a far field production never draws.
+    // That difference is most of the gap between the synthetic reduction and earlier
     // captures, and a harness that did not reproduce it would be measuring a globe the
     // engine does not render.
     qt.fog_density = cesium_engine::globe::quadtree::fog_density_for(p.alt_m as f32, &config.fog);
@@ -1714,7 +1712,7 @@ fn settled_real_tree(
 
 /// Is **every** sub-rectangle of a `2^depth × 2^depth` division of this node hidden?
 ///
-/// The ceiling of `docs/terrain-plan.md` §7b's proposal, measured without committing to
+/// The ceiling of a per-sub-rectangle occludee test, measured without committing to
 /// an implementation of it. A sub-rectangle's box is built by
 /// [`QuadtreeNode::for_surface_with`] on the *descendant tile id* with the **parent's**
 /// height interval, which is exactly what `SubGrid::build` does one level of abstraction
@@ -1782,14 +1780,14 @@ fn probe_node(
     }
 }
 
-/// **The refutation of `docs/terrain-plan.md` §7b's follow-up, kept re-runnable without
+/// **The refutation of a per-sub-patch occludee test, kept re-runnable without
 /// the code it refutes** — what a per-sub-patch occludee test would buy on real terrain.
 ///
-/// §7b proposes testing per sub-patch "the way `Stage::SubPatchGrid` does", on the
+/// Testing per sub-patch "the way `Stage::SubPatchGrid` does" was proposed on the
 /// grounds that `k²` small boxes hug a ridge line far more closely than one big box over
-/// a node's own `h_max`. §7c built exactly that, measured it and removed it again: two to
+/// a node's own `h_max`. Measurements showed that this yielded: two to
 /// four more tiles out of forty to sixty-seven, for six to ten times the cost of the whole
-/// D1+D2 pass. This test is what survives, and deliberately so — it needs **no engine
+/// baseline culling pass. This test is what survives, and deliberately so — it needs **no engine
 /// support at all**, so the measurement outlives the implementation.
 ///
 /// It runs the proposal at **its ceiling**: not `SubGrid`'s `k`, but a 2×2, 4×4 and 8×8
@@ -1903,7 +1901,7 @@ fn d3_sub_patch_granularity_probe() {
     }
 }
 
-/// **The real-terrain reduction and the real-terrain cost**, in one table — what D3
+/// **The real-terrain reduction and the real-terrain cost**, in one table — what terrain occlusion
 /// removes at the capture poses and five more low ones, and what it charges for it.
 ///
 /// `rendering::terrain_capture` measures the reduction too, but only alongside a render,
@@ -1912,8 +1910,7 @@ fn d3_sub_patch_granularity_probe() {
 /// relaxation**, counted instead of drawn. It agrees with the capture to a tile
 /// (`alps_inn_valley` 50 → 48 here, 49 → 48 there).
 ///
-/// The cost columns are what `docs/terrain-plan.md` §7c's optimisation pass is measured
-/// against, and they are charged to different places: `refresh_terrain_horizon` is **once
+/// The cost columns are what the stage's optimisation is measured against, and they are charged to different places: `refresh_terrain_horizon` is **once
 /// per frame**, `Stage::TerrainOcclusion` is per node and shows up inside `update`.
 #[test]
 #[ignore = "measurement, needs the network for real height tiles"]

@@ -72,12 +72,13 @@ impl OrientedBoundingBox {
     ///
     /// Additive: nothing above changes, and no culling stage reads this.
     ///
-    /// **Currently unused.** It exists for `docs/pre-terrain-plan.md` WP3a, which
-    /// wants `QuadtreeNode::apply_lod` to measure `d` to the box rather than to
+    /// Production does not use it: it is only reached through `LodDistanceMode::Box`, the
+    /// LOD harness's switch for measuring `QuadtreeNode::apply_lod` with `d` to the box
+    /// rather than to
     /// [`OrientedBoundingBox::center`] — centre distance over-states `d` at
     /// grazing angles by up to a tile half-width, and so under-refines there.
     /// Substituting it is a one-line change at that call site, but it is **not**
-    /// the no-op WP3 is specified as: measured over the 204 bench poses it moves
+    /// a no-op: measured over the 204 bench poses it moves
     /// 24.3 % of subdivision decisions and breaks
     /// `test_visible_set_digest_is_stable`. The substitution is therefore held
     /// back pending a deliberate decision about the threshold it is measured

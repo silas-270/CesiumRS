@@ -2,6 +2,7 @@
 name = "cesium-flight"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 cesium-engine = { path = "../cesium-engine" }

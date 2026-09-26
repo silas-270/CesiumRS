@@ -1,4 +1,4 @@
-//! The `Heightfield` surface model — C1, C2 and C3 of `docs/terrain-plan.md` §6.
+//! The `Heightfield` surface model: relief, normals and crack-free LOD seams.
 //!
 //! This is the second [`SurfaceModel`] implementation and the first real one: the
 //! globe's skin stops being the bare ellipsoid and becomes the ellipsoid displaced
@@ -18,13 +18,13 @@
 //!
 //! **Megametres**, like the rest of `SurfaceModel` (see `quadtree/surface.rs`'s module
 //! doc). [`HeightTileManager::height_at`] hands out megametres already; the one
-//! metres-to-megametres conversion in the engine stays where Phase B put it.
+//! metres-to-megametres conversion in the engine stays where height fetching put it.
 //!
 //! # Vertical exaggeration is applied exactly once, here
 //!
 //! `TerrainConfig::exaggeration` is multiplied in during [`HeightPatch::sample`] and
-//! *nowhere else*. Phase B deliberately left it unused (`height_at` returns raw
-//! heights), and Phase D reads [`HeightPatch::height_bounds`] — or, for a node whose
+//! *nowhere else*. Height fetching deliberately left it unused (`height_at` returns raw
+//! heights), and culling reads [`HeightPatch::height_bounds`] — or, for a node whose
 //! mesh does not exist yet, [`HeightTileManager::height_bounds_for`], which applies the
 //! same factor to the same data — rather than the source tile's raw `h_min`/`h_max`, so
 //! the boxes and spheres of §3.1/§3.2 inherit the exaggeration automatically instead of
@@ -41,7 +41,7 @@ use crate::globe::terrain::height_cache::HeightTileManager;
 
 /// How many levels of LOD jump across a tile edge the skirt is derived against.
 ///
-/// C3 computes the crack as the deviation of a tile's own edge from that edge
+/// The skirt calculation computes the crack as the deviation of a tile's own edge from that edge
 /// *coarsened by a factor `k`*, which is exactly what a neighbour `log2(k)` levels up
 /// interpolates across it. `k ∈ {2, 4}` covers a one- and a two-level jump; the
 /// quadtree refines one level at a time and screen-space LOD does not produce deeper
@@ -58,7 +58,7 @@ const HALO_BOTTOM: usize = 3;
 
 /// Whether a tile's height data is usable *yet*.
 ///
-/// The distinction Phase B's `height_at` makes between "unknown" and "sea level" only
+/// The distinction `height_at` makes between "unknown" and "sea level" only
 /// pays off if the mesh builder acts on it, which is what this enum is for: a tile
 /// whose heights have not arrived is **deferred**, not flattened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,14 +91,14 @@ pub enum PatchStatus {
 /// ```
 ///
 /// The interior `rows/cols 1..=segments+1` are the tile's own `(segments+1)²`
-/// samples; the ring around them is a **halo**, and it exists for C2. A central
+/// samples; the ring around them is a **halo**, and it exists for normal calculation. A central
 /// difference at a tile's edge vertex needs the neighbour's height, which the tile
 /// itself does not have. Sampling the halo out of the *same source tile* supplies it
 /// exactly whenever the source is an ancestor — which is the normal case (always,
 /// below z15) — because an ancestor covers the neighbour too. Where it is not
 /// (`id`'s own tile is the source and `id` sits on that tile's border), the halo
 /// column would fall outside the source and [`Self::halo_valid`] records the fact so
-/// C2 can drop to a one-sided difference instead of silently halving the slope.
+/// Normal calculation can drop to a one-sided difference instead of silently halving the slope.
 ///
 /// The skirt ring's *altitude* still comes from the edge, not the halo — see
 /// [`Heightfield::vertex_altitude`]: skirts hang inward from the edge, they do not
@@ -118,7 +118,7 @@ pub struct HeightPatch {
     h_min: f64,
     h_max: f64,
     /// The height tile these samples came from: `id` itself, or the ancestor that
-    /// answered for it. Phase E2's cache key.
+    /// answered for it. The rebuild logic's cache key.
     source: TileId,
     /// `1 / (2 · east step)` per row, in `Mm⁻¹`, for the central difference. Zero
     /// where the east step degenerates (at a pole).
@@ -127,7 +127,7 @@ pub struct HeightPatch {
     inv_2ds_north: Vec<f64>,
     /// Per-side halo validity, indexed by `HALO_*`.
     halo_valid: [bool; 4],
-    /// C3's derived skirt depth, megametres.
+    /// Derived skirt depth, megametres.
     skirt: f32,
 }
 
@@ -146,7 +146,7 @@ impl HeightPatch {
     ) -> Result<Self, PatchStatus> {
         // The best data resident now, even if `id`'s own tile is still in flight — the
         // way Cesium upsamples a parent's terrain for a child that has not loaded. The
-        // mesh records `source`, and E2 rebuilds it once the tile's own data lands
+        // mesh records `source`, and rebuild logic rebuilds it once the tile's own data lands
         // (`tiles::system::fresher_height_source`). Waiting instead left the tile without
         // a mesh, and the renderer's fallback then climbed to whatever ancestor *had* one
         // — a single new tile at the edge of the view could swap the whole screen for a
@@ -182,7 +182,7 @@ impl HeightPatch {
         // The affine map from this tile's (u, v) into the source tile's, evaluated
         // **without** the [0,1] clamp `ancestor_uv` applies: the halo ring lives just
         // outside [0,1] by construction and clamping it would collapse it onto the
-        // edge, which is precisely the degenerate central difference C2 is avoiding.
+        // edge, which is precisely the degenerate central difference normal calculation is avoiding.
         let uv = |u: f64, v: f64| HeightTileManager::ancestor_uv_unclamped(id, source, u, v);
 
         let b = tile_bounds(&id);
@@ -304,7 +304,7 @@ impl HeightPatch {
         (inv_2ds_east, inv_2ds_north, max_step / EARTH_RADIUS_A_F64)
     }
 
-    /// C3 — the skirt depth, measured instead of assumed.
+    /// The skirt depth, measured instead of assumed.
     ///
     /// The crack at an LOD boundary is the disagreement between this tile's edge and
     /// the straight line a coarser neighbour draws across the same edge. Both are in
@@ -371,7 +371,7 @@ impl HeightPatch {
     }
 
     /// The `[min, max]` height interval of this patch's interior, **megametres**,
-    /// exaggeration already applied. Phase D reads this, not the source tile's raw
+    /// exaggeration already applied. Culling reads this, not the source tile's raw
     /// `h_min`/`h_max`.
     pub fn height_bounds(&self) -> [f64; 2] {
         [self.h_min, self.h_max]
@@ -382,7 +382,7 @@ impl HeightPatch {
         self.source
     }
 
-    /// C3's derived skirt depth, megametres.
+    /// Derived skirt depth, megametres.
     pub fn skirt(&self) -> f32 {
         self.skirt
     }
@@ -417,15 +417,15 @@ impl HeightPatch {
 }
 
 /// The altitude interval, in **megametres**, a node's bounding volumes are fitted
-/// over — [`SurfaceModel::NodeExtra`] for [`Heightfield`], and the whole of Phase D1.
+/// over — [`SurfaceModel::NodeExtra`] for [`Heightfield`], and the whole of height-aware bounds.
 ///
 /// # This is the *box* span, not the height field's range
 ///
 /// `hi` is the highest sample the node's mesh can reach, but `lo` is **not** the
 /// lowest: it is the lowest sample minus the deepest skirt that mesh can hang, because
 /// a skirt vertex outside the box is a drawable point outside the box, which is a false
-/// negative in the frustum stage exactly like a summit outside it. C3 made the skirt
-/// content-dependent (`docs/terrain-plan.md` §6), so it is no longer a number the
+/// negative in the frustum stage exactly like a summit outside it. Skirt derivation made the skirt
+/// content-dependent, so it is no longer a number the
 /// quadtree could hard-code; [`skirt_allowance`] bounds it from the same two things the
 /// patch derives it from, and [`HeightTileManager::height_bounds_for`] folds it in
 /// before the interval ever reaches a node.
@@ -442,17 +442,17 @@ pub struct HeightBounds {
     /// Highest altitude the node's geometry can reach.
     pub hi: f64,
     /// Lowest altitude the node's **ground** can reach — `lo` *without* the skirt
-    /// allowance. **D3's occluder**, and the reason this is a third number rather than
+    /// allowance. **Terrain occlusion's occluder**, and the reason this is a third number rather than
     /// a derived one.
     ///
     /// `lo` is the right bound for a bounding volume, because a skirt vertex outside the
     /// box is as much a false negative as a summit outside it. It is the wrong bound for
     /// an occluder: an occluder is a claim about where solid ground *is*, and the skirt
     /// hangs into empty space below the ground precisely so that a crack at an LOD
-    /// boundary is covered. [`skirt_allowance`] bounds C3's content-derived skirt by the
+    /// boundary is covered. [`skirt_allowance`] bounds the content-derived skirt by the
     /// tile's entire height range (measured: the node interval is 1.53× the mesh
     /// interval it contains), so an occluder taken from `lo` would sit kilometres below
-    /// the ridge it is supposed to represent and D3 would cull almost nothing.
+    /// the ridge it is supposed to represent and terrain occlusion would cull almost nothing.
     ///
     /// Always `lo <= floor <= hi`. On an inherited interval it widens downward by
     /// [`inherit_margin_mm`] — the table's per-level margin and **nothing else**, unlike
@@ -469,7 +469,7 @@ pub struct HeightBounds {
     ///
     /// # Why the whole-tile minimum is not enough, measured
     ///
-    /// This is the difference between D3 culling *behind mountains* and D3 culling behind
+    /// This is the difference between terrain occlusion culling *behind mountains* and terrain occlusion culling behind
     /// the local curvature horizon, and the first implementation did the latter without
     /// anybody noticing until the ridge was flattened and the tile counts did not move.
     ///
@@ -486,8 +486,8 @@ pub struct HeightBounds {
     /// cell, because a parent's sub-cells are not a child's.
     pub floor_grid: [f32; OCCLUDER_GRID_CELLS],
     /// The node's **measured geometric error** — megametres, exaggeration applied, the
-    /// deviation of the drawn mesh from the DEM ([`HeightTile::detail`]). E1 of
-    /// `docs/terrain-plan.md` §8, and the only field here that is not about a bounding
+    /// deviation of the drawn mesh from the DEM ([`HeightTile::detail`]). The
+    /// only field here that is not about a bounding
     /// volume.
     ///
     /// It rides in `HeightBounds` rather than in a payload of its own because the
@@ -539,8 +539,7 @@ impl Default for HeightBounds {
     /// node starts with, and the only interval available before anything has been
     /// fetched.
     ///
-    /// `docs/terrain-plan.md` §7's first policy row, used exactly where that row is
-    /// cheap: at z1 a 21-km-tall box over a 10 000-km tile is nothing. Every node below
+    /// The simplest height policy, used exactly where it is cheap: at z1 a 21-km-tall box over a 10 000-km tile is nothing. Every node below
     /// a root either has its own data or inherits through [`Heightfield::child_extra`],
     /// which is the third row.
     fn default() -> Self {
@@ -592,7 +591,7 @@ impl HeightBounds {
 }
 
 /// How far a child node's height interval may fall outside its parent's, per level,
-/// in **metres** — the measured margin of `docs/terrain-plan.md` §7's third policy.
+/// in **metres** — a measured margin.
 ///
 /// # What is being measured, and why it is not zero
 ///
@@ -666,7 +665,7 @@ const HEIGHT_INHERIT_MARGIN_M: [f64; 16] = [
 
 /// Mesh density the inheritance allowance is evaluated at.
 ///
-/// The shipped default (`docs/terrain-plan.md` §6 C4 keeps 16). [`skirt_allowance`]'s
+/// The shipped default. [`skirt_allowance`]'s
 /// sagitta term *falls* with density, so evaluating at 16 is an upper bound for every
 /// mesh built at 16 or finer. A configuration that lowered `mesh_segments` below 16 would
 /// need this raised with it — stated here because [`Heightfield::child_extra`] is a static
@@ -701,22 +700,21 @@ pub fn inherit_allowance_mm(child: &TileId) -> f64 {
 }
 
 /// Level-zero geometric error, **metres** — the fallback [`fallback_detail_mm`] halves
-/// per level, and the one number in E1 that is *not* measured off the data.
+/// per level, and the one number in the terrain LOD term that is *not* measured off the data.
 ///
 /// Cesium's `getEstimatedLevelZeroGeometricErrorForAHeightmap(ellipsoid, tileWidth,
 /// tilesAtLevelZero)` is `maximumRadius · 2π / (tileWidth · tilesAtLevelZero)`. For this
 /// engine's scheme — Web Mercator, **one** tile at z0 — and Cesium's own shipped
 /// `tileWidth = 65`, that is `2π · 6 378 137 / 65 = 616 538 m`, which is the value used
-/// here. The table it generates, and the measured errors it stands in for, are in
-/// `docs/terrain-plan.md` §8.
+/// here.
 const LEVEL_ZERO_DETAIL_M: f64 = 616_538.0;
 
 /// The deepest level the terrain LOD term is allowed to demand refinement *into* — the
-/// default of `TerrainConfig::detail_max_z`, and **19 since §9 F5**, not 15.
+/// default of `TerrainConfig::detail_max_z`, and **19**, not 15.
 ///
-/// # What F5 corrected
+/// # Detail correction
 ///
-/// E1 set this to `TERRARIUM_MAX_LEVEL` with Cesium's argument: *"past the source's deepest
+/// Originally this was set to `TERRARIUM_MAX_LEVEL` with Cesium's argument: *"past the source's deepest
 /// level a node's mesh is an interpolation of its z15 ancestor's samples, so the refinement
 /// it would buy is arithmetic and not shape"*. That argument is sound **for Cesium**, where
 /// `HeightmapTerrainData`'s `width × height` *is* the mesh lattice and `upsample` resamples
@@ -734,12 +732,12 @@ const LEVEL_ZERO_DETAIL_M: f64 = 616_538.0;
 /// below its source, because at that depth the mesh reproduces the field. So the clamp is
 /// redundant with the data at 19 and the constant is kept for two narrower jobs: it bounds
 /// [`fallback_detail_mm`], the level-based stand-in for a node whose tile has not arrived
-/// and which therefore has no data to be bounded by; and it is the knob §9 F5's cost table
+/// and which therefore has no data to be bounded by; and it is the knob the cost table
 /// sweeps and a device measurement could lower. `mesh_segments = 16` is baked into the 4 —
 /// at 32 the ladder would reach 1:1 one level earlier.
 pub const DETAIL_MAX_Z: u8 = 19;
 
-/// The level-based geometric error for a node at level `z`, **megametres** — E1's
+/// The level-based geometric error for a node at level `z`, **megametres** — the terrain LOD term's
 /// fallback for a node whose own height tile has not landed.
 ///
 /// `LEVEL_ZERO_DETAIL_M / 2^z`, which is Cesium's heightmap rule exactly: content-blind,
@@ -770,7 +768,7 @@ pub fn inherit_margin_mm(z: u8) -> f64 {
 /// An upper bound, in **megametres**, on the skirt [`HeightPatch::derive_skirt`] can
 /// produce for a tile at level `z` with a height range of `range` megametres.
 ///
-/// C3's skirt is `max over k ∈ {2, 4}` of (the edge's deviation from its own
+/// Skirt depth is `max over k ∈ {2, 4}` of (the edge's deviation from its own
 /// `k`-coarsening) + (the curvature sagitta of the chord a neighbour draws across `k`
 /// grid steps). Both terms are bounded here from things the quadtree knows:
 ///
@@ -798,7 +796,7 @@ pub fn skirt_allowance(id: TileId, segments: u32, range_mm: f64) -> f64 {
     range_mm + sagitta
 }
 
-/// The quadtree's view of the height cache — Phase D1's feed, and the only coupling
+/// The quadtree's view of the height cache — height-aware bounds feed, and the only coupling
 /// between the two.
 ///
 /// Exists because the interval a node needs is not a property of the cache alone: it
@@ -815,7 +813,7 @@ pub struct HeightBoundsSource<'a> {
     pub segments: u32,
     /// `TerrainConfig::exaggeration`, as [`HeightPatch::sample`] will apply it.
     pub exaggeration: f32,
-    /// `TerrainConfig::detail_max_z` — **F5**. The deepest level the geometric term may
+    /// `TerrainConfig::detail_max_z` — the deep-detail pyramid. The deepest level the geometric term may
     /// demand refinement into; at and below it a node's stored error is zero. It rides here
     /// rather than in [`Heightfield::geometric_error`] because that is a static dispatch
     /// with no access to the configuration, which is the same reason `segments` rides here.
@@ -832,12 +830,12 @@ impl NodeExtraSource<Heightfield> for HeightBoundsSource<'_> {
 
 /// The globe with relief: the ellipsoid displaced radially by a sampled height field.
 ///
-/// Phase C gave this model its geometry; **Phase D gives it its culling**. The two
-/// payloads below are D1 and D2 of `docs/terrain-plan.md` §7:
+/// Earlier work gave this model its geometry; **culling gives it its culling**. The two
+/// payloads below are height-aware bounds and the relief-aware horizon test:
 ///
 /// * [`HeightBounds`] per node — the altitude interval `fit_obb` sweeps, so a node's
 ///   box contains the relief inside it instead of hugging the ellipsoid under it. This
-///   is what the Phase C captures were missing: the visible set over the Alps at 4.5 km
+///   is what earlier captures were missing: the visible set over the Alps at 4.5 km
 ///   was byte-identically the flat one, its geometry was lifted by up to 2.9 km, and the
 ///   tiles that should have filled the gap underneath were frustum-culled against boxes
 ///   fitted at `alt = 0`.
@@ -851,7 +849,7 @@ impl SurfaceModel for Heightfield {
     type PatchExtra = ScaledSphere;
     type BuildCtx = HeightPatch;
 
-    /// C3's measured value. See [`HeightPatch::derive_skirt`].
+    /// The measured value. See [`HeightPatch::derive_skirt`].
     #[inline]
     fn skirt_depth(_id: &TileId, _segments: u32, ctx: &HeightPatch) -> f32 {
         ctx.skirt()
@@ -870,7 +868,7 @@ impl SurfaceModel for Heightfield {
         Some(ctx.source())
     }
 
-    /// C1 — the sampled height, and for a skirt vertex that height minus the skirt.
+    /// The sampled height, and for a skirt vertex that height minus the skirt.
     ///
     /// Structurally identical to `Ellipsoid`'s `0` / `-skirt`, with the zero replaced
     /// by the field. The skirt row reads the **edge** sample rather than its own halo
@@ -888,7 +886,7 @@ impl SurfaceModel for Heightfield {
         }
     }
 
-    /// C2 — central differences on the height field in the tile's local east/north
+    /// Central differences on the height field in the tile's local east/north
     /// frame.
     ///
     /// Without this the relief is visible in silhouette and invisible in shading: the
@@ -967,7 +965,7 @@ impl SurfaceModel for Heightfield {
         }
     }
 
-    /// **D1** — the node's own interval, so `fit_obb` sweeps its grid at both ends and
+    /// **Height-aware bounds** — the node's own interval, so `fit_obb` sweeps its grid at both ends and
     /// the box spans the relief instead of hugging the ellipsoid under it.
     ///
     /// Always a non-degenerate interval ([`skirt_allowance`]'s sagitta term is strictly
@@ -980,14 +978,14 @@ impl SurfaceModel for Heightfield {
         (extra.lo, extra.hi)
     }
 
-    /// **E1** — this globe has relief, so it has an error to refine against.
+    /// **Terrain LOD** — this globe has relief, so it has an error to refine against.
     const HAS_GEOMETRIC_ERROR: bool = true;
 
-    /// **E1, as F5 left it** — the node's measured deviation from the DEM, read and
+    /// **The deep-detail pyramid** — the node's measured deviation from the DEM, read and
     /// nothing else.
     ///
-    /// E1 clamped here, at `id.z >= DETAIL_MAX_Z`, on the argument that the ceiling is a
-    /// statement about the LOD rule rather than about the data. F5 moved it, because that
+    /// Previously clamped here, at `id.z >= DETAIL_MAX_Z`, on the argument that the ceiling is a
+    /// statement about the LOD rule rather than about the data. Refinement moved it, because that
     /// stopped being true: below the source ceiling the error is
     /// `HeightTile::detail_below`'s per-window, per-lattice measurement, which reaches
     /// exactly zero on its own four levels down, and the remaining ceiling is a
@@ -999,7 +997,7 @@ impl SurfaceModel for Heightfield {
         extra.detail
     }
 
-    /// **D3** — the node's ground floor, not its box floor. See
+    /// **Terrain occlusion** — the node's ground floor, not its box floor. See
     /// [`HeightBounds::floor`] for why those are two different numbers and
     /// [`SurfaceModel::occluder_floor`] for why this side must be the lower bound.
     #[inline]
@@ -1007,13 +1005,12 @@ impl SurfaceModel for Heightfield {
         extra.floor_grid
     }
 
-    /// **D1's soundness trap** — the parent's interval, widened by the measured
+    /// **Height-aware bounds soundness trap** — the parent's interval, widened by the measured
     /// per-level margin of [`HEIGHT_INHERIT_MARGIN_M`].
     ///
     /// Not the parent's interval unmodified: a coarse DEM smooths a peak away that a
     /// deeper one resolves, so the parent's interval is not a superset of the child's
-    /// and copying it is a false negative waiting for the first mountain
-    /// (`docs/terrain-plan.md` §7).
+    /// and copying it is a false negative waiting for the first mountain.
     ///
     /// # Not clamped to the global interval
     ///
@@ -1028,7 +1025,7 @@ impl SurfaceModel for Heightfield {
     /// # The extra downward term, and why the corpus does not need re-measuring
     ///
     /// The margin table was measured on box spans whose skirt allowance was the *whole
-    /// tile's* height range. **D1's follow-up** replaced that with the tight edge-window
+    /// tile's* height range. This replaced that with the tight edge-window
     /// bound ([`HeightTile::edge_window_range`](crate::globe::terrain::HeightTile::edge_window_range)),
     /// which raises the child's `lo` — that helps — *and* the parent's, which does not.
     /// With `allow` for the skirt allowance and `M` for the table's margin, the corpus
@@ -1051,7 +1048,7 @@ impl SurfaceModel for Heightfield {
     ///
     /// # [`HeightBounds::floor`] does **not** pay that allowance, and this is why
     ///
-    /// D3's occluder was widened by the same `w` as `lo` on the argument that the corpus
+    /// The terrain occlusion occluder was widened by the same `w` as `lo` on the argument that the corpus
     /// measures `parent.lo − child.lo` and that turning it into the statement `floor`
     /// needs — `parent.h_min − child.h_min ≤ M` — costs `allow_whole(parent)` back. The
     /// argument is sound and the premise is wrong: `pyramid_extrema.csv` holds
@@ -1076,8 +1073,7 @@ impl SurfaceModel for Heightfield {
     /// over everything stamped into it, so one node on an inherited interval anywhere near
     /// the camera took its whole polar cell to the bottom of the march. That is why
     /// `rendering::terrain_step_capture` read 62 → 62 and 71 → 71 while the counting
-    /// harness, whose fetch policy leaves no such node in range, read 80 → 70
-    /// (`docs/terrain-plan.md` §7e, "Where the renderer still reads 62 → 62").
+    /// harness, whose fetch policy leaves no such node in range, read 80 → 70.
     ///
     /// **A relaxation of the occluder bound is the error class that opens holes**, which
     /// is why it is a measurement rather than an argument, and why `floor`'s new value is
@@ -1108,7 +1104,7 @@ impl SurfaceModel for Heightfield {
             // the parent rather than a scaled copy of it. The scalar floor is what is still
             // true everywhere in that quadrant.
             floor_grid: [floor as f32; OCCLUDER_GRID_CELLS],
-            // **E1: the level-based formula, and only here.** The parent's *measured*
+            // **The level-based formula, and only here.** The parent's *measured*
             // error is the wrong number to inherit — it is the error of the parent's mesh
             // over four times the ground, which is systematically larger than the child's
             // and would compound a demand for refinement down a chain that has no data at
@@ -1120,14 +1116,14 @@ impl SurfaceModel for Heightfield {
         }
     }
 
-    /// **D2** — the scaled-space bounding sphere of the node's box, fitted at
+    /// **The relief-aware horizon test** — the scaled-space bounding sphere of the node's box, fitted at
     /// construction where `T`'s linearity makes it free and exact.
     #[inline]
     fn patch_extra(obb: &OrientedBoundingBox) -> ScaledSphere {
         ScaledSphere::around_obb(obb)
     }
 
-    /// **D2** — Theorem 3.7's cone test on that sphere.
+    /// **The relief-aware horizon test** — Theorem 3.7's cone test on that sphere.
     ///
     /// The flat model's exact rectangle supremum is *unsound* here and this is the
     /// whole reason the site dispatches: `q·c ≤ 1` says a point is below the polar
@@ -1143,14 +1139,14 @@ impl SurfaceModel for Heightfield {
         sphere_is_occluded(cam, &patch.extra)
     }
 
-    /// **D2**, one level finer. See [`SurfaceModel::sub_patch_is_occluded`].
+    /// **The relief-aware horizon test**, one level finer. See [`SurfaceModel::sub_patch_is_occluded`].
     ///
     /// `a_star` and the φ span are the flat test's inputs and go unread here, which is
     /// ~25 f64 flops per sub-patch column that the terrain path computes and throws
     /// away. Left that way on purpose: hoisting `column_a_star` behind a model-dependent
     /// condition would put a branch on the flat path's hottest loop to save work only
-    /// the terrain path does, which is the trade `docs/terrain-plan.md` §1 exists to
-    /// refuse.
+    /// the terrain path does, which is the trade the surface-model split exists
+    /// to refuse.
     #[inline]
     fn sub_patch_is_occluded(
         cam: &HorizonCamera,
