@@ -27,6 +27,8 @@ pub mod sky_perf;
 #[cfg(test)]
 pub mod fog_capture;
 #[cfg(test)]
+pub mod label_occlusion;
+#[cfg(test)]
 pub mod haze_capture;
 #[cfg(test)]
 pub mod terrain_capture;

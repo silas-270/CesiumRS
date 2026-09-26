@@ -403,6 +403,8 @@ pub struct FlightTrackerApp {
 const AIRBORNE_MODEL_LIFT_M: f64 = 7.5;
 /// Gap left between the gear and the ground, metres.
 const GEAR_CLEARANCE_M: f64 = 0.2;
+/// The aircraft exterior is never drawn smaller than this many pixels across.
+const AIRCRAFT_MIN_PIXEL_SIZE: f32 = 100.0;
 
 impl FlightTrackerApp {
     /// Constructs the app and a handle for sending commands to it from other threads.
@@ -518,6 +520,79 @@ impl FlightTrackerApp {
         }
 
         state
+    }
+
+    /// Camera-relative model matrix of the aircraft exterior, as pushed to the model
+    /// shader (before the shader's own minimum-pixel-size boost).
+    fn airplane_model_matrix(
+        &self,
+        airplane: &ModelRenderer,
+        state: &cesium_engine::math::trajectory::TransformState,
+        camera_pos_f64: [f64; 3],
+    ) -> glam::Mat4 {
+        // The model's scale grows with camera distance (below), about an origin
+        // above its gear, so the lift that keeps it out of the ground has to be
+        // worked out at that scale. Airborne it sits 7.5 m up, clear of the
+        // ribbon's own 5 m z-fighting offset in polyline.wgsl; on the ground the
+        // gear rests on the terrain; and at any height its lowest point stays
+        // above the terrain under it however large the zoom has made it.
+        let up_dir = state.position.normalize();
+        let camera_pos = glam::DVec3::from_slice(&camera_pos_f64);
+        let model_scale_m = (((state.position + up_dir * AIRBORNE_MODEL_LIFT_M * 1.0e-6)
+            - camera_pos)
+            .length()
+            * 0.008325)
+            .clamp(33.5e-6, 1.0)
+            * 1.0e6;
+        let gear_depth_m = -(airplane.min_y as f64) * model_scale_m;
+        let w = self.terrain.weight;
+        let lift_m = (AIRBORNE_MODEL_LIFT_M * (1.0 - w) + (gear_depth_m + GEAR_CLEARANCE_M) * w)
+            .max(gear_depth_m + GEAR_CLEARANCE_M - self.terrain.agl_m);
+        let elevated_position = state.position + up_dir * (lift_m * 1.0e-6);
+        let relative_pos_f64 = elevated_position - camera_pos;
+        let relative_pos = glam::Vec3::new(
+            relative_pos_f64.x as f32,
+            relative_pos_f64.y as f32,
+            relative_pos_f64.z as f32,
+        );
+        let translation = glam::Mat4::from_translation(relative_pos);
+
+        let cur_rot = state.rotation;
+        let rot_f32 = glam::Quat::from_xyzw(
+            cur_rot.x as f32,
+            cur_rot.y as f32,
+            cur_rot.z as f32,
+            cur_rot.w as f32,
+        )
+        .normalize();
+        let rotation = glam::Mat4::from_quat(rot_f32);
+
+        // Dynamic scaling based on camera distance
+        let distance = relative_pos.length(); // Distance in Megameters
+
+        // Desired length of the airplane in Megameters
+        let desired_length_mm = distance * 0.008325;
+
+        let min_length_mm = 33.5 / 1_000_000.0; // 33.5 meters (half of A350 length)
+        let max_length_m = 1000.0 * 1000.0; // 1000 km
+        let max_length_mm = max_length_m / 1_000_000.0;
+
+        let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
+
+        // The mesh is normalised to a bounding radius of 1.0 local unit, so this
+        // is a radius in Megametres rather than a length despite the names.
+        let scale_factor = clamped_length_mm / 1.0;
+        let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
+
+        // Apply a constant yaw correction to align the model with standard axes
+        let model_correction = glam::Mat4::from_euler(
+            glam::EulerRot::YXZ,
+            crate::aircraft_model::YAW_CORRECTION, // Yaw
+            0.0,                                   // Pitch
+            0.0,                                   // Roll
+        );
+
+        translation * rotation * scale * model_correction
     }
 
     /// Refreshes the aircraft's [`AircraftFit`] for the current progress from the engine's
@@ -1252,69 +1327,7 @@ impl GlobeExtension for FlightTrackerApp {
         if self.view_mode != CameraMode::Cockpit {
             if let Some(airplane) = &self.airplane_renderer {
             if let Some(state) = airplane_state {
-                // The model's scale grows with camera distance (below), about an origin
-                // above its gear, so the lift that keeps it out of the ground has to be
-                // worked out at that scale. Airborne it sits 7.5 m up, clear of the
-                // ribbon's own 5 m z-fighting offset in polyline.wgsl; on the ground the
-                // gear rests on the terrain; and at any height its lowest point stays
-                // above the terrain under it however large the zoom has made it.
-                let up_dir = state.position.normalize();
-                let camera_pos = glam::DVec3::from_slice(&camera_pos_f64);
-                let model_scale_m = (((state.position + up_dir * AIRBORNE_MODEL_LIFT_M * 1.0e-6)
-                    - camera_pos)
-                    .length()
-                    * 0.008325)
-                    .clamp(33.5e-6, 1.0)
-                    * 1.0e6;
-                let gear_depth_m = -(airplane.min_y as f64) * model_scale_m;
-                let w = self.terrain.weight;
-                let lift_m = (AIRBORNE_MODEL_LIFT_M * (1.0 - w) + (gear_depth_m + GEAR_CLEARANCE_M) * w)
-                    .max(gear_depth_m + GEAR_CLEARANCE_M - self.terrain.agl_m);
-                let elevated_position = state.position + up_dir * (lift_m * 1.0e-6);
-                let relative_pos_f64 = elevated_position - camera_pos;
-                let relative_pos = glam::Vec3::new(
-                    relative_pos_f64.x as f32,
-                    relative_pos_f64.y as f32,
-                    relative_pos_f64.z as f32,
-                );
-                let translation = glam::Mat4::from_translation(relative_pos);
-
-                let cur_rot = state.rotation;
-                let rot_f32 = glam::Quat::from_xyzw(
-                    cur_rot.x as f32,
-                    cur_rot.y as f32,
-                    cur_rot.z as f32,
-                    cur_rot.w as f32,
-                )
-                .normalize();
-                let rotation = glam::Mat4::from_quat(rot_f32);
-
-                // Dynamic scaling based on camera distance
-                let distance = relative_pos.length(); // Distance in Megameters
-
-                // Desired length of the airplane in Megameters
-                let desired_length_mm = distance * 0.008325;
-
-                let min_length_mm = 33.5 / 1_000_000.0; // 33.5 meters (half of A350 length)
-                let max_length_m = 1000.0 * 1000.0; // 1000 km
-                let max_length_mm = max_length_m / 1_000_000.0;
-
-                let clamped_length_mm = desired_length_mm.clamp(min_length_mm, max_length_mm);
-
-                // The mesh is normalised to a bounding radius of 1.0 local unit, so this
-                // is a radius in Megametres rather than a length despite the names.
-                let scale_factor = clamped_length_mm / 1.0;
-                let scale = glam::Mat4::from_scale(glam::Vec3::splat(scale_factor));
-
-                // Apply a constant yaw correction to align the model with standard axes
-                let model_correction = glam::Mat4::from_euler(
-                    glam::EulerRot::YXZ,
-                    crate::aircraft_model::YAW_CORRECTION, // Yaw
-                    0.0,                                   // Pitch
-                    0.0,                                   // Roll
-                );
-
-                let model_matrix = translation * rotation * scale * model_correction;
+                let model_matrix = self.airplane_model_matrix(airplane, &state, camera_pos_f64);
 
                     let sun = self
                         .get_sun_intensity_at(current_progress)
@@ -1335,7 +1348,7 @@ impl GlobeExtension for FlightTrackerApp {
                             1.0,
                         ],
                         viewport_size,
-                        min_pixel_size: 100.0,
+                        min_pixel_size: AIRCRAFT_MIN_PIXEL_SIZE,
                         depth_bias: 0.0,
                         // Ambient floor and rim scale with daylight, keeping the aircraft
                         // dark in nighttime silhouettes while rich in sunset and daylight.
@@ -1479,6 +1492,39 @@ impl GlobeExtension for FlightTrackerApp {
                 }
             }
         }
+    }
+
+    fn label_occluders(
+        &self,
+        camera_pos_f64: [f64; 3],
+        viewport_size: [f32; 2],
+    ) -> Vec<[glam::Vec3; 8]> {
+        // The cockpit surrounds the camera: labels seen through the windows stay.
+        if self.view_mode == CameraMode::Cockpit {
+            return Vec::new();
+        }
+        let Some(airplane) = &self.airplane_renderer else {
+            return Vec::new();
+        };
+        let Some(state) = self.get_plane_state_at(*self.progress.lock().unwrap()) else {
+            return Vec::new();
+        };
+        let model_matrix = self.airplane_model_matrix(airplane, &state, camera_pos_f64);
+        let boost = cesium_engine::render::model_pipeline::pipeline::min_pixel_scale_multiplier(
+            &model_matrix,
+            viewport_size[1],
+            AIRCRAFT_MIN_PIXEL_SIZE,
+        );
+        let (lo, hi) = airplane.bounds;
+        let corner = |i: usize| {
+            let local = glam::Vec3::new(
+                if i & 1 == 0 { lo[0] } else { hi[0] },
+                if i & 2 == 0 { lo[1] } else { hi[1] },
+                if i & 4 == 0 { lo[2] } else { hi[2] },
+            );
+            model_matrix.transform_point3(local * boost)
+        };
+        vec![std::array::from_fn(corner)]
     }
 
     fn runway_corridors(&self) -> &[cesium_engine::globe::terrain::RunwayCorridor] {

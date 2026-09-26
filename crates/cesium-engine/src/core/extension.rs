@@ -37,6 +37,18 @@ pub trait GlobeExtension: Send + 'static {
         camera_pos_f64: [f64; 3],
     );
 
+    /// Boxes of 3D content the screen-space label overlay must not be painted over,
+    /// each as its eight corners relative to the camera (ECEF, megametres). The labels
+    /// are drawn by egui after the scene, so without this they sit on top of the
+    /// aircraft. Default: none.
+    fn label_occluders(
+        &self,
+        _camera_pos_f64: [f64; 3],
+        _viewport_size: [f32; 2],
+    ) -> Vec<[glam::Vec3; 8]> {
+        Vec::new()
+    }
+
     /// Active runway corridors for terrain flattening, if any.
     fn runway_corridors(&self) -> &[crate::globe::terrain::RunwayCorridor] {
         &[]

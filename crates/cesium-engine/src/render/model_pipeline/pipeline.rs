@@ -177,6 +177,29 @@ pub struct ModelRenderer {
     /// Lowest vertex `y` of the finished (normalised, scaled) mesh, in model units. For
     /// an aircraft this is the bottom of the gear relative to the model origin.
     pub min_y: f32,
+    /// Axis-aligned bounds of the finished mesh, in model units: `(min, max)`.
+    pub bounds: ([f32; 3], [f32; 3]),
+}
+
+/// The factor the model shader inflates a mesh by so it is never drawn smaller than
+/// `min_pixel_size` pixels — the CPU twin of the `scale_multiplier` block in
+/// `shader.wgsl`, for anything that needs to know where the model actually lands on
+/// screen. `model_matrix` is camera-relative, exactly as pushed to the shader.
+pub fn min_pixel_scale_multiplier(
+    model_matrix: &glam::Mat4,
+    viewport_height: f32,
+    min_pixel_size: f32,
+) -> f32 {
+    if min_pixel_size <= 0.0 {
+        return 1.0;
+    }
+    let dist_to_cam = model_matrix.w_axis.truncate().length().max(0.000001);
+    let physical_size_engine = 2.0 * model_matrix.x_axis.truncate().length();
+    let pixels_per_engine_unit = (1.0 / dist_to_cam) * viewport_height * 1.5;
+    let size_pixels = (physical_size_engine * pixels_per_engine_unit).max(0.00001);
+    let needed_scale = min_pixel_size / size_pixels;
+    let max_scale = (4000000.0 / (6378137.0 * physical_size_engine.max(0.000001))).max(1.0);
+    needed_scale.clamp(1.0, max_scale)
 }
 
 impl ModelRenderer {
@@ -369,6 +392,16 @@ impl ModelRenderer {
             .map(|v| v.position[1])
             .fold(f32::INFINITY, f32::min)
             .min(0.0);
+        let mut bounds = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &vertices {
+            for i in 0..3 {
+                bounds.0[i] = bounds.0[i].min(v.position[i]);
+                bounds.1[i] = bounds.1[i].max(v.position[i]);
+            }
+        }
+        if vertices.is_empty() {
+            bounds = ([0.0; 3], [0.0; 3]);
+        }
 
         stage("mesh walk");
         use wgpu::util::DeviceExt;
@@ -609,6 +642,7 @@ impl ModelRenderer {
             num_indices: indices.len() as u32,
             bind_group,
             min_y,
+            bounds,
         })
     }
 

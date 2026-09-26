@@ -348,7 +348,7 @@ impl<'a> App<'a> {
     }
 
     #[cfg(feature = "debug_panel")]
-    fn render_label_indicators(ctx: &egui::Context, state: &WgpuState) {
+    pub fn render_label_indicators(ctx: &egui::Context, state: &WgpuState) {
         if !state.label_manager.enabled {
             return;
         }
@@ -375,6 +375,40 @@ impl<'a> App<'a> {
             egui::Order::Background,
             egui::Id::new("label_layer"),
         ));
+
+        // Screen rectangles (and nearest distance) of the 3D models the labels must stay
+        // behind. The labels are painted after the scene, so they would otherwise sit on
+        // top of the aircraft.
+        let occluders: Vec<(egui::Rect, f32)> = match &state.extension {
+            Some(ext) => {
+                let (cam_f64, _) = state.camera.global_transform_f64();
+                ext.label_occluders(
+                    cam_f64.to_array(),
+                    // Physical pixels, as the model shader sees them — not egui points.
+                    [state.config.width as f32, state.config.height as f32],
+                )
+                    .iter()
+                    .filter_map(|corners| {
+                        let mut rect = egui::Rect::NOTHING;
+                        let mut nearest = f32::INFINITY;
+                        for c in corners {
+                            let p = view_proj * (*c + cam_pos).extend(1.0);
+                            // Straddles the camera: its screen extent is unbounded.
+                            if p.w <= 0.0 {
+                                return None;
+                            }
+                            rect.extend_with(egui::pos2(
+                                (p.x / p.w + 1.0) * 0.5 * width,
+                                (1.0 - p.y / p.w) * 0.5 * height,
+                            ));
+                            nearest = nearest.min(c.length());
+                        }
+                        Some((rect, nearest))
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
 
         for label in &state.label_manager.visible_labels {
             let ecef = label.ecef_pos;
@@ -469,6 +503,18 @@ impl<'a> App<'a> {
                 egui::pos2(pill_x, pill_y),
                 egui::vec2(pill_w, pill_h),
             );
+
+            // Hidden behind the aircraft (or any other occluding model)
+            let label_rect = bg_rect.union(egui::Rect::from_center_size(
+                anchor_pos,
+                egui::Vec2::splat(dot_radius * 2.0 + 1.0),
+            ));
+            if occluders
+                .iter()
+                .any(|(rect, nearest)| dist > *nearest && rect.intersects(label_rect))
+            {
+                continue;
+            }
 
             // Backdrop pill
             painter.rect_filled(bg_rect, egui::Rounding::same(3.0), bg_color);
