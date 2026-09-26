@@ -28,7 +28,9 @@ pub trait GlobeExtension: Send + 'static {
     /// with terrain off or no data there yet. Default: ignored.
     fn sample_ground(&mut self, _ground: &dyn Fn(DVec3) -> Option<f64>) {}
 
-    /// Called every frame after the globe and engine debug models are drawn
+    /// Called every frame after the globe, sky and engine debug models are drawn: the
+    /// extension's part of the world layer (route ribbons and the like), which the city
+    /// labels are drawn over.
     fn render<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
@@ -37,16 +39,17 @@ pub trait GlobeExtension: Send + 'static {
         camera_pos_f64: [f64; 3],
     );
 
-    /// Boxes of 3D content the screen-space label overlay must not be painted over,
-    /// each as its eight corners relative to the camera (ECEF, megametres). The labels
-    /// are drawn by egui after the scene, so without this they sit on top of the
-    /// aircraft. Default: none.
-    fn label_occluders(
-        &self,
-        _camera_pos_f64: [f64; 3],
+    /// Called every frame after the city labels: 3D models (the aircraft, a cockpit)
+    /// that must cover a label wherever they are nearer than its anchor. Labels write
+    /// their anchor's depth, so an ordinary depth-tested draw here gets that for free.
+    /// Default: nothing.
+    fn render_foreground<'a>(
+        &'a self,
+        _render_pass: &mut wgpu::RenderPass<'a>,
+        _camera_bind_group: &'a wgpu::BindGroup,
         _viewport_size: [f32; 2],
-    ) -> Vec<[glam::Vec3; 8]> {
-        Vec::new()
+        _camera_pos_f64: [f64; 3],
+    ) {
     }
 
     /// Active runway corridors for terrain flattening, if any.

@@ -19,6 +19,10 @@ pub async fn run_headless_render(
         extension,
     ).await;
 
+    // The Hub, Onboarding and Account route maps are clean images of the routes; city
+    // labels, which the scene pass now draws, have never been part of them.
+    state.label_manager.enabled = false;
+
     // Set up camera
     if let Some(up) = initial_cam_up {
         state.camera.set_eye_with_up(initial_cam_pos, initial_cam_target, up);

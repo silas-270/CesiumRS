@@ -36,6 +36,11 @@ impl CameraUniform {
         }
     }
 
+    /// The camera-relative view-projection the shaders see this frame.
+    pub(super) fn view_proj(&self) -> Mat4 {
+        Mat4::from_cols_array_2d(&self.view_proj)
+    }
+
     /// Sine of the sun's elevation, as carried in `sun_dir.w`.
     #[allow(dead_code)]
     pub(super) fn sun_elevation(&self) -> f32 {

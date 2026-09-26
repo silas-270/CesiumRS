@@ -1322,6 +1322,31 @@ impl GlobeExtension for FlightTrackerApp {
                 config: &config,
             });
         }
+    }
+
+    /// The aircraft exterior, or in cockpit view the cockpit interior: drawn after the
+    /// city labels so they cover any label they are nearer than.
+    fn render_foreground<'res>(
+        &'res self,
+        render_pass: &mut wgpu::RenderPass<'res>,
+        camera_bind_group: &'res wgpu::BindGroup,
+        viewport_size: [f32; 2],
+        camera_pos_f64: [f64; 3],
+    ) {
+        let current_progress = *self.progress.lock().unwrap();
+        let airplane_state = self.get_plane_state_at(current_progress);
+
+        // In cockpit mode we draw the cockpit interior.
+        if self.view_mode == CameraMode::Cockpit {
+            let _span = cesium_engine::core::trace::ScopedTrace::new("cesium.render.cockpit_model");
+            self.render_cockpit(
+                render_pass,
+                camera_bind_group,
+                viewport_size,
+                camera_pos_f64,
+                airplane_state,
+            );
+        }
 
         // Draw airplane exterior if not in cockpit mode
         if self.view_mode != CameraMode::Cockpit {
@@ -1363,7 +1388,7 @@ impl GlobeExtension for FlightTrackerApp {
             }
         }
     }
-}
+    }
 
     #[cfg(feature = "debug_panel")]
     fn render_ui(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -1492,39 +1517,6 @@ impl GlobeExtension for FlightTrackerApp {
                 }
             }
         }
-    }
-
-    fn label_occluders(
-        &self,
-        camera_pos_f64: [f64; 3],
-        viewport_size: [f32; 2],
-    ) -> Vec<[glam::Vec3; 8]> {
-        // The cockpit surrounds the camera: labels seen through the windows stay.
-        if self.view_mode == CameraMode::Cockpit {
-            return Vec::new();
-        }
-        let Some(airplane) = &self.airplane_renderer else {
-            return Vec::new();
-        };
-        let Some(state) = self.get_plane_state_at(*self.progress.lock().unwrap()) else {
-            return Vec::new();
-        };
-        let model_matrix = self.airplane_model_matrix(airplane, &state, camera_pos_f64);
-        let boost = cesium_engine::render::model_pipeline::pipeline::min_pixel_scale_multiplier(
-            &model_matrix,
-            viewport_size[1],
-            AIRCRAFT_MIN_PIXEL_SIZE,
-        );
-        let (lo, hi) = airplane.bounds;
-        let corner = |i: usize| {
-            let local = glam::Vec3::new(
-                if i & 1 == 0 { lo[0] } else { hi[0] },
-                if i & 2 == 0 { lo[1] } else { hi[1] },
-                if i & 4 == 0 { lo[2] } else { hi[2] },
-            );
-            model_matrix.transform_point3(local * boost)
-        };
-        vec![std::array::from_fn(corner)]
     }
 
     fn runway_corridors(&self) -> &[cesium_engine::globe::terrain::RunwayCorridor] {

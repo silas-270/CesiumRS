@@ -31,6 +31,10 @@ async-trait = "0.1.89"
 byteorder = "1.5.0"
 sha2 = "0.11.0"
 gltf = "1.4.1"
+# Label text: rasterized from egui's default proportional face so the labels look as
+# they did when egui drew them. Both were already in the tree via egui.
+ab_glyph = "0.2"
+epaint_default_fonts = "0.29"
 winit = { version = "0.30", features = ["rwh_06"] }
 libc = "0.2"
 

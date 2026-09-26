@@ -521,6 +521,7 @@ dependencies = [
 name = "cesium-engine"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "async-trait",
  "bytemuck",
  "byteorder",
@@ -528,6 +529,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "epaint_default_fonts",
  "flate2",
  "glam",
  "gltf",

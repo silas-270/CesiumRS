@@ -41,6 +41,8 @@ pub struct SubsystemTimings {
     pub extension_render_us: f64,
     pub submit_present_us: f64,
     pub egui_us: f64,
+    /// Building and uploading the label instances (`render::label_pipeline`).
+    pub label_render_us: f64,
 }
 
 pub struct WgpuState<'a> {
@@ -107,6 +109,7 @@ pub struct WgpuState<'a> {
     /// Capacity 4096 to handle long Europe→US flights without unbounded growth.
     tiles_with_own_texture: LruCache<TileId, ()>,
     pub label_manager: crate::label::LabelManager,
+    pub label_renderer: crate::render::label_pipeline::LabelRenderer,
     pub last_timings: FrameTimings,
     pub last_subsystem_timings: SubsystemTimings,
     pub frame_count: u64,
@@ -473,6 +476,14 @@ impl<'a> WgpuState<'a> {
             ext.init(&device, &queue, &config, &camera_bind_group_layout);
         }
 
+        let label_manager = crate::label::LabelManager::new();
+        let label_renderer = crate::render::label_pipeline::LabelRenderer::new(
+            &device,
+            &queue,
+            config.format,
+            &camera_bind_group_layout,
+        );
+
         Self {
             instance,
             surface,
@@ -545,7 +556,8 @@ impl<'a> WgpuState<'a> {
             display_state: HashMap::new(),
             last_visible_set: HashSet::new(),
             tiles_with_own_texture: LruCache::new(std::num::NonZeroUsize::new(4096).unwrap()),
-            label_manager: crate::label::LabelManager::new(),
+            label_manager,
+            label_renderer,
             last_timings: FrameTimings::default(),
             last_subsystem_timings: SubsystemTimings::default(),
             frame_count: 0,
@@ -1466,6 +1478,52 @@ impl<'a> WgpuState<'a> {
         // the sky and the globe sample it directly.
         self.sky_lut.update(encoder);
 
+        #[cfg(feature = "debug_panel")]
+        let camera_pos_f64 = if self.debug_mode {
+            [
+                self.debug_camera.position.x as f64,
+                self.debug_camera.position.y as f64,
+                self.debug_camera.position.z as f64,
+            ]
+        } else {
+            let (pos_dvec, _) = self.camera.global_transform_f64();
+            [pos_dvec.x, pos_dvec.y, pos_dvec.z]
+        };
+
+        #[cfg(not(feature = "debug_panel"))]
+        let camera_pos_f64 = {
+            let (pos_dvec, _) = self.camera.global_transform_f64();
+            [pos_dvec.x, pos_dvec.y, pos_dvec.z]
+        };
+
+        // Label instances are built before the pass opens; they are drawn inside it,
+        // between the world layer and the extension's foreground models.
+        {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.render.labels");
+            let label_start = Instant::now();
+            let (flight_cam, _) = self.camera.global_transform();
+            let input = crate::render::label_pipeline::LabelFrameInput {
+                labels: &self.label_manager.visible_labels,
+                camera_pos_f64: glam::DVec3::from_array(camera_pos_f64),
+                view_proj: self.camera_uniform.view_proj(),
+                style: crate::label::style::StyleFrame::new(
+                    flight_cam,
+                    self.camera.altitude(),
+                    self.label_manager.size_scale,
+                ),
+                pixels_per_point: self
+                    .window
+                    .as_ref()
+                    .map(|w| w.scale_factor() as f32)
+                    .unwrap_or(1.0),
+                viewport_px: [self.config.width as f32, self.config.height as f32],
+                show_anchor_dots: self.label_manager.show_anchor_dots,
+            };
+            self.label_renderer.prepare(&self.device, &self.queue, &input);
+            self.last_subsystem_timings.label_render_us =
+                label_start.elapsed().as_secs_f64() * 1_000_000.0;
+        }
+
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1497,23 +1555,6 @@ impl<'a> WgpuState<'a> {
             timestamp_writes: None,
         });
 
-        #[cfg(feature = "debug_panel")]
-        let camera_pos_f64 = if self.debug_mode {
-            [
-                self.debug_camera.position.x as f64,
-                self.debug_camera.position.y as f64,
-                self.debug_camera.position.z as f64,
-            ]
-        } else {
-            let (pos_dvec, _) = self.camera.global_transform_f64();
-            [pos_dvec.x, pos_dvec.y, pos_dvec.z]
-        };
-
-        #[cfg(not(feature = "debug_panel"))]
-        let camera_pos_f64 = {
-            let (pos_dvec, _) = self.camera.global_transform_f64();
-            [pos_dvec.x, pos_dvec.y, pos_dvec.z]
-        };
 
         // Draw solid — iterate display_state for stable per-tile texture assignments.
         // display_state was built this frame by update_display_state() with no-downgrade rules.
@@ -1636,6 +1677,23 @@ impl<'a> WgpuState<'a> {
             );
             self.last_subsystem_timings.extension_render_us =
                 extension_render_start.elapsed().as_secs_f64() * 1_000_000.0;
+        }
+
+        // Labels after the world layer, before the foreground models: see the rules in
+        // `render::label_pipeline`.
+        self.label_renderer.draw(&mut render_pass, &self.camera_bind_group);
+
+        if let Some(ext) = &self.extension {
+            let _span = crate::core::trace::ScopedTrace::new("cesium.render.extension_foreground");
+            let foreground_start = Instant::now();
+            ext.render_foreground(
+                &mut render_pass,
+                &self.camera_bind_group,
+                [self.config.width as f32, self.config.height as f32],
+                camera_pos_f64,
+            );
+            self.last_subsystem_timings.extension_render_us +=
+                foreground_start.elapsed().as_secs_f64() * 1_000_000.0;
         }
     }
 
