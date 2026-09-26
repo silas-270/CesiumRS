@@ -285,11 +285,11 @@ construction, not by two constants that happen to agree today.
   (`pow(color, mix(1.0, 1.35, …))`) that darkens the tile, and a 65%-weighted blend toward
   `luminance * vec3(0.75, 0.82, 0.95)` — grey tinted cold blue, not black. Gating on the
   *texture's own brightness*, rather than on which basemap is configured, is what keeps this
-  model-agnostic: the default "Dark Matter" vector basemap (`STANDARD_IMAGERY_URL`) is
+  model-agnostic: the default "Dark Matter" vector basemap (`standard_imagery_url()`) is
   already near-black everywhere its roads aren't, so `night_lum` never clears 0.04,
   `photo_gate` stays at 0, and the curve leaves it alone — which is the entire point, since
   crushing an already-dark map toward monochrome would erase the roads it exists to keep
-  legible. Point the engine at photographic imagery (`SATELLITE_IMAGERY_URL`) instead and
+  legible. Point the engine at photographic imagery (`satellite_imagery_url()`) instead and
   the same code now has bright pixels to gate on, and the curve applies without any
   per-basemap branch.
 - **The final `clamp` moved outside the colour-grading `if`.** It used to run only when
@@ -502,7 +502,7 @@ would be invisible to both sweeps, since Dark Matter's near-black pixels never o
 imagery source — instead of another altitude or camera angle: it runs the same six
 progress values (`0.0, 0.2, … 1.0`, spanning the full depth arc, taxi to cruise and back) in
 `Tracking` mode twice, once against `TileEngineConfig::default()` and once with
-`base_imagery_url` swapped to `SATELLITE_IMAGERY_URL` (Esri World Imagery, photographic),
+`base_imagery_url` swapped to `satellite_imagery_url()` (Esri World Imagery, photographic),
 via a new `shoot_with_config` that threads the tile config through instead of always taking
 the default. The output pairs up as `dark_*.png` / `sat_*.png` per progress value, so a
 regression that only shows up on bright photographic tiles at night — the exact failure

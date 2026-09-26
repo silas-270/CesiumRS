@@ -20,7 +20,7 @@ mod tests {
 
     /// The core claim of WP4/A: this is a *live* feed, not a second frozen constant.
     /// Checked away from the bootstrap value in both directions — a decode smaller
-    /// than the default (matching `SATELLITE_IMAGERY_URL`'s 256px tiles) and one
+    /// than the default (matching `satellite_imagery_url()`'s 256px tiles) and one
     /// larger than it — so a wiring bug that only ever reported the default, or that
     /// silently clamped, would fail this.
     #[test]

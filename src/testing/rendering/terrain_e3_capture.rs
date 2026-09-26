@@ -27,7 +27,7 @@
 //!   cargo test --release --lib rendering::terrain_e3_capture -- --ignored --nocapture
 //! ```
 
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use cesium_flight::telemetry::geo::LatLon;
 use cesium_flight::telemetry::{generate, FlightPlanConfig, FlightRequest};
 
@@ -110,7 +110,7 @@ fn look(
 /// The same config the Phase C/D captures use, so the two sets are comparable.
 fn config(terrain: bool) -> TileEngineConfig {
     TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         offline_mode: false,
         transparent_background: true,
         target_texel_ratio: 1.0,

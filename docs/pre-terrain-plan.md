@@ -17,7 +17,7 @@
 |---|---|
 | Viewport height | A 2340-tall S23 and a 1080-tall window get identical tile density. `cockpit_s23.rs` says the S23 is a target. |
 | Vertical FOV | Cockpit mode is pinned at 60°, Free/Tracking at 46.4° — a factor of 1.35 in `2·tan(fovy/2)` that nothing accounts for. |
-| Imagery texture size | Carto `@2x` serves 512², Esri serves 256². Switching to `SATELLITE_IMAGERY_URL` halves effective texel density with zero LOD compensation. |
+| Imagery texture size | Carto `@2x` serves 512², Esri serves 256². Switching to `satellite_imagery_url()` halves effective texel density with zero LOD compensation. |
 | Distance measure | `(center − eye).length()` over-estimates badly at grazing angles — exactly the cockpit and low-altitude geometry. |
 
 Terrain lands on top of this rule. Unfreezing it first means tuning once instead of twice, and every item below is independently worth shipping regardless of whether terrain ever happens.

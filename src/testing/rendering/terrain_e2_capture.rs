@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use cesium_engine::globe::quadtree::TileId;
 use cesium_engine::globe::terrain::HeightTile;
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use cesium_engine::globe::tiles::system::MESH_REBUILD_BUDGET_PER_FRAME;
 use cesium_engine::render::wgpu_state::WgpuState;
 
@@ -100,7 +100,7 @@ fn look(
 /// The same config the Phase C/D/E captures use, terrain on.
 fn config() -> TileEngineConfig {
     TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         offline_mode: false,
         transparent_background: true,
         target_texel_ratio: 1.0,

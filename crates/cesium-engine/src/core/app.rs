@@ -180,7 +180,7 @@ impl<'a> App<'a> {
                     // Determine which of the three styles is currently active.
                     use crate::globe::tiles::config::{
                         TileSourceMode, OFFLINE_IMAGERY_MAX_LEVEL, SATELLITE_IMAGERY_MAX_LEVEL,
-                        SATELLITE_IMAGERY_URL, STANDARD_IMAGERY_MAX_LEVEL, standard_imagery_url,
+                        satellite_imagery_url, STANDARD_IMAGERY_MAX_LEVEL, standard_imagery_url,
                     };
                     #[derive(PartialEq, Clone, Copy)]
                     enum StyleSel { Standard, Satellite, Offline }
@@ -188,7 +188,7 @@ impl<'a> App<'a> {
                     let sel = match &state.tile_system.config.tile_source_mode {
                         TileSourceMode::SvgVector(_) => StyleSel::Offline,
                         TileSourceMode::HttpNetwork => {
-                            if state.tile_system.config.base_imagery_url == SATELLITE_IMAGERY_URL {
+                            if state.tile_system.config.base_imagery_url == satellite_imagery_url() {
                                 StyleSel::Satellite
                             } else {
                                 StyleSel::Standard
@@ -202,7 +202,7 @@ impl<'a> App<'a> {
                         state.set_terrain_enabled(false);
                     }
                     if ui.radio_value(&mut sel, StyleSel::Satellite, "Satellite + Terrain").changed() {
-                        state.set_base_imagery_url(SATELLITE_IMAGERY_URL.to_string(), SATELLITE_IMAGERY_MAX_LEVEL);
+                        state.set_base_imagery_url(satellite_imagery_url(), SATELLITE_IMAGERY_MAX_LEVEL);
                         state.set_terrain_enabled(true);
                     }
                     if ui.radio_value(&mut sel, StyleSel::Offline, "Offline (SVG)").changed() {

@@ -14,13 +14,13 @@
 //! back, so that is the throughput: whichever of CPU and GPU is slower).
 
 use cesium_engine::camera::camera::CameraMode;
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use cesium_engine::render::wgpu_state::WgpuState;
 
 fn config(satellite: bool) -> TileEngineConfig {
     if satellite {
         TileEngineConfig {
-            base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+            base_imagery_url: satellite_imagery_url(),
             terrain: TerrainConfig { enabled: true, ..TerrainConfig::default() },
             ..TileEngineConfig::default()
         }

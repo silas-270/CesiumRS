@@ -215,7 +215,7 @@ fn light_audit_sweep() {
 #[test]
 #[ignore = "writes PNGs; run explicitly"]
 fn light_audit_dark_vs_satellite_sweep() {
-    use cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL;
+    use cesium_engine::globe::tiles::config::satellite_imagery_url;
 
     let dir = std::env::var("LIGHT_AUDIT_DIR").unwrap_or_else(|_| "light_audit".to_string());
     std::fs::create_dir_all(&dir).unwrap();
@@ -238,7 +238,7 @@ fn light_audit_dark_vs_satellite_sweep() {
 
     // 2. Satellite (Esri) Map
     let sat_config = TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         ..Default::default()
     };
     for &p in &progresses {

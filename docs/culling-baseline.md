@@ -104,14 +104,14 @@ literal.
 `TileTextureManager::current_texture_size_px()` (the real decoded tile size, via the
 new `ObservedTextureSize`) instead of the frozen `DEFAULT_IMAGERY_TEXTURE_SIZE_PX`
 (512) `wgpu_state::update_logic` used unconditionally before this. Not a no-op:
-`SATELLITE_IMAGERY_URL` serves 256×256 tiles, so this changes what the engine
+`satellite_imagery_url()` serves 256×256 tiles, so this changes what the engine
 actually renders for that style. Measured with
 `cargo test --release --lib lod::test_lod_sweep::test_wp4a_esri_texture_size_compensated_vs_uncompensated -- --nocapture`,
 same 204 bench poses, `target_texel_ratio = 1.0` throughout.*
 
 | scenario | `lod_factor_for` assumes | real texels counted | `aggregate_ratio` | tiles | texture bytes |
 |---|---|---|---|---|---|
-| 512px baseline (Carto, `STANDARD_IMAGERY_URL`) | 512px | 512px | **1.6625** | 3 922 | 3922.0 MiB |
+| 512px baseline (Carto, `standard_imagery_url()`) | 512px | 512px | **1.6625** | 3 922 | 3922.0 MiB |
 | **compensated 256px (Esri, post-WP4/A, live)** | 256px | 256px | **1.7367** | 12 363 | 3090.8 MiB |
 | uncompensated 256px (Esri, pre-WP4/A bug, reproduced for comparison) | *512px (frozen, wrong)* | 256px | **0.4156** | 3 922 | 980.5 MiB |
 
@@ -252,7 +252,7 @@ next.
 `docs/pre-terrain-plan.md`.* WP4/C found the 12 single worst under-refined tiles
 bit-identical across both LOD distance metrics, all at `MAX_ZOOM = 20` — a zoom
 ceiling, not an LOD-rule problem. The question worth checking cheaply: does
-`STANDARD_IMAGERY_URL` (Carto `dark_nolabels` `@2x`) even have real content at
+`standard_imagery_url()` (Carto `dark_nolabels` `@2x`) even have real content at
 z=20, or is the engine dutifully refining toward data that doesn't exist?
 
 Fetched the exact worst-case tile from the WP0-WP4 measurements, `z=20 x=550502

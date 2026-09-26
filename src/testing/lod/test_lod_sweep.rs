@@ -325,7 +325,7 @@ fn test_true_ground_per_radius_is_not_the_calibration_constant() {
     }
 }
 
-/// WP4/A (`docs/pre-terrain-plan.md`): measures `SATELLITE_IMAGERY_URL`'s 256px
+/// WP4/A (`docs/pre-terrain-plan.md`): measures `satellite_imagery_url()`'s 256px
 /// style two ways and records both, per that package's instructions.
 ///
 /// **Compensated** (`LodConfig::new(1.0, 256.0)`) is what the engine actually does

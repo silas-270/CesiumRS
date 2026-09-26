@@ -13,7 +13,7 @@
 //! `SUNSET_ELEVS=3,-3` and `SUNSET_VIEWS=g_sun,air_anti` narrow the sweep.
 
 use cesium_engine::camera::camera::CameraMode;
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use cesium_engine::render::celestial;
 use cesium_engine::render::wgpu_state::WgpuState;
 
@@ -66,7 +66,7 @@ const ELEVATIONS: &[f32] = &[10.0, 3.0, 0.0, -3.0, -6.0, -10.0];
 
 fn config() -> TileEngineConfig {
     TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         terrain: TerrainConfig { enabled: false, ..TerrainConfig::default() },
         ..TileEngineConfig::default()
     }

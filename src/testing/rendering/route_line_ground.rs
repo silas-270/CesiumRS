@@ -14,7 +14,7 @@
 //! ```
 
 use cesium_engine::camera::camera::CameraMode;
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use cesium_engine::render::wgpu_state::WgpuState;
 use cesium_flight::tracker::FlightTrackerApp;
 
@@ -71,7 +71,7 @@ async fn render(shot: &Shot, out_path: &str) {
     app.reset_viewport = true;
 
     let config = TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         target_texel_ratio: 1.0,
         terrain: TerrainConfig {
             enabled: true,

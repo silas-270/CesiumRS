@@ -6,7 +6,7 @@ use std::time::Duration;
 /// Default dark, label-free vector-style basemap. The `@2x` suffix requests
 /// 512x512 retina tiles, which carry genuinely twice the detail rather than
 /// an upscale. Tile dimensions are derived from the decoded image, so styles
-/// served at 256x256 (e.g. `SATELLITE_IMAGERY_URL`) still work unchanged.
+/// served at 256x256 (e.g. `satellite_imagery_url()`) still work unchanged.
 ///
 /// **CARTO requires an API key**, and this repository is public, so the key is
 /// never in source: it is read at compile time from the `CARTO_API_KEY`
@@ -40,11 +40,32 @@ pub fn standard_imagery_url() -> String {
 /// the cap is the engine declining to ask past CartoDB's documented ceiling.
 pub const STANDARD_IMAGERY_MAX_LEVEL: u8 = 20;
 
-/// Esri World Imagery - free, no API key required.
-pub const SATELLITE_IMAGERY_URL: &str =
-    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+/// Esri World Imagery.
+///
+/// The keyless `server.arcgisonline.com` service answers without a key but is not
+/// licensed for commercial use. The licensed route is ArcGIS Location Platform's
+/// basemap service on `ibasemaps-api.arcgis.com`, which serves the same imagery and
+/// tile scheme but needs an API key — read at compile time from `ESRI_API_KEY`,
+/// the same way [`standard_imagery_url`] reads `CARTO_API_KEY`. Without one this
+/// falls back to the keyless service and warns once.
+pub fn satellite_imagery_url() -> String {
+    const LICENSED: &str =
+        "https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+    const KEYLESS: &str =
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+    match option_env!("ESRI_API_KEY").filter(|key| !key.is_empty()) {
+        Some(key) => format!("{LICENSED}?token={key}"),
+        None => {
+            static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+            WARN_ONCE.call_once(|| {
+                log::warn!("ESRI_API_KEY was not set at build time; satellite imagery uses the keyless, non-commercial service");
+            });
+            KEYLESS.to_string()
+        }
+    }
+}
 
-/// Deepest level requested from [`SATELLITE_IMAGERY_URL`] — the direct fix for
+/// Deepest level requested from [`satellite_imagery_url`] — the direct fix for
 /// imagery rendering as flat white close to the ground (see `wgpu_state.rs`'s
 /// `imagery_lod_height_px` for the DPI half of that bug; this is the other half,
 /// the one that holds even after the LOD math is right, because Esri's own real
@@ -476,7 +497,7 @@ pub const MIN_TILE_CACHE_ENTRIES: usize = 64;
 /// until its first tile has decoded, and this is what `lod_factor_for` runs at until
 /// then (or if imagery is disabled). Before WP4/A this was the value used
 /// unconditionally, silently halving effective sharpness on any 256² style
-/// (`SATELLITE_IMAGERY_URL`) with no LOD compensation.
+/// (`satellite_imagery_url()`) with no LOD compensation.
 ///
 /// This mirrors, but is deliberately a separate constant from, the LOD test harness's
 /// own `TEXTURE_SIZE_PX` in `src/testing/lod/sweep.rs` — the harness measures texel
@@ -669,7 +690,7 @@ mod tests {
         );
     }
 
-    /// A 256x256 style (e.g. `SATELLITE_IMAGERY_URL`) is 256KiB per tile, so
+    /// A 256x256 style (e.g. `satellite_imagery_url()`) is 256KiB per tile, so
     /// 2048 of them fit in the same budget and the count cap stays the binding
     /// constraint — i.e. behaviour there is unchanged.
     #[test]

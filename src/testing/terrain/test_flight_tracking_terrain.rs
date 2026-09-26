@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use cesium_engine::camera::camera::CameraMode;
-    use cesium_engine::globe::tiles::config::{TileEngineConfig, SATELLITE_IMAGERY_URL};
+    use cesium_engine::globe::tiles::config::{TileEngineConfig, satellite_imagery_url};
     use cesium_engine::render::wgpu_state::WgpuState;
     use std::time::Instant;
 
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_tracking_flight_orbit_terrain_3d_render() {
-        run_orbit_benchmark("Satellite + Terrain 3D", true, SATELLITE_IMAGERY_URL.to_string());
+        run_orbit_benchmark("Satellite + Terrain 3D", true, satellite_imagery_url());
     }
 
     #[test]
@@ -143,7 +143,7 @@ mod tests {
                 flight_app.reset_viewport = true;
 
                 let mut config = TileEngineConfig::default();
-                config.base_imagery_url = SATELLITE_IMAGERY_URL.to_string();
+                config.base_imagery_url = satellite_imagery_url();
                 config.terrain.enabled = true;
 
                 let mut state = WgpuState::new(
@@ -287,7 +287,7 @@ mod tests {
 
                 // 1. Switch to Satellite + Terrain while tracking plane on runway
                 state.set_base_imagery_url(
-                    cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string(),
+                    cesium_engine::globe::tiles::config::satellite_imagery_url(),
                     cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_MAX_LEVEL,
                 );
                 state.set_terrain_enabled(true);

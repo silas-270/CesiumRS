@@ -14,7 +14,7 @@
 //!   cargo test --release --lib rendering::terrain_rapid_pan -- --ignored --nocapture
 //! ```
 
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use std::time::{Duration, Instant};
 
 use super::terrain_capture::{oblique, shot_dir};
@@ -26,7 +26,7 @@ const ZOOM_FRAMES: usize = 60;
 
 fn config() -> TileEngineConfig {
     TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         offline_mode: false,
         transparent_background: true,
         target_texel_ratio: 1.0,

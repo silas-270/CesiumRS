@@ -25,11 +25,11 @@ use super::super::culling::sweep::{harness_pool, UPDATE_ITERATIONS};
 /// texel-density assumption independently of the engine's. Used as the *default*
 /// `texture_size_px` in [`LodConfig`] and by [`measure_pose`]/[`measure_poses`];
 /// every measurement function also takes an explicit `texture_size_px` (WP4/A,
-/// `docs/pre-terrain-plan.md`) so `SATELLITE_IMAGERY_URL`'s 256px style can be
+/// `docs/pre-terrain-plan.md`) so `satellite_imagery_url()`'s 256px style can be
 /// measured too — see [`ESRI_TEXTURE_SIZE_PX`].
 pub const TEXTURE_SIZE_PX: u32 = 512;
 
-/// `SATELLITE_IMAGERY_URL`'s tile size (`config.rs`) — the other real style this
+/// `satellite_imagery_url()`'s tile size (`config.rs`) — the other real style this
 /// engine serves, and the one WP4/A's live texture-size feed exists to stop
 /// silently under-refining.
 pub const ESRI_TEXTURE_SIZE_PX: f32 = 256.0;
@@ -423,7 +423,7 @@ pub fn measure_pose_with_target(p: &ViewParams, target_texel_ratio: f32) -> Pose
 /// As [`measure_pose`], but with an explicit [`LodConfig`] — WP4/A
 /// (`docs/pre-terrain-plan.md`): the texture size fed to `lod_factor_for` is no
 /// longer implicitly [`TEXTURE_SIZE_PX`], so a sweep can measure
-/// `SATELLITE_IMAGERY_URL`'s 256px style (via [`LodConfig::new`]), or reproduce the
+/// `satellite_imagery_url()`'s 256px style (via [`LodConfig::new`]), or reproduce the
 /// pre-WP4/A engine behaviour via [`LodConfig::uncompensated`] — see
 /// [`ESRI_TEXTURE_SIZE_PX`] and `docs/culling-baseline.md`'s WP4/A section.
 pub fn measure_pose_with_config(p: &ViewParams, cfg: LodConfig) -> PoseResult {

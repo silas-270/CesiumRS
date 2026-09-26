@@ -43,7 +43,7 @@
 //!   cargo test --release --lib rendering::terrain_balance -- --ignored --nocapture
 //! ```
 
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 
 use super::terrain_capture::{oblique, Pose};
 use super::terrain_step_capture::bearing_pose;
@@ -80,7 +80,7 @@ fn median_of(v: &[f64]) -> f64 {
 
 fn config(occlusion: bool, texel_ratio: f32) -> TileEngineConfig {
     TileEngineConfig {
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         offline_mode: false,
         transparent_background: true,
         target_texel_ratio: texel_ratio,

@@ -379,7 +379,7 @@ impl TileSystem {
     /// simply hasn't loaded yet already uses, not a second mechanism. This is what stops
     /// imagery sources whose real depth is shallower than the quadtree's own (satellite
     /// photography past its resolution, the offline vector map past its source scale)
-    /// from being asked for tiles beyond it, where — for `SATELLITE_IMAGERY_URL` at
+    /// from being asked for tiles beyond it, where — for `satellite_imagery_url()` at
     /// least — the source hands back a flat, near-white "no data" placeholder rather
     /// than an error (see `SATELLITE_IMAGERY_MAX_LEVEL`'s doc comment).
     fn sync_imagery_requests(&mut self, camera_pos: Vec3, visible_tiles: &[(TileId, Vec3, f32)]) {

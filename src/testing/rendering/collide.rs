@@ -1,6 +1,6 @@
 use crate::testing::harness::simulator::Simulator;
 use cesium_engine::core::app::App;
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 use cesium_flight::flight_handle::FlightHandle;
 use cesium_flight::tracker::FlightTrackerApp;
 use std::num::NonZeroUsize;
@@ -36,7 +36,7 @@ impl<'a> CollideApp<'a> {
             mesh_cache_size: NonZeroUsize::new(cesium_engine::globe::tiles::config::MESH_CACHE_ENTRIES).unwrap(),
             target_texel_ratio: 1.0,
             enable_prefetch: true,
-            base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+            base_imagery_url: satellite_imagery_url(),
             terrain: TerrainConfig {
                 enabled: true,
                 ..TerrainConfig::default()

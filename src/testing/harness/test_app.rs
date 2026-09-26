@@ -40,7 +40,7 @@ impl<'a> TestApp<'a> {
         let mut tile_config = cesium_engine::globe::tiles::config::TileEngineConfig::default();
         tile_config.terrain.enabled = terrain_enabled;
         if config.map_style == crate::MapStyle::SatelliteTerrain {
-            tile_config.base_imagery_url = cesium_engine::globe::tiles::config::SATELLITE_IMAGERY_URL.to_string();
+            tile_config.base_imagery_url = cesium_engine::globe::tiles::config::satellite_imagery_url();
             // Must travel with the URL above — see `TileEngineConfig::imagery_max_level`'s
             // doc comment. Without it this harness silently keeps the `Standard` style's
             // cap (20, effectively unenforced under `max_zoom` 19) while showing satellite

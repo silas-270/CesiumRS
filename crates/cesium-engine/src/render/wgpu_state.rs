@@ -575,7 +575,7 @@ impl<'a> WgpuState<'a> {
     /// texel density by `scale_factor` — on a typical flagship phone (`scale_factor` 2.6–4,
     /// against ~1.0 on the desktop machine this was developed on, which is why nothing here
     /// noticed) that pushes imagery requests several quadtree levels deeper than the same
-    /// on-screen framing needs. Deeper than `SATELLITE_IMAGERY_URL`'s real photographic
+    /// on-screen framing needs. Deeper than `satellite_imagery_url()`'s real photographic
     /// coverage at most locations, whose response for a level it has no imagery for is not
     /// an error but a flat, near-white placeholder tile (HTTP 200, confirmed against the
     /// live Esri endpoint) — decoded and uploaded like any other successful tile, so no

@@ -20,7 +20,7 @@
 //!   cargo test --release --lib rendering::terrain_capture -- --ignored --nocapture
 //! ```
 
-use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, SATELLITE_IMAGERY_URL};
+use cesium_engine::globe::tiles::config::{TerrainConfig, TileEngineConfig, satellite_imagery_url};
 
 /// Where the PNGs go. Set `CESIUM_SHOT_DIR`; defaults to the system temp dir.
 pub(crate) fn shot_dir() -> std::path::PathBuf {
@@ -151,7 +151,7 @@ fn config(terrain: bool, occlusion: bool) -> TileEngineConfig {
     TileEngineConfig {
         // Satellite imagery: relief against a dark vector basemap is legible only in
         // silhouette, and half of what C2 changes is the shading.
-        base_imagery_url: SATELLITE_IMAGERY_URL.to_string(),
+        base_imagery_url: satellite_imagery_url(),
         offline_mode: false,
         transparent_background: true,
         target_texel_ratio: 1.0,
