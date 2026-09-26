@@ -4,6 +4,11 @@
 
 **A 3D globe and flight renderer in Rust, built on wgpu.**
 
+[![Rust 2021](https://img.shields.io/badge/rust-2021_edition-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![wgpu](https://img.shields.io/badge/graphics-wgpu-blue)](https://wgpu.rs)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Android-lightgrey)](https://github.com/silas-270/CesiumRS)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 A WGS84 globe with streamed imagery and terrain, a physically based sky, and an offline
 flight planner that turns two airports and a duration into the route an airline would fly.
 It runs on desktop and on Android.
