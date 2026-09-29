@@ -475,7 +475,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
             WindowEvent::RedrawRequested => {
                 // Skip rendering when the Compose UI is covering the globe (battery saver)
                 #[cfg(target_os = "android")]
-                if !RENDERING_ENABLED.load(Ordering::Relaxed) {
+                if !RENDERING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
 
@@ -690,7 +690,7 @@ impl<'a> ApplicationHandler<AppUserEvent> for App<'a> {
         // ── Battery saver: skip rendering when Compose UI is covering the globe ──
         #[cfg(target_os = "android")]
         {
-            if !RENDERING_ENABLED.load(Ordering::Relaxed) {
+            if !RENDERING_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
                 let _span = crate::core::trace::ScopedTrace::new("cesium.frame.idle_sleep");
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 return;
